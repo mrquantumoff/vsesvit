@@ -30,6 +30,9 @@ pub(crate) enum ViewKind {
     Popup,
 }
 
+/// Work held until the background has loaded.
+pub(crate) type Waiting = Box<dyn FnOnce()>;
+
 pub(crate) struct ExtView {
     pub id: ViewId,
     pub kind: ViewKind,
@@ -87,6 +90,9 @@ pub(crate) struct Extension {
     /// Content-blocker JSON for the enabled static rulesets; `None` when there are none.
     pub dnr_json: Option<String>,
     pub background: RefCell<Option<webkit::WebView>>,
+    /// Work waiting for the background to finish loading; `None` once it has, or when there
+    /// is none.
+    pub background_waiting: RefCell<Option<Vec<Waiting>>>,
     pub views: RefCell<Vec<ExtView>>,
     pub action: RefCell<Option<ActionState>>,
     pub filter: RefCell<Option<webkit::UserContentFilter>>,
@@ -161,6 +167,7 @@ impl Extension {
             host_permissions,
             dnr_json,
             background: RefCell::new(None),
+            background_waiting: RefCell::new(None),
             views: RefCell::new(Vec::new()),
             action: RefCell::new(action),
             filter: RefCell::new(None),
@@ -255,6 +262,25 @@ impl Extension {
         match self.manifest.manifest_version {
             ManifestVersion::V2 => webkit::WebExtensionMode::Manifestv2,
             ManifestVersion::V3 => webkit::WebExtensionMode::Manifestv3,
+        }
+    }
+
+    /// Runs `f` once the background has loaded, since only then do its top-level listeners
+    /// exist: now, unless it is still loading. Chrome holds messages for a starting background
+    /// the same way.
+    pub fn when_background_loaded(&self, f: impl FnOnce() + 'static) {
+        if let Some(waiting) = self.background_waiting.borrow_mut().as_mut() {
+            waiting.push(Box::new(f));
+            return;
+        }
+        f();
+    }
+
+    /// Runs the work [`Extension::when_background_loaded`] held back.
+    pub fn background_loaded(&self) {
+        let waiting = self.background_waiting.borrow_mut().take();
+        for f in waiting.into_iter().flatten() {
+            f();
         }
     }
 

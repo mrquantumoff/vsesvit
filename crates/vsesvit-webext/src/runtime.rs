@@ -148,6 +148,7 @@ impl Runtime {
             bg.load_uri("about:blank");
         }
         ext.views.borrow_mut().clear();
+        ext.background_loaded();
         self.0.notify_actions_changed();
         log::info!("{}: unloaded", id.as_str());
     }

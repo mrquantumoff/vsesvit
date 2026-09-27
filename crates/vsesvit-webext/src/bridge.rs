@@ -112,7 +112,10 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         return reply.err(&format!("{} is not available in content scripts", call.method));
     }
     match call.method {
-        Method::RuntimeSendMessage => send_to_pages(inner, ext, origin, &call, reply),
+        Method::RuntimeSendMessage => {
+            let (inner, target) = (inner.clone(), ext.clone());
+            ext.when_background_loaded(move || send_to_pages(&inner, &target, origin, &call, reply));
+        }
         Method::TabsSendMessage => send_to_tab(inner, ext, origin, &call, reply),
         Method::ScriptingExecuteScript => execute_script(inner, ext, &call, reply),
         Method::StorageGet | Method::StorageSet | Method::StorageRemove | Method::StorageClear | Method::StorageGetBytesInUse => {

@@ -129,13 +129,16 @@ pub(crate) fn start_background(inner: &Rc<Inner>, ext: &Rc<Extension>, install: 
             InstallEvent::Startup => ("runtime.onStartup", vec![]),
             InstallEvent::Nothing => {
                 log::debug!("{}: background ready (re-enabled, no lifecycle event)", ext_for_load.id.as_str());
+                ext_for_load.background_loaded();
                 return;
             }
         };
         bridge::emit(view, None, event_name, &args);
         log::debug!("{}: background ready, fired {event_name}", ext_for_load.id.as_str());
+        ext_for_load.background_loaded();
     });
     *ext.background.borrow_mut() = Some(view.clone());
+    ext.background_waiting.borrow_mut().get_or_insert_with(Vec::new);
     view.load_uri(&url);
 }
 
