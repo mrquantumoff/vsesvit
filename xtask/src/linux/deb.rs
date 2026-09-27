@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::Result;
-use crate::ctx::{BINARY, Ctx, HOMEPAGE, MAINTAINER, SUMMARY};
+use crate::ctx::{BINARY, Ctx, Format, HOMEPAGE, MAINTAINER, SUMMARY};
 
 use super::deps;
 use super::stage::Stage;
@@ -27,7 +27,7 @@ pub fn build(ctx: &Ctx, stage: &Stage, artifact: &Path) -> Result {
          Vsesvit is a web browser built on WebKitGTK. It installs extensions from the\n \
          Chrome Web Store and keeps bookmarks, history, open tabs and settings in a\n \
          sync-ready profile.\n",
-        version = ctx.version,
+        version = Format::Deb.package_version(&ctx.version),
         depends = deps::required(|d| d.deb).join(", "),
         recommends = deps::optional(|d| d.deb).join(", "),
     );

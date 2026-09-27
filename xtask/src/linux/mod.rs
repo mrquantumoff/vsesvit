@@ -46,18 +46,18 @@ pub fn package(format: Format, ctx: &Ctx) -> Result<PathBuf> {
     Ok(artifact)
 }
 
-/// `cargo build --release -p vsesvit`, returning the executable cargo reports, so the binary is
-/// found whatever `CARGO_TARGET_DIR` is.
+/// `cargo build --release --locked -p vsesvit`, returning the executable cargo reports, so the
+/// binary is found whatever `CARGO_TARGET_DIR` is.
 fn build_release(ctx: &Ctx) -> Result<PathBuf> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(cargo)
-        .args(["build", "--release", "-p", BINARY, "--message-format=json-render-diagnostics"])
+        .args(["build", "--release", "--locked", "-p", BINARY, "--message-format=json-render-diagnostics"])
         .current_dir(&ctx.root)
         .stderr(std::process::Stdio::inherit())
         .output()
         .map_err(|e| format!("cargo build: {e}"))?;
     if !output.status.success() {
-        return Err(format!("cargo build --release -p {BINARY} failed ({})", output.status));
+        return Err(format!("cargo build --release --locked -p {BINARY} failed ({})", output.status));
     }
     let executable = String::from_utf8_lossy(&output.stdout)
         .lines()

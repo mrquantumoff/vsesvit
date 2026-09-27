@@ -35,7 +35,7 @@ modules:
       - install -d /app/bin && ln -s ../lib/vsesvit/vsesvit /app/bin/vsesvit
       - install -Dm644 packaging/linux/dev.mrquantumoff.vsesvit.desktop /app/share/applications/dev.mrquantumoff.vsesvit.desktop
       - |
-        version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
+        version=$(sed -n '/^\[workspace.package\]/,/^\[/ s/^version = "\(.*\)"$/\1/p' Cargo.toml)
         install -d /app/share/metainfo
         sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$(date -u +%F)/" packaging/linux/dev.mrquantumoff.vsesvit.metainfo.xml > /app/share/metainfo/dev.mrquantumoff.vsesvit.metainfo.xml
       - |

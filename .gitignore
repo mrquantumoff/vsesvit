@@ -2,3 +2,4 @@
 /.audit/scratch/
 *.crx
 !/tests/fixtures/**/*.crx
+.updater/

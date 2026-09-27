@@ -49,6 +49,19 @@ impl Format {
         }
     }
 
+    /// `version` as the package manager spells it, with the prerelease still sorting below its
+    /// release so the stable update over a nightly is an upgrade. rpm and dpkg sort `~` below
+    /// everything. pacman has no `-` and sorts `0.1.1_nightly.1` and `0.1.1.nightly.1` above
+    /// `0.1.1`, but letters glued to the number below it.
+    pub fn package_version(self, version: &str) -> String {
+        let prerelease_separator = match self {
+            Format::Deb | Format::Rpm => "~",
+            Format::Pacman => "",
+            Format::Nsis | Format::AppImage | Format::Flatpak => "-",
+        };
+        version.replacen('-', prerelease_separator, 1)
+    }
+
     /// `latest.json` platform keys this format is published under. Flatpak updates through
     /// Flatpak, so it has none.
     pub fn manifest_keys(self) -> &'static [&'static str] {
@@ -111,5 +124,23 @@ impl Ctx {
 
     pub fn packaging(&self) -> PathBuf {
         self.root.join("packaging")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Format;
+
+    #[test]
+    fn package_versions() {
+        for (format, stable, nightly) in [
+            (Format::Deb, "0.1.1", "0.1.1~nightly.20260927.5"),
+            (Format::Rpm, "0.1.1", "0.1.1~nightly.20260927.5"),
+            (Format::Pacman, "0.1.1", "0.1.1nightly.20260927.5"),
+            (Format::AppImage, "0.1.1", "0.1.1-nightly.20260927.5"),
+        ] {
+            assert_eq!(format.package_version("0.1.1"), stable, "{format:?}");
+            assert_eq!(format.package_version("0.1.1-nightly.20260927.5"), nightly, "{format:?}");
+        }
     }
 }

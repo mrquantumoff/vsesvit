@@ -5,13 +5,14 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::Result;
-use crate::ctx::{APP_ID, BINARY, Ctx, HOMEPAGE, LICENSE, SUMMARY};
+use crate::ctx::{APP_ID, BINARY, Ctx, Format, HOMEPAGE, LICENSE, SUMMARY};
 
 use super::deps;
 use super::stage::Stage;
 use super::util;
 
 pub fn build(ctx: &Ctx, stage: &Stage, artifact: &Path) -> Result {
+    let version = Format::Rpm.package_version(&ctx.version);
     let topdir = ctx.work.join("rpm/topdir");
     util::fresh_dir(&topdir)?;
     for sub in ["BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"] {
@@ -46,7 +47,6 @@ pub fn build(ctx: &Ctx, stage: &Stage, artifact: &Path) -> Result {
          /usr/share/applications/{APP_ID}.desktop\n\
          /usr/share/metainfo/{APP_ID}.metainfo.xml\n\
          /usr/share/icons/hicolor/*/apps/{APP_ID}.*\n",
-        version = ctx.version,
         requires = deps::required(|d| d.rpm).iter().map(|d| format!("Requires: {d}")).collect::<Vec<_>>().join("\n"),
         recommends = deps::optional(|d| d.rpm).iter().map(|d| format!("Recommends: {d}")).collect::<Vec<_>>().join("\n"),
         root = super::display(&stage.root),
@@ -63,6 +63,6 @@ pub fn build(ctx: &Ctx, stage: &Stage, artifact: &Path) -> Result {
             .arg(format!("_dbpath {}", super::display(&topdir.join("rpmdb"))))
             .arg(&spec_path),
     )?;
-    let built = topdir.join("RPMS/x86_64").join(format!("{BINARY}-{}-1.x86_64.rpm", ctx.version));
+    let built = topdir.join("RPMS/x86_64").join(format!("{BINARY}-{version}-1.x86_64.rpm"));
     util::copy(&built, artifact)
 }

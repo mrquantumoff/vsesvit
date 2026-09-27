@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::Result;
-use crate::ctx::{BINARY, Ctx, HOMEPAGE, LICENSE, MAINTAINER, SUMMARY};
+use crate::ctx::{BINARY, Ctx, Format, HOMEPAGE, LICENSE, MAINTAINER, SUMMARY};
 
 use super::deps;
 use super::stage::Stage;
@@ -33,7 +33,7 @@ pub fn build(ctx: &Ctx, stage: &Stage, artifact: &Path) -> Result {
          size = {size}\n\
          arch = x86_64\n\
          license = {LICENSE}\n",
-        version = ctx.version,
+        version = Format::Pacman.package_version(&ctx.version),
         size = util::tree_size(root)?,
     );
     for dep in deps::required(|d| d.pacman) {
