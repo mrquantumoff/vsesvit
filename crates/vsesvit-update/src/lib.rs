@@ -10,12 +10,15 @@
 //! ```ignore
 //! let installation = Installation::detect();
 //! let updater = Updater::new(Config::builtin()?, current_version, installation.clone())?;
-//! if let Some(update) = updater.check()? {
+//! let available = updater.check()?;
+//! remove_stale_downloads(&cache_dir, available.as_ref().map(|a| &a.release().version))?;
+//! if let Some(Available::Update(update)) = available {
 //!     let downloaded = update.download(&cache_dir, |received, total| { /* progress */ })?;
-//!     match downloaded.install(&installation, &relaunch_args)? {
-//!         Installed::ExitNow => { /* save the session, then exit */ }
-//!         Installed::Relaunch => { /* offer "Restart" */ }
-//!         Installed::NextLaunch => { /* nothing to do */ }
+//!     match downloaded.install(&installation, &relaunch_args) {
+//!         Ok(Installed::ExitNow) => { /* save the session, then exit */ }
+//!         Ok(Installed::Relaunch) => { /* offer "Restart" */ }
+//!         Ok(Installed::NextLaunch) => { /* nothing to do */ }
+//!         Err(failed) => { /* keep failed.downloaded to try again */ }
 //!     }
 //! }
 //! ```
@@ -35,9 +38,9 @@ mod release;
 mod updater;
 
 pub use config::{Config, WindowsInstallMode};
-pub use install::Installed;
+pub use install::{InstallFailed, Installed};
 pub use installation::{Format, Installation};
-pub use updater::{Downloaded, Update, Updater};
+pub use updater::{Available, Downloaded, Release, Update, Updater, remove_stale_downloads};
 
 /// The `{{target}}` of the protocol, and the first part of a static-format platform key.
 pub const TARGET: &str = if cfg!(windows) { "windows" } else { "linux" };

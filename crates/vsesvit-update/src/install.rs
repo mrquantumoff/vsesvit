@@ -16,10 +16,44 @@ pub enum Installed {
     NextLaunch,
 }
 
+/// An install that did not happen. The verified download comes back, so trying again does not
+/// download it again.
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct InstallFailed {
+    pub error: Error,
+    pub downloaded: Downloaded,
+}
+
+impl From<InstallFailed> for Error {
+    fn from(failed: InstallFailed) -> Error {
+        failed.error
+    }
+}
+
 impl Downloaded {
     /// `relaunch_args` are the arguments the relaunched browser gets, without the program name.
-    /// Only the Windows installer uses them.
-    pub fn install(self, installation: &Installation, relaunch_args: &[OsString]) -> Result<Installed, Error> {
+    /// Only the Windows installer uses them. A successful install consumes the download: the
+    /// package manager is done with it, or the Windows installer is running from it.
+    #[expect(clippy::result_large_err, reason = "once per update, and the error carries the download back")]
+    pub fn install(self, installation: &Installation, relaunch_args: &[OsString]) -> Result<Installed, InstallFailed> {
+        let result = self.apply(installation, relaunch_args);
+        result.map_err(|error| InstallFailed { error, downloaded: self })
+    }
+
+    /// For a browser quitting with an update ready: runs the Windows installer silently
+    /// (`/S /UPDATE`) and does not relaunch.
+    #[cfg(windows)]
+    #[expect(clippy::result_large_err, reason = "once per update, and the error carries the download back")]
+    pub fn install_on_exit(self, installation: &Installation) -> Result<Installed, InstallFailed> {
+        let result = match (installation, self.format) {
+            (Installation::Nsis { .. }, Format::Nsis) => nsis::launch(&self.path, std::ffi::OsStr::new("/S /UPDATE")),
+            _ => Err(mismatch(installation)),
+        };
+        result.map_err(|error| InstallFailed { error, downloaded: self })
+    }
+
+    fn apply(&self, installation: &Installation, relaunch_args: &[OsString]) -> Result<Installed, Error> {
         match (installation, self.format) {
             (Installation::Nsis { .. }, Format::Nsis) => {
                 #[cfg(windows)]
@@ -46,18 +80,8 @@ impl Downloaded {
         }
     }
 
-    /// For a browser quitting with an update ready: runs the Windows installer silently
-    /// (`/S /UPDATE`) and does not relaunch.
-    #[cfg(windows)]
-    pub fn install_on_exit(self, installation: &Installation) -> Result<Installed, Error> {
-        match (installation, self.format) {
-            (Installation::Nsis { .. }, Format::Nsis) => nsis::launch(&self.path, std::ffi::OsStr::new("/S /UPDATE")),
-            _ => Err(mismatch(installation)),
-        }
-    }
-
     #[cfg(unix)]
-    fn pkexec(self, program: &str, args: &[&str]) -> Result<Installed, Error> {
+    fn pkexec(&self, program: &str, args: &[&str]) -> Result<Installed, Error> {
         let status = std::process::Command::new("pkexec")
             .arg(program)
             .args(args)
@@ -76,7 +100,7 @@ impl Downloaded {
     }
 
     #[cfg(not(unix))]
-    fn pkexec(self, program: &str, _args: &[&str]) -> Result<Installed, Error> {
+    fn pkexec(&self, program: &str, _args: &[&str]) -> Result<Installed, Error> {
         Err(Error::Install(format!("a {program} package can only be installed on Linux")))
     }
 }

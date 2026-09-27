@@ -7,16 +7,22 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 use time::format_description::well_known::Rfc3339;
-use vsesvit_update::{Config, Error, Installation, Installed, Update, Updater};
+use vsesvit_update::{
+    Available, Config, Error, Installation, Installed, Release, Update, Updater,
+    remove_stale_downloads,
+};
 
-use super::{current_version, download_dir, remove_stale};
+use super::{current_version, download_dir};
 
 pub(crate) fn check() -> ExitCode {
     let installation = Installation::detect();
     finish(
         updater(&installation)
             .and_then(|updater| updater.check())
-            .map(|update| report(&installation, "available", update.as_ref().map(available))),
+            .map(|available| {
+                let release = available.as_ref().map(Available::release);
+                report(&installation, "available", release.map(release_json))
+            }),
     )
 }
 
@@ -24,15 +30,17 @@ pub(crate) fn check() -> ExitCode {
 pub(crate) fn update() -> ExitCode {
     let installation = Installation::detect();
     let result = (|| {
-        let Some(update) = updater(&installation)?.check()? else {
+        let Some(available) = updater(&installation)?.check()? else {
             return Ok(report(&installation, "installed", None));
         };
+        let update = available.into_update()?;
         let dir = download_dir();
         fs::create_dir_all(&dir)?;
-        remove_stale(&dir, &current_version());
+        remove_stale_downloads(&dir, Some(&update.release.version))?;
         let downloaded = update.download(&dir, progress(&update))?;
         let next = downloaded.install(&installation, &[])?;
-        let installed = json!({"version": update.version.to_string(), "next": outcome(next)});
+        let installed =
+            json!({"version": update.release.version.to_string(), "next": outcome(next)});
         Ok(report(&installation, "installed", Some(installed)))
     })();
     finish(result)
@@ -50,11 +58,11 @@ fn report(installation: &Installation, key: &str, value: Option<Value>) -> Value
     })
 }
 
-fn available(update: &Update) -> Value {
+fn release_json(release: &Release) -> Value {
     json!({
-        "version": update.version.to_string(),
-        "notes": update.notes,
-        "pub_date": update.pub_date.and_then(|date| date.format(&Rfc3339).ok()),
+        "version": release.version.to_string(),
+        "notes": release.notes,
+        "pub_date": release.pub_date.and_then(|date| date.format(&Rfc3339).ok()),
     })
 }
 
@@ -69,7 +77,7 @@ fn outcome(installed: Installed) -> &'static str {
 /// Prints a line each time another tenth of the file (or, without a length, another MiB)
 /// arrives.
 fn progress(update: &Update) -> impl FnMut(u64, Option<u64>) {
-    let version = update.version.clone();
+    let version = update.release.version.clone();
     let mut shown = None;
     move |received, total| {
         let step = match total {

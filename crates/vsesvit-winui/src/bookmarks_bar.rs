@@ -3,6 +3,7 @@
 
 use std::rc::Rc;
 
+use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, NodeKind};
 use windows_core::{Interface, Result};
 
 use crate::bindings::*;
@@ -18,6 +19,31 @@ pub(crate) enum BarItem {
         title: String,
         children: Vec<BarItem>,
     },
+}
+
+/// The bar's items for the bookmark folder `folder`, in display order. Separators are dropped.
+pub(crate) fn items_from(
+    folder: BookmarkId,
+    children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>,
+) -> Vec<BarItem> {
+    children(folder)
+        .into_iter()
+        .filter_map(|node| match node.kind {
+            NodeKind::Url => node.url.map(|url| BarItem::Link {
+                title: if node.title.is_empty() {
+                    url.to_string()
+                } else {
+                    node.title
+                },
+                url: url.to_string(),
+            }),
+            NodeKind::Folder => Some(BarItem::Folder {
+                children: items_from(node.id, children),
+                title: node.title,
+            }),
+            NodeKind::Separator => None,
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,4 +144,65 @@ fn fill_menu(
         items.Append(&empty.cast::<MenuFlyoutItemBase>()?)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use vsesvit_core::Url;
+
+    use super::*;
+
+    fn node(id: BookmarkId, kind: NodeKind, title: &str, url: Option<&str>) -> BookmarkNode {
+        BookmarkNode {
+            id,
+            kind,
+            parent: BookmarkId::TOOLBAR,
+            index: 0,
+            title: title.into(),
+            url: url.map(|u| Url::parse(u).unwrap()),
+            added_ms: 0,
+        }
+    }
+
+    #[test]
+    fn folders_nest_and_separators_drop() {
+        // Root ids stand in for arbitrary node ids here.
+        let children = |folder: BookmarkId| match folder {
+            f if f == BookmarkId::TOOLBAR => vec![
+                node(
+                    BookmarkId::MOBILE,
+                    NodeKind::Url,
+                    "",
+                    Some("https://a.test/"),
+                ),
+                node(BookmarkId::ROOT, NodeKind::Separator, "", None),
+                node(BookmarkId::OTHER, NodeKind::Folder, "F", None),
+            ],
+            f if f == BookmarkId::OTHER => {
+                vec![node(
+                    BookmarkId::MOBILE,
+                    NodeKind::Url,
+                    "B",
+                    Some("https://b.test/"),
+                )]
+            }
+            _ => vec![],
+        };
+        assert_eq!(
+            items_from(BookmarkId::TOOLBAR, &children),
+            [
+                BarItem::Link {
+                    title: "https://a.test/".into(),
+                    url: "https://a.test/".into()
+                },
+                BarItem::Folder {
+                    title: "F".into(),
+                    children: vec![BarItem::Link {
+                        title: "B".into(),
+                        url: "https://b.test/".into()
+                    }],
+                },
+            ]
+        );
+    }
 }

@@ -1,26 +1,23 @@
 //! The update lifecycle as a state machine, free of GTK and threads so it can be tested alone.
-//! `U` and `D` are an offered update and its verified download; the shell uses
-//! `vsesvit_update::Update` and `Downloaded`, tests use stand-ins.
+//! `D` is a verified download; the shell uses `vsesvit_update::Downloaded`, tests use a
+//! stand-in.
 
 use semver::Version;
 use vsesvit_update::{DisabledReason, Error, Installed};
 
-pub(crate) enum State<U, D> {
+pub(crate) enum State<D> {
     Idle,
     Checking,
     Downloading {
         version: Version,
     },
-    /// Waiting for the user to click "Update". `downloaded` is `None` after a failed install,
-    /// which consumed the download, so the next attempt downloads again.
+    /// Waiting for the user to click "Update", also after an install that failed.
     Ready {
         version: Version,
-        update: U,
-        downloaded: Option<D>,
+        downloaded: D,
     },
     Installing {
         version: Version,
-        update: U,
     },
     Installed {
         version: Version,
@@ -29,28 +26,27 @@ pub(crate) enum State<U, D> {
     Disabled(DisabledReason),
 }
 
-pub(crate) enum Event<U, D> {
+pub(crate) enum Event<D> {
     /// The timer asks for a check.
     Check,
     /// The banner's button.
     Activate,
     UpToDate,
     Found(Version),
-    Downloaded {
-        update: U,
+    Downloaded(D),
+    Installed(Installed),
+    /// The install did not happen; the download comes back for the next try.
+    InstallFailed {
+        error: Error,
         downloaded: D,
     },
-    Installed(Installed),
     Failed(Error),
 }
 
 /// What the shell does after a step.
-pub(crate) enum Effect<U, D> {
+pub(crate) enum Effect<D> {
     Check,
-    Install {
-        update: U,
-        downloaded: Option<D>,
-    },
+    Install(D),
     /// Quit, then start the new version.
     Restart,
     /// Quit; the installer starts the new version.
@@ -66,14 +62,14 @@ pub(crate) struct Banner {
     pub(crate) button: Option<&'static str>,
 }
 
-pub(crate) struct Lifecycle<U, D> {
-    state: State<U, D>,
+pub(crate) struct Lifecycle<D> {
+    state: State<D>,
     /// The AppImage is replaced as soon as the new one is verified, without asking; the other
     /// formats wait for the user because the package manager asks for a password.
     background_install: bool,
 }
 
-impl<U: Clone, D> Lifecycle<U, D> {
+impl<D> Lifecycle<D> {
     pub(crate) fn new(background_install: bool) -> Self {
         Lifecycle {
             state: State::Idle,
@@ -81,65 +77,58 @@ impl<U: Clone, D> Lifecycle<U, D> {
         }
     }
 
-    pub(crate) fn state(&self) -> &State<U, D> {
+    pub(crate) fn state(&self) -> &State<D> {
         &self.state
     }
 
-    pub(crate) fn step(&mut self, event: Event<U, D>) -> Option<Effect<U, D>> {
+    pub(crate) fn step(&mut self, event: Event<D>) -> Option<Effect<D>> {
         let background = self.background_install;
         let (state, effect) = match (std::mem::replace(&mut self.state, State::Idle), event) {
             (_, Event::Failed(Error::Disabled(reason))) => (State::Disabled(reason), None),
             (State::Idle, Event::Check) => (State::Checking, Some(Effect::Check)),
             (State::Checking, Event::UpToDate) => (State::Idle, None),
             (State::Checking, Event::Found(version)) => (State::Downloading { version }, None),
-            (State::Downloading { version }, Event::Downloaded { update, downloaded })
-                if background =>
-            {
-                (
-                    State::Installing {
-                        version,
-                        update: update.clone(),
-                    },
-                    Some(Effect::Install {
-                        update,
-                        downloaded: Some(downloaded),
-                    }),
-                )
-            }
-            (State::Downloading { version }, Event::Downloaded { update, downloaded }) => (
+            (State::Downloading { version }, Event::Downloaded(downloaded)) if background => (
+                State::Installing { version },
+                Some(Effect::Install(downloaded)),
+            ),
+            (State::Downloading { version }, Event::Downloaded(downloaded)) => (
                 State::Ready {
                     version,
-                    update,
-                    downloaded: Some(downloaded),
+                    downloaded,
                 },
                 None,
             ),
             (
                 State::Ready {
                     version,
-                    update,
                     downloaded,
                 },
                 Event::Activate,
             ) => (
-                State::Installing {
-                    version,
-                    update: update.clone(),
-                },
-                Some(Effect::Install { update, downloaded }),
+                State::Installing { version },
+                Some(Effect::Install(downloaded)),
             ),
-            (State::Installing { version, .. }, Event::Installed(next)) => {
+            (State::Installing { version }, Event::Installed(next)) => {
                 let effect = (next == Installed::ExitNow).then_some(Effect::Exit);
                 (State::Installed { version, next }, effect)
             }
-            (State::Installing { version, update }, Event::Failed(error)) if !background => (
-                State::Ready {
-                    version,
-                    update,
-                    downloaded: None,
-                },
-                Some(Effect::Notify(error.to_string())),
-            ),
+            (State::Installing { version }, Event::InstallFailed { error, downloaded })
+                if !background =>
+            {
+                (
+                    State::Ready {
+                        version,
+                        downloaded,
+                    },
+                    Some(Effect::Notify(error.to_string())),
+                )
+            }
+            // The next check's download finds the verified file on disk and retries from there.
+            (State::Installing { .. }, Event::InstallFailed { error, .. }) => {
+                log::warn!("updating failed: {error}");
+                (State::Idle, None)
+            }
             (
                 State::Checking | State::Downloading { .. } | State::Installing { .. },
                 Event::Failed(error),
@@ -167,7 +156,7 @@ impl<U: Clone, D> Lifecycle<U, D> {
                 format!("Vsesvit {version} is ready to install"),
                 Some("Update"),
             ),
-            State::Installing { version, .. } if !self.background_install => {
+            State::Installing { version } if !self.background_install => {
                 banner(format!("Installing Vsesvit {version}…"), None)
             }
             State::Installed {
@@ -190,7 +179,7 @@ impl<U: Clone, D> Lifecycle<U, D> {
 mod tests {
     use super::*;
 
-    type Machine = Lifecycle<&'static str, &'static str>;
+    type Machine = Lifecycle<&'static str>;
 
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap()
@@ -224,11 +213,7 @@ mod tests {
         let mut machine = Machine::new(false);
         found(&mut machine);
         assert_eq!(machine.banner(), None, "downloading is quiet");
-        let downloaded = Event::Downloaded {
-            update: "update",
-            downloaded: "file",
-        };
-        assert!(machine.step(downloaded).is_none());
+        assert!(machine.step(Event::Downloaded("file")).is_none());
         assert_eq!(
             machine.banner(),
             banner("Vsesvit 2.0.0 is ready to install", Some("Update"))
@@ -238,12 +223,10 @@ mod tests {
             "no checks while an update waits"
         );
 
-        match machine.step(Event::Activate) {
-            Some(Effect::Install { update, downloaded }) => {
-                assert_eq!((update, downloaded), ("update", Some("file")))
-            }
-            _ => panic!("Update installs"),
-        }
+        assert!(matches!(
+            machine.step(Event::Activate),
+            Some(Effect::Install("file"))
+        ));
         assert_eq!(machine.banner(), banner("Installing Vsesvit 2.0.0…", None));
         assert!(
             machine.step(Event::Activate).is_none(),
@@ -270,17 +253,15 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_install_keeps_the_banner_and_downloads_again_on_retry() {
+    fn a_failed_install_keeps_the_download_for_the_retry() {
         let mut machine = Machine::new(false);
         found(&mut machine);
-        machine.step(Event::Downloaded {
-            update: "update",
-            downloaded: "file",
-        });
+        machine.step(Event::Downloaded("file"));
         machine.step(Event::Activate);
-        let failed = Event::Failed(Error::Install(
-            "administrator authorization was not given".into(),
-        ));
+        let failed = Event::InstallFailed {
+            error: Error::Install("administrator authorization was not given".into()),
+            downloaded: "file",
+        };
         match machine.step(failed) {
             Some(Effect::Notify(message)) => {
                 assert!(message.contains("authorization"), "{message}")
@@ -291,29 +272,22 @@ mod tests {
             machine.banner(),
             banner("Vsesvit 2.0.0 is ready to install", Some("Update"))
         );
-        match machine.step(Event::Activate) {
-            Some(Effect::Install { update, downloaded }) => {
-                assert_eq!((update, downloaded), ("update", None))
-            }
-            _ => panic!("Update retries"),
-        }
+        assert!(
+            machine.step(Event::Check).is_none(),
+            "the retry does not check or download"
+        );
+        assert!(
+            matches!(machine.step(Event::Activate), Some(Effect::Install("file"))),
+            "Update installs the same file again"
+        );
     }
 
     #[test]
     fn an_appimage_installs_in_the_background() {
         let mut machine = Machine::new(true);
         found(&mut machine);
-        let effect = machine.step(Event::Downloaded {
-            update: "update",
-            downloaded: "file",
-        });
-        assert!(matches!(
-            effect,
-            Some(Effect::Install {
-                downloaded: Some("file"),
-                ..
-            })
-        ));
+        let effect = machine.step(Event::Downloaded("file"));
+        assert!(matches!(effect, Some(Effect::Install("file"))));
         assert_eq!(
             machine.banner(),
             None,
@@ -338,15 +312,12 @@ mod tests {
     fn a_failed_background_install_is_retried_by_the_next_check() {
         let mut machine = Machine::new(true);
         found(&mut machine);
-        machine.step(Event::Downloaded {
-            update: "update",
+        machine.step(Event::Downloaded("file"));
+        let failed = Event::InstallFailed {
+            error: Error::Install("disk full".into()),
             downloaded: "file",
-        });
-        assert!(
-            machine
-                .step(Event::Failed(Error::Install("disk full".into())))
-                .is_none()
-        );
+        };
+        assert!(machine.step(failed).is_none());
         assert!(matches!(machine.state(), State::Idle));
         assert!(matches!(machine.step(Event::Check), Some(Effect::Check)));
     }
@@ -386,10 +357,7 @@ mod tests {
     fn exit_now_quits_without_a_relaunch() {
         let mut machine = Machine::new(false);
         found(&mut machine);
-        machine.step(Event::Downloaded {
-            update: "update",
-            downloaded: "file",
-        });
+        machine.step(Event::Downloaded("file"));
         machine.step(Event::Activate);
         assert!(matches!(
             machine.step(Event::Installed(Installed::ExitNow)),

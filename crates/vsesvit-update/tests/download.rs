@@ -4,7 +4,7 @@ use std::path::Path;
 
 use semver::Version;
 use support::{Server, Signer, artifact, config};
-use vsesvit_update::{DisabledReason, Downloaded, Error, Format, Installation, Update, Updater};
+use vsesvit_update::{Downloaded, Error, Format, Installation, Update, Updater, remove_stale_downloads};
 
 struct Release {
     server: Server,
@@ -28,7 +28,7 @@ impl Release {
     fn update(&self, installation: Installation) -> Update {
         let config = config(self.signer.pubkey(), vec![self.server.url("/update")]);
         let updater = Updater::new(config, Version::new(0, 1, 0), installation).unwrap();
-        updater.check().unwrap().expect("the release is newer")
+        updater.check().unwrap().expect("the release is newer").into_update().unwrap()
     }
 }
 
@@ -155,22 +155,54 @@ fn an_artifact_the_server_does_not_have_is_an_http_error() {
     assert!(matches!(err, Error::Http(404)), "{err:?}");
 }
 
-#[test]
-fn installations_that_do_not_update_themselves_do_not_download() {
-    for installation in [Installation::Unpackaged, Installation::Flatpak] {
-        let release = signed(Format::AppImage, "0.2.0");
-        let err = rejected(release, installation);
-        assert!(matches!(err, Error::Disabled(DisabledReason::NotSelfUpdating)), "{err:?}");
-    }
+fn artifact_requests(release: &Release) -> usize {
+    release.server.requests().iter().filter(|r| r.target == "/artifact").count()
 }
 
 #[test]
-fn downloading_again_replaces_the_earlier_file() {
+fn a_verified_earlier_download_is_used_without_fetching() {
     let release = signed(Format::Pacman, "0.2.0");
     let dir = tempfile::tempdir().unwrap();
     let update = release.update(Installation::Pacman);
     download(&update, dir.path()).unwrap();
-    let again = download(&update, dir.path()).unwrap();
+    let mut progress = Vec::new();
+    let again = update.download(dir.path(), |received, total| progress.push((received, total))).unwrap();
     assert_eq!(again.path().file_name().unwrap(), "vsesvit-0.2.0.pkg.tar.zst");
     assert_eq!(leftovers(dir.path()).len(), 1);
+    assert_eq!(artifact_requests(&release), 1, "the second download fetched nothing");
+    assert!(progress.is_empty());
+}
+
+#[test]
+fn an_earlier_file_that_does_not_verify_is_downloaded_again() {
+    let release = signed(Format::Deb, "0.2.0");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("vsesvit-0.2.0.deb"), b"!<arch>\ndebian-binary tampered").unwrap();
+    let downloaded = download(&release.update(Installation::Deb), dir.path()).unwrap();
+    assert_eq!(std::fs::read(downloaded.path()).unwrap(), artifact(Format::Deb));
+    assert_eq!(artifact_requests(&release), 1);
+}
+
+#[test]
+fn stale_downloads_are_removed_and_the_kept_version_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = [
+        "vsesvit-0.9.0.deb",
+        "vsesvit-1.1.0.deb",
+        "vsesvit-1.1.0.deb.part",
+        "vsesvit-1.2.0-setup.exe",
+        "vsesvit-1.2.0-setup.exe.part",
+        "notes.txt",
+    ];
+    for name in names {
+        std::fs::write(dir.path().join(name), b"x").unwrap();
+    }
+    remove_stale_downloads(dir.path(), Some(&Version::new(1, 1, 0))).unwrap();
+    let mut left = leftovers(dir.path());
+    left.sort();
+    assert_eq!(left, ["notes.txt", "vsesvit-1.1.0.deb"]);
+
+    remove_stale_downloads(dir.path(), None).unwrap();
+    assert_eq!(leftovers(dir.path()), ["notes.txt"]);
+    remove_stale_downloads(&dir.path().join("missing"), None).expect("a missing directory has nothing stale");
 }

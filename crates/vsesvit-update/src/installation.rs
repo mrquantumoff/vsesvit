@@ -91,6 +91,8 @@ impl Installation {
 }
 
 impl Format {
+    pub(crate) const ALL: [Format; 5] = [Format::Nsis, Format::Deb, Format::Rpm, Format::Pacman, Format::AppImage];
+
     pub fn variant(self) -> &'static str {
         match self {
             Format::Nsis => "nsis",

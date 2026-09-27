@@ -1,20 +1,24 @@
-//! One tab: its `TabViewItem` header in the strip and its `WebView2` in the window's page grid.
+//! One tab: its `WebView2` in the window's page grid and the state the tab lists show.
 //!
-//! The web view is not the item's content (a WebView2 inside `TabViewItem` content measures 0
-//! high); the window shows the selected tab's view and collapses the others.
+//! The web view is never a tab list item's content (a WebView2 inside `TabViewItem` content
+//! measures 0 high); the window shows the selected tab's view and collapses the others.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use vsesvit_core::history::Transition;
+use vsesvit_core::session;
 use windows_core::{IInspectable, Interface, Ref, Result};
 
 use crate::bindings::*;
 use crate::browser::CommitKind;
+use crate::exec;
 use crate::shortcuts::{self, PageMessage};
+use crate::tab_header::TabLook;
 use crate::window::BrowserWindow;
-use crate::{exec, xaml};
 
+/// Identifies a tab within this process.
 pub(crate) type TabId = u64;
 
 /// What a new tab loads first.
@@ -63,46 +67,67 @@ pub(crate) struct TabState {
 
 pub(crate) struct Tab {
     pub id: TabId,
+    /// The tab's identity in saved sessions; restored tabs keep theirs.
+    pub session_id: session::TabId,
     window: Weak<BrowserWindow>,
-    item: TabViewItem,
-    header: TabHeader,
     view: WebView2,
     core: OnceCell<CoreWebView2>,
     state: RefCell<TabState>,
+    favicon: RefCell<Option<ImageSource>>,
     background_link: RefCell<Option<(String, Instant)>>,
     /// The URI of the last main-frame navigation request; WebView2 reports an empty `Source`
     /// for some documents (data: URLs), and then this is what was committed.
     requested: RefCell<String>,
+    /// How the navigation the shell started came about, for history. Page-initiated
+    /// navigations have none and count as links.
+    transition: Cell<Option<Transition>>,
+    last_active_ms: Cell<i64>,
     favicon_generation: Cell<u64>,
     closed: Cell<bool>,
 }
 
 impl Tab {
-    pub fn new(id: TabId, window: Weak<BrowserWindow>) -> Result<Rc<Self>> {
-        let header = TabHeader::new()?;
-        let item = TabViewItem::new()?;
-        item.SetHeader(&header.root)?;
-        let view = WebView2::new()?;
+    pub fn new(
+        id: TabId,
+        session_id: Option<session::TabId>,
+        window: Weak<BrowserWindow>,
+    ) -> Result<Rc<Self>> {
         Ok(Rc::new(Self {
             id,
+            session_id: session_id.unwrap_or_default(),
             window,
-            item,
-            header,
-            view,
+            view: WebView2::new()?,
             core: OnceCell::new(),
             state: RefCell::new(TabState {
                 title: "New tab".into(),
                 ..TabState::default()
             }),
+            favicon: RefCell::new(None),
             background_link: RefCell::new(None),
             requested: RefCell::new(String::new()),
+            transition: Cell::new(None),
+            last_active_ms: Cell::new(now_ms()),
             favicon_generation: Cell::new(0),
             closed: Cell::new(false),
         }))
     }
 
-    pub fn item(&self) -> &TabViewItem {
-        &self.item
+    /// What the tab lists show.
+    pub fn look(&self) -> TabLook {
+        let state = self.state.borrow();
+        TabLook {
+            title: state.title.clone(),
+            favicon: self.favicon.borrow().clone(),
+            loading: state.loading,
+        }
+    }
+
+    pub fn last_active_ms(&self) -> i64 {
+        self.last_active_ms.get()
+    }
+
+    pub fn mark_active(&self) {
+        self.last_active_ms.set(now_ms());
     }
 
     pub fn view(&self) -> &WebView2 {
@@ -117,8 +142,18 @@ impl Tab {
         self.state.borrow().clone()
     }
 
+    /// The committed URL, or the one being loaded before the first commit.
+    pub fn session_url(&self) -> String {
+        let url = self.state.borrow().url.clone();
+        if url.is_empty() {
+            self.requested.borrow().clone()
+        } else {
+            url
+        }
+    }
+
     pub fn has_favicon(&self) -> bool {
-        self.header.has_favicon.get()
+        self.favicon.borrow().is_some()
     }
 
     pub fn is_ready(&self) -> bool {
@@ -186,6 +221,12 @@ impl Tab {
         }
     }
 
+    /// A navigation the user started from the shell: typed, or a bookmark.
+    pub fn navigate_as(&self, url: &str, transition: Transition) {
+        self.transition.set(Some(transition));
+        self.navigate(url);
+    }
+
     pub fn go_back(&self) {
         if let Some(core) = self.core.get() {
             let _ = core.GoBack();
@@ -201,11 +242,16 @@ impl Tab {
     pub fn reload_or_stop(&self) {
         let Some(core) = self.core.get() else { return };
         let loading = self.state.borrow().loading;
-        let _ = if loading { core.Stop() } else { core.Reload() };
+        if loading {
+            let _ = core.Stop();
+        } else {
+            self.reload();
+        }
     }
 
     pub fn reload(&self) {
         if let Some(core) = self.core.get() {
+            self.transition.set(Some(Transition::Reload));
             let _ = core.Reload();
         }
     }
@@ -277,7 +323,6 @@ impl Tab {
             |tab, args: &CoreWebView2NavigationStartingEventArgs| {
                 *tab.requested.borrow_mut() = args.Uri().unwrap_or_default();
                 tab.state.borrow_mut().loading = true;
-                tab.header.set_loading(true);
                 tab.notify();
             },
         ))?
@@ -313,7 +358,6 @@ impl Tab {
                     );
                 }
                 tab.state.borrow_mut().loading = false;
-                tab.header.set_loading(false);
                 tab.refresh_history();
                 tab.notify();
             },
@@ -377,12 +421,12 @@ impl Tab {
     fn committed(self: &Rc<Self>, kind: CommitKind) {
         self.refresh_url();
         let url = self.state.borrow().url.clone();
-        let browser = self
-            .window()
-            .and_then(|w| w.browser())
-            .filter(|_| url != "about:blank");
-        if let Some(browser) = browser {
-            let starred = browser.navigation_committed(&url, kind);
+        let transition = match kind {
+            CommitKind::NewDocument => self.transition.take().unwrap_or(Transition::Link),
+            CommitKind::SameDocument => Transition::Link,
+        };
+        if let Some(browser) = self.window().and_then(|w| w.browser()) {
+            let starred = browser.navigation_committed(&url, kind, transition);
             self.state.borrow_mut().starred = starred;
         }
         self.notify();
@@ -421,7 +465,6 @@ impl Tab {
         let Some(core) = self.core.get() else { return };
         let url = self.state.borrow().url.clone();
         let title = display_title(core.DocumentTitle().unwrap_or_default(), &url);
-        self.header.set_title(&title);
         self.state.borrow_mut().title = title.clone();
         if let Some(browser) = self.window().and_then(|w| w.browser()) {
             browser.title_changed(&url, &title);
@@ -454,13 +497,12 @@ impl Tab {
         if self.favicon_generation.get() != generation || self.closed.get() {
             return;
         }
-        match image {
-            Ok(image) => self.header.set_favicon(image.as_ref()),
-            Err(e) => {
-                log::debug!("tab {}: favicon: {e}", self.id);
-                self.header.set_favicon(None);
-            }
-        }
+        let image = image.unwrap_or_else(|e| {
+            log::debug!("tab {}: favicon: {e}", self.id);
+            None
+        });
+        *self.favicon.borrow_mut() = image;
+        self.notify();
     }
 
     fn new_window_requested(self: &Rc<Self>, args: &CoreWebView2NewWindowRequestedEventArgs) {
@@ -503,6 +545,12 @@ impl Tab {
     }
 }
 
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 /// What a tab shows as its title: the document's, else its URL, else "New tab".
 fn display_title(document_title: String, url: &str) -> String {
     match (document_title.trim(), url) {
@@ -535,70 +583,6 @@ fn on<A: Interface + 'static>(
         if let (Some(tab), Some(args)) = (tab.upgrade(), args.as_ref()) {
             handler(&tab, args);
         }
-    }
-}
-
-const HEADER_XAML: &str = r#"
-<Grid {ns} ColumnSpacing="8">
-  <Grid.ColumnDefinitions>
-    <ColumnDefinition Width="16"/>
-    <ColumnDefinition Width="*"/>
-  </Grid.ColumnDefinitions>
-  <FontIcon x:Name="DefaultIcon" Glyph="&#xE774;" FontSize="14" VerticalAlignment="Center"/>
-  <Image x:Name="Favicon" Width="16" Height="16" VerticalAlignment="Center" Visibility="Collapsed"/>
-  <ProgressRing x:Name="Spinner" Width="16" Height="16" MinWidth="16" MinHeight="16"
-                VerticalAlignment="Center" IsActive="False" Visibility="Collapsed"/>
-  <TextBlock x:Name="Title" Grid.Column="1" Text="New tab" TextTrimming="CharacterEllipsis"
-             TextWrapping="NoWrap" VerticalAlignment="Center"/>
-</Grid>"#;
-
-struct TabHeader {
-    root: FrameworkElement,
-    default_icon: UIElement,
-    favicon: Image,
-    spinner: ProgressRing,
-    title: TextBlock,
-    loading: Cell<bool>,
-    has_favicon: Cell<bool>,
-}
-
-impl TabHeader {
-    fn new() -> Result<Self> {
-        let root: FrameworkElement = xaml::load(HEADER_XAML)?;
-        Ok(Self {
-            default_icon: xaml::find(&root, "DefaultIcon")?,
-            favicon: xaml::find(&root, "Favicon")?,
-            spinner: xaml::find(&root, "Spinner")?,
-            title: xaml::find(&root, "Title")?,
-            root,
-            loading: Cell::new(false),
-            has_favicon: Cell::new(false),
-        })
-    }
-
-    fn set_title(&self, title: &str) {
-        let _ = self.title.SetText(title);
-        let _ = xaml::boxed(title).and_then(|tip| ToolTipService::SetToolTip(&self.root, &tip));
-    }
-
-    fn set_loading(&self, loading: bool) {
-        self.loading.set(loading);
-        self.update_icon();
-    }
-
-    fn set_favicon(&self, image: Option<&ImageSource>) {
-        let _ = self.favicon.SetSource(image);
-        self.has_favicon.set(image.is_some());
-        self.update_icon();
-    }
-
-    fn update_icon(&self) {
-        let loading = self.loading.get();
-        let favicon = !loading && self.has_favicon.get();
-        let _ = self.spinner.SetIsActive(loading);
-        let _ = xaml::set_visible(&self.spinner, loading);
-        let _ = xaml::set_visible(&self.favicon, favicon);
-        let _ = xaml::set_visible(&self.default_icon, !loading && !favicon);
     }
 }
 

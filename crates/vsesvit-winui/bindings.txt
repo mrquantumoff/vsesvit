@@ -27,19 +27,34 @@ Microsoft.UI.Xaml.IWindow2::{put_SystemBackdrop, get_AppWindow}
 Microsoft.UI.Xaml.WindowEventArgs
 Microsoft.UI.Xaml.Media.MicaBackdrop::CreateInstance
 Microsoft.UI.Xaml.Media.SystemBackdrop
-Microsoft.UI.Windowing.IAppWindow::{ShowWithActivation, Resize, SetPresenterByKind}
+Microsoft.UI.Windowing.IAppWindow::{ShowWithActivation, Resize, SetPresenterByKind, get_Id, get_Position, get_Size, MoveAndResize, get_Presenter, get_TitleBar}
+Microsoft.UI.Windowing.AppWindowPresenter
+Microsoft.UI.Windowing.IAppWindow2::MoveInZOrderAtBottom
+Microsoft.UI.Windowing.OverlappedPresenter
+Microsoft.UI.Windowing.IOverlappedPresenter::{get_State, Maximize}
+Microsoft.UI.Windowing.OverlappedPresenterState
+Microsoft.UI.Windowing.AppWindowTitleBar
+Microsoft.UI.Windowing.IAppWindowTitleBar3::put_PreferredTheme
+Microsoft.UI.Windowing.TitleBarTheme
+Microsoft.UI.WindowId
 Microsoft.UI.Windowing.AppWindowPresenterKind
 Windows.Graphics.SizeInt32
+Windows.Graphics.PointInt32
+Windows.Graphics.RectInt32
 
 // ---- XAML tree ----
 Microsoft.UI.Xaml.Markup.XamlReader::Load
 Microsoft.UI.Xaml.DependencyObject
-Microsoft.UI.Xaml.IUIElement::{get_Visibility, put_Visibility, get_KeyboardAccelerators, put_KeyboardAcceleratorPlacementMode, Focus, get_XamlRoot, put_XamlRoot, GotFocus, PointerReleased}
+Microsoft.UI.Xaml.IUIElement::{get_Visibility, put_Visibility, get_KeyboardAccelerators, put_KeyboardAcceleratorPlacementMode, Focus, get_XamlRoot, put_XamlRoot, GotFocus, PointerReleased, TransformToVisual, UpdateLayout}
+Microsoft.UI.Xaml.Media.GeneralTransform
+Microsoft.UI.Xaml.Media.IGeneralTransform::TransformPoint
+Windows.Foundation.Point
 Microsoft.UI.Xaml.Input.IPointerRoutedEventArgs::{GetCurrentPoint, put_Handled}
 Microsoft.UI.Input.IPointerPoint::get_Properties
 Microsoft.UI.Input.IPointerPointProperties::get_PointerUpdateKind
 Microsoft.UI.Input.PointerUpdateKind
-Microsoft.UI.Xaml.IFrameworkElement::{FindName, put_Width, put_Height}
+Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, get_ActualWidth, get_ActualHeight, put_RequestedTheme}
+Microsoft.UI.Xaml.ElementTheme
 Microsoft.UI.Xaml.Visibility
 Microsoft.UI.Xaml.FocusState
 Microsoft.UI.Xaml.XamlRoot
@@ -61,14 +76,33 @@ Microsoft.UI.Xaml.Controls.Button
 Microsoft.UI.Xaml.Controls.Primitives.IButtonBase::Click
 Microsoft.UI.Xaml.Controls.Primitives.IToggleButton::put_IsChecked
 Microsoft.UI.Xaml.Controls.IFontIcon::put_Glyph
-Microsoft.UI.Xaml.Controls.IAutoSuggestBox::{get_Text, put_Text, TextChanged, QuerySubmitted}
+Microsoft.UI.Xaml.Controls.IAutoSuggestBox::{get_Text, put_Text, TextChanged, QuerySubmitted, put_IsSuggestionListOpen}
 Microsoft.UI.Xaml.Controls.IAutoSuggestBoxTextChangedEventArgs::get_Reason
 Microsoft.UI.Xaml.Controls.AutoSuggestionBoxTextChangeReason
 Microsoft.UI.Xaml.Controls.IAutoSuggestBoxQuerySubmittedEventArgs::{get_QueryText, get_ChosenSuggestion}
 Microsoft.UI.Xaml.Controls.IItemsControl::{put_ItemsSource, get_Items}
 Microsoft.UI.Xaml.Controls.ItemCollection
-Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text}
-Microsoft.UI.Xaml.Controls.ITextBlock::put_Text
+Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text, put_Text}
+Microsoft.UI.Xaml.Controls.ListViewBase
+Microsoft.UI.Xaml.Controls.IListViewBase::{ItemClick, DragItemsCompleted, ScrollIntoView}
+Microsoft.UI.Xaml.Controls.ListViewItem::CreateInstance
+Microsoft.UI.Xaml.Controls.IItemClickEventArgs::get_ClickedItem
+Microsoft.UI.Xaml.Controls.DragItemsCompletedEventArgs
+Microsoft.UI.Xaml.Controls.Primitives.Selector
+Microsoft.UI.Xaml.Controls.Primitives.ISelector::{get_SelectedIndex, put_SelectedIndex, get_SelectedItem, put_SelectedItem, SelectionChanged}
+Microsoft.UI.Xaml.Controls.ContentControl
+Microsoft.UI.Xaml.Controls.IContentControl::{get_Content, put_Content}
+Microsoft.UI.Xaml.Controls.TreeView
+Microsoft.UI.Xaml.Controls.ITreeView::get_RootNodes
+Microsoft.UI.Xaml.Controls.ITreeView2::{get_SelectedNode, put_SelectedNode}
+Microsoft.UI.Xaml.Controls.ITreeView3::SelectionChanged
+Microsoft.UI.Xaml.Controls.TreeViewSelectionChangedEventArgs
+Microsoft.UI.Xaml.Controls.TreeViewNode::CreateInstance
+Microsoft.UI.Xaml.Controls.ITreeViewNode::{get_Content, put_Content, get_Parent, put_IsExpanded, get_Children}
+Microsoft.UI.Xaml.Controls.IProgressBar::put_IsIndeterminate
+Microsoft.UI.Xaml.Controls.Primitives.RangeBase
+Microsoft.UI.Xaml.Controls.Primitives.IRangeBase::{put_Maximum, put_Value}
+Microsoft.UI.Xaml.Controls.ITextBlock::{get_Text, put_Text}
 Microsoft.UI.Xaml.Controls.IImage::put_Source
 Microsoft.UI.Xaml.Controls.IProgressRing::put_IsActive
 Microsoft.UI.Xaml.Controls.IMenuFlyoutItem::{Click, put_Text}
@@ -79,12 +113,11 @@ Microsoft.UI.Xaml.Controls.MenuFlyoutSubItem::CreateInstance
 Microsoft.UI.Xaml.Controls.IMenuFlyoutSubItem::{get_Items, put_Text}
 Microsoft.UI.Xaml.Controls.MenuFlyoutItemBase
 Microsoft.UI.Xaml.Controls.IButton::put_Flyout
-Microsoft.UI.Xaml.Controls.IContentDialog::ShowAsync
+Microsoft.UI.Xaml.Controls.IContentDialog::{ShowAsync, Hide}
 Microsoft.UI.Xaml.Controls.ContentDialogResult
 Microsoft.UI.Xaml.Controls.IToggleSwitch::{get_IsOn, put_IsOn, Toggled}
 Microsoft.UI.Xaml.Controls.IInfoBar::{put_IsOpen, put_Title, put_Message, put_Severity}
 Microsoft.UI.Xaml.Controls.InfoBarSeverity
-Microsoft.UI.Xaml.Controls.IContentControl::put_Content
 Microsoft.UI.Xaml.Controls.IFlyout::get_Content
 Microsoft.UI.Xaml.Controls.Primitives.IFlyoutBase::{ShowAtWithOptions, Hide, Closed}
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions::CreateInstance
@@ -99,6 +132,13 @@ Microsoft.UI.Xaml.Media.ImageSource
 Microsoft.UI.Xaml.Media.Imaging.BitmapImage::CreateInstance
 Microsoft.UI.Xaml.Media.Imaging.IBitmapSource::SetSourceAsync
 
+// ---- automation (scripted runs invoke buttons without OS input) ----
+Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer::CreatePeerForElement
+Microsoft.UI.Xaml.Automation.Peers.AutomationPeer
+Microsoft.UI.Xaml.Automation.Peers.IAutomationPeer::GetPattern
+Microsoft.UI.Xaml.Automation.Peers.PatternInterface
+Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider::Invoke
+
 // ---- WebView2 control ----
 Microsoft.UI.Xaml.Controls.WebView2::CreateInstance
 Microsoft.UI.Xaml.Controls.IWebView2::{get_CoreWebView2, Close}
@@ -107,7 +147,7 @@ Microsoft.UI.Xaml.Controls.IWebView22::EnsureCoreWebView2WithEnvironmentAsync
 // ---- WebView2 engine ----
 Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions
 Microsoft.Web.WebView2.Core.ICoreWebView2EnvironmentOptions6::put_AreBrowserExtensionsEnabled
-Microsoft.Web.WebView2.Core.ICoreWebView2EnvironmentStatics::CreateWithOptionsAsync
+Microsoft.Web.WebView2.Core.ICoreWebView2EnvironmentStatics::{CreateWithOptionsAsync, GetAvailableBrowserVersionString}
 Microsoft.Web.WebView2.Core.ICoreWebView2Environment::get_BrowserVersionString
 Microsoft.Web.WebView2.Core.ICoreWebView2Environment15::CreateFindOptions
 Microsoft.Web.WebView2.Core.ICoreWebView2FindOptions::{put_FindTerm, put_SuppressDefaultFindDialog}
@@ -129,7 +169,24 @@ Microsoft.Web.WebView2.Core.ICoreWebView2Find::{StartAsync, get_MatchCount, Stop
 Microsoft.Web.WebView2.Core.CoreWebView2CapturePreviewImageFormat
 Microsoft.Web.WebView2.Core.ICoreWebView2Profile7::AddBrowserExtensionAsync
 Microsoft.Web.WebView2.Core.CoreWebView2Profile_Manual3::GetBrowserExtensionsAsync
-Microsoft.Web.WebView2.Core.ICoreWebView2BrowserExtension::{get_Id, get_Name, get_IsEnabled}
+Microsoft.Web.WebView2.Core.ICoreWebView2BrowserExtension::{get_Id, get_Name, get_IsEnabled, RemoveAsync, EnableAsync}
+
+// ---- app lifecycle (single instance) and pickers ----
+Microsoft.Windows.AppLifecycle.AppInstance::{GetCurrent, FindOrRegisterForKey}
+Microsoft.Windows.AppLifecycle.IAppInstance::{UnregisterKey, RedirectActivationToAsync, GetActivatedEventArgs, Activated, get_IsCurrent, get_ProcessId}
+Microsoft.Windows.AppLifecycle.AppActivationArguments
+Microsoft.Windows.AppLifecycle.IAppActivationArguments::{get_Kind, get_Data}
+Microsoft.Windows.AppLifecycle.ExtendedActivationKind
+Microsoft.Windows.Storage.Pickers.FileOpenPicker
+Microsoft.Windows.Storage.Pickers.IFileOpenPickerFactory::CreateInstance
+Microsoft.Windows.Storage.Pickers.IFileOpenPicker::{get_FileTypeFilter, PickSingleFileAsync}
+Microsoft.Windows.Storage.Pickers.PickFileResult
+Microsoft.Windows.Storage.Pickers.IPickFileResult::get_Path
+Microsoft.Windows.Storage.Pickers.FolderPicker
+Microsoft.Windows.Storage.Pickers.IFolderPickerFactory::CreateInstance
+Microsoft.Windows.Storage.Pickers.IFolderPicker::PickSingleFolderAsync
+Microsoft.Windows.Storage.Pickers.PickFolderResult
+Microsoft.Windows.Storage.Pickers.IPickFolderResult::get_Path
 
 // ---- streams, imaging, window capture ----
 Windows.Storage.Streams.InMemoryRandomAccessStream::CreateInstance
@@ -158,6 +215,10 @@ Windows.Graphics.Imaging.IBitmapEncoderWithSoftwareBitmap::SetSoftwareBitmap
 // ---- Win32 (0.100 flattens Win32 into one namespace) ----
 Windows.Win32.CoInitializeEx
 Windows.Win32.COINIT_APARTMENTTHREADED
+Windows.Win32.COINIT_MULTITHREADED
+Windows.Win32.CommandLineToArgvW
+Windows.Win32.LocalFree
+Windows.Win32.AllowSetForegroundWindow
 Windows.Win32.SetProcessDpiAwarenessContext
 Windows.Win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 Windows.Win32.GetDpiForWindow
@@ -205,6 +266,10 @@ Microsoft.UI.Xaml.Controls.Image
 Microsoft.UI.Xaml.Controls.ProgressRing
 Microsoft.UI.Xaml.Controls.ToggleSwitch
 Microsoft.UI.Xaml.Controls.InfoBar
+Microsoft.UI.Xaml.Controls.ListView
+Microsoft.UI.Xaml.Controls.ComboBox
+Microsoft.UI.Xaml.Controls.ProgressBar
+Microsoft.UI.Xaml.Controls.Grid
 Microsoft.UI.Xaml.Controls.MenuFlyoutItem
 Microsoft.UI.Xaml.Controls.Flyout
 Microsoft.UI.Xaml.Controls.ContentDialog

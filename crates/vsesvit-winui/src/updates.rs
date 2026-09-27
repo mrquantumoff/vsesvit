@@ -16,7 +16,10 @@ use std::time::Duration;
 
 use semver::Version;
 use serde_json::{Value, json};
-use vsesvit_update::{Config, Downloaded, Installation, Installed, Update, Updater};
+use vsesvit_update::{
+    Available, Config, Downloaded, Installation, Installed, Release, Update, Updater,
+    remove_stale_downloads,
+};
 
 use crate::browser::{self, Browser};
 use crate::cli::UpdateCommand;
@@ -45,9 +48,11 @@ pub(crate) enum State<D> {
         received: u64,
         total: Option<u64>,
     },
+    /// `error` is why the last "Restart to update" did not start the installer.
     Ready {
         version: Version,
         update: D,
+        error: Option<String>,
     },
     Installing {
         version: Version,
@@ -66,9 +71,17 @@ pub(crate) enum Event<D> {
     Check(Trigger),
     UpToDate,
     Found(Version),
-    Progress { received: u64, total: Option<u64> },
+    Progress {
+        received: u64,
+        total: Option<u64>,
+    },
     Downloaded(D),
     Failed(String),
+    /// The installer did not start; the download comes back for the next try.
+    InstallFailed {
+        update: D,
+        error: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,16 +140,19 @@ impl<D> State<D> {
                 received,
                 total,
             },
-            (Self::Downloading { version, .. }, Event::Downloaded(update)) => {
-                Self::Ready { version, update }
-            }
+            (Self::Downloading { version, .. }, Event::Downloaded(update)) => Self::Ready {
+                version,
+                update,
+                error: None,
+            },
             (
                 Self::Checking { trigger } | Self::Downloading { trigger, .. },
                 Event::Failed(error),
             ) => Self::Failed { trigger, error },
-            (Self::Installing { .. }, Event::Failed(error)) => Self::Failed {
-                trigger: Trigger::User,
-                error,
+            (Self::Installing { version }, Event::InstallFailed { update, error }) => Self::Ready {
+                version,
+                update,
+                error: Some(error),
             },
             (state, _) => state,
         }
@@ -165,11 +181,23 @@ impl<D> State<D> {
             action,
         };
         match self {
-            Self::Ready { version, .. } => Some(info(
+            Self::Ready {
+                version,
+                error: None,
+                ..
+            } => Some(info(
                 format!("Vsesvit {version} is ready"),
                 String::new(),
                 Some(Action::Restart),
             )),
+            Self::Ready {
+                error: Some(error), ..
+            } => Some(Banner {
+                severity: Severity::Error,
+                title: "Vsesvit could not update".into(),
+                message: error.clone(),
+                action: Some(Action::Restart),
+            }),
             Self::Installing { version } => Some(info(
                 format!("Vsesvit {version} is ready"),
                 "Restarting…".into(),
@@ -336,10 +364,19 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
 
     let checked = exec::background(move || updater.check()).await;
     let update = match checked {
-        Ok(Some(update)) => update,
+        Ok(Some(Available::Update(update))) => update,
+        Ok(Some(Available::NotInstallable(release))) => {
+            // `setup` accepts only an NSIS installation, which always has an artifact to install.
+            log::warn!(
+                "updates: Vsesvit {} is out, but this installation does not update itself",
+                release.version
+            );
+            with(&browser, |b| apply(b, Event::UpToDate));
+            return;
+        }
         Ok(None) => {
             log::info!("updates: Vsesvit {} is current", env!("CARGO_PKG_VERSION"));
-            exec::background(move || remove_stale(&dir)).await;
+            exec::background(move || remove_stale(&dir, None)).await;
             with(&browser, |b| apply(b, Event::UpToDate));
             return;
         }
@@ -349,8 +386,9 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
             return;
         }
     };
-    log::info!("updates: downloading Vsesvit {}", update.version);
-    with(&browser, |b| apply(b, Event::Found(update.version.clone())));
+    let version = update.release.version.clone();
+    log::info!("updates: downloading Vsesvit {version}");
+    with(&browser, |b| apply(b, Event::Found(version)));
 
     let queue = exec::dispatcher();
     let downloaded = exec::background(move || {
@@ -388,65 +426,82 @@ fn with(browser: &Weak<Browser>, f: impl FnOnce(&Browser)) {
     }
 }
 
-/// "Restart to update": the installer takes over from here and relaunches the browser.
+/// "Restart to update": the installer takes over from here and relaunches the browser. The
+/// session is saved on the way out (`app::exit`), before the installer sees the process end.
 pub(crate) fn restart(browser: &Browser) {
     let Some((installation, update)) = browser.updates().begin_install() else {
         return;
     };
     browser.update_state_changed();
-    browser.save_session();
     let version = update.version().clone();
     match update.install(&installation, &[]) {
         Ok(outcome) => {
             log::info!("updates: installing Vsesvit {version} ({outcome:?}), exiting");
             app::exit(0);
         }
-        Err(e) => {
-            log::error!("updates: installing Vsesvit {version}: {e}");
-            apply(browser, Event::Failed(e.to_string()));
+        Err(failed) => {
+            log::error!("updates: installing Vsesvit {version}: {}", failed.error);
+            apply(
+                browser,
+                Event::InstallFailed {
+                    update: failed.downloaded,
+                    error: failed.error.to_string(),
+                },
+            );
         }
     }
 }
 
-/// The user quit with an update ready: install it silently, without relaunching. The session
-/// is already saved.
-pub(crate) fn install_on_exit(browser: &Browser) {
-    if !browser.updates_automatic() {
+thread_local! {
+    static INSTALL_ON_EXIT: RefCell<Option<(Installation, Downloaded)>> = const { RefCell::new(None) };
+}
+
+/// The user quit with an update ready: `install_on_exit` installs it silently, without
+/// relaunching.
+pub(crate) fn queue_install_on_exit(browser: &Browser) {
+    if browser.updates().is_disabled() || !browser.updates_automatic() {
         return;
     }
-    let Some((installation, update)) = browser.updates().begin_install() else {
+    if let Some(install) = browser.updates().begin_install() {
+        INSTALL_ON_EXIT.set(Some(install));
+    }
+}
+
+/// Runs the installer `queue_install_on_exit` queued. Called once `app::run` has returned: the
+/// session is saved and XAML has shut down. A download that fails to launch stays on disk, and
+/// the next check uses it.
+pub(crate) fn install_on_exit() {
+    let Some((installation, update)) = INSTALL_ON_EXIT.take() else {
         return;
     };
     let version = update.version().clone();
     match update.install_on_exit(&installation) {
         Ok(_) => log::info!("updates: installing Vsesvit {version} as the browser exits"),
-        Err(e) => log::error!("updates: installing Vsesvit {version} on exit: {e}"),
+        Err(failed) => {
+            log::error!(
+                "updates: installing Vsesvit {version} on exit: {}",
+                failed.error
+            );
+        }
     }
 }
 
+/// Fetches `update` into `dir`. Other versions' installers and partial downloads go first; a
+/// complete, verified download of this version is reused by the updater.
 fn download(
     update: &Update,
     dir: &Path,
     progress: impl FnMut(u64, Option<u64>),
 ) -> Result<Downloaded, vsesvit_update::Error> {
-    remove_stale(dir);
     std::fs::create_dir_all(dir)?;
+    remove_stale(dir, Some(&update.release.version));
     update.download(dir, progress)
 }
 
-/// Installers of older versions, and partial downloads. A file that is in use (an installer
-/// still running) stays until the next time.
-fn remove_stale(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && let Err(e) = std::fs::remove_file(&path)
-        {
-            log::debug!("updates: keeping {}: {e}", path.display());
-        }
+/// A file that is in use (an installer still running) stays until the next time.
+fn remove_stale(dir: &Path, keep: Option<&Version>) {
+    if let Err(e) = remove_stale_downloads(dir, keep) {
+        log::debug!("updates: cleaning {}: {e}", dir.display());
     }
 }
 
@@ -456,9 +511,8 @@ fn remove_stale(dir: &Path) {
 pub(crate) fn run_command(command: UpdateCommand) -> ExitCode {
     let installation = Installation::detect();
     let result = match command {
-        UpdateCommand::Check => {
-            check_now(&installation).map(|update| report(&installation, update.as_ref()))
-        }
+        UpdateCommand::Check => check_now(&installation)
+            .map(|available| report(&installation, available.as_ref().map(Available::release))),
         UpdateCommand::Install => install_now(&installation),
     };
     match result {
@@ -473,7 +527,7 @@ pub(crate) fn run_command(command: UpdateCommand) -> ExitCode {
     }
 }
 
-fn check_now(installation: &Installation) -> Result<Option<Update>, String> {
+fn check_now(installation: &Installation) -> Result<Option<Available>, String> {
     Config::builtin()
         .and_then(|config| Updater::new(config, current_version(), installation.clone()))
         .and_then(|updater| updater.check())
@@ -481,12 +535,13 @@ fn check_now(installation: &Installation) -> Result<Option<Update>, String> {
 }
 
 fn install_now(installation: &Installation) -> Result<Value, String> {
-    let update = check_now(installation)?;
-    let mut value = report(installation, update.as_ref());
-    let Some(update) = update else {
+    let available = check_now(installation)?;
+    let mut value = report(installation, available.as_ref().map(Available::release));
+    let Some(available) = available else {
         value["installed"] = Value::Null;
         return Ok(value);
     };
+    let update = available.into_update().map_err(|e| e.to_string())?;
     let dir = download_dir()?;
     let mut shown = None;
     let downloaded = download(&update, &dir, |received, total| {
@@ -510,12 +565,12 @@ fn install_now(installation: &Installation) -> Result<Value, String> {
     Ok(value)
 }
 
-fn report(installation: &Installation, update: Option<&Update>) -> Value {
-    let available = update.map(|update| {
+fn report(installation: &Installation, release: Option<&Release>) -> Value {
+    let available = release.map(|release| {
         json!({
-            "version": update.version.to_string(),
-            "notes": update.notes,
-            "pub_date": update
+            "version": release.version.to_string(),
+            "notes": release.notes,
+            "pub_date": release
                 .pub_date
                 .and_then(|date| date.format(&time::format_description::well_known::Rfc3339).ok()),
         })
@@ -566,7 +621,8 @@ mod tests {
             state,
             S::Ready {
                 version: v("0.2.0"),
-                update: "setup.exe"
+                update: "setup.exe",
+                error: None,
             }
         );
         let banner = state.banner().unwrap();
@@ -641,6 +697,7 @@ mod tests {
         let mut state = S::Ready {
             version: v("0.2.0"),
             update: "setup.exe",
+            error: None,
         };
         assert_eq!(state.begin_install(), Some("setup.exe"));
         assert_eq!(
@@ -655,13 +712,20 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_install_can_be_retried() {
-        let state = S::Installing {
+    fn a_failed_install_keeps_the_download_for_the_retry() {
+        let mut state = S::Installing {
             version: v("0.2.0"),
         }
-        .next(Event::Failed("the installer did not start".into()));
-        assert_eq!(state.banner().unwrap().action, Some(Action::Retry));
-        assert!(state.can_check());
+        .next(Event::InstallFailed {
+            update: "setup.exe",
+            error: "the installer did not start".into(),
+        });
+        let banner = state.banner().unwrap();
+        assert_eq!(banner.severity, Severity::Error);
+        assert_eq!(banner.message, "the installer did not start");
+        assert_eq!(banner.action, Some(Action::Restart));
+        assert!(!state.can_check(), "the retry does not check or download");
+        assert_eq!(state.begin_install(), Some("setup.exe"));
     }
 
     #[test]
@@ -683,18 +747,18 @@ mod tests {
                 trigger: Trigger::Scheduled
             }
         );
-        let ready = S::Ready {
+        let ready = || S::Ready {
             version: v("0.2.0"),
             update: "x",
+            error: None,
         };
-        assert!(!ready.can_check());
-        assert_eq!(
-            ready.next(Event::Failed("late".into())),
-            S::Ready {
-                version: v("0.2.0"),
-                update: "x"
-            }
-        );
+        assert!(!ready().can_check());
+        assert_eq!(ready().next(Event::Failed("late".into())), ready());
+        let install_failed = Event::InstallFailed {
+            update: "y",
+            error: "late".into(),
+        };
+        assert_eq!(ready().next(install_failed), ready());
     }
 
     #[test]

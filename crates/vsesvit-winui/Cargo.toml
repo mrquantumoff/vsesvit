@@ -5,6 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["self-test"]
+# `--self-test` and `--ui-smoke`: the fixture server, the signed probe CRX and the test-only key
+# from vsesvit-core's testkit. On by default because the acceptance run uses release builds too;
+# a distribution build drops it with `default-features = false`.
+self-test = ["vsesvit-core/testkit"]
+
 [target.'cfg(windows)'.dependencies]
 vsesvit-core = { workspace = true }
 vsesvit-update = { workspace = true }
@@ -13,6 +20,7 @@ windows-future = { workspace = true }
 windows-collections = { workspace = true }
 windows-link = { workspace = true }
 windows-reference = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 semver = "1"

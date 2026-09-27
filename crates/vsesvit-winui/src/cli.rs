@@ -1,19 +1,21 @@
-//! Command line: `vsesvit [URL...] [--profile-dir DIR] [--self-test OUT_DIR]`, or one of the
-//! update commands on its own.
+//! Command line: `vsesvit [URL...] [--profile-dir DIR] [--self-test OUT_DIR [--network]]`, or
+//! one of the update commands on its own.
 
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 
 pub(crate) const USAGE: &str = "\
-usage: vsesvit [URL...] [--profile-dir DIR] [--self-test OUT_DIR]
+usage: vsesvit [URL...] [--profile-dir DIR] [--self-test OUT_DIR [--network]]
        vsesvit --check-for-updates | --update
 
-  URL...                    open each URL in a tab
-  --profile-dir DIR         use DIR as the profile (default %LOCALAPPDATA%\\Vsesvit\\dev)
+  URL...                    open each URL in a tab (in the running instance, if there is one)
+  --profile-dir DIR         use DIR as the profile
+                            (default %LOCALAPPDATA%\\Vsesvit\\data\\profiles\\Default)
   --self-test OUT_DIR       run the end-to-end self-test with a fresh profile in OUT_DIR
-  --load-extension DIR      load an unpacked extension into the engine for this session
-  --ui-smoke OUT_DIR        open the URLs, exercise tabs, save screenshots to OUT_DIR, exit
+  --network                 with --self-test: also install from the Chrome Web Store
+  --load-extension DIR      install an unpacked extension folder into the profile
+  --ui-smoke OUT_DIR        drive the UI, save screenshots and smoke.json to OUT_DIR, exit
   --check-for-updates       print one JSON line saying whether an update is available, exit
   --update                  download and start installing an available update (progress on
                             stderr), print the outcome as one JSON line, exit
@@ -49,6 +51,7 @@ pub(crate) struct Args {
     pub profile_dir: Option<PathBuf>,
     pub run: RunKind,
     pub load_extensions: Vec<PathBuf>,
+    pub network: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -66,6 +69,8 @@ pub(crate) enum CliError {
     NotUnicode(OsString),
     Duplicate(&'static str),
     Conflict(&'static str, &'static str),
+    Requires(&'static str, &'static str),
+    UnexpectedValue(&'static str),
     Alone(&'static str),
 }
 
@@ -77,6 +82,8 @@ impl fmt::Display for CliError {
             Self::NotUnicode(arg) => write!(f, "argument is not valid Unicode: {}", arg.display()),
             Self::Duplicate(flag) => write!(f, "{flag} given more than once"),
             Self::Conflict(a, b) => write!(f, "{a} cannot be combined with {b}"),
+            Self::Requires(a, b) => write!(f, "{a} needs {b}"),
+            Self::UnexpectedValue(flag) => write!(f, "{flag} takes no value"),
             Self::Alone(flag) => write!(f, "{flag} takes no other arguments"),
         }
     }
@@ -114,6 +121,23 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, 
             "--" => only_urls = true,
             "-h" | "--help" => return Ok(Parsed::Help),
             "--version" => return Ok(Parsed::Version),
+            "--check-for-updates" | "--update" => {
+                let next = if flag == "--update" {
+                    UpdateCommand::Install
+                } else {
+                    UpdateCommand::Check
+                };
+                if inline.is_some() {
+                    return Err(CliError::UnexpectedValue(next.flag()));
+                }
+                match command.replace(next) {
+                    Some(previous) if previous == next => {
+                        return Err(CliError::Duplicate(next.flag()));
+                    }
+                    Some(previous) => return Err(CliError::Conflict(previous.flag(), next.flag())),
+                    None => {}
+                }
+            }
             "--profile-dir" => {
                 let dir = value("--profile-dir")?;
                 if parsed.profile_dir.replace(dir).is_some() {
@@ -128,26 +152,17 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, 
                 let dir = value("--ui-smoke")?;
                 set_run(&mut parsed.run, RunKind::UiSmoke(dir))?;
             }
-            "--check-for-updates" | "--update" => {
-                if let Some(value) = &inline {
-                    return Err(CliError::UnknownOption(format!("{flag}={value}")));
-                }
-                let next = if flag == "--update" {
-                    UpdateCommand::Install
-                } else {
-                    UpdateCommand::Check
-                };
-                match command.replace(next) {
-                    Some(previous) if previous == next => {
-                        return Err(CliError::Duplicate(next.flag()));
-                    }
-                    Some(previous) => return Err(CliError::Conflict(previous.flag(), next.flag())),
-                    None => {}
-                }
-            }
             "--load-extension" => {
                 let dir = value("--load-extension")?;
                 parsed.load_extensions.push(dir);
+            }
+            "--network" => {
+                if inline.is_some() {
+                    return Err(CliError::UnexpectedValue("--network"));
+                }
+                if std::mem::replace(&mut parsed.network, true) {
+                    return Err(CliError::Duplicate("--network"));
+                }
             }
             _ => return Err(CliError::UnknownOption(flag)),
         }
@@ -160,6 +175,9 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, 
     }
     if matches!(parsed.run, RunKind::SelfTest(_)) && parsed.profile_dir.is_some() {
         return Err(CliError::Conflict("--self-test", "--profile-dir"));
+    }
+    if parsed.network && !matches!(parsed.run, RunKind::SelfTest(_)) {
+        return Err(CliError::Requires("--network", "--self-test"));
     }
     Ok(Parsed::Run(parsed))
 }
@@ -292,7 +310,26 @@ mod tests {
             run(&["--update", "--update"]),
             Err(CliError::Duplicate("--update"))
         );
+        assert_eq!(
+            run(&["--update=now"]),
+            Err(CliError::UnexpectedValue("--update"))
+        );
         assert_eq!(run(&["--update", "--help"]), Ok(Parsed::Help));
+    }
+
+    #[test]
+    fn network_only_with_self_test() {
+        let args = browse(&["--self-test", "out", "--network"]);
+        assert!(args.network);
+        assert_eq!(args.run, RunKind::SelfTest(PathBuf::from("out")));
+        assert_eq!(
+            run(&["--network"]),
+            Err(CliError::Requires("--network", "--self-test"))
+        );
+        assert_eq!(
+            run(&["--self-test", "o", "--network=yes"]),
+            Err(CliError::UnexpectedValue("--network"))
+        );
     }
 
     #[test]

@@ -1,64 +1,31 @@
-//! Provisional address-box input handling: a URL with a known scheme is used as is, anything
-//! else gets `https://`. The real policy (search on the default engine, suggestions from
-//! bookmarks and history) is `vsesvit_core`'s omnibox; `Browser::omnibox_submitted` is where it
-//! replaces this.
+//! Address-box details around vsesvit-core's omnibox: engine URLs that core does not classify,
+//! how suggestions read in the list, and what the box shows for a committed URL.
 
-const SCHEMES: &[&str] = &[
-    "http",
-    "https",
-    "file",
-    "about",
-    "data",
-    "blob",
-    "chrome-extension",
-    "edge",
-    "view-source",
-    "mailto",
-];
+use vsesvit_core::search::{Suggestion, SuggestionSource};
 
-/// The URL to load for `input`, or `None` when there is nothing to load.
-pub(crate) fn navigation_target(input: &str) -> Option<String> {
-    let text = input.trim();
-    if text.is_empty() {
-        return None;
-    }
-    if let Some((scheme, _)) = text.split_once(':')
-        && SCHEMES
-            .iter()
-            .any(|known| scheme.eq_ignore_ascii_case(known))
-    {
-        return Some(text.to_owned());
-    }
-    if let Some(path) = windows_path(text) {
-        return Some(format!("file:///{}", path.replace('\\', "/")));
-    }
-    let scheme = if is_loopback(text) { "http" } else { "https" };
-    Some(format!("{scheme}://{text}"))
+/// Schemes WebView2 navigates that core's omnibox does not treat as URLs.
+const ENGINE_SCHEMES: &[&str] = &["chrome-extension", "blob", "mailto"];
+
+/// `text` itself when it is a URL of one of `ENGINE_SCHEMES`.
+pub(crate) fn engine_url(text: &str) -> Option<String> {
+    let text = text.trim();
+    let (scheme, rest) = text.split_once(':')?;
+    let known = ENGINE_SCHEMES
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s));
+    (known && !rest.is_empty()).then(|| text.to_owned())
 }
 
-fn windows_path(text: &str) -> Option<&str> {
-    let bytes = text.as_bytes();
-    let drive = bytes.first()?.is_ascii_alphabetic() && bytes.get(1) == Some(&b':');
-    let separator = matches!(bytes.get(2), Some(b'\\' | b'/'));
-    (drive && separator).then_some(text)
-}
-
-/// Loopback servers rarely speak TLS, so they get `http` like other browsers give them.
-fn is_loopback(text: &str) -> bool {
-    let authority = text.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = if authority.starts_with('[') {
-        authority
-            .split(']')
-            .next()
-            .map(|h| format!("{h}]"))
-            .unwrap_or_default()
-    } else {
-        authority
-            .rsplit_once(':')
-            .map_or(authority, |(host, _)| host)
-            .to_owned()
-    };
-    host.eq_ignore_ascii_case("localhost") || host.starts_with("127.") || host == "[::1]"
+/// One line of the suggestion list. Labels are unique within a list, because core deduplicates
+/// suggestions by URL and every label that is not a search shows its URL.
+pub(crate) fn label(suggestion: &Suggestion) -> String {
+    let url = suggestion.target.url().as_str();
+    match suggestion.source {
+        SuggestionSource::Search | SuggestionSource::Typed => suggestion.title.clone(),
+        SuggestionSource::Bookmark => format!("\u{2605} {}  \u{2014}  {url}", suggestion.title),
+        SuggestionSource::History if suggestion.title == url => url.to_owned(),
+        SuggestionSource::History => format!("{}  \u{2014}  {url}", suggestion.title),
+    }
 }
 
 /// What the address box shows for a committed URL: nothing for the blank page.
@@ -68,65 +35,50 @@ pub(crate) fn display_url(url: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use vsesvit_core::Url;
+    use vsesvit_core::search::NavTarget;
+
     use super::*;
 
-    #[test]
-    fn known_schemes_pass_through() {
-        for url in [
-            "https://example.com/a?b#c",
-            "HTTP://EXAMPLE.COM",
-            "about:blank",
-            "chrome-extension://abcdefghijklmnopabcdefghijklmnop/popup.html",
-            "file:///C:/x.html",
-            "data:text/html,hi",
-        ] {
-            assert_eq!(navigation_target(url).as_deref(), Some(url));
+    fn suggestion(source: SuggestionSource, title: &str, url: &str) -> Suggestion {
+        Suggestion {
+            source,
+            title: title.into(),
+            target: NavTarget::Url(Url::parse(url).unwrap()),
         }
     }
 
     #[test]
-    fn bare_hosts_get_https() {
+    fn engine_schemes_pass_through() {
         assert_eq!(
-            navigation_target(" example.com ").as_deref(),
-            Some("https://example.com")
+            engine_url(" chrome-extension://abc/popup.html ").as_deref(),
+            Some("chrome-extension://abc/popup.html")
         );
         assert_eq!(
-            navigation_target("example.com:8443/x").as_deref(),
-            Some("https://example.com:8443/x")
+            engine_url("mailto:a@b.test").as_deref(),
+            Some("mailto:a@b.test")
         );
+        assert_eq!(engine_url("https://a.test/"), None);
+        assert_eq!(engine_url("blob:"), None);
+        assert_eq!(engine_url("vsesvit fixture"), None);
     }
 
     #[test]
-    fn loopback_gets_http() {
-        assert_eq!(
-            navigation_target("127.0.0.1:8080/page2.html").as_deref(),
-            Some("http://127.0.0.1:8080/page2.html")
+    fn labels_show_titles_and_urls() {
+        let b = suggestion(SuggestionSource::Bookmark, "A", "https://a.test/");
+        assert_eq!(label(&b), "\u{2605} A  \u{2014}  https://a.test/");
+        let h = suggestion(
+            SuggestionSource::History,
+            "https://h.test/",
+            "https://h.test/",
         );
-        assert_eq!(
-            navigation_target("localhost:3000").as_deref(),
-            Some("http://localhost:3000")
+        assert_eq!(label(&h), "https://h.test/");
+        let t = suggestion(
+            SuggestionSource::Typed,
+            "https://t.test/",
+            "https://t.test/",
         );
-        assert_eq!(
-            navigation_target("[::1]:80/").as_deref(),
-            Some("http://[::1]:80/")
-        );
-        assert_eq!(
-            navigation_target("localhost.example.com").as_deref(),
-            Some("https://localhost.example.com")
-        );
-    }
-
-    #[test]
-    fn windows_paths_become_file_urls() {
-        assert_eq!(
-            navigation_target(r"C:\sites\index.html").as_deref(),
-            Some("file:///C:/sites/index.html")
-        );
-    }
-
-    #[test]
-    fn empty_input_loads_nothing() {
-        assert_eq!(navigation_target("   "), None);
+        assert_eq!(label(&t), "https://t.test/");
     }
 
     #[test]

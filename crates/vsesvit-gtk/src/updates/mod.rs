@@ -18,7 +18,8 @@ use gtk::gio::ActionEntry;
 use gtk::glib;
 use semver::Version;
 use vsesvit_update::{
-    Config, DisabledReason, Downloaded, Error, Format, Installation, Update, Updater,
+    Config, DisabledReason, Downloaded, Error, Format, Installation, Updater,
+    remove_stale_downloads,
 };
 
 use crate::window::BrowserWindow;
@@ -39,7 +40,7 @@ struct Inner {
     /// Resolved before anything is installed: once a package manager replaces the executable,
     /// `current_exe()` names the deleted file.
     program: PathBuf,
-    lifecycle: RefCell<Lifecycle<Update, Downloaded>>,
+    lifecycle: RefCell<Lifecycle<Downloaded>>,
     automatic: Cell<bool>,
     window_seen: Cell<bool>,
     timer: RefCell<Option<glib::SourceId>>,
@@ -158,7 +159,7 @@ impl Updates {
         }
     }
 
-    fn dispatch(&self, event: Event<Update, Downloaded>) {
+    fn dispatch(&self, event: Event<Downloaded>) {
         let effect = self.0.lifecycle.borrow_mut().step(event);
         let (banner, disabled) = {
             let lifecycle = self.0.lifecycle.borrow();
@@ -185,21 +186,16 @@ impl Updates {
                     }
                 });
             }
-            Some(Effect::Install { update, downloaded }) => {
-                let (installation, dir) = (self.0.installation.clone(), self.0.dir.clone());
+            Some(Effect::Install(downloaded)) => {
+                let installation = self.0.installation.clone();
                 self.spawn(move |send| {
-                    let downloaded = match downloaded {
-                        Some(downloaded) => Ok(downloaded),
-                        None => fs::create_dir_all(&dir)
-                            .map_err(Error::Io)
-                            .and_then(|()| update.download(&dir, |_, _| {})),
-                    };
-                    send(
-                        match downloaded.and_then(|d| d.install(&installation, &[])) {
-                            Ok(next) => Event::Installed(next),
-                            Err(e) => Event::Failed(e),
+                    send(match downloaded.install(&installation, &[]) {
+                        Ok(next) => Event::Installed(next),
+                        Err(failed) => Event::InstallFailed {
+                            error: failed.error,
+                            downloaded: failed.downloaded,
                         },
-                    );
+                    });
                 });
             }
             Some(Effect::Restart) => {
@@ -224,7 +220,7 @@ impl Updates {
     }
 
     /// Runs `work` on a worker thread; each event it sends is dispatched here on the UI thread.
-    fn spawn(&self, work: impl FnOnce(&dyn Fn(Event<Update, Downloaded>)) + Send + 'static) {
+    fn spawn(&self, work: impl FnOnce(&dyn Fn(Event<Downloaded>)) + Send + 'static) {
         let (sender, mut receiver) = mpsc::unbounded();
         let spawned = std::thread::Builder::new()
             .name("vsesvit-update".into())
@@ -261,17 +257,19 @@ impl Updates {
 fn check_and_download(
     updater: &Updater,
     dir: &Path,
-    send: &dyn Fn(Event<Update, Downloaded>),
+    send: &dyn Fn(Event<Downloaded>),
 ) -> Result<(), Error> {
     fs::create_dir_all(dir)?;
-    remove_stale(dir, &current_version());
-    let Some(update) = updater.check()? else {
+    let available = updater.check()?;
+    remove_stale_downloads(dir, available.as_ref().map(|a| &a.release().version))?;
+    let Some(available) = available else {
         send(Event::UpToDate);
         return Ok(());
     };
-    send(Event::Found(update.version.clone()));
+    let update = available.into_update()?;
+    send(Event::Found(update.release.version.clone()));
     let downloaded = update.download(dir, |_, _| {})?;
-    send(Event::Downloaded { update, downloaded });
+    send(Event::Downloaded(downloaded));
     Ok(())
 }
 
@@ -281,81 +279,4 @@ fn download_dir() -> PathBuf {
 
 fn current_version() -> Version {
     Version::parse(env!("CARGO_PKG_VERSION")).expect("the crate version is semver")
-}
-
-/// Deletes downloads of versions this build already is or is newer than. A download of a newer
-/// version is left alone: another profile's instance may be writing it.
-fn remove_stale(dir: &Path, current: &Version) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        if name
-            .to_str()
-            .and_then(downloaded_version)
-            .is_some_and(|v| v <= *current)
-            && let Err(e) = fs::remove_file(entry.path())
-        {
-            log::warn!("could not remove {}: {e}", entry.path().display());
-        }
-    }
-}
-
-/// The version in a file name `Update::download` writes: `vsesvit-<version><suffix>`, or that
-/// plus `.part` while it downloads.
-fn downloaded_version(name: &str) -> Option<Version> {
-    const SUFFIXES: [&str; 5] = [".AppImage", ".deb", ".rpm", ".pkg.tar.zst", "-setup.exe"];
-    let name = name.strip_suffix(".part").unwrap_or(name);
-    let rest = name.strip_prefix("vsesvit-")?;
-    SUFFIXES
-        .iter()
-        .find_map(|suffix| rest.strip_suffix(suffix))
-        .and_then(|version| Version::parse(version).ok())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn download_names_parse_to_their_version() {
-        let cases = [
-            ("vsesvit-1.2.3.AppImage", Some("1.2.3")),
-            ("vsesvit-1.2.3.deb.part", Some("1.2.3")),
-            ("vsesvit-2.0.0-rc.1.pkg.tar.zst", Some("2.0.0-rc.1")),
-            ("vsesvit-0.9.0-setup.exe", Some("0.9.0")),
-            ("vsesvit-1.2.3.tar.gz", None),
-            ("other-1.2.3.deb", None),
-            ("vsesvit-latest.rpm", None),
-        ];
-        for (name, expected) in cases {
-            assert_eq!(
-                downloaded_version(name),
-                expected.map(|v| Version::parse(v).unwrap()),
-                "{name}"
-            );
-        }
-    }
-
-    #[test]
-    fn stale_downloads_are_removed_and_newer_ones_kept() {
-        let dir = glib::mkdtemp(glib::tmp_dir().join("vsesvit-updates-XXXXXX")).unwrap();
-        for name in [
-            "vsesvit-0.9.0.deb",
-            "vsesvit-1.0.0.deb.part",
-            "vsesvit-1.1.0.deb",
-            "notes.txt",
-        ] {
-            fs::write(dir.join(name), b"x").unwrap();
-        }
-        remove_stale(&dir, &Version::new(1, 0, 0));
-        let mut left: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        left.sort();
-        assert_eq!(left, ["notes.txt", "vsesvit-1.1.0.deb"]);
-        fs::remove_dir_all(&dir).unwrap();
-    }
 }

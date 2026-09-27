@@ -1,27 +1,42 @@
-//! Windows shell: WinUI 3 (Windows App SDK) + WebView2. Compiles to nothing on other targets.
+//! Windows shell: WinUI 3 (Windows App SDK) + WebView2 on vsesvit-core. Compiles to nothing on
+//! other targets.
 //!
 //! | module            | owns                                                                |
 //! |-------------------|---------------------------------------------------------------------|
 //! | `cli`, `config`   | command line and the resolved run configuration                     |
 //! | `platform`        | COM, DPI awareness, Windows App Runtime dependency, message boxes   |
+//! | `instance`        | one process per profile: forwarding a launch to the running one     |
 //! | `app`             | the XAML `Application` subclass and the exit code                   |
-//! | `exec`            | a single-threaded executor on the UI `DispatcherQueue`              |
+//! | `exec`            | a single-threaded executor on the UI `DispatcherQueue`, worker jobs |
 //! | `engine`          | the shared `CoreWebView2Environment` and engine-side extension calls|
-//! | `browser`         | app-wide controller; the points where vsesvit-core plugs in         |
-//! | `window`          | one window: tab strip in the title bar, toolbar, bars, page grid    |
-//! | `tab`             | one tab: `TabViewItem` header, `WebView2`, navigation state         |
+//! | `browser`         | app-wide controller: profile, windows, history, bookmarks, prefs    |
+//! | `session`         | session restore plans and snapshots (pure)                          |
+//! | `extensions`      | install pipeline driver and the WebView2 extension sync             |
+//! | `window`          | one window: tab list, toolbar, bookmarks bar, page grid             |
+//! | `layout`          | tab list placement and reading it back from geometry (pure)         |
+//! | `strip`           | the two tab lists: `TabView` strip and the vertical pane            |
+//! | `tab`, `tab_header` | one tab's `WebView2` and state; its row in a tab list             |
 //! | `bookmarks_bar`   | bookmarks bar buttons and folder menus                              |
 //! | `popup`           | extension action buttons and their popup flyout                     |
 //! | `dialogs`         | Bookmarks / History / Extensions / Settings / About                 |
+//! | `pickers`         | file and folder pickers                                             |
 //! | `shortcuts`       | keyboard bindings, shared by XAML accelerators and the page script  |
-//! | `omnibox`         | provisional address-box input handling                              |
+//! | `omnibox`         | address-box details around core's omnibox                          |
 //! | `capture`         | PNG capture of web content and of the whole window, without focus   |
-//! | `automation`      | scripted UI runs (`--ui-smoke`) built on `capture`                  |
+//! | `selftest`, `automation` | `--self-test` and `--ui-smoke` (feature `self-test`)         |
 //! | `updates`         | the self-update state machine, its schedule, the update commands    |
 //! | `bindings`        | generated; regenerate with `tools/bindgen` (see `bindings.txt`)     |
 #![cfg(windows)]
+#![cfg_attr(
+    not(feature = "self-test"),
+    allow(
+        dead_code,
+        reason = "the in-app capture, dialog previews and geometry probes serve the scripted runs"
+    )
+)]
 
 mod app;
+#[cfg(feature = "self-test")]
 mod automation;
 #[rustfmt::skip]
 #[allow(
@@ -42,19 +57,32 @@ mod config;
 mod dialogs;
 mod engine;
 mod exec;
+mod extensions;
+mod instance;
+mod layout;
 mod logging;
 mod omnibox;
+mod pickers;
 mod platform;
 mod popup;
+#[cfg(feature = "self-test")]
+mod report;
+#[cfg(feature = "self-test")]
+mod selftest;
+mod session;
 mod shortcuts;
+mod strip;
 mod tab;
+mod tab_header;
 mod updates;
 mod window;
 mod xaml;
 
 use std::process::ExitCode;
+use std::time::Instant;
 
 use config::{Config, Mode};
+use vsesvit_core::{OpenError, OpenOptions, Profile};
 
 pub fn run() -> ExitCode {
     let args = match cli::parse(std::env::args_os().skip(1)) {
@@ -86,28 +114,128 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    logging::init(&config.profile_dir);
+    if let Mode::SelfTest { out_dir, .. } = &config.mode {
+        #[cfg(feature = "self-test")]
+        if let Err(e) = selftest::prepare(out_dir) {
+            eprintln!("vsesvit: {}: {e}", out_dir.display());
+            return ExitCode::FAILURE;
+        }
+        #[cfg(not(feature = "self-test"))]
+        {
+            eprintln!(
+                "vsesvit: --self-test {}: this build has no self-test (feature `self-test`)",
+                out_dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    #[cfg(feature = "self-test")]
+    if let Mode::UiSmoke { out_dir } = &config.mode
+        && let Err(e) = automation::prepare(out_dir, &config.profile_dir)
+    {
+        eprintln!("vsesvit: {}: {e}", out_dir.display());
+        return ExitCode::FAILURE;
+    }
+    logging::init(&config.log_file());
     log::info!(
         "vsesvit {} starting, profile {}",
         env!("CARGO_PKG_VERSION"),
         config.profile_dir.display()
     );
 
-    if let Mode::SelfTest { out_dir } = &config.mode {
-        log::error!(
-            "--self-test {}: the end-to-end checks are not part of this build yet",
-            out_dir.display()
-        );
-        return ExitCode::FAILURE;
-    }
-
     let interactive = config.mode.is_interactive();
     if let Err(e) = platform::init() {
+        logging::open_file(logging::FileMode::Append);
         log::error!("{e}");
         if interactive {
             platform::report_startup_failure(&e);
         }
         return ExitCode::FAILURE;
     }
-    app::run(config)
+    match open_profile(config) {
+        Ok(launch) => {
+            let code = app::run(launch);
+            updates::install_on_exit();
+            code
+        }
+        Err(code) => code,
+    }
+}
+
+/// Opens the profile before any window exists. When another Vsesvit process has it open, this
+/// launch's command line goes to that process instead.
+fn open_profile(config: Config) -> Result<browser::Launch, ExitCode> {
+    let chrome_version = match engine::available_version() {
+        Ok(version) => engine::chromium_version(&version),
+        Err(e) => {
+            log::warn!("WebView2 runtime version: {e}");
+            None
+        }
+    };
+    let options = OpenOptions {
+        chrome_version: chrome_version.unwrap_or_else(|| OpenOptions::default().chrome_version),
+        ..OpenOptions::default()
+    };
+    log::info!("Chrome Web Store version: {}", options.chrome_version);
+    let started = Instant::now();
+    match Profile::open(&config.profile_dir, options) {
+        Ok(profile) => {
+            let profile_open_ms = started.elapsed().as_millis();
+            logging::open_file(logging::FileMode::Truncate);
+            if let Some(instance) = instance::register(&config.profile_dir) {
+                instance::listen(&instance);
+            }
+            Ok(browser::Launch {
+                config,
+                profile,
+                profile_open_ms,
+            })
+        }
+        Err(OpenError::Locked) if config.mode == Mode::Browse => {
+            logging::open_file(logging::FileMode::Append);
+            match instance::forward(&config.profile_dir) {
+                Ok(()) => {
+                    log::info!("the profile is open in another process; the launch went there");
+                    Err(ExitCode::SUCCESS)
+                }
+                Err(e) => {
+                    log::error!("forwarding to the process that has the profile open: {e}");
+                    platform::message_box(
+                        &format!(
+                            "Vsesvit is already running with this profile ({}), and it did not respond.\n\n{e}",
+                            config.profile_dir.display()
+                        ),
+                        bindings::MB_OK | bindings::MB_ICONERROR,
+                    );
+                    Err(ExitCode::FAILURE)
+                }
+            }
+        }
+        Err(e) => {
+            logging::open_file(logging::FileMode::Append);
+            log::error!("profile {}: {e}", config.profile_dir.display());
+            match &config.mode {
+                Mode::Browse => {
+                    platform::message_box(
+                        &format!(
+                            "Vsesvit could not open its profile ({}).\n\n{e}",
+                            config.profile_dir.display()
+                        ),
+                        bindings::MB_OK | bindings::MB_ICONERROR,
+                    );
+                }
+                #[cfg(feature = "self-test")]
+                Mode::SelfTest { out_dir, network } => {
+                    selftest::report_failed_start(
+                        out_dir,
+                        *network,
+                        started.elapsed().as_millis(),
+                        &e.to_string(),
+                    );
+                }
+                _ => {}
+            }
+            Err(ExitCode::FAILURE)
+        }
+    }
 }

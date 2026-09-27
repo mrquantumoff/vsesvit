@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use semver::Version;
 use support::{Server, config, dead_url};
 use url::Url;
-use vsesvit_update::{ARCH, DisabledReason, Error, Format, Installation, TARGET, Update, Updater};
+use vsesvit_update::{ARCH, Available, DisabledReason, Error, Format, Installation, TARGET, Update, Updater};
 
 const PUBKEY: &str = "UldRZjM5aGF0Y2hlZA==";
 
@@ -26,7 +26,7 @@ fn dynamic(version: &str) -> String {
 }
 
 fn check(updater: &Updater) -> Option<Update> {
-    updater.check().expect("check succeeds")
+    updater.check().expect("check succeeds").map(|available| available.into_update().expect("installable"))
 }
 
 #[test]
@@ -35,12 +35,12 @@ fn dynamic_format_offers_a_newer_release() {
     server.route(&format!("/u/{TARGET}/{ARCH}/1.0.0"), 200, dynamic("1.1.0"));
     let update = check(&updater(vec![templated(&server)], "1.0.0", Installation::Deb)).expect("1.1.0 is newer");
 
-    assert_eq!(update.version, Version::new(1, 1, 0));
-    assert_eq!(update.notes.as_deref(), Some("Fixes"));
-    assert_eq!(update.pub_date.map(|d| d.unix_timestamp()), Some(1_789_905_600));
+    assert_eq!(update.release.version, Version::new(1, 1, 0));
+    assert_eq!(update.release.notes.as_deref(), Some("Fixes"));
+    assert_eq!(update.release.pub_date.map(|d| d.unix_timestamp()), Some(1_789_905_600));
     assert_eq!(update.url.as_str(), "https://dl.test/Vsesvit_1.1.0_amd64.deb");
     assert_eq!(update.signature, "c2ln");
-    assert_eq!(update.format, Some(Format::Deb));
+    assert_eq!(update.format, Format::Deb);
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -52,7 +52,7 @@ fn dynamic_format_offers_a_newer_release() {
 #[test]
 fn build_metadata_in_the_current_version_is_percent_encoded() {
     let server = Server::start();
-    let _ = check(&updater(vec![templated(&server)], "1.0.0+nightly.3", Installation::Unpackaged));
+    let _ = updater(vec![templated(&server)], "1.0.0+nightly.3", Installation::Unpackaged).check();
     assert_eq!(
         server.requests()[0].target,
         format!("/u/{TARGET}/{ARCH}/1.0.0%2Bnightly.3?variant=unknown"),
@@ -75,10 +75,10 @@ fn static_format_prefers_the_variant_key() {
     let plain_key = format!("{TARGET}-{ARCH}");
     server.route("/latest.json", 200, static_manifest(&[&plain_key, &variant_key, "linux-riscv64-rpm"]));
     let update = check(&updater(vec![server.url("/latest.json")], "1.0.0", Installation::Rpm)).expect("v2.0.0 is newer");
-    assert_eq!(update.version, Version::new(2, 0, 0), "the leading v is accepted");
+    assert_eq!(update.release.version, Version::new(2, 0, 0), "the leading v is accepted");
     assert_eq!(update.url.as_str(), format!("https://dl.test/{variant_key}"));
     assert_eq!(update.signature, format!("sig-{variant_key}"));
-    assert_eq!(update.pub_date, None);
+    assert_eq!(update.release.pub_date, None);
 }
 
 #[test]
@@ -126,10 +126,10 @@ fn quadrant_database_row_is_accepted_verbatim() {
     let endpoint = server
         .url("/api/any/vsesvit/updates/stable/{{target}}/{{arch}}/{{current_version}}?variant={{bundle_type}}");
     let update = check(&updater(vec![endpoint], "0.1.0", Installation::Deb)).expect("0.2.0 is newer");
-    assert_eq!(update.version, Version::new(0, 2, 0));
+    assert_eq!(update.release.version, Version::new(0, 2, 0));
     assert_eq!(update.signature, "dW50cnVzdGVkIGNvbW1lbnQ=");
     assert!(update.url.as_str().ends_with("Vsesvit_0.2.0_amd64.deb"));
-    let date = update.pub_date.expect("pub_date parses");
+    let date = update.release.pub_date.expect("pub_date parses");
     assert_eq!((date.offset().whole_hours(), date.nanosecond()), (2, 789_012_000));
 }
 
@@ -158,7 +158,7 @@ fn a_failing_endpoint_falls_through_to_the_next() {
     server.route("/good", 200, dynamic("1.1.0"));
     let endpoints = vec![dead_url(), server.url("/broken"), server.url("/garbage"), server.url("/good")];
     let update = check(&updater(endpoints, "1.0.0", Installation::Deb)).expect("the last endpoint answers");
-    assert_eq!(update.version, Version::new(1, 1, 0));
+    assert_eq!(update.release.version, Version::new(1, 1, 0));
     let targets: Vec<String> = server.requests().into_iter().map(|r| r.target).collect();
     assert_eq!(targets, ["/broken", "/garbage", "/good"]);
 }
@@ -190,15 +190,19 @@ fn only_a_strictly_newer_version_is_offered() {
 }
 
 #[test]
-fn installations_that_do_not_update_themselves_still_check() {
+fn installations_that_do_not_update_themselves_see_the_release_without_an_artifact() {
     let server = Server::start();
-    server.route("/u", 200, static_manifest(&[&format!("{TARGET}-{ARCH}-flatpak"), &format!("{TARGET}-{ARCH}")]));
-    let flatpak = check(&updater(vec![server.url("/u")], "1.0.0", Installation::Flatpak)).unwrap();
-    assert_eq!(flatpak.format, None);
-    assert!(flatpak.url.as_str().ends_with("-flatpak"));
-    let unpackaged = check(&updater(vec![server.url("/u")], "1.0.0", Installation::Unpackaged)).unwrap();
-    assert_eq!(unpackaged.format, None);
-    assert_eq!(unpackaged.url.as_str(), format!("https://dl.test/{TARGET}-{ARCH}"));
+    server.route("/u", 200, static_manifest(&[&format!("{TARGET}-{ARCH}-deb"), &format!("{TARGET}-{ARCH}-appimage")]));
+    for installation in [Installation::Unpackaged, Installation::Flatpak] {
+        let available = updater(vec![server.url("/u")], "1.0.0", installation.clone()).check().unwrap();
+        let Some(Available::NotInstallable(release)) = available else {
+            panic!("{installation:?}: expected a release it cannot install, got {available:?}")
+        };
+        assert_eq!(release.version, Version::new(2, 0, 0));
+        let err = Available::NotInstallable(release).into_update().unwrap_err();
+        assert!(matches!(err, Error::Disabled(DisabledReason::NotSelfUpdating)), "{err:?}");
+    }
+    assert_eq!(server.requests().len(), 2, "one check each, and nothing downloaded");
 }
 
 #[test]
@@ -228,7 +232,9 @@ fn plain_http_is_refused_when_https_only() {
 fn values_that_do_io_are_send() {
     fn send<T: Send>() {}
     send::<Updater>();
+    send::<Available>();
     send::<Update>();
     send::<vsesvit_update::Downloaded>();
+    send::<vsesvit_update::InstallFailed>();
     send::<Error>();
 }

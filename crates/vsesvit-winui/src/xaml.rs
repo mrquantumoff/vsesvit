@@ -64,6 +64,28 @@ pub(crate) fn find_descendant<T: Interface>(root: &DependencyObject) -> Option<T
     None
 }
 
+/// Depth-first search of the visual tree for the element named `name` (`x:Name`). Unlike
+/// `FindName`, this works for content moved out of the markup that declared it.
+pub(crate) fn find_named<T: Interface>(root: &DependencyObject, name: &str) -> Option<T> {
+    let count = VisualTreeHelper::GetChildrenCount(root).ok()?;
+    for index in 0..count {
+        let Ok(child) = VisualTreeHelper::GetChild(root, index) else {
+            continue;
+        };
+        let named = child
+            .cast::<FrameworkElement>()
+            .and_then(|e| e.Name())
+            .is_ok_and(|n| n == name);
+        if named && let Ok(found) = child.cast::<T>() {
+            return Some(found);
+        }
+        if let Some(found) = find_named(&child, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// Escapes text for use inside a double-quoted XAML attribute or element content.
 pub(crate) fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

@@ -10,15 +10,14 @@ use serde::Deserialize;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::{ARCH, DisabledReason, Error, TARGET};
+use crate::{ARCH, DisabledReason, Error, Release, TARGET};
 
 /// Tauri substitutes `unknown` for `{{bundle_type}}` when the app is not a known bundle.
 const UNKNOWN_BUNDLE_TYPE: &str = "unknown";
 
-pub(crate) struct Release {
-    pub version: Version,
-    pub notes: Option<String>,
-    pub pub_date: Option<OffsetDateTime>,
+/// A parsed update response: what the release says about itself, and its artifacts.
+pub(crate) struct Manifest {
+    pub release: Release,
     artifacts: Artifacts,
 }
 
@@ -27,7 +26,7 @@ enum Artifacts {
     Static(HashMap<String, Artifact>),
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(crate) struct Artifact {
     pub url: Url,
     pub signature: String,
@@ -48,7 +47,7 @@ pub(crate) fn endpoint_url(template: &Url, current: &Version, variant: Option<&s
     url
 }
 
-pub(crate) fn parse_release(body: &[u8]) -> Result<Release, Error> {
+pub(crate) fn parse_manifest(body: &[u8]) -> Result<Manifest, Error> {
     #[derive(Deserialize)]
     struct Raw {
         #[serde(alias = "name", deserialize_with = "version_with_optional_v")]
@@ -72,7 +71,7 @@ pub(crate) fn parse_release(body: &[u8]) -> Result<Release, Error> {
         (None, None, _) => return Err(Error::BadResponse("neither `platforms` nor `url` is set".into())),
         (None, Some(_), None) => return Err(Error::BadResponse("`signature` is not set".into())),
     };
-    Ok(Release { version: raw.version, notes: raw.notes, pub_date, artifacts })
+    Ok(Manifest { release: Release { version: raw.version, notes: raw.notes, pub_date }, artifacts })
 }
 
 fn version_with_optional_v<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Version, D::Error> {
@@ -80,19 +79,15 @@ fn version_with_optional_v<'de, D: serde::Deserializer<'de>>(deserializer: D) ->
     Version::parse(version.trim_start_matches('v')).map_err(serde::de::Error::custom)
 }
 
-impl Release {
+impl Manifest {
     /// A static manifest is searched for `<target>-<arch>-<variant>`, then `<target>-<arch>`.
-    pub fn artifact(&self, variant: Option<&str>) -> Result<&Artifact, Error> {
+    pub fn artifact(&self, variant: &str) -> Result<&Artifact, Error> {
         let platforms = match &self.artifacts {
             Artifacts::Dynamic(artifact) => return Ok(artifact),
             Artifacts::Static(platforms) => platforms,
         };
-        let keys: Vec<String> = variant
-            .map(|variant| format!("{TARGET}-{ARCH}-{variant}"))
-            .into_iter()
-            .chain([format!("{TARGET}-{ARCH}")])
-            .collect();
-        keys.iter().find_map(|key| platforms.get(key)).ok_or(Error::NoArtifactForTarget(keys))
+        let keys = [format!("{TARGET}-{ARCH}-{variant}"), format!("{TARGET}-{ARCH}")];
+        keys.iter().find_map(|key| platforms.get(key)).ok_or_else(|| Error::NoArtifactForTarget(keys.to_vec()))
     }
 }
 
@@ -162,32 +157,31 @@ mod tests {
                 "{TARGET}-{ARCH}": {{"url": "https://u.test/any", "signature": "s2"}}
             }}}}"#
         );
-        let release = parse_release(body.as_bytes()).unwrap();
-        assert_eq!(release.artifact(Some("deb")).unwrap().url.as_str(), "https://u.test/deb");
-        assert_eq!(release.artifact(Some("rpm")).unwrap().url.as_str(), "https://u.test/any");
-        assert_eq!(release.artifact(None).unwrap().url.as_str(), "https://u.test/any");
+        let manifest = parse_manifest(body.as_bytes()).unwrap();
+        assert_eq!(manifest.artifact("deb").unwrap().url.as_str(), "https://u.test/deb");
+        assert_eq!(manifest.artifact("rpm").unwrap().url.as_str(), "https://u.test/any");
     }
 
     #[test]
     fn static_lookup_names_every_key_it_tried() {
-        let release = parse_release(br#"{"version": "1.0.0", "platforms": {}}"#).unwrap();
-        let Err(Error::NoArtifactForTarget(keys)) = release.artifact(Some("rpm")) else { panic!("no artifact expected") };
+        let manifest = parse_manifest(br#"{"version": "1.0.0", "platforms": {}}"#).unwrap();
+        let Err(Error::NoArtifactForTarget(keys)) = manifest.artifact("rpm") else { panic!("no artifact expected") };
         assert_eq!(keys, [format!("{TARGET}-{ARCH}-rpm"), format!("{TARGET}-{ARCH}")]);
     }
 
     #[test]
     fn dynamic_needs_url_and_signature() {
-        assert!(matches!(parse_release(br#"{"version": "1.0.0", "signature": "s"}"#), Err(Error::BadResponse(_))));
+        assert!(matches!(parse_manifest(br#"{"version": "1.0.0", "signature": "s"}"#), Err(Error::BadResponse(_))));
         assert!(matches!(
-            parse_release(br#"{"version": "1.0.0", "url": "https://u.test/a"}"#),
+            parse_manifest(br#"{"version": "1.0.0", "url": "https://u.test/a"}"#),
             Err(Error::BadResponse(_))
         ));
     }
 
     #[test]
     fn version_takes_a_leading_v_and_the_name_alias() {
-        let release = parse_release(br#"{"name": "v2.0.0", "url": "https://u.test/a", "signature": "s"}"#).unwrap();
-        assert_eq!(release.version, Version::new(2, 0, 0));
+        let manifest = parse_manifest(br#"{"name": "v2.0.0", "url": "https://u.test/a", "signature": "s"}"#).unwrap();
+        assert_eq!(manifest.release.version, Version::new(2, 0, 0));
     }
 
     #[test]

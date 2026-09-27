@@ -19,7 +19,7 @@ fn downloaded(format: Format, as_installation: Installation, dir: &Path) -> (Dow
     server.route("/artifact", 200, bytes);
     server.route("/update", 200, body.to_string());
     let updater = Updater::new(config(signer.pubkey(), vec![server.url("/update")]), Version::new(0, 1, 0), as_installation);
-    let update = updater.unwrap().check().unwrap().unwrap();
+    let update = updater.unwrap().check().unwrap().unwrap().into_update().unwrap();
     (update.download(dir, |_, _| {}).unwrap(), server)
 }
 
@@ -28,18 +28,21 @@ fn installations_that_do_not_update_themselves_refuse_to_install() {
     let dir = tempfile::tempdir().unwrap();
     for installation in [Installation::Unpackaged, Installation::Flatpak] {
         let (downloaded, _server) = downloaded(Format::Deb, Installation::Deb, dir.path());
-        let err = downloaded.install(&installation, &[]).unwrap_err();
+        let err = downloaded.install(&installation, &[]).unwrap_err().error;
         assert!(matches!(err, Error::Disabled(DisabledReason::NotSelfUpdating)), "{installation:?}: {err:?}");
     }
 }
 
 #[test]
-fn an_artifact_for_another_installation_is_refused() {
+fn a_refused_install_hands_the_download_back() {
     let dir = tempfile::tempdir().unwrap();
     let (downloaded, _server) = downloaded(Format::Deb, Installation::Deb, dir.path());
-    let err = downloaded.install(&Installation::Rpm, &[]).unwrap_err();
-    assert!(matches!(err, Error::WrongArtifactType(Format::Rpm)), "{err:?}");
-    assert!(dir.path().join("vsesvit-0.2.0.deb").exists(), "a refused install leaves the file alone");
+    let failed = downloaded.install(&Installation::Rpm, &[]).unwrap_err();
+    assert!(matches!(failed.error, Error::WrongArtifactType(Format::Rpm)), "{failed:?}");
+    assert_eq!(failed.downloaded.path(), dir.path().join("vsesvit-0.2.0.deb"));
+    assert!(failed.downloaded.path().exists(), "a refused install leaves the file alone");
+    let again = failed.downloaded.install(&Installation::Rpm, &[]).unwrap_err();
+    assert_eq!(again.downloaded.version(), &Version::new(0, 2, 0), "the same download can be tried again");
 }
 
 #[cfg(windows)]
@@ -47,7 +50,7 @@ fn an_artifact_for_another_installation_is_refused() {
 fn linux_packages_do_not_install_on_windows() {
     let dir = tempfile::tempdir().unwrap();
     let (downloaded, _server) = downloaded(Format::Deb, Installation::Deb, dir.path());
-    let err = downloaded.install(&Installation::Deb, &[]).unwrap_err();
+    let err = downloaded.install(&Installation::Deb, &[]).unwrap_err().error;
     assert!(matches!(err, Error::Install(_)), "{err:?}");
 }
 
@@ -57,7 +60,7 @@ fn the_windows_installer_does_not_run_on_linux() {
     let dir = tempfile::tempdir().unwrap();
     let nsis = Installation::Nsis { install_dir: dir.path().to_path_buf() };
     let (downloaded, _server) = downloaded(Format::Nsis, nsis.clone(), dir.path());
-    let err = downloaded.install(&nsis, &[]).unwrap_err();
+    let err = downloaded.install(&nsis, &[]).unwrap_err().error;
     assert!(matches!(err, Error::Install(_)), "{err:?}");
 }
 

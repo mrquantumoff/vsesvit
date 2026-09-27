@@ -1,0 +1,881 @@
+//! One browser window: a tab list (the vertical pane on the left or right of the pages, or the
+//! `TabView` strip in the title bar), the toolbar, the bookmarks bar and the page grid that hosts
+//! every tab's web view.
+//!
+//! With the vertical pane the toolbar sits in the title bar and a strip at its end is the drag
+//! region; with the top strip the strip's footer is. `tabs` only owns the `Tab` values; their
+//! order and the selection live in the live tab list. No `RefCell` borrow is held across a XAML
+//! call, because XAML raises events such as `SelectionChanged` synchronously from inside them.
+
+mod chrome;
+mod tab_layout;
+mod wiring;
+
+use std::cell::{Cell, OnceCell, RefCell};
+use std::rc::{Rc, Weak};
+
+use vsesvit_core::history::Transition;
+use vsesvit_core::prefs::{TabsPosition, Theme};
+use windows_core::{IInspectable, Interface, Result};
+
+use crate::bindings::*;
+use crate::bookmarks_bar::{self, BarItem, Disposition, OpenLink};
+use crate::browser::{Browser, ClosedTab};
+use crate::dialogs::{self, Dialog};
+use crate::layout::StripKind;
+use crate::popup::{self, Activation, ExtensionAction, Popup};
+use crate::session::WindowPlan;
+use crate::shortcuts::Command;
+use crate::strip::{SidePane, TopStrip};
+use crate::tab::{Initial, Tab, TabId};
+use crate::updates::{Action, Banner, Severity};
+use crate::{capture, exec, omnibox, platform, xaml};
+
+use chrome::Chrome;
+use wiring::{strip_events, with};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Show {
+    Activate,
+    /// Shown without taking focus from the user's current window (scripted runs).
+    NoActivate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuAction {
+    Run(Command),
+    Show(Dialog),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Placement {
+    End,
+    After(TabId),
+}
+
+/// The window's look, from preferences.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WindowPrefs {
+    pub tabs: TabsPosition,
+    pub pane_collapsed: bool,
+    pub theme: Theme,
+    pub bookmarks_bar: bool,
+}
+
+pub(crate) struct BrowserWindow {
+    browser: Weak<Browser>,
+    window: Window,
+    ui: Chrome,
+    top: Rc<TopStrip>,
+    side: Rc<SidePane>,
+    tabs_position: Cell<TabsPosition>,
+    tabs: RefCell<Vec<Rc<Tab>>>,
+    /// The user typed into the address box since it last showed the page URL.
+    address_edited: Cell<bool>,
+    /// The suggestion list's labels and the URL each one opens.
+    suggestions: RefCell<Vec<(String, String)>>,
+    /// The tab the toolbar currently shows.
+    shown_tab: Cell<Option<TabId>>,
+    fullscreen: Cell<bool>,
+    bookmarks_bar_wanted: Cell<bool>,
+    bar_items: RefCell<Vec<BarItem>>,
+    dialog_open: Cell<bool>,
+    /// What the update bar shows; the user may have closed it since.
+    update_banner: RefCell<Option<Banner>>,
+    closed: Cell<bool>,
+    me: Weak<BrowserWindow>,
+}
+
+impl BrowserWindow {
+    pub fn create(browser: &Rc<Browser>, show: Show, prefs: WindowPrefs) -> Result<Rc<Self>> {
+        let ui = Chrome::load()?;
+        let window = Window::new()?;
+        window.SetTitle("Vsesvit")?;
+        window.SetContent(&ui.root)?;
+        window.SetExtendsContentIntoTitleBar(true)?;
+        let window2 = window.cast::<IWindow2>()?;
+        window2.SetSystemBackdrop(&MicaBackdrop::new()?.cast::<SystemBackdrop>()?)?;
+
+        let slot = Rc::new(OnceCell::new());
+        let events = Rc::new(strip_events(&slot));
+        let top = TopStrip::new(ui.tab_view.clone(), &events)?;
+        let side = SidePane::new(&events)?;
+        let this = Rc::new_cyclic(|me: &Weak<BrowserWindow>| Self {
+            browser: Rc::downgrade(browser),
+            window,
+            ui,
+            top,
+            side,
+            tabs_position: Cell::new(prefs.tabs),
+            tabs: RefCell::new(Vec::new()),
+            address_edited: Cell::new(false),
+            suggestions: RefCell::new(Vec::new()),
+            shown_tab: Cell::new(None),
+            fullscreen: Cell::new(false),
+            bookmarks_bar_wanted: Cell::new(prefs.bookmarks_bar),
+            bar_items: RefCell::new(Vec::new()),
+            dialog_open: Cell::new(false),
+            update_banner: RefCell::new(None),
+            closed: Cell::new(false),
+            me: me.clone(),
+        });
+        let _ = slot.set(this.me.clone());
+        this.side.set_compact(prefs.pane_collapsed);
+        this.show_layout(prefs.tabs)?;
+        this.apply_theme(prefs.theme);
+        this.set_bookmarks_bar_visible(prefs.bookmarks_bar);
+        this.wire()?;
+        this.install_accelerators()?;
+        this.size_for_screen()?;
+        match show {
+            Show::Activate => this.window.Activate()?,
+            Show::NoActivate => {
+                // Behind the user's windows, where a stray click cannot reach it; the in-app
+                // capture reads the window's own surface, so being covered does not matter.
+                let app = window2.AppWindow()?;
+                app.ShowWithActivation(false)?;
+                if let Err(e) = app
+                    .cast::<IAppWindow2>()
+                    .and_then(|a| a.MoveInZOrderAtBottom())
+                {
+                    log::warn!("moving the window to the back: {e}");
+                }
+            }
+        }
+        Ok(this)
+    }
+
+    fn app_window(&self) -> Result<AppWindow> {
+        self.window.cast::<IWindow2>()?.AppWindow()
+    }
+
+    fn size_for_screen(&self) -> Result<()> {
+        let hwnd = platform::window_handle(&self.window)?;
+        let scale = f64::from(unsafe { GetDpiForWindow(hwnd) }.max(96)) / 96.0;
+        let size = SizeInt32 {
+            width: (1280.0 * scale) as i32,
+            height: (860.0 * scale) as i32,
+        };
+        self.app_window()?.Resize(size)
+    }
+
+    pub fn browser(&self) -> Option<Rc<Browser>> {
+        self.browser.upgrade()
+    }
+
+    pub fn xaml_root(&self) -> Result<XamlRoot> {
+        self.ui.root.cast::<UIElement>()?.XamlRoot()
+    }
+
+    fn me(&self) -> Rc<Self> {
+        self.me
+            .upgrade()
+            .expect("a window method runs while the window is alive")
+    }
+
+    /// Brings the window forward for a launch the user started (a forwarded command line).
+    pub fn activate(&self) {
+        if let Err(e) = self.window.Activate() {
+            log::warn!("activate window: {e}");
+        }
+    }
+
+    // ---- tabs ----
+
+    /// Opens a window's tabs from a startup plan and selects its active tab.
+    pub fn open_planned(&self, plan: &WindowPlan) -> Result<()> {
+        for (index, tab) in plan.tabs.iter().enumerate() {
+            let initial = tab.url.clone().map_or(Initial::Blank, Initial::Url);
+            self.open_tab(initial, Placement::End, index == plan.active, tab.id)?;
+        }
+        if let Some(bounds) = plan.bounds {
+            self.apply_bounds(bounds, plan.maximized);
+        }
+        Ok(())
+    }
+
+    pub fn open_url_tab(&self, url: &str, foreground: bool) -> Result<Rc<Tab>> {
+        self.open_tab(
+            Initial::Url(url.to_owned()),
+            Placement::End,
+            foreground,
+            None,
+        )
+    }
+
+    pub fn open_blank_tab(&self) -> Result<Rc<Tab>> {
+        let tab = self.open_tab(Initial::Blank, Placement::End, true, None)?;
+        self.focus_address();
+        Ok(tab)
+    }
+
+    /// A page's new-window request: a tab right after its opener.
+    pub fn open_tab_from(&self, opener: TabId, initial: Initial, background: bool) {
+        if let Err(e) = self.open_tab(initial, Placement::After(opener), !background, None) {
+            log::error!("open tab: {e}");
+        }
+    }
+
+    fn open_tab(
+        &self,
+        initial: Initial,
+        placement: Placement,
+        foreground: bool,
+        session_id: Option<vsesvit_core::session::TabId>,
+    ) -> Result<Rc<Tab>> {
+        let browser = self.browser().ok_or_else(windows_core::Error::empty)?;
+        let tab = Tab::new(browser.next_tab_id(), session_id, self.me.clone())?;
+        xaml::set_visible(tab.view(), false)?;
+        self.ui
+            .pages
+            .Children()?
+            .Append(&tab.view().cast::<UIElement>()?)?;
+        self.tabs.borrow_mut().push(tab.clone());
+
+        let count = u32::try_from(self.tab_count().saturating_sub(1)).unwrap_or(u32::MAX);
+        let index = match placement {
+            Placement::End => count,
+            Placement::After(opener) => self.index_of(opener).map_or(count, |i| i + 1),
+        };
+        self.strip().insert(index, tab.id, &tab.look())?;
+        if foreground || self.strip().selected().is_none() {
+            self.strip().select(tab.id)?;
+        }
+        self.sync_selection();
+        exec::spawn(tab.clone().start(
+            browser.engine().environment().clone(),
+            browser.page_script(),
+            initial,
+        ));
+        browser.session_changed();
+        Ok(tab)
+    }
+
+    pub fn close_tab(&self, id: TabId) {
+        let Some(tab) = self.tab(id) else { return };
+        if let Err(e) = self.remove_tab(&tab) {
+            log::warn!("close tab {id}: {e}");
+        }
+        if let Some(browser) = self.browser() {
+            let state = tab.state();
+            browser.remember_closed(ClosedTab {
+                url: state.url,
+                title: state.title,
+            });
+            browser.session_changed();
+        }
+        let last = self.tabs.borrow().is_empty();
+        if last {
+            let _ = self.window.Close();
+        }
+    }
+
+    fn remove_tab(&self, tab: &Rc<Tab>) -> Result<()> {
+        let strip = self.strip();
+        let order = strip.order();
+        if let Some(index) = order.iter().position(|id| *id == tab.id) {
+            if strip.selected() == Some(tab.id) && order.len() > 1 {
+                let next = if index + 1 < order.len() {
+                    index + 1
+                } else {
+                    index - 1
+                };
+                strip.select(order[next])?;
+            }
+            strip.remove(tab.id)?;
+        }
+        let children = self.ui.pages.Children()?;
+        let view = tab.view().cast::<UIElement>()?;
+        let mut index = 0;
+        if children.IndexOf(&view, &mut index)? {
+            children.RemoveAt(index)?;
+        }
+        tab.close();
+        self.tabs.borrow_mut().retain(|t| t.id != tab.id);
+        self.sync_selection();
+        Ok(())
+    }
+
+    pub fn tab(&self, id: TabId) -> Option<Rc<Tab>> {
+        self.tabs.borrow().iter().find(|t| t.id == id).cloned()
+    }
+
+    /// Tabs in the tab list's order.
+    pub fn tabs_in_order(&self) -> Vec<Rc<Tab>> {
+        let order = self.strip().order();
+        order.into_iter().filter_map(|id| self.tab(id)).collect()
+    }
+
+    fn index_of(&self, id: TabId) -> Option<u32> {
+        let index = self.strip().order().iter().position(|t| *t == id)?;
+        u32::try_from(index).ok()
+    }
+
+    pub fn active_tab(&self) -> Option<Rc<Tab>> {
+        self.strip().selected().and_then(|id| self.tab(id))
+    }
+
+    fn select_index(&self, index: usize) {
+        let _ = self
+            .strip()
+            .select_index(u32::try_from(index).unwrap_or(u32::MAX));
+        self.sync_selection();
+    }
+
+    fn select_relative(&self, step: isize) {
+        let count = self.tab_count() as isize;
+        if count == 0 {
+            return;
+        }
+        let current = self.strip().selected_index().unwrap_or(0) as isize;
+        self.select_index((current + step).rem_euclid(count) as usize);
+    }
+
+    /// Shows the selected tab's web view, hides the rest, and refreshes the toolbar.
+    fn sync_selection(&self) {
+        let active = self.active_tab();
+        let tabs = self.tabs.borrow().clone();
+        for tab in tabs {
+            let visible = active.as_ref().is_some_and(|a| a.id == tab.id);
+            if xaml::is_visible(tab.view()) != visible {
+                let _ = xaml::set_visible(tab.view(), visible);
+            }
+        }
+        if self.fullscreen.get() && !active.as_ref().is_some_and(|t| t.state().fullscreen) {
+            self.set_fullscreen(false);
+        }
+        let active_id = active.as_ref().map(|t| t.id);
+        if self.shown_tab.replace(active_id) != active_id {
+            self.address_edited.set(false);
+            if let Some(tab) = &active {
+                tab.mark_active();
+            }
+            if let Some(browser) = self.browser() {
+                browser.session_changed();
+            }
+        }
+        self.refresh_chrome();
+    }
+
+    fn strip_selection_changed(&self, kind: StripKind) {
+        if kind == StripKind::of(self.tabs_position.get()) {
+            self.sync_selection();
+        }
+    }
+
+    /// Called by a tab whenever its state changed.
+    pub fn tab_updated(&self, tab: &Tab) {
+        self.strip().update(tab.id, &tab.look());
+        if self.active_tab().is_some_and(|a| a.id == tab.id) {
+            self.refresh_chrome();
+        }
+    }
+
+    pub fn tab_fullscreen_changed(&self, tab: &Tab, fullscreen: bool) {
+        if self.active_tab().is_some_and(|a| a.id == tab.id) {
+            self.set_fullscreen(fullscreen);
+        }
+    }
+
+    fn refresh_chrome(&self) {
+        let state = self.active_tab().map(|t| t.state()).unwrap_or_default();
+        let _ = self.ui.back.SetIsEnabled(state.can_go_back);
+        let _ = self.ui.forward.SetIsEnabled(state.can_go_forward);
+        let (glyph, tip) = if state.loading {
+            ("\u{E711}", "Stop")
+        } else {
+            ("\u{E72C}", "Refresh (Ctrl+R)")
+        };
+        let _ = self.ui.reload_glyph.SetGlyph(glyph);
+        let _ = xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.reload, &tip));
+        if !self.address_edited.get() {
+            let shown = omnibox::display_url(&state.url);
+            if self.ui.address.Text().is_ok_and(|t| t != shown) {
+                let _ = self.ui.address.SetText(shown);
+            }
+        }
+        self.show_star(state.starred);
+        let title = if state.title.is_empty() || state.url.is_empty() {
+            "Vsesvit".to_owned()
+        } else {
+            format!("{} - Vsesvit", state.title)
+        };
+        let _ = self.window.SetTitle(&title);
+    }
+
+    fn show_star(&self, starred: bool) {
+        let _ = self.ui.star.SetIsChecked(Some(starred));
+        let _ = self
+            .ui
+            .star_glyph
+            .SetGlyph(if starred { "\u{E735}" } else { "\u{E734}" });
+    }
+
+    /// Re-reads each tab's bookmarked state (after a bookmark changed anywhere).
+    pub fn refresh_starred(&self, is_bookmarked: &dyn Fn(&str) -> bool) {
+        let tabs = self.tabs.borrow().clone();
+        for tab in tabs {
+            let url = tab.state().url;
+            tab.set_starred(!url.is_empty() && is_bookmarked(&url));
+        }
+        self.refresh_chrome();
+    }
+
+    pub fn address_text(&self) -> String {
+        self.ui.address.Text().unwrap_or_default()
+    }
+
+    pub fn tab_count(&self) -> usize {
+        self.tabs.borrow().len()
+    }
+
+    // ---- commands ----
+
+    pub fn run(&self, command: Command) {
+        let active = self.active_tab();
+        match command {
+            Command::NewTab => {
+                if let Err(e) = self.open_blank_tab() {
+                    log::error!("new tab: {e}");
+                }
+            }
+            Command::NewWindow => {
+                if let Some(browser) = self.browser()
+                    && let Err(e) = browser.open_blank_window(Show::Activate)
+                {
+                    log::error!("new window: {e}");
+                }
+            }
+            Command::CloseTab => {
+                if let Some(tab) = active {
+                    self.close_tab(tab.id);
+                }
+            }
+            Command::ReopenClosedTab => {
+                if let Some(closed) = self.browser().and_then(|b| b.take_closed()) {
+                    log::info!("reopening {} ({})", closed.url, closed.title);
+                    if let Err(e) = self.open_url_tab(&closed.url, true) {
+                        log::error!("reopen tab: {e}");
+                    }
+                }
+            }
+            Command::FocusAddress => self.focus_address(),
+            Command::Reload => {
+                if let Some(tab) = active {
+                    tab.reload();
+                }
+            }
+            Command::Back => {
+                if let Some(tab) = active {
+                    tab.go_back();
+                }
+            }
+            Command::Forward => {
+                if let Some(tab) = active {
+                    tab.go_forward();
+                }
+            }
+            Command::NextTab => self.select_relative(1),
+            Command::PreviousTab => self.select_relative(-1),
+            Command::SelectTab(index) => {
+                if usize::from(index) < self.tab_count() {
+                    self.select_index(usize::from(index));
+                }
+            }
+            Command::SelectLastTab => {
+                if let Some(last) = self.tab_count().checked_sub(1) {
+                    self.select_index(last);
+                }
+            }
+            Command::Bookmark => self.star_clicked(),
+            Command::Find => {
+                if let (Some(tab), Some(browser)) = (active, self.browser()) {
+                    match browser.engine().find_options("") {
+                        Ok(options) => exec::spawn(async move {
+                            if let Err(e) = tab.find(options).await {
+                                log::warn!("find: {e}");
+                            }
+                        }),
+                        Err(e) => log::warn!("find: {e}"),
+                    }
+                }
+            }
+            Command::ToggleBookmarksBar => {
+                if let Some(browser) = self.browser() {
+                    browser.set_bookmarks_bar_visible(!browser.bookmarks_bar_visible());
+                }
+            }
+            Command::ShowBookmarks => self.show_dialog(Dialog::Bookmarks),
+            Command::ShowHistory => self.show_dialog(Dialog::History),
+        }
+    }
+
+    pub fn show_dialog(&self, dialog: Dialog) {
+        if self.dialog_open.replace(true) {
+            return;
+        }
+        let me = self.me();
+        exec::spawn(async move {
+            if let Err(e) = dialogs::show(&me, dialog).await {
+                log::error!("{dialog:?} dialog: {e}");
+            }
+            me.dialog_open.set(false);
+        });
+    }
+
+    /// Shows `body` over the window like a dialog, without the modal dialog's focus handling,
+    /// so a scripted run can capture it without activating anything. `None` removes it.
+    pub fn set_overlay(&self, content: Option<(&str, &UIElement)>) -> Result<()> {
+        let children = self.ui.overlay_body.Children()?;
+        children.Clear()?;
+        if let Some((title, body)) = content {
+            self.ui.overlay_title.SetText(title)?;
+            children.Append(body)?;
+        }
+        xaml::set_visible(&self.ui.overlay, content.is_some())
+    }
+
+    /// Programmatic focus in an inactive window would activate it, which scripted runs and
+    /// background events must never do.
+    fn is_foreground(&self) -> bool {
+        platform::window_handle(&self.window)
+            .is_ok_and(|hwnd| unsafe { GetForegroundWindow() } == hwnd)
+    }
+
+    fn focus_address(&self) {
+        if !self.is_foreground() {
+            return;
+        }
+        let address = &self.ui.address;
+        let _ = address
+            .cast::<UIElement>()
+            .and_then(|a| a.Focus(FocusState::Programmatic));
+        if let Ok(root) = address.cast::<DependencyObject>()
+            && let Some(text_box) = xaml::find_descendant::<TextBox>(&root)
+        {
+            let _ = text_box.SelectAll();
+        }
+    }
+
+    /// The star button and Ctrl+D: bookmark the page into the bookmarks bar, or remove it.
+    pub fn star_clicked(&self) {
+        let (Some(tab), Some(browser)) = (self.active_tab(), self.browser()) else {
+            return;
+        };
+        let state = tab.state();
+        if state.url.is_empty() {
+            self.show_star(false);
+            return;
+        }
+        browser.toggle_bookmark(&state.url, &state.title);
+    }
+
+    /// Enter in the address box.
+    pub fn address_submitted(&self, text: &str) {
+        self.address_edited.set(false);
+        let chosen = self
+            .suggestions
+            .borrow()
+            .iter()
+            .find(|(label, _)| label == text)
+            .map(|(_, url)| url.clone());
+        let Some(browser) = self.browser() else {
+            return;
+        };
+        let Some(url) = chosen.or_else(|| browser.resolve_input(text)) else {
+            return;
+        };
+        match self.active_tab() {
+            Some(tab) => {
+                tab.navigate_as(&url, Transition::Typed);
+                if self.is_foreground() {
+                    tab.focus_page();
+                }
+            }
+            None => {
+                if let Err(e) = self.open_url_tab(&url, true) {
+                    log::error!("open {url}: {e}");
+                }
+            }
+        }
+        self.refresh_chrome();
+    }
+
+    /// Fills the suggestion list for `text` (what the user typed).
+    pub fn show_suggestions(&self, text: &str) -> usize {
+        let Some(browser) = self.browser() else {
+            return 0;
+        };
+        let suggestions = browser.suggest(text);
+        let items: Vec<Option<IInspectable>> = suggestions
+            .iter()
+            .map(|(label, _)| xaml::boxed(label).ok())
+            .collect();
+        let count = suggestions.len();
+        *self.suggestions.borrow_mut() = suggestions;
+        let source = windows_collections::IVector::<IInspectable>::from(items);
+        let _ = self
+            .ui
+            .address
+            .cast::<ItemsControl>()
+            .and_then(|list| list.SetItemsSource(&source));
+        count
+    }
+
+    /// The labels the suggestion list currently holds.
+    pub fn suggestion_labels(&self) -> Vec<String> {
+        self.suggestions
+            .borrow()
+            .iter()
+            .map(|(l, _)| l.clone())
+            .collect()
+    }
+
+    fn address_edited_by_user(&self) {
+        self.address_edited.set(true);
+        let text = self.address_text();
+        self.show_suggestions(&text);
+    }
+
+    // ---- bars ----
+
+    pub fn set_bookmarks_bar_visible(&self, visible: bool) {
+        self.bookmarks_bar_wanted.set(visible);
+        let _ = xaml::set_visible(&self.ui.bookmarks_bar, visible && !self.fullscreen.get());
+    }
+
+    pub fn bookmarks_bar_shown(&self) -> bool {
+        xaml::is_visible(&self.ui.bookmarks_bar)
+    }
+
+    /// Replaces the bookmarks bar's buttons.
+    pub fn set_bookmarks_bar(&self, items: &[BarItem]) {
+        let Ok(children) = self.ui.bookmark_items.Children() else {
+            return;
+        };
+        let _ = children.Clear();
+        let window = self.me.clone();
+        let open: OpenLink =
+            Rc::new(move |url, disposition| with(&window, |w| w.open_link(url, disposition)));
+        for item in items {
+            match bookmarks_bar::button(item, &open) {
+                Ok(button) => {
+                    let _ = children.Append(&button);
+                }
+                Err(e) => log::warn!("bookmarks bar item: {e}"),
+            }
+        }
+        let _ = xaml::set_visible(&self.ui.bookmarks_hint, items.is_empty());
+        *self.bar_items.borrow_mut() = items.to_vec();
+    }
+
+    pub fn bookmarks_bar_items(&self) -> Vec<BarItem> {
+        self.bar_items.borrow().clone()
+    }
+
+    /// The number of buttons the bookmarks bar shows.
+    pub fn bookmarks_bar_buttons(&self) -> u32 {
+        self.ui
+            .bookmark_items
+            .Children()
+            .and_then(|c| c.Size())
+            .unwrap_or(0)
+    }
+
+    pub fn open_link(&self, url: &str, disposition: Disposition) {
+        let result = match (disposition, self.active_tab()) {
+            (Disposition::CurrentTab, Some(tab)) => {
+                tab.navigate_as(url, Transition::Bookmark);
+                Ok(())
+            }
+            (Disposition::CurrentTab, None) => self.open_url_tab(url, true).map(drop),
+            (Disposition::BackgroundTab, _) => self.open_url_tab(url, false).map(drop),
+        };
+        if let Err(e) = result {
+            log::error!("open {url}: {e}");
+        }
+    }
+
+    /// Shows `banner` in the update bar, or hides the bar. A bar the user closed opens again
+    /// only for news (a new title), not for progress.
+    pub fn show_update(&self, banner: Option<&Banner>) {
+        let news =
+            self.update_banner.borrow().as_ref().map(|b| &b.title) != banner.map(|b| &b.title);
+        *self.update_banner.borrow_mut() = banner.cloned();
+        let bar = &self.ui.update_bar;
+        let Some(banner) = banner else {
+            let _ = bar.SetIsOpen(false);
+            return;
+        };
+        let severity = match banner.severity {
+            Severity::Informational => InfoBarSeverity::Informational,
+            Severity::Error => InfoBarSeverity::Error,
+        };
+        let _ = bar.SetSeverity(severity);
+        let _ = bar.SetTitle(&banner.title);
+        let _ = bar.SetMessage(&banner.message);
+        let action = &self.ui.update_action;
+        if let Some(label) = banner.action.map(Action::label) {
+            let _ = xaml::boxed(label)
+                .and_then(|label| action.cast::<IContentControl>()?.SetContent(&label));
+        }
+        let _ = xaml::set_visible(action, banner.action.is_some());
+        if news {
+            let _ = bar.SetIsOpen(true);
+        }
+    }
+
+    fn update_clicked(&self) {
+        let action = self.update_banner.borrow().as_ref().and_then(|b| b.action);
+        if let (Some(action), Some(browser)) = (action, self.browser()) {
+            browser.update_action(action);
+        }
+    }
+
+    /// Replaces the extension action buttons in the toolbar.
+    pub fn set_extension_actions(&self, actions: &[ExtensionAction]) {
+        let Ok(children) = self.ui.extension_actions.Children() else {
+            return;
+        };
+        let _ = children.Clear();
+        let Some(browser) = self.browser() else {
+            return;
+        };
+        for action in actions {
+            match popup::action_button(action, browser.engine().environment().clone()) {
+                Ok(button) => {
+                    let _ = button.cast::<UIElement>().and_then(|b| children.Append(&b));
+                }
+                Err(e) => log::warn!("extension action {}: {e}", action.extension_id),
+            }
+        }
+    }
+
+    /// Opens the popup of the extension action for `engine_id`, as a click would.
+    pub fn open_extension_popup(&self, engine_id: &str, activation: Activation) -> Result<Popup> {
+        let browser = self.browser().ok_or_else(windows_core::Error::empty)?;
+        let actions = browser.extension_actions();
+        let index = actions
+            .iter()
+            .position(|a| a.extension_id == engine_id)
+            .ok_or_else(|| {
+                windows_core::Error::new(E_FAIL, "no action button for that extension")
+            })?;
+        let button = self
+            .ui
+            .extension_actions
+            .Children()?
+            .GetAt(u32::try_from(index).unwrap_or(u32::MAX))?;
+        popup::open(
+            &button.cast()?,
+            browser.engine().environment().clone(),
+            &actions[index],
+            activation,
+        )
+    }
+
+    fn set_fullscreen(&self, on: bool) {
+        if self.fullscreen.replace(on) == on {
+            return;
+        }
+        let chrome_visible = !on;
+        let _ = xaml::set_visible(&self.ui.toolbar, chrome_visible);
+        let _ = xaml::set_visible(
+            &self.ui.bookmarks_bar,
+            chrome_visible && self.bookmarks_bar_wanted.get(),
+        );
+        let _ = xaml::set_visible(&self.ui.update_bar, chrome_visible);
+        if let Err(e) = self.show_layout(self.tabs_position.get()) {
+            log::warn!("fullscreen layout: {e}");
+        }
+        let kind = if on {
+            AppWindowPresenterKind::FullScreen
+        } else {
+            AppWindowPresenterKind::Overlapped
+        };
+        if let Err(e) = self.app_window().and_then(|w| w.SetPresenterByKind(kind)) {
+            log::warn!("fullscreen: {e}");
+        }
+    }
+
+    pub fn apply_theme(&self, theme: Theme) {
+        let (element, title_bar) = match theme {
+            Theme::System => (ElementTheme::Default, TitleBarTheme::UseDefaultAppMode),
+            Theme::Light => (ElementTheme::Light, TitleBarTheme::Light),
+            Theme::Dark => (ElementTheme::Dark, TitleBarTheme::Dark),
+        };
+        let _ = self.ui.root.SetRequestedTheme(element);
+        let preferred = self
+            .app_window()
+            .and_then(|w| w.TitleBar())
+            .and_then(|t| t.cast::<IAppWindowTitleBar3>())
+            .and_then(|t| t.SetPreferredTheme(title_bar));
+        if let Err(e) = preferred {
+            log::debug!("title bar theme: {e}");
+        }
+    }
+
+    // ---- placement ----
+
+    /// Position and size in screen pixels, and whether the window is maximized.
+    pub fn bounds(&self) -> Option<((i32, i32, u32, u32), bool)> {
+        let app = self.app_window().ok()?;
+        let position = app.Position().ok()?;
+        let size = app.Size().ok()?;
+        let maximized = app
+            .Presenter()
+            .and_then(|p| p.cast::<OverlappedPresenter>())
+            .and_then(|p| p.State())
+            .is_ok_and(|s| s == OverlappedPresenterState::Maximized);
+        let width = u32::try_from(size.width).ok()?;
+        let height = u32::try_from(size.height).ok()?;
+        Some(((position.x, position.y, width, height), maximized))
+    }
+
+    fn apply_bounds(&self, (x, y, width, height): (i32, i32, u32, u32), maximized: bool) {
+        let rect = RectInt32 {
+            x,
+            y,
+            width: i32::try_from(width).unwrap_or(i32::MAX),
+            height: i32::try_from(height).unwrap_or(i32::MAX),
+        };
+        let Ok(app) = self.app_window() else { return };
+        if rect.width >= 200
+            && rect.height >= 150
+            && let Err(e) = app.MoveAndResize(rect)
+        {
+            log::warn!("restore window bounds: {e}");
+        }
+        if maximized {
+            let _ = app
+                .Presenter()
+                .and_then(|p| p.cast::<OverlappedPresenter>())
+                .and_then(|p| p.Maximize());
+        }
+    }
+
+    pub fn window_id(&self) -> Result<WindowId> {
+        self.app_window()?.Id()
+    }
+
+    // ---- engine access and capture ----
+
+    /// The WebView2 profile, once any tab's engine view exists.
+    pub async fn engine_profile(&self) -> Option<CoreWebView2Profile> {
+        let ready = exec::wait_for(
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_millis(50),
+            || self.tabs.borrow().iter().find_map(|t| t.core().cloned()),
+        )
+        .await?;
+        ready
+            .cast::<ICoreWebView2_13>()
+            .and_then(|c| c.Profile())
+            .ok()
+    }
+
+    /// The whole window, captured without activating it.
+    pub async fn capture(&self) -> Result<capture::WindowShot> {
+        capture::window_png(platform::window_handle(&self.window)?).await
+    }
+}

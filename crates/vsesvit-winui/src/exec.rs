@@ -128,64 +128,6 @@ impl Wake for TaskWaker {
     }
 }
 
-/// Runs `work` on a new thread; the returned future completes on the UI thread with its result.
-/// This is how slow `Send` work (network, disk) reports back to UI-thread state.
-pub(crate) fn background<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> Background<T> {
-    let handoff = Arc::new(Mutex::new(Handoff {
-        value: None,
-        waker: None,
-    }));
-    let worker = handoff.clone();
-    std::thread::spawn(move || {
-        let value = work();
-        let waker = {
-            let mut handoff = worker.lock().unwrap_or_else(PoisonError::into_inner);
-            handoff.value = Some(value);
-            handoff.waker.take()
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
-    });
-    Background { handoff }
-}
-
-struct Handoff<T> {
-    value: Option<T>,
-    waker: Option<Waker>,
-}
-
-pub(crate) struct Background<T> {
-    handoff: Arc<Mutex<Handoff<T>>>,
-}
-
-impl<T> Future for Background<T> {
-    type Output = T;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        let mut handoff = self.handoff.lock().unwrap_or_else(PoisonError::into_inner);
-        match handoff.value.take() {
-            Some(value) => Poll::Ready(value),
-            None => {
-                handoff.waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-        }
-    }
-}
-
-/// The UI thread's dispatcher, for a worker thread to `post` to.
-pub(crate) fn dispatcher() -> Option<DispatcherQueue> {
-    QUEUE.with_borrow(Clone::clone)
-}
-
-/// Runs `f` on the dispatcher's thread. Callable from any thread.
-pub(crate) fn post(queue: &DispatcherQueue, f: impl Fn() + 'static) {
-    let _ = queue.TryEnqueue(&DispatcherQueueHandler::new(f));
-}
-
 /// Completes after `duration`, without blocking the UI thread.
 pub(crate) fn sleep(duration: Duration) -> Sleep {
     Sleep {
@@ -238,6 +180,69 @@ pub(crate) async fn timeout<T>(limit: Duration, future: impl Future<Output = T>)
         timer.as_mut().poll(cx).map(|()| None)
     })
     .await
+}
+
+/// Runs `work` on a new worker thread; the returned future completes on the UI thread with its
+/// result. Nothing but the closure and its result crosses threads.
+pub(crate) fn background<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Background<T> {
+    let shared = Arc::new(Mutex::new(Handoff {
+        result: None,
+        waker: None,
+    }));
+    let worker = shared.clone();
+    let spawned = std::thread::Builder::new()
+        .name("vsesvit-worker".into())
+        .spawn(move || {
+            let result = work();
+            let waker = {
+                let mut handoff = worker.lock().unwrap_or_else(PoisonError::into_inner);
+                handoff.result = Some(result);
+                handoff.waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        });
+    if let Err(e) = spawned {
+        log::error!("worker thread: {e}");
+    }
+    Background { shared }
+}
+
+struct Handoff<T> {
+    result: Option<T>,
+    waker: Option<Waker>,
+}
+
+pub(crate) struct Background<T> {
+    shared: Arc<Mutex<Handoff<T>>>,
+}
+
+impl<T> Future for Background<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
+        let mut handoff = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        match handoff.result.take() {
+            Some(result) => Poll::Ready(result),
+            None => {
+                handoff.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+}
+
+/// The UI thread's dispatcher, for a worker thread to `post` to.
+pub(crate) fn dispatcher() -> Option<DispatcherQueue> {
+    QUEUE.with_borrow(Clone::clone)
+}
+
+/// Runs `f` on the dispatcher's thread. Callable from any thread.
+pub(crate) fn post(queue: &DispatcherQueue, f: impl Fn() + 'static) {
+    let _ = queue.TryEnqueue(&DispatcherQueueHandler::new(f));
 }
 
 /// Polls `condition` on the UI thread every `step` until it returns `Some` or `timeout` passes.

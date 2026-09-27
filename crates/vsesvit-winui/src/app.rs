@@ -6,21 +6,22 @@ use std::process::ExitCode;
 use windows_core::{Array, HSTRING, Interface, Ref, Result, implement};
 
 use crate::bindings::*;
-use crate::config::Config;
-use crate::{browser, exec};
+use crate::browser::{self, Launch};
+use crate::exec;
 
 thread_local! {
     static EXIT_CODE: Cell<u8> = const { Cell::new(0) };
+    static EXITING: Cell<bool> = const { Cell::new(false) };
     static APPLICATION: RefCell<Option<Application>> = const { RefCell::new(None) };
 }
 
 /// Runs XAML on the calling thread until the last window closes or `exit` is called.
-pub(crate) fn run(config: Config) -> ExitCode {
-    let config = RefCell::new(Some(config));
+pub(crate) fn run(launch: Launch) -> ExitCode {
+    let launch = RefCell::new(Some(launch));
     let started = Application::Start(&ApplicationInitializationCallback::new(move |_| {
         let app = App {
             provider: RefCell::new(None),
-            config: RefCell::new(config.take()),
+            launch: RefCell::new(launch.take()),
         };
         match Application::compose(app) {
             Ok(app) => APPLICATION.with_borrow_mut(|a| *a = Some(app)),
@@ -37,8 +38,12 @@ pub(crate) fn run(config: Config) -> ExitCode {
 }
 
 /// Ends the XAML message loop; `run` then returns `code`. Everything that holds XAML or
-/// WebView2 objects is released first, while the framework is still alive.
+/// WebView2 objects is released first, while the framework is still alive. The first call
+/// decides the code: windows closing during the shutdown must not turn a failure into success.
 pub(crate) fn exit(code: u8) {
+    if EXITING.replace(true) {
+        return;
+    }
     EXIT_CODE.set(code);
     browser::shutdown();
     exec::shutdown();
@@ -51,7 +56,7 @@ pub(crate) fn exit(code: u8) {
 #[implement(IApplicationOverrides, IXamlMetadataProvider)]
 struct App {
     provider: RefCell<Option<XamlControlsXamlMetaDataProvider>>,
-    config: RefCell<Option<Config>>,
+    launch: RefCell<Option<Launch>>,
 }
 
 impl App_Impl {
@@ -85,12 +90,12 @@ impl App_Impl {
             .MergedDictionaries()?
             .Append(&controls)?;
         exec::init()?;
-        let config = self
-            .config
+        let launch = self
+            .launch
             .borrow_mut()
             .take()
             .ok_or_else(windows_core::Error::empty)?;
-        browser::launch(config);
+        browser::launch(launch);
         Ok(())
     }
 }
