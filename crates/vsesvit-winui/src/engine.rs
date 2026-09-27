@@ -140,9 +140,17 @@ pub(crate) struct EngineExtension {
     handle: CoreWebView2BrowserExtension,
 }
 
-/// Extensions WebView2 installs on its own. The shell neither lists nor removes them.
-const BUILTIN_EXTENSIONS: [&str; 2] =
-    ["Microsoft Clipboard Extension", "Microsoft Edge PDF Viewer"];
+/// Extensions WebView2 installs on its own ("Microsoft Clipboard Extension" and "Microsoft Edge
+/// PDF Viewer"). The shell leaves them alone. Known by id: an extension can take any name.
+const BUILTIN_EXTENSIONS: [&str; 2] = [
+    "dgiklkfkllikcanfonkcabmbdfmgleag",
+    "mhjfbmdgcfjbbpaeojofohoefgiehjai",
+];
+
+/// Whether the engine extension `id` is one WebView2 installs on its own.
+pub(crate) fn is_builtin(id: &str) -> bool {
+    BUILTIN_EXTENSIONS.contains(&id)
+}
 
 impl EngineExtension {
     fn new(handle: CoreWebView2BrowserExtension) -> Result<Self> {
@@ -152,10 +160,6 @@ impl EngineExtension {
             enabled: handle.IsEnabled()?,
             handle,
         })
-    }
-
-    pub fn is_builtin(&self) -> bool {
-        BUILTIN_EXTENSIONS.contains(&self.name.as_str())
     }
 
     pub async fn remove(&self) -> Result<()> {

@@ -20,6 +20,8 @@ pub(crate) struct TabPlan {
     pub url: Option<String>,
     /// Kept for restored tabs, so the saved session keeps naming the same tabs.
     pub id: Option<TabId>,
+    /// A restored tab's title, shown until its page reports one; empty otherwise.
+    pub title: String,
 }
 
 impl TabPlan {
@@ -27,6 +29,7 @@ impl TabPlan {
         Self {
             url: Some(url),
             id: None,
+            title: String::new(),
         }
     }
 
@@ -34,6 +37,7 @@ impl TabPlan {
         Self {
             url: None,
             id: None,
+            title: String::new(),
         }
     }
 }
@@ -94,6 +98,7 @@ fn restore_window(window: WindowSnapshot) -> Option<WindowPlan> {
         .map(|tab| TabPlan {
             url: (tab.url.as_str() != "about:blank").then(|| tab.url.to_string()),
             id: Some(tab.id),
+            title: tab.title,
         })
         .collect();
     Some(WindowPlan {
@@ -181,11 +186,13 @@ mod tests {
                 tabs: vec![
                     TabPlan {
                         url: Some("https://a.test/".into()),
-                        id: Some(a.id)
+                        id: Some(a.id),
+                        title: "t".into(),
                     },
                     TabPlan {
                         url: None,
-                        id: Some(blank.id)
+                        id: Some(blank.id),
+                        title: "t".into(),
                     },
                 ],
                 active: 1,

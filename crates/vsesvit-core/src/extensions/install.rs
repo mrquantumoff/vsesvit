@@ -7,7 +7,8 @@
 //! run():  resolve ─▶ fetch (in memory, size-capped; AMO: sha256 checked)
 //!                 ─▶ verify (CRX3: every proof + id binding + publisher proof;  AMO XPI: sha256 from the API)
 //!                 ─▶ unpack (zip-slip / symlink / name / size checks, drop _metadata/)
-//!                 ─▶ inject manifest "key" (CRX only, so the unpacked dir keeps the store id)
+//!                 ─▶ set manifest "key" (CRX: the verified key, so the unpacked dir keeps the store id;
+//!                                        XPI: removed, since nothing verified it)
 //!                 ─▶ Manifest::load (validate + localize)
 //!                 ─▶ StagedInstall
 //! ```
@@ -291,7 +292,8 @@ impl InstallJob {
     ///   manifest gecko id, else derived from the file's path.
     /// - Unpacked: `Manifest::load(dir)` only. Nothing is copied.
     ///
-    /// Then `unpack_zip` into `staging/root`, inject `key` (CRX), load the manifest, and
+    /// An XPI's gecko id (or AMO `guid`) may not be Chrome-style. Then `unpack_zip` into
+    /// `staging/root`, set `key` (CRX: the verified one; XPI: none), load the manifest, and
     /// check the id against `expected_id`.
     pub fn run(self, progress: &mut dyn FnMut(InstallPhase)) -> Result<StagedInstall, InstallError> {
         let InstallJob { source, intent, staging, chrome_version, ui_locale, expected_id } = self;
@@ -304,7 +306,7 @@ impl InstallJob {
             Fetched::Package(package) => {
                 fs::create_dir_all(&staging.0)?;
                 let (id, manifest, verification) = stage(&package, &staging.root(), &ui_locale, progress)?;
-                let dir_name = format!("{}_{}", manifest.version, hex(&package.sha256[..4]));
+                let dir_name = format!("{}_{}", manifest.version, hex(&package.sha256[..16]));
                 (id, manifest, StagedFiles::Staged { staging, dir_name }, verification)
             }
         };
@@ -363,7 +365,7 @@ fn fetch(source: &InstallSource, chrome_version: &str, progress: &mut dyn FnMut(
             let agent = agent();
             let addon = amo_addon(&agent, slug_or_guid)?;
             let expected_sha256 = parse_sha256(&addon.current_version.file.hash)?;
-            let guid = ExtensionId::parse(&addon.guid).map_err(|_| InstallError::BadStoreResponse(format!("guid {:?}", addon.guid)))?;
+            let guid = xpi_id(&addon.guid).ok_or_else(|| InstallError::BadStoreResponse(format!("guid {:?}", addon.guid)))?;
             let bytes = download(&agent, &addon.current_version.file.url, progress)?;
             let package = Package::new(bytes, Format::Xpi(XpiId::Store(guid)));
             if package.sha256 != expected_sha256 {
@@ -390,7 +392,7 @@ fn stage(
             let verified = crx::verify(&crx, policy)?;
             progress(InstallPhase::Unpacking);
             unpack_zip(crx.zip, root)?;
-            inject_key(root, &verified.developer_key)?;
+            set_key(root, Some(&verified.developer_key))?;
             progress(InstallPhase::ReadingManifest);
             let manifest = Manifest::load(root, ui_locale)?;
             let verification = match policy {
@@ -402,12 +404,13 @@ fn stage(
         Format::Xpi(id) => {
             progress(InstallPhase::Unpacking);
             unpack_zip(&package.bytes, root)?;
+            set_key(root, None)?;
             progress(InstallPhase::ReadingManifest);
             let manifest = Manifest::load(root, ui_locale)?;
             let gecko_id = manifest
                 .gecko_id
                 .as_deref()
-                .map(|g| ExtensionId::parse(g).map_err(|_| ManifestError::Field("browser_specific_settings.gecko.id")))
+                .map(|g| xpi_id(g).ok_or(ManifestError::Field("browser_specific_settings.gecko.id")))
                 .transpose()?;
             let resolved = match (gecko_id, id) {
                 (Some(g), XpiId::Store(guid)) if g != *guid => {
@@ -424,6 +427,12 @@ fn stage(
             Ok((resolved, manifest, verification))
         }
     }
+}
+
+/// A gecko id from an XPI manifest or AMO. Chrome-style ids are refused: they are hashes of
+/// a developer key, and nothing ties an XPI to one.
+fn xpi_id(s: &str) -> Option<ExtensionId> {
+    ExtensionId::parse(s).ok().filter(|id| !id.is_chrome_style())
 }
 
 /// An unpacked dir's id: from the manifest `key` if it has one, else from its path.
@@ -587,10 +596,11 @@ pub struct StagedInstall {
 
 #[derive(Debug)]
 pub(crate) enum StagedFiles {
-    /// `staging.root()`, to be renamed to `extensions/<id>/<version>_<hash8>`.
-    /// `hash8` = the first 8 hex chars of the archive's SHA-256, so identical bytes map to
-    /// the same dir (idempotent) and different bytes with the same version never touch an
-    /// existing dir (WebView2 drops extensions whose files change).
+    /// `staging.root()`, to be renamed to `extensions/<id>/<version>_<hash32>`.
+    /// `hash32` = the first 32 hex chars (128 bits) of the archive's SHA-256, so identical
+    /// bytes map to the same dir (idempotent) and different bytes with the same version
+    /// never touch an existing dir (WebView2 drops extensions whose files change). A
+    /// shorter prefix could be matched on purpose by grinding a zip comment.
     Staged {
         staging: StagingDir,
         dir_name: String,
@@ -704,17 +714,30 @@ fn is_portable_segment(s: &str) -> bool {
         && !is_windows_reserved_name(s)
 }
 
-/// Rewrite `manifest.json` with `"key": base64(spki_der)` so the unpacked copy keeps the
-/// CRX id under WebView2 and under our own runtime. Any `key` already there is replaced,
-/// as Chromium's installer does: the CRX's developer key is the one that was verified.
+/// Rewrite `manifest.json` so its `key` is the one this install verified, because WebView2
+/// derives an unpacked dir's id from it:
+/// - CRX: `base64(spki_der)`, so the unpacked copy keeps the CRX id under WebView2 and
+///   under our own runtime. Any `key` already there is replaced, as Chromium's installer
+///   does: the CRX's developer key is the one that was verified.
+/// - XPI (`None`): no `key`. An archive's `key` is just a public key, and with it the
+///   engine would load the XPI as, and in place of, the extension that key belongs to.
+///
 /// Parses with the tolerant reader in `manifest.rs` (Chrome accepts comments in
-/// manifest.json).
-pub(crate) fn inject_key(root: &Path, spki_der: &[u8]) -> Result<(), InstallError> {
+/// manifest.json), and leaves the file as it is when there is nothing to change.
+pub(crate) fn set_key(root: &Path, spki_der: Option<&[u8]>) -> Result<(), InstallError> {
     let path = root.join("manifest.json");
     let mut value = manifest::parse_tolerant_json(&manifest::read_text(&path)?)?;
     let obj = value.as_object_mut().ok_or_else(|| ManifestError::Json("the top level is not an object".into()))?;
-    obj.insert("key".into(), base64::engine::general_purpose::STANDARD.encode(spki_der).into());
-    fs::write(&path, serde_json::to_vec_pretty(&value).expect("a JSON value always serializes"))?;
+    let changed = match spki_der {
+        Some(der) => {
+            obj.insert("key".into(), base64::engine::general_purpose::STANDARD.encode(der).into());
+            true
+        }
+        None => obj.remove("key").is_some(),
+    };
+    if changed {
+        fs::write(&path, serde_json::to_vec_pretty(&value).expect("a JSON value always serializes"))?;
+    }
     Ok(())
 }
 
@@ -746,6 +769,12 @@ pub enum InstallError {
     IdMismatch { expected: String, actual: String },
     #[error("only unpacked extensions can be reloaded")]
     NotUnpacked,
+    #[error("extension {0} comes from a signed package, and an unverified copy cannot take its id")]
+    VerifiedIdTaken(String),
+    #[error("extension id {id} differs only in letter case from the installed {installed}")]
+    IdCaseConflict { id: String, installed: String },
+    #[error("{} is not a valid Unicode path", .0.display())]
+    PathNotUnicode(PathBuf),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

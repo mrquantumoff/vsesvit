@@ -1016,6 +1016,69 @@ unsafe impl Send for CoreWebView2ContentLoadingEventArgs {}
 unsafe impl Sync for CoreWebView2ContentLoadingEventArgs {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2DevToolsProtocolEventReceivedEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2DevToolsProtocolEventReceivedEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2DevToolsProtocolEventReceivedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::for_class::<
+        Self,
+        ICoreWebView2DevToolsProtocolEventReceivedEventArgs,
+    >();
+}
+unsafe impl windows_core::Interface for CoreWebView2DevToolsProtocolEventReceivedEventArgs {
+    type Vtable =
+        <ICoreWebView2DevToolsProtocolEventReceivedEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2DevToolsProtocolEventReceivedEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2DevToolsProtocolEventReceivedEventArgs {
+    type Target = ICoreWebView2DevToolsProtocolEventReceivedEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2DevToolsProtocolEventReceivedEventArgs {
+    const NAME: &'static str =
+        "Microsoft.Web.WebView2.Core.CoreWebView2DevToolsProtocolEventReceivedEventArgs";
+}
+unsafe impl Send for CoreWebView2DevToolsProtocolEventReceivedEventArgs {}
+unsafe impl Sync for CoreWebView2DevToolsProtocolEventReceivedEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2DevToolsProtocolEventReceiver(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2DevToolsProtocolEventReceiver,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2DevToolsProtocolEventReceiver {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::for_class::<
+        Self,
+        ICoreWebView2DevToolsProtocolEventReceiver,
+    >();
+}
+unsafe impl windows_core::Interface for CoreWebView2DevToolsProtocolEventReceiver {
+    type Vtable = <ICoreWebView2DevToolsProtocolEventReceiver as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2DevToolsProtocolEventReceiver as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2DevToolsProtocolEventReceiver {
+    type Target = ICoreWebView2DevToolsProtocolEventReceiver;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2DevToolsProtocolEventReceiver {
+    const NAME: &'static str =
+        "Microsoft.Web.WebView2.Core.CoreWebView2DevToolsProtocolEventReceiver";
+}
+unsafe impl Send for CoreWebView2DevToolsProtocolEventReceiver {}
+unsafe impl Sync for CoreWebView2DevToolsProtocolEventReceiver {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWebView2Environment(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     CoreWebView2Environment,
@@ -1981,6 +2044,73 @@ impl<F: Fn() + 'static> DispatcherQueueHandlerBox<F> {
             windows_core::HRESULT(0)
         }
     }
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisplayArea(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    DisplayArea,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl DisplayArea {
+    pub fn GetFromRect(
+        rect: RectInt32,
+        displayareafallback: DisplayAreaFallback,
+    ) -> windows_core::Result<Self> {
+        Self::IDisplayAreaStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetFromRect)(
+                windows_core::Interface::as_raw(this),
+                rect,
+                displayareafallback,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IDisplayAreaStatics<R, F: FnOnce(&IDisplayAreaStatics) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<DisplayArea, IDisplayAreaStatics> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for DisplayArea {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IDisplayArea>();
+}
+unsafe impl windows_core::Interface for DisplayArea {
+    type Vtable = <IDisplayArea as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IDisplayArea as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for DisplayArea {
+    type Target = IDisplayArea;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for DisplayArea {
+    const NAME: &'static str = "Microsoft.UI.Windowing.DisplayArea";
+}
+unsafe impl Send for DisplayArea {}
+unsafe impl Sync for DisplayArea {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DisplayAreaFallback(pub i32);
+impl DisplayAreaFallback {
+    pub const None: Self = Self(0);
+    pub const Primary: Self = Self(1);
+    pub const Nearest: Self = Self(2);
+}
+impl windows_core::imp::TypeKind for DisplayAreaFallback {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for DisplayAreaFallback {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.UI.Windowing.DisplayAreaFallback;i4)",
+    );
 }
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4433,6 +4563,20 @@ impl ICoreWebView2 {
                 .ok()
         }
     }
+    pub fn GetDevToolsProtocolEventReceiver(
+        &self,
+        eventname: &str,
+    ) -> windows_core::Result<CoreWebView2DevToolsProtocolEventReceiver> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetDevToolsProtocolEventReceiver)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(eventname)),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
     pub fn Stop(&self) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).Stop)(windows_core::Interface::as_raw(self)).ok()
@@ -4582,7 +4726,11 @@ pub struct ICoreWebView2_Vtbl {
     ) -> windows_core::HRESULT,
     pub GoBack: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
     pub GoForward: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
-    GetDevToolsProtocolEventReceiver: usize,
+    pub GetDevToolsProtocolEventReceiver: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     pub Stop: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
@@ -4691,6 +4839,102 @@ impl windows_core::RuntimeType for ICoreWebView2ContentLoadingEventArgs {
 #[repr(C)]
 pub struct ICoreWebView2ContentLoadingEventArgs_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2DevToolsProtocolEventReceivedEventArgs,
+    ICoreWebView2DevToolsProtocolEventReceivedEventArgs_Vtbl,
+    0xb6a4b41d_fd18_59fa_923a_c57555d960ce
+);
+impl windows_core::RuntimeType for ICoreWebView2DevToolsProtocolEventReceivedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2DevToolsProtocolEventReceivedEventArgs {
+    pub fn ParameterObjectAsJson(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ParameterObjectAsJson)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2DevToolsProtocolEventReceivedEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub ParameterObjectAsJson: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2DevToolsProtocolEventReceiver,
+    ICoreWebView2DevToolsProtocolEventReceiver_Vtbl,
+    0xb2a2be79_65fc_5537_8715_3d92bf31090b
+);
+impl windows_core::RuntimeType for ICoreWebView2DevToolsProtocolEventReceiver {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2DevToolsProtocolEventReceiver {
+    pub fn DevToolsProtocolEventReceived<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2>,
+                windows_core::Ref<CoreWebView2DevToolsProtocolEventReceivedEventArgs>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<
+            CoreWebView2,
+            CoreWebView2DevToolsProtocolEventReceivedEventArgs,
+        > = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<CoreWebView2, CoreWebView2DevToolsProtocolEventReceivedEventArgs>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<
+                    CoreWebView2,
+                    CoreWebView2DevToolsProtocolEventReceivedEventArgs,
+                    F,
+                >::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).DevToolsProtocolEventReceived)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveDevToolsProtocolEventReceived,
+            ))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2DevToolsProtocolEventReceiver_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub DevToolsProtocolEventReceived: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveDevToolsProtocolEventReceived:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2Environment,
@@ -5046,6 +5290,16 @@ impl ICoreWebView2NewWindowRequestedEventArgs {
             .ok()
         }
     }
+    pub fn IsUserInitiated(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsUserInitiated)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
     pub fn GetDeferral(&self) -> windows_core::Result<Deferral> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -5072,7 +5326,8 @@ pub struct ICoreWebView2NewWindowRequestedEventArgs_Vtbl {
     Handled: usize,
     pub SetHandled:
         unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
-    IsUserInitiated: usize,
+    pub IsUserInitiated:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
     WindowFeatures: usize,
     pub GetDeferral: unsafe extern "system" fn(
         *mut core::ffi::c_void,
@@ -6001,6 +6256,60 @@ pub struct IDispatcherQueueStatics_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
     pub GetForCurrentThread: unsafe extern "system" fn(
         *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IDisplayArea,
+    IDisplayArea_Vtbl,
+    0x5c7e0537_b621_5579_bcae_a84aa8746167
+);
+impl windows_core::RuntimeType for IDisplayArea {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IDisplayArea {
+    pub fn WorkArea(&self) -> windows_core::Result<RectInt32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).WorkArea)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+}
+#[repr(C)]
+pub struct IDisplayArea_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    DisplayId: usize,
+    IsPrimary: usize,
+    OuterBounds: usize,
+    pub WorkArea:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut RectInt32) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IDisplayAreaStatics,
+    IDisplayAreaStatics_Vtbl,
+    0x02ab4926_211e_5d49_8e4b_2af193daed09
+);
+impl windows_core::RuntimeType for IDisplayAreaStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IDisplayAreaStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    Primary: usize,
+    CreateWatcher: usize,
+    FindAll: usize,
+    GetFromWindowId: usize,
+    GetFromPoint: usize,
+    pub GetFromRect: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        RectInt32,
+        DisplayAreaFallback,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }

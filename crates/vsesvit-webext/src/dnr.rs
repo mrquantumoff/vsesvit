@@ -258,6 +258,9 @@ fn translate_rule(rule: &Rule, extension_base: &str) -> Result<Vec<Value>, Strin
     if c.excluded_initiator_domains.is_some() && c.initiator_domains.is_some() {
         return Err("initiatorDomains and excludedInitiatorDomains together are not supported".into());
     }
+    if c.excluded_domains.is_some() && c.domains.is_some() {
+        return Err("domains and excludedDomains together are not supported".into());
+    }
 
     let filter = url_filter_regex(c)?;
     let mut trigger = Map::new();
@@ -724,6 +727,24 @@ mod tests {
         let types = trig["resource-type"].as_array().unwrap();
         assert!(!types.contains(&json!("top-document")) && !types.contains(&json!("image")));
         assert!(types.contains(&json!("child-document")) && types.contains(&json!("other")));
+    }
+
+    /// Chrome lets `excludedDomains` win over `domains`; a WebKit trigger carries either
+    /// `if-domain` or `unless-domain`, so the pair is refused (and logged) like the
+    /// initiator pair, never emitted as an `if-domain` that also fires on the exclusions.
+    #[test]
+    fn domains_with_excluded_domains_are_skipped_not_over_blocked() {
+        let text = r#"[{
+          "id": 3, "action": {"type": "block"},
+          "condition": {"urlFilter": "ads", "domains": ["example.com"], "excludedDomains": ["safe.example.com"]}
+        }]"#;
+        let t = translate(&rules(text), BASE);
+        assert!(t.rules.is_empty(), "mistranslated: {:?}", t.rules);
+        assert_eq!(t.skipped.len(), 1);
+        assert_eq!(t.skipped[0].rule_id, Some(3));
+        assert!(t.skipped[0].reason.contains("excludedDomains"), "{}", t.skipped[0].reason);
+        let alone = translate(&rules(r#"[{"id": 4, "action": {"type": "block"}, "condition": {"urlFilter": "ads", "excludedDomains": ["safe.example.com"]}}]"#), BASE);
+        assert_eq!(alone.rules[0]["trigger"]["unless-domain"], json!(["*safe.example.com"]));
     }
 
     #[test]

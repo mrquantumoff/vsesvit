@@ -1,9 +1,11 @@
 //! JS -> Rust calls (`script-message-with-reply-received`) and Rust -> JS events.
 //!
-//! One handler per extension per `UserContentManager`: content scripts reach it from the
-//! extension's isolated world on a tab manager, extension pages from the default world
-//! on their own manager. The closure knows the extension and where the call came from,
-//! so the payload never has to be trusted for that.
+//! Two handlers per extension per `UserContentManager`: content scripts reach
+//! `Extension::handler` from the extension's isolated world, extension pages reach
+//! `Extension::page_handler` from the default world. The closure knows the extension and
+//! where the call came from, so the payload never has to be trusted for that. The page
+//! handler is also visible to whatever else shares the view (a web page in the same
+//! tab, a foreign iframe), which is why page calls must carry `Extension::page_token`.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -23,8 +25,18 @@ use crate::tabs::{TabId, TabInfo};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Origin {
+    /// A content script in the extension's isolated world of a tab.
     Content { tab: TabId },
+    /// An extension page in a view the runtime built (background, popup).
     Page { view: ViewId },
+    /// An extension page in a tab (options page, `tabs.create(getURL(..))`, a link).
+    TabPage { tab: TabId },
+}
+
+impl Origin {
+    fn is_page(self) -> bool {
+        !matches!(self, Origin::Content { .. })
+    }
 }
 
 /// The pending Promise of one `postMessage`. Consumed exactly once.
@@ -58,12 +70,13 @@ pub(crate) fn register(
     origin: Origin,
     world: Option<&str>,
 ) -> glib::SignalHandlerId {
-    if !ucm.register_script_message_handler_with_reply(&ext.handler, world) {
-        log::warn!("{}: message handler {} was already registered", ext.id.as_str(), ext.handler);
+    let name = if origin.is_page() { &ext.page_handler } else { &ext.handler };
+    if !ucm.register_script_message_handler_with_reply(name, world) {
+        log::warn!("{}: message handler {} was already registered", ext.id.as_str(), name);
     }
     let weak = Rc::downgrade(inner);
     let ext_id = ext.id.clone();
-    ucm.connect_script_message_with_reply_received(Some(&ext.handler), move |_, value, reply| {
+    ucm.connect_script_message_with_reply_received(Some(name), move |_, value, reply| {
         let Some(ctx) = value.context() else {
             reply.return_error_message("Vsesvit: message without a JavaScript context");
             return true;
@@ -85,13 +98,17 @@ pub(crate) fn register(
             reply.err("Vsesvit: the extension is no longer loaded");
             return true;
         };
+        if origin.is_page() && call.token.as_deref() != Some(ext.page_token.as_str()) {
+            reply.err("Vsesvit: the extension bridge is unavailable in this context");
+            return true;
+        }
         dispatch(&inner, &ext, origin, call, reply);
         true
     })
 }
 
 fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, reply: Reply) {
-    if matches!(origin, Origin::Content { .. }) && !call.method.allowed_in_content_script() {
+    if !origin.is_page() && !call.method.allowed_in_content_script() {
         return reply.err(&format!("{} is not available in content scripts", call.method));
     }
     match call.method {
@@ -103,7 +120,7 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         }
         Method::RuntimeOpenOptionsPage => reply.finish(open_options_page(inner, ext)),
         Method::TabsQuery | Method::TabsGet | Method::TabsGetCurrent | Method::TabsCreate | Method::TabsUpdate | Method::TabsRemove | Method::TabsReload => {
-            reply.finish(tabs(inner, &call));
+            reply.finish(tabs(inner, ext, origin, &call));
         }
         Method::ScriptingInsertCss => reply.finish(insert_css(inner, ext, &call)),
         Method::ActionSetBadgeText
@@ -122,20 +139,30 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
 
 // --- events -----------------------------------------------------------------------------
 
-/// Fire `event` in one context. A context without the shim ignores it.
-pub(crate) fn emit(view: &webkit::WebView, world: Option<&str>, event: &str, args: &[Value]) {
-    let source = protocol::emit_source(event, args);
-    let event = event.to_owned();
-    view.evaluate_javascript(&source, world, None, None::<&gio::Cancellable>, move |result| {
+fn run(view: &webkit::WebView, world: Option<&str>, source: &str, what: &str) {
+    let what = what.to_owned();
+    view.evaluate_javascript(source, world, None, None::<&gio::Cancellable>, move |result| {
         if let Err(e) = result {
-            log::debug!("emit {event}: {e}");
+            log::debug!("emit {what}: {e}");
         }
     });
 }
 
-pub(crate) fn emit_to_pages(ext: &Extension, event: &str, args: &[Value]) {
+/// Fire `event` in one context. A context without the shim ignores it.
+pub(crate) fn emit(view: &webkit::WebView, world: Option<&str>, event: &str, args: &[Value]) {
+    run(view, world, &protocol::emit_source(event, args), event);
+}
+
+/// Fire `event` in every page of `ext`: the views the runtime built and the tabs
+/// currently showing one of its documents. In a tab the source checks the document's
+/// origin itself, so a web page that took the tab over meanwhile sees nothing.
+pub(crate) fn emit_to_pages(inner: &Inner, ext: &Extension, event: &str, args: &[Value]) {
     for (_, _, view) in ext.live_views() {
         emit(&view, None, event, args);
+    }
+    let guarded = protocol::emit_source_in_page(&ext.host, event, args);
+    for (_, view) in inner.page_tab_views(ext) {
+        run(&view, None, &guarded, event);
     }
 }
 
@@ -161,7 +188,7 @@ pub(crate) fn storage_changed(inner: &Inner, ext: &Extension, area: StorageArea,
         map.insert(c.key.clone(), Value::Object(entry));
     }
     let args = [Value::Object(map), json!(area.name())];
-    emit_to_pages(ext, "storage.onChanged", &args);
+    emit_to_pages(inner, ext, "storage.onChanged", &args);
     emit_to_tabs(inner, ext, "storage.onChanged", &args);
 }
 
@@ -170,37 +197,59 @@ pub(crate) fn storage_changed(inner: &Inner, ext: &Extension, area: StorageArea,
 fn sender_for(inner: &Inner, ext: &Extension, origin: Origin, call: &Call) -> Sender {
     let url = call.url.clone();
     let mut sender = Sender { id: ext.id.as_str().to_owned(), origin: url.as_deref().and_then(Sender::origin_of), url, ..Sender::default() };
-    if let Origin::Content { tab } = origin {
-        sender.tab = inner.tab_json(tab);
-        sender.frame_id = call.top_frame.then_some(0);
+    match origin {
+        Origin::Content { tab } | Origin::TabPage { tab } => {
+            sender.tab = inner.tab_info(tab).map(|t| ext.tab_json(&t));
+            sender.frame_id = call.top_frame.then_some(0);
+        }
+        Origin::Page { .. } => {}
     }
     sender
 }
 
+/// One context a message is offered to.
+struct Target {
+    view: webkit::WebView,
+    body: Rc<String>,
+    world: Option<String>,
+}
+
 fn send_to_pages(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call, reply: Reply) {
     let sender = sender_for(inner, ext, origin, call);
-    let exclude = match origin {
-        Origin::Page { view } => Some(view),
-        Origin::Content { .. } => None,
-    };
-    let targets: Vec<webkit::WebView> = ext.live_views().into_iter().filter(|(id, _, _)| Some(*id) != exclude).map(|(_, _, v)| v).collect();
     let body = Rc::new(protocol::dispatch_source(call.arg(0), &sender));
-    deliver(targets.into_iter(), body, None, reply);
+    let guarded = Rc::new(protocol::dispatch_source_in_page(&ext.host, call.arg(0), &sender));
+    let mut targets: Vec<Target> = ext
+        .live_views()
+        .into_iter()
+        .filter(|(id, _, _)| origin != Origin::Page { view: *id })
+        .map(|(_, _, view)| Target { view, body: body.clone(), world: None })
+        .collect();
+    targets.extend(
+        inner
+            .page_tab_views(ext)
+            .into_iter()
+            .filter(|(tab, _)| origin != Origin::TabPage { tab: *tab })
+            .map(|(_, view)| Target { view, body: guarded.clone(), world: None }),
+    );
+    deliver(targets.into_iter(), reply);
 }
 
 fn send_to_tab(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call, reply: Reply) {
     let Some(tab) = TabId::from_json(call.arg(0)) else { return reply.err("tabs.sendMessage: tabId must be an integer") };
     let Some(view) = inner.host.web_view(tab) else { return reply.err(&format!("No tab with id: {}.", tab.0)) };
     let sender = sender_for(inner, ext, origin, call);
-    let body = Rc::new(protocol::dispatch_source(call.arg(1), &sender));
-    deliver(vec![view].into_iter(), body, Some(ext.world.clone()), reply);
+    let message = call.arg(1);
+    let mut targets = vec![Target { view: view.clone(), body: Rc::new(protocol::dispatch_source(message, &sender)), world: Some(ext.world.clone()) }];
+    if view.uri().is_some_and(|u| ext.owns_url(&u)) {
+        targets.push(Target { view, body: Rc::new(protocol::dispatch_source_in_page(&ext.host, message, &sender)), world: None });
+    }
+    deliver(targets.into_iter(), reply);
 }
 
 /// Offer the message to each target in turn; the first context with a listener answers.
-fn deliver(mut targets: std::vec::IntoIter<webkit::WebView>, body: Rc<String>, world: Option<String>, reply: Reply) {
-    let Some(view) = targets.next() else { return reply.err(NO_RECEIVER) };
-    let (source, world_name) = (body.clone(), world.clone());
-    view.call_async_javascript_function(&source, None, world_name.as_deref(), None, None::<&gio::Cancellable>, move |result| {
+fn deliver(mut targets: std::vec::IntoIter<Target>, reply: Reply) {
+    let Some(target) = targets.next() else { return reply.err(NO_RECEIVER) };
+    target.view.call_async_javascript_function(&target.body, None, target.world.as_deref(), None, None::<&gio::Cancellable>, move |result| {
         let dispatched = match result {
             Ok(value) => Dispatched::parse(value.to_json(0).as_deref()),
             Err(e) => {
@@ -209,7 +258,7 @@ fn deliver(mut targets: std::vec::IntoIter<webkit::WebView>, body: Rc<String>, w
             }
         };
         if dispatched.none {
-            deliver(targets, body, world, reply);
+            deliver(targets, reply);
         } else if let Some(e) = dispatched.error {
             reply.err(&e);
         } else {
@@ -269,22 +318,32 @@ fn key_list(v: &Value) -> Result<Option<Vec<String>>, String> {
 
 // --- tabs -------------------------------------------------------------------------------
 
-fn tabs(inner: &Rc<Inner>, call: &Call) -> Result<Option<Value>, String> {
+fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> Result<Option<Value>, String> {
     let host = &inner.host;
     let find = |id: TabId| host.tabs().into_iter().find(|t| t.id == id);
+    let visible = |t: &TabInfo| ext.tab_json(t);
     Ok(match call.method {
-        Method::TabsQuery => Some(Value::Array(host.tabs().iter().filter(|t| t.matches_query(call.arg(0))).map(TabInfo::to_json).collect())),
+        Method::TabsQuery => Some(Value::Array(host.tabs().iter().filter(|t| t.matches_query(call.arg(0), ext.sees_tab(t))).map(visible).collect())),
         Method::TabsGet => {
             let id = TabId::from_json(call.arg(0)).ok_or("tabs.get: tabId must be an integer")?;
-            Some(find(id).ok_or_else(|| format!("No tab with id: {}.", id.0))?.to_json())
+            Some(visible(&find(id).ok_or_else(|| format!("No tab with id: {}.", id.0))?))
         }
-        Method::TabsGetCurrent => None,
+        Method::TabsGetCurrent => match origin {
+            Origin::TabPage { tab } => find(tab).as_ref().map(visible),
+            _ => None,
+        },
         Method::TabsCreate => {
             let props = call.arg(0);
             let url = props.get("url").and_then(Value::as_str).unwrap_or("about:blank");
             let active = props.get("active").and_then(Value::as_bool).unwrap_or(true);
             let id = host.create_tab(url, active).ok_or("tabs.create: the browser refused to open a tab")?;
-            Some(find(id).map(|t| t.to_json()).unwrap_or(json!({ "id": id.0, "url": url, "active": active })))
+            Some(find(id).as_ref().map(visible).unwrap_or_else(|| {
+                let mut tab = json!({ "id": id.0, "active": active });
+                if ext.has_permission("tabs") || ext.host_access(url, Some(id)) {
+                    tab["url"] = json!(url);
+                }
+                tab
+            }))
         }
         Method::TabsUpdate => {
             let id = match TabId::from_json(call.arg(0)) {
@@ -297,7 +356,7 @@ fn tabs(inner: &Rc<Inner>, call: &Call) -> Result<Option<Value>, String> {
             if !host.update_tab(id, url, active) {
                 return Err(format!("No tab with id: {}.", id.0));
             }
-            find(id).map(|t| t.to_json())
+            find(id).as_ref().map(visible)
         }
         Method::TabsRemove => {
             let ids: Vec<TabId> = match call.arg(0) {
@@ -331,16 +390,26 @@ fn open_options_page(inner: &Rc<Inner>, ext: &Rc<Extension>) -> Result<Option<Va
 
 // --- scripting --------------------------------------------------------------------------
 
-fn target_view(inner: &Inner, injection: &Value) -> Result<webkit::WebView, String> {
+/// The tab view an injection may target: the `scripting` permission, and host access to
+/// what the tab shows (host permissions, or an `activeTab` grant), as Chrome requires.
+fn injection_target(inner: &Inner, ext: &Extension, injection: &Value, api: &str) -> Result<webkit::WebView, String> {
     let tab = TabId::from_json(&injection["target"]["tabId"]).ok_or("target.tabId must be an integer")?;
-    inner.host.web_view(tab).ok_or_else(|| format!("No tab with id: {}.", tab.0))
+    if !ext.has_permission("scripting") {
+        return Err(format!("{api} requires the \"scripting\" permission"));
+    }
+    let view = inner.host.web_view(tab).ok_or_else(|| format!("No tab with id: {}.", tab.0))?;
+    let url = view.uri().map(String::from).unwrap_or_default();
+    if !ext.host_access(&url, Some(tab)) {
+        return Err(format!("Cannot access contents of url \"{url}\". Extension manifest must request permission to access this host."));
+    }
+    Ok(view)
 }
 
 fn read_files(ext: &Extension, files: &Value) -> Result<String, String> {
     let mut source = String::new();
     for f in files.as_array().ok_or("files must be an array")? {
         let rel = f.as_str().ok_or("files must be strings")?;
-        let path = vsesvit_core::extensions::manifest::RelPath::parse(rel).map_err(|e| e.to_string())?.resolve(&ext.dir);
+        let path = ext.resource(rel)?.resolve(&ext.dir);
         source.push_str(&std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?);
         source.push('\n');
     }
@@ -354,22 +423,24 @@ enum Injection {
 
 fn execute_script(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: Reply) {
     let injection = call.arg(0);
-    let view = match target_view(inner, injection) {
+    let view = match injection_target(inner, ext, injection, "scripting.executeScript") {
         Ok(v) => v,
         Err(e) => return reply.err(&e),
     };
-    let world = match injection["world"].as_str() {
-        Some("MAIN") => None,
-        _ => Some(ext.world.clone()),
+    // Isolated-world code gets the content-script API whether or not a manifest content
+    // script ran there; MAIN-world code gets none, as in Chrome.
+    let (world, bootstrap) = match injection["world"].as_str() {
+        Some("MAIN") => (None, ""),
+        _ => (Some(ext.world.clone()), ext.content_bootstrap.as_str()),
     };
     let what = if injection.get("files").is_some() {
         match read_files(ext, &injection["files"]) {
-            Ok(source) => Injection::Files(source),
+            Ok(source) => Injection::Files(format!("{bootstrap}{source}")),
             Err(e) => return reply.err(&e),
         }
     } else if let Some(func) = injection["func"].as_str() {
         let args = injection.get("args").cloned().unwrap_or_else(|| json!([]));
-        Injection::Func { body: format!("return ({func}).apply(null, {});", protocol::js_literal(&args)) }
+        Injection::Func { body: format!("{bootstrap}return ({func}).apply(null, {});", protocol::js_literal(&args)) }
     } else {
         return reply.err("scripting.executeScript: either files or func is required");
     };
@@ -388,7 +459,7 @@ fn execute_script(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: Re
 
 fn insert_css(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<Value>, String> {
     let injection = call.arg(0);
-    let view = target_view(inner, injection)?;
+    let view = injection_target(inner, ext, injection, "scripting.insertCSS")?;
     let css = match injection.get("css").and_then(Value::as_str) {
         Some(css) => css.to_owned(),
         None => read_files(ext, &injection["files"])?,
@@ -426,13 +497,13 @@ fn action(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<
                     _ => None,
                 };
                 if let Some(p) = path {
-                    let rel = vsesvit_core::extensions::manifest::RelPath::parse(&p).map_err(|e| e.to_string())?;
-                    state.icon = Some(rel.resolve(&ext.dir));
+                    state.icon = Some(ext.resource(&p)?.resolve(&ext.dir));
                 }
                 None
             }
             Method::ActionSetPopup => {
-                state.popup = details.get("popup").and_then(Value::as_str).unwrap_or("").trim_start_matches('/').to_owned();
+                let popup = details.get("popup").and_then(Value::as_str).unwrap_or("");
+                state.popup = crate::patterns::resource_path(&ext.base_url, popup).to_owned();
                 None
             }
             Method::ActionGetPopup => {
@@ -526,7 +597,7 @@ fn schedule_alarm(inner: &Rc<Inner>, ext: &Rc<Extension>, name: String, delay_ms
                 }
             }
         };
-        emit_to_pages(&ext, "alarms.onAlarm", &[next.0]);
+        emit_to_pages(&inner, &ext, "alarms.onAlarm", &[next.0]);
         if let Some(period_ms) = next.1 {
             schedule_alarm(&inner, &ext, alarm_name.clone(), period_ms);
         }

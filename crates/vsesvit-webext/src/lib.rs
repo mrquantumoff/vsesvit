@@ -31,8 +31,11 @@
 //! // rulesets compile in the background, `pending_filters()` counts them and
 //! // `on_filters_ready` runs once every pending one is attached, which the self-test
 //! // uses before its `dnr_blocked` navigation. `Runtime::web_context()` is the context
-//! // the scheme is registered on.
+//! // the scheme is registered on. `load` is for startup and the load after an install;
+//! // when the user re-enables an extension, `load_with(.., LoadReason::Enable)` keeps
+//! // `runtime.onStartup` from firing.
 //! runtime.load(&installed_extension)?;                 // Err(LoadError) for unreadable files/rulesets
+//! runtime.load_with(&installed_extension, LoadReason::Enable)?;
 //! runtime.on_filters_ready(|| { /* navigate */ });
 //! runtime.unload(&id);
 //! let ids: Vec<ExtensionId> = runtime.loaded();
@@ -63,27 +66,39 @@
 //!   each extension in its own isolated world (named by its id).
 //! - `chrome.*` and `browser.*` (promise and callback styles, `chrome.runtime.lastError`)
 //!   in content scripts: `runtime.sendMessage/onMessage/getURL/id/getManifest`,
-//!   `storage.local/sync` with `storage.onChanged`, `i18n`. Extension pages additionally get
-//!   `tabs.query/get/create/update/remove/reload/sendMessage` with `onUpdated/onActivated/
-//!   onRemoved`, `scripting.executeScript/insertCSS`, `action`/`browserAction`
-//!   (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`, `onClicked`), `alarms`,
-//!   `permissions.contains/getAll`, `extension.getURL`, `runtime.openOptionsPage` and
-//!   `runtime.onInstalled` on the first load of a version.
+//!   `storage.local/sync` with `storage.onChanged`, `i18n`. Extension pages (background,
+//!   popup, and any of the extension's documents shown in a tab: the options page,
+//!   `tabs.create(getURL(..))`, links) additionally get
+//!   `tabs.query/get/getCurrent/create/update/remove/reload/sendMessage` with
+//!   `onUpdated/onActivated/onRemoved`, `scripting.executeScript/insertCSS`,
+//!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
+//!   `onClicked`), `alarms`, `permissions.contains/getAll`, `extension.getURL`,
+//!   `runtime.openOptionsPage`, and `runtime.onInstalled` on the first load of an install
+//!   or version (`runtime.onStartup` on later startups).
+//! - Chrome's permission model for those APIs: `scripting.*` needs the `scripting`
+//!   permission and host access to the target tab (a host permission, or `activeTab`
+//!   after the user invoked the action on that tab); tab URLs and titles are visible
+//!   only with the `tabs` permission or host access to the tab's URL.
 //! - declarativeNetRequest static rulesets as one WebKit content blocker per extension,
 //!   attached to every tab. Rules WebKit cannot express are logged and skipped.
 //!
 //! Known limits: events reach a tab's top frame only (`tabs.sendMessage`, `storage.onChanged`
-//! in subframes); no `runtime.connect` ports; no `webRequest`; one runtime per process.
-//! Runtime state (compiled filters, install markers) lives in `<profile>/webext/`.
+//! in subframes); no `runtime.connect` ports; no `webRequest`; one runtime per process;
+//! `about:blank` frames inside extension pages get no API; in a background or popup view,
+//! an `http(s)` iframe loads only for an extension without host permissions (WebKitGTK
+//! applies the view's CORS allowlist to every frame). Runtime state (compiled filters,
+//! install markers) lives in `<profile>/webext/`.
 
 pub mod dnr;
 pub mod i18n;
+pub mod lifecycle;
 pub mod mime;
 pub mod patterns;
 pub mod protocol;
 pub mod support;
 pub mod tabs;
 
+pub use lifecycle::LoadReason;
 pub use support::{Unsupported, unsupported_features};
 pub use tabs::{TabId, TabInfo};
 
@@ -107,5 +122,6 @@ pub use runtime::{ActionInfo, LoadError, Runtime};
 #[cfg(target_os = "linux")]
 pub use tabs::TabHost;
 
-/// The JavaScript shim every context receives, with `__VSESVIT_CONFIG__` prepended.
+/// The JavaScript shim every context receives: one function expression that
+/// [`protocol::bootstrap`] applies to the context's configuration.
 pub const API_JS: &str = include_str!("js/api.js");

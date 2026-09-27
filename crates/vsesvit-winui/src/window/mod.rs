@@ -24,7 +24,7 @@ use crate::browser::{Browser, ClosedTab};
 use crate::dialogs::{self, Dialog};
 use crate::layout::StripKind;
 use crate::popup::{self, Activation, ExtensionAction, Popup};
-use crate::session::WindowPlan;
+use crate::session::{TabPlan, WindowPlan};
 use crate::shortcuts::Command;
 use crate::strip::{SidePane, TopStrip};
 use crate::tab::{Initial, Tab, TabId};
@@ -186,7 +186,7 @@ impl BrowserWindow {
     pub fn open_planned(&self, plan: &WindowPlan) -> Result<()> {
         for (index, tab) in plan.tabs.iter().enumerate() {
             let initial = tab.url.clone().map_or(Initial::Blank, Initial::Url);
-            self.open_tab(initial, Placement::End, index == plan.active, tab.id)?;
+            self.open_tab(initial, Placement::End, index == plan.active, Some(tab))?;
         }
         if let Some(bounds) = plan.bounds {
             self.apply_bounds(bounds, plan.maximized);
@@ -221,10 +221,17 @@ impl BrowserWindow {
         initial: Initial,
         placement: Placement,
         foreground: bool,
-        session_id: Option<vsesvit_core::session::TabId>,
+        restored: Option<&TabPlan>,
     ) -> Result<Rc<Tab>> {
         let browser = self.browser().ok_or_else(windows_core::Error::empty)?;
-        let tab = Tab::new(browser.next_tab_id(), session_id, self.me.clone())?;
+        let tab = Tab::new(
+            browser.next_tab_id(),
+            restored.and_then(|p| p.id),
+            self.me.clone(),
+        )?;
+        if let Initial::Url(url) = &initial {
+            tab.set_planned(url, restored.map_or("", |p| p.title.as_str()));
+        }
         xaml::set_visible(tab.view(), false)?;
         self.ui
             .pages
@@ -840,6 +847,25 @@ impl BrowserWindow {
             height: i32::try_from(height).unwrap_or(i32::MAX),
         };
         let Ok(app) = self.app_window() else { return };
+        let work_area = |rect, fallback| {
+            DisplayArea::GetFromRect(rect, fallback)
+                .and_then(|d| d.WorkArea())
+                .ok()
+        };
+        let rect = match work_area(rect, DisplayAreaFallback::Nearest) {
+            Some(nearest) => {
+                let title_bar = RectInt32 {
+                    height: rect.height.min(TITLE_BAR_HEIGHT),
+                    ..rect
+                };
+                restored_rect(
+                    rect,
+                    work_area(title_bar, DisplayAreaFallback::None),
+                    nearest,
+                )
+            }
+            None => rect,
+        };
         if rect.width >= 200
             && rect.height >= 150
             && let Err(e) = app.MoveAndResize(rect)
@@ -877,5 +903,104 @@ impl BrowserWindow {
     /// The whole window, captured without activating it.
     pub async fn capture(&self) -> Result<capture::WindowShot> {
         capture::window_png(platform::window_handle(&self.window)?).await
+    }
+}
+
+/// How much of a restored window's title bar must be on a display for it to stay where it was
+/// saved: enough to grab it with the mouse, in screen pixels.
+const GRAB_WIDTH: i32 = 100;
+const GRAB_HEIGHT: i32 = 16;
+/// The part of a window's top edge treated as its title bar.
+const TITLE_BAR_HEIGHT: i32 = 32;
+
+/// Where a window saved at `saved` reopens. `title_work_area` is the work area of the display
+/// under its title bar, if any display is; `nearest_work_area` that of the display nearest to it.
+fn restored_rect(
+    saved: RectInt32,
+    title_work_area: Option<RectInt32>,
+    nearest_work_area: RectInt32,
+) -> RectInt32 {
+    let grabbable = title_work_area.is_some_and(|area| {
+        let left = saved.x.max(area.x);
+        let right = saved.x.saturating_add(saved.width).min(area.x + area.width);
+        let top = saved.y.max(area.y);
+        let bottom = saved
+            .y
+            .saturating_add(TITLE_BAR_HEIGHT.min(saved.height))
+            .min(area.y + area.height);
+        right - left >= GRAB_WIDTH && bottom - top >= GRAB_HEIGHT
+    });
+    if grabbable {
+        return saved;
+    }
+    let area = nearest_work_area;
+    let width = saved.width.min(area.width);
+    let height = saved.height.min(area.height);
+    RectInt32 {
+        x: saved.x.clamp(area.x, area.x + area.width - width),
+        y: saved.y.clamp(area.y, area.y + area.height - height),
+        width,
+        height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn rect(x: i32, y: i32, width: i32, height: i32) -> RectInt32 {
+        RectInt32 {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    const SCREEN: RectInt32 = rect(0, 0, 1920, 1040);
+
+    #[test]
+    fn a_window_on_a_display_stays_where_it_was() {
+        let saved = rect(100, 100, 1280, 860);
+        assert_eq!(restored_rect(saved, Some(SCREEN), SCREEN), saved);
+    }
+
+    #[test]
+    fn a_window_whose_title_bar_can_still_be_grabbed_stays() {
+        let saved = rect(1700, 200, 1280, 860);
+        assert_eq!(restored_rect(saved, Some(SCREEN), SCREEN), saved);
+    }
+
+    #[test]
+    fn a_window_from_a_disconnected_display_moves_onto_the_nearest() {
+        let saved = rect(2600, 100, 1280, 860);
+        assert_eq!(
+            restored_rect(saved, None, SCREEN),
+            rect(640, 100, 1280, 860)
+        );
+    }
+
+    #[test]
+    fn a_title_bar_barely_on_a_display_is_brought_onto_it() {
+        let saved = rect(1880, 100, 1280, 860);
+        assert_eq!(
+            restored_rect(saved, Some(SCREEN), SCREEN),
+            rect(640, 100, 1280, 860)
+        );
+        let above = rect(100, -600, 1280, 860);
+        assert_eq!(restored_rect(above, None, SCREEN), rect(100, 0, 1280, 860));
+    }
+
+    #[test]
+    fn a_window_larger_than_the_display_shrinks_to_its_work_area() {
+        let saved = rect(-3000, -50, 2560, 1400);
+        assert_eq!(restored_rect(saved, None, SCREEN), SCREEN);
+    }
+
+    #[test]
+    fn work_areas_away_from_the_origin_are_respected() {
+        let left = rect(-1280, 200, 1280, 984);
+        let saved = rect(-5000, 0, 800, 600);
+        assert_eq!(restored_rect(saved, None, left), rect(-1280, 200, 800, 600));
     }
 }

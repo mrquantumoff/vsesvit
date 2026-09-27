@@ -154,7 +154,7 @@ fn other_records_follow_the_rule() {
     let pref = PrefRecord { key: "theme".into(), value: Lww::new(Some(JsonText::from_value(&json!("dark"))), stamp(1)) };
     let v = serde_json::to_value(&pref).unwrap();
     assert_wire_rule(&v, &["key"]);
-    assert_eq!(v["value"]["v"], "dark");
+    assert_eq!(v["value"]["v"], "\"dark\"", "a JSON register carries its value as canonical text");
     assert_eq!(serde_json::from_value::<PrefRecord>(v).unwrap(), pref);
 
     let ext = ExtensionId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
@@ -180,6 +180,35 @@ fn other_records_follow_the_rule() {
     let v = serde_json::to_value(&s).unwrap();
     assert_wire_rule(&v, &["device"]);
     assert_eq!(serde_json::from_value::<DeviceSessionRecord>(v).unwrap(), s);
+}
+
+/// `Lww<Option<JsonText>>` (prefs, `storage.sync` items) has two states that a bare JSON
+/// value cannot tell apart: no value, and the value `null`. Both must round-trip.
+#[test]
+fn json_registers_carry_a_null_value_distinct_from_no_value() {
+    let null = Some(JsonText::from_value(&Value::Null));
+    let pref = PrefRecord { key: "x".into(), value: Lww::new(null.clone(), stamp(1)) };
+    let with_null = serde_json::to_value(&pref).unwrap();
+    assert_wire_rule(&with_null, &["key"]);
+    assert_eq!(serde_json::from_value::<PrefRecord>(with_null.clone()).unwrap(), pref);
+
+    let reset = PrefRecord { key: "x".into(), value: Lww::new(None, stamp(1)) };
+    let without = serde_json::to_value(&reset).unwrap();
+    assert_wire_rule(&without, &["key"]);
+    assert!(without["value"]["v"].is_null(), "no value stays a JSON null, like every other Option register");
+    assert_ne!(with_null, without);
+    assert_eq!(serde_json::from_value::<PrefRecord>(without).unwrap(), reset);
+
+    let ext = ExtensionId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+    let item = SyncItemRecord { ext, key: "k".into(), value: Lww::new(null, stamp(2)) };
+    let v = serde_json::to_value(&item).unwrap();
+    assert_wire_rule(&v, &["ext", "key"]);
+    assert_eq!(serde_json::from_value::<SyncItemRecord>(v).unwrap(), item);
+
+    // the value slot holds JSON text; anything else is rejected at the boundary
+    let mut bad = serde_json::to_value(&pref).unwrap();
+    bad["value"]["v"] = json!("{not json");
+    assert!(serde_json::from_value::<PrefRecord>(bad).is_err());
 }
 
 #[test]

@@ -11,15 +11,15 @@ use gtk::{gio, glib};
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
 
 use super::{LibraryDialog, confirm, prompt_choice, prompt_text};
-use crate::browser::Browser;
 use crate::profile::Core;
 use crate::tab::display_uri;
 use crate::window::{BrowserWindow, Focus};
 
 const SEARCH_LIMIT: usize = 60;
 
+/// Holds no browser or profile of its own: the widgets' handlers keep this state alive
+/// for as long as the dialog's widgets exist, which must not keep the profile open.
 struct State {
-    browser: Browser,
     window: glib::WeakRef<BrowserWindow>,
     ui: LibraryDialog,
     root: gio::ListStore,
@@ -31,13 +31,10 @@ struct State {
 }
 
 pub(crate) fn present(window: &BrowserWindow) {
-    let browser = window.browser().clone();
-    let core = browser.core().clone();
-
     let root = gio::ListStore::new::<glib::BoxedAnyObject>();
     let tree = gtk::TreeListModel::new(root.clone(), false, false, {
-        let core = core.clone();
-        move |item| children_model(&core, item)
+        let core = Rc::downgrade(window.browser().core());
+        move |item| children_model(&core.upgrade()?, item)
     });
     let selection = gtk::SingleSelection::new(Some(tree.clone()));
     let list = gtk::ListView::new(Some(selection.clone()), Some(row_factory()));
@@ -88,7 +85,6 @@ pub(crate) fn present(window: &BrowserWindow) {
     ui.content.set_child(Some(&stack));
 
     let state = Rc::new(State {
-        browser,
         window: window.downgrade(),
         ui,
         root,
@@ -152,13 +148,14 @@ impl State {
         glib::spawn_future_local(f(self.clone()));
     }
 
-    fn core(&self) -> &Core {
-        self.browser.core()
+    fn core(&self) -> Option<Core> {
+        self.window.upgrade().map(|window| window.browser().core().clone())
     }
 
     /// Rebuilds the tree from core and expands the three roots.
     fn rebuild(&self) {
-        let roots = self.core().borrow_mut().bookmarks().children(BookmarkId::ROOT);
+        let Some(core) = self.core() else { return };
+        let roots = core.borrow_mut().bookmarks().children(BookmarkId::ROOT);
         self.root.remove_all();
         for node in roots {
             self.root.append(&glib::BoxedAnyObject::new(node));
@@ -194,7 +191,8 @@ impl State {
             self.stack.set_visible_child_name("tree");
             return;
         }
-        let found = self.core().borrow_mut().bookmarks().search(text, SEARCH_LIMIT);
+        let Some(core) = self.core() else { return };
+        let found = core.borrow_mut().bookmarks().search(text, SEARCH_LIMIT);
         for row in self.result_rows.take() {
             self.results.remove(&row);
         }
@@ -223,7 +221,9 @@ impl State {
     }
 
     fn changed(&self) {
-        self.browser.bookmarks_changed();
+        if let Some(window) = self.window.upgrade() {
+            window.browser().bookmarks_changed();
+        }
         self.rebuild();
     }
 
@@ -244,8 +244,8 @@ impl State {
         let Some(title) = prompt_text(&self.ui.dialog, "New Folder", "New Folder", "_Create").await else {
             return;
         };
-        let result = self
-            .core()
+        let Some(core) = self.core() else { return };
+        let result = core
             .borrow_mut()
             .bookmarks()
             .add_folder(parent, InsertAt::End, &title)
@@ -261,7 +261,8 @@ impl State {
         let Some(title) = prompt_text(&self.ui.dialog, "Rename", &node.title, "_Rename").await else {
             return;
         };
-        let result = self.core().borrow_mut().bookmarks().rename(node.id, &title);
+        let Some(core) = self.core() else { return };
+        let result = core.borrow_mut().bookmarks().rename(node.id, &title);
         self.report(result);
     }
 
@@ -271,7 +272,8 @@ impl State {
             return;
         };
         let folders = {
-            let mut profile = self.core().borrow_mut();
+            let Some(core) = self.core() else { return };
+            let mut profile = core.borrow_mut();
             let bookmarks = profile.bookmarks();
             let mut out = Vec::new();
             for root in bookmarks.children(BookmarkId::ROOT) {
@@ -286,7 +288,8 @@ impl State {
             return;
         };
         let Some((target, _)) = folders.get(index as usize) else { return };
-        let result = self.core().borrow_mut().bookmarks().move_to(node.id, *target, InsertAt::End);
+        let Some(core) = self.core() else { return };
+        let result = core.borrow_mut().bookmarks().move_to(node.id, *target, InsertAt::End);
         self.report(result);
     }
 
@@ -307,7 +310,8 @@ impl State {
                 return;
             }
         }
-        let result = self.core().borrow_mut().bookmarks().remove(node.id);
+        let Some(core) = self.core() else { return };
+        let result = core.borrow_mut().bookmarks().remove(node.id);
         self.report(result);
     }
 }

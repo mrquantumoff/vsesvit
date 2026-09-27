@@ -7,6 +7,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde_json::json;
 use vsesvit_core::history::Transition;
 use vsesvit_core::session;
 use windows_core::{IInspectable, Interface, Ref, Result};
@@ -14,7 +15,7 @@ use windows_core::{IInspectable, Interface, Ref, Result};
 use crate::bindings::*;
 use crate::browser::CommitKind;
 use crate::exec;
-use crate::shortcuts::{self, PageMessage};
+use crate::shortcuts::{self, PageMessage, PageScript};
 use crate::tab_header::TabLook;
 use crate::window::BrowserWindow;
 
@@ -142,6 +143,15 @@ impl Tab {
         self.state.borrow().clone()
     }
 
+    /// What the tab shows before its engine view commits anything: the URL it is about to load
+    /// and, for a restored tab, the title it had. A session saved meanwhile keeps both.
+    pub fn set_planned(&self, url: &str, title: &str) {
+        *self.requested.borrow_mut() = url.to_owned();
+        if !title.is_empty() {
+            self.state.borrow_mut().title = title.to_owned();
+        }
+    }
+
     /// The committed URL, or the one being loaded before the first commit.
     pub fn session_url(&self) -> String {
         let url = self.state.borrow().url.clone();
@@ -164,7 +174,7 @@ impl Tab {
     pub async fn start(
         self: Rc<Self>,
         environment: CoreWebView2Environment,
-        page_script: Rc<str>,
+        page_script: Rc<PageScript>,
         initial: Initial,
     ) {
         let core = match self.ensure_core(&environment, &page_script).await {
@@ -194,7 +204,7 @@ impl Tab {
     async fn ensure_core(
         self: &Rc<Self>,
         environment: &CoreWebView2Environment,
-        page_script: &str,
+        page_script: &PageScript,
     ) -> Result<CoreWebView2> {
         self.view
             .cast::<IWebView22>()?
@@ -203,12 +213,44 @@ impl Tab {
         let core = self.view.CoreWebView2()?;
         let settings = core.Settings()?;
         settings.SetAreDevToolsEnabled(true)?;
-        settings.SetIsWebMessageEnabled(true)?;
+        settings.SetIsWebMessageEnabled(false)?;
         self.wire(&core)?;
-        core.AddScriptToExecuteOnDocumentCreatedAsync(page_script)?
-            .await?;
+        self.inject(&core, page_script).await?;
         let _ = self.core.set(core.clone());
         Ok(core)
+    }
+
+    /// Runs the shortcut script in its isolated world of every new document (see `shortcuts`)
+    /// and listens to its binding.
+    async fn inject(self: &Rc<Self>, core: &CoreWebView2, script: &PageScript) -> Result<()> {
+        core.GetDevToolsProtocolEventReceiver("Runtime.bindingCalled")?
+            .DevToolsProtocolEventReceived(on(
+                self,
+                |tab, args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs| {
+                    tab.binding_called(args);
+                },
+            ))?
+            .forget();
+        // Scripts for new documents need the Page domain on, and a binding reaches the worlds
+        // created later only while the Runtime domain is on.
+        let calls = [
+            ("Page.enable", "{}".to_owned()),
+            ("Runtime.enable", "{}".to_owned()),
+            (
+                "Runtime.addBinding",
+                json!({ "name": shortcuts::BINDING, "executionContextName": script.world })
+                    .to_string(),
+            ),
+            (
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": script.source, "worldName": script.world }).to_string(),
+            ),
+        ];
+        for (method, params) in calls {
+            core.CallDevToolsProtocolMethodAsync(method, &params)?
+                .await?;
+        }
+        Ok(())
     }
 
     pub fn navigate(&self, url: &str) {
@@ -397,13 +439,6 @@ impl Tab {
             }
         }))?
         .forget();
-        core.WebMessageReceived(on(
-            self,
-            |tab, args: &CoreWebView2WebMessageReceivedEventArgs| {
-                tab.web_message(args);
-            },
-        ))?
-        .forget();
         core.ProcessFailed(on(
             self,
             |tab, args: &CoreWebView2ProcessFailedEventArgs| {
@@ -507,6 +542,14 @@ impl Tab {
 
     fn new_window_requested(self: &Rc<Self>, args: &CoreWebView2NewWindowRequestedEventArgs) {
         let Some(window) = self.window() else { return };
+        // WebView2 turns Edge's popup blocker off and leaves this to the app: like a browser,
+        // open only the windows a user gesture asked for.
+        if !args.IsUserInitiated().unwrap_or(false) {
+            let url = args.Uri().unwrap_or_default();
+            log::info!("tab {}: blocked a popup to {url}: no user gesture", self.id);
+            let _ = args.SetHandled(true);
+            return;
+        }
         let deferral = match args.GetDeferral() {
             Ok(deferral) => deferral,
             Err(e) => {
@@ -526,15 +569,12 @@ impl Tab {
         window.open_tab_from(self.id, Initial::Opener(request), background);
     }
 
-    fn web_message(&self, args: &CoreWebView2WebMessageReceivedEventArgs) {
+    fn binding_called(&self, args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs) {
         let Some(window) = self.window() else { return };
-        let Some(browser) = window.browser() else {
+        let Ok(event) = args.ParameterObjectAsJson() else {
             return;
         };
-        let Ok(message) = args.TryGetWebMessageAsString() else {
-            return;
-        };
-        match shortcuts::parse_page_message(&message, browser.page_nonce()) {
+        match shortcuts::parse_binding_call(&event) {
             // Runs on the next turn: the command may close this tab's web view (Ctrl+W).
             Some(PageMessage::Key(command)) => exec::spawn(async move { window.run(command) }),
             Some(PageMessage::BackgroundLink(url)) => {

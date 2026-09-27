@@ -26,27 +26,40 @@ pub struct TabInfo {
 }
 
 impl TabInfo {
-    /// `chrome.tabs.Tab`.
+    /// `chrome.tabs.Tab` as an extension with access to the tab's contents sees it.
     pub fn to_json(&self) -> Value {
-        serde_json::json!({
+        self.to_json_for(true)
+    }
+
+    /// `chrome.tabs.Tab`. Without `sees_content` (no `tabs` permission and no host
+    /// access to the tab's URL) `url` and `title` are left out, as Chrome does.
+    pub fn to_json_for(&self, sees_content: bool) -> Value {
+        let mut tab = serde_json::json!({
             "id": self.id.0,
             "windowId": self.window_id,
             "index": self.index,
-            "url": self.url,
-            "title": self.title,
             "active": self.active,
             "highlighted": self.active,
             "selected": self.active,
             "pinned": false,
             "incognito": false,
             "status": "complete",
-        })
+        });
+        if sees_content {
+            tab["url"] = Value::String(self.url.clone());
+            tab["title"] = Value::String(self.title.clone());
+        }
+        tab
     }
 
     /// `chrome.tabs.query(queryInfo)`. Unknown keys are ignored; `url` accepts a match
-    /// pattern or a list of them, matched with [`crate::patterns::url_matches`].
-    pub fn matches_query(&self, query: &Value) -> bool {
+    /// pattern or a list of them, matched with [`crate::patterns::url_matches`]. A tab
+    /// whose contents the caller may not see never matches a `url` or `title` filter.
+    pub fn matches_query(&self, query: &Value, sees_content: bool) -> bool {
         let Some(q) = query.as_object() else { return true };
+        if !sees_content && (q.contains_key("url") || q.contains_key("title")) {
+            return false;
+        }
         let bool_key = |k: &str| q.get(k).and_then(Value::as_bool);
         if let Some(active) = bool_key("active")
             && active != self.active
@@ -107,18 +120,18 @@ mod tests {
     #[test]
     fn query_filters() {
         let t = tab();
-        assert!(t.matches_query(&json!({})));
-        assert!(t.matches_query(&Value::Null));
-        assert!(t.matches_query(&json!({"active": true, "currentWindow": true})));
-        assert!(!t.matches_query(&json!({"active": false})));
-        assert!(t.matches_query(&json!({"url": "http://127.0.0.1/*"})));
-        assert!(t.matches_query(&json!({"url": ["https://x/*", "*://*/index.html"]})));
-        assert!(!t.matches_query(&json!({"url": "https://*/*"})));
-        assert!(t.matches_query(&json!({"title": "Vsesvit*"})));
-        assert!(!t.matches_query(&json!({"title": "Other"})));
-        assert!(t.matches_query(&json!({"index": 2, "windowId": 1})));
-        assert!(!t.matches_query(&json!({"windowId": 2})));
-        assert!(t.matches_query(&json!({"windowId": -2})));
+        assert!(t.matches_query(&json!({}), true));
+        assert!(t.matches_query(&Value::Null, true));
+        assert!(t.matches_query(&json!({"active": true, "currentWindow": true}), true));
+        assert!(!t.matches_query(&json!({"active": false}), true));
+        assert!(t.matches_query(&json!({"url": "http://127.0.0.1/*"}), true));
+        assert!(t.matches_query(&json!({"url": ["https://x/*", "*://*/index.html"]}), true));
+        assert!(!t.matches_query(&json!({"url": "https://*/*"}), true));
+        assert!(t.matches_query(&json!({"title": "Vsesvit*"}), true));
+        assert!(!t.matches_query(&json!({"title": "Other"}), true));
+        assert!(t.matches_query(&json!({"index": 2, "windowId": 1}), true));
+        assert!(!t.matches_query(&json!({"windowId": 2}), true));
+        assert!(t.matches_query(&json!({"windowId": -2}), true));
     }
 
     #[test]
@@ -126,8 +139,24 @@ mod tests {
         let v = tab().to_json();
         assert_eq!(v["id"], 7);
         assert_eq!(v["active"], true);
+        assert_eq!(v["url"], "http://127.0.0.1:8080/index.html");
         assert_eq!(TabId::from_json(&json!(7)), Some(TabId(7)));
         assert_eq!(TabId::from_json(&json!("7")), None);
         assert_eq!(TabId::from_json(&json!(-1)), None);
+    }
+
+    /// Without `tabs` or host access an extension gets the tab minus its contents, and
+    /// cannot probe them through a query either.
+    #[test]
+    fn tabs_hide_their_contents_from_extensions_without_access() {
+        let t = tab();
+        let v = t.to_json_for(false);
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["active"], true);
+        assert!(v.get("url").is_none() && v.get("title").is_none(), "{v}");
+        assert!(t.matches_query(&json!({"active": true}), false));
+        assert!(!t.matches_query(&json!({"url": "http://127.0.0.1/*"}), false));
+        assert!(!t.matches_query(&json!({"title": "Vsesvit*"}), false));
+        assert_eq!(t.to_json(), t.to_json_for(true));
     }
 }

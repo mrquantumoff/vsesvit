@@ -168,8 +168,9 @@ fn launch_arguments(args: &AppActivationArguments) -> windows_core::Result<Strin
     }
 }
 
-/// Splits a command line the way the C runtime does. For an unpackaged launch the arguments
-/// start with the executable, which is dropped.
+/// Splits a command line the way the C runtime does, without its first token: an unpackaged
+/// launch forwards its whole command line, which starts with the program however the launch
+/// spelled it (`vsesvit` from cmd.exe, a quoted path from a shortcut).
 pub(crate) fn command_line_args(line: &str) -> Vec<String> {
     let line = line.trim();
     if line.is_empty() {
@@ -188,10 +189,7 @@ pub(crate) fn command_line_args(line: &str) -> Vec<String> {
         }
         LocalFree(argv.cast());
     }
-    if args
-        .first()
-        .is_some_and(|first| first.to_ascii_lowercase().ends_with(".exe"))
-    {
+    if !args.is_empty() {
         args.remove(0);
     }
     args
@@ -235,10 +233,19 @@ mod tests {
             ),
             ["--profile-dir", r"C:\p q", "https://a.test/"]
         );
+        assert!(command_line_args("   ").is_empty());
+    }
+
+    #[test]
+    fn the_program_is_dropped_however_the_launch_spelled_it() {
         assert_eq!(
-            command_line_args("https://a.test/ b"),
+            command_line_args("vsesvit https://example.com"),
+            ["https://example.com"]
+        );
+        assert_eq!(
+            command_line_args(r".\vsesvit https://a.test/ b"),
             ["https://a.test/", "b"]
         );
-        assert!(command_line_args("   ").is_empty());
+        assert!(command_line_args("vsesvit").is_empty());
     }
 }

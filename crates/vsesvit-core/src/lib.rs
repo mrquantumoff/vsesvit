@@ -83,7 +83,7 @@ pub struct ProfilePaths {
     pub root: PathBuf,
     /// `<root>/vsesvit.db` (+ `-wal`, `-shm`)
     pub db: PathBuf,
-    /// `<root>/extensions/<id>/<version>_<hash8>/`: immutable once committed
+    /// `<root>/extensions/<id>/<version>_<sha256 prefix, 32 hex>/`: immutable once committed
     pub extensions: PathBuf,
     /// `<root>/staging/<job uuid>/`: install scratch, wiped at open
     pub staging: PathBuf,

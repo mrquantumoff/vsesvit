@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 692f58c3fa4b409e1a3149f6ad9af3fafc3ab0fd9a2bf99487f10b1972836891 # shrinks to skew = [0, 0, 0], steps = [Local { dev: 0, op: StorageSet { key: 0, value: 4 } }], reapply_seed = 0
+cc dba03cce8d288d8293de1709e29deb069ddce0bebd6027bd6af5d9008affbd8c # shrinks to records = [PageRecord { url: Url { scheme: "https", cannot_be_a_base: false, username: "", password: None, host: Some(Domain("site0.example")), port: None, path: "/", query: None, fragment: None }, title: Lww { v: "t0", at: Stamp { hlc: Hlc(0), device: DeviceId(1) } }, visits: {Visit { at_ms: 0, device: DeviceId(1), transition: Link }}, extra: {} }, PageRecord { url: Url { scheme: "https", cannot_be_a_base: false, username: "", password: None, host: Some(Domain("site0.example")), port: None, path: "/", query: None, fragment: None }, title: Lww { v: "t0", at: Stamp { hlc: Hlc(0), device: DeviceId(1) } }, visits: {}, extra: {"x": Lww { v: JsonText("0"), at: Stamp { hlc: Hlc(0), device: DeviceId(1) } }} }], seed = 8367222347431638929

@@ -5,11 +5,16 @@
 //! the reply:
 //!
 //! ```text
-//! request:  {"m": "storage.get", "a": ["local", ["visits"]], "u": "<location.href>", "top": true}
+//! request:  {"m": "storage.get", "a": ["local", ["visits"]], "u": "<location.href>", "top": true, "t": "<token>"}
 //! reply:    {"v": <json>}      the call's result
 //!           {}                 the call returned undefined
 //!           rejected Promise   the call failed; the message is what chrome.runtime.lastError shows
 //! ```
+//!
+//! `t` is the extension-page token: the page handler lives in the default world, where
+//! any document in the same view could reach it, so a call is honoured only when it
+//! carries the secret the page bootstrap (injected into that extension's documents only)
+//! was given. Content scripts talk to a handler in their isolated world and send no token.
 //!
 //! Rust → JS goes the other way through `evaluate_javascript` (fire-and-forget events,
 //! see [`emit_source`]) and `call_async_javascript_function` (message dispatch, which
@@ -36,6 +41,24 @@ pub struct Call {
     pub url: Option<String>,
     #[serde(rename = "top", default)]
     pub top_frame: bool,
+    /// The extension-page token (see the module docs); absent from content scripts.
+    #[serde(rename = "t", default)]
+    pub token: Option<String>,
+}
+
+/// The shim with `config` bound: `api.js` is one function expression taking the
+/// context's configuration, so the bootstrap declares nothing in the global scope and
+/// may run any number of times in one world (each `content_scripts` entry, then
+/// `scripting.executeScript`); the shim's own `__vsesvit` guard makes repeats no-ops.
+pub fn bootstrap(config: &Value) -> String {
+    format!("{}({});\n", crate::API_JS.trim_end(), config)
+}
+
+/// A JavaScript expression that is true only when evaluated in a document of the
+/// extension whose URL host is `host`. Both `location` accessors are unforgeable, so a
+/// web page that happens to share the view cannot make it true.
+pub fn page_guard(host: &str) -> String {
+    format!("(location.protocol === \"chrome-extension:\" && location.host === {})", js_string(host))
 }
 
 impl Call {
@@ -285,6 +308,12 @@ pub fn emit_source(event: &str, args: &[Value]) -> String {
     s
 }
 
+/// [`emit_source`] for the main world of a tab that may or may not show one of the
+/// extension's own pages: outside them it evaluates nothing, not even the arguments.
+pub fn emit_source_in_page(host: &str, event: &str, args: &[Value]) -> String {
+    format!("{} && {}", page_guard(host), emit_source(event, args))
+}
+
 /// Body for `call_async_javascript_function`: delivers `message` to the context's
 /// `runtime.onMessage` listeners and resolves with a [`Dispatched`].
 pub fn dispatch_source(message: &Value, sender: &Sender) -> String {
@@ -294,6 +323,11 @@ pub fn dispatch_source(message: &Value, sender: &Sender) -> String {
         js_literal(message),
         js_literal(&sender)
     )
+}
+
+/// [`dispatch_source`] guarded like [`emit_source_in_page`].
+pub fn dispatch_source_in_page(host: &str, message: &Value, sender: &Sender) -> String {
+    format!("if (!{}) return {{ none: true }}; {}", page_guard(host), dispatch_source(message, sender))
 }
 
 /// A JSON value as a JavaScript expression. JSON is a JavaScript subset since ES2019
@@ -373,5 +407,50 @@ mod tests {
         assert!(d.starts_with("if (!globalThis.__vsesvit) return { none: true };"));
         assert!(d.contains(r#"dispatchMessage({"type":"hello"}, {"id":"ext","url":"http://x/"})"#), "{d}");
         assert_eq!(js_string("a\"b</script>"), r#""a\"b</script>""#);
+    }
+
+    #[test]
+    fn page_calls_carry_a_token_and_content_calls_do_not() {
+        let page = Call::from_json(r#"{"m":"tabs.query","a":[{}],"t":"s3cret"}"#).unwrap();
+        assert_eq!(page.token.as_deref(), Some("s3cret"));
+        let content = Call::from_json(r#"{"m":"storage.get","a":["local",null]}"#).unwrap();
+        assert_eq!(content.token, None);
+    }
+
+    /// Two `content_scripts` entries run as two user scripts in one world, so the
+    /// bootstrap may not declare anything at the top level (a repeated `const` is a
+    /// SyntaxError before the shim's own guard can run).
+    #[test]
+    fn bootstrap_declares_nothing_global_and_binds_the_config_as_an_argument() {
+        let config = json!({ "id": "twin@vsesvit.test", "host": "0123456789abcdef0123456789abcdef", "handler": "h", "kind": "page", "token": "s3cret" });
+        let src = bootstrap(&config);
+        assert!(src.starts_with("(function (config)"), "{}", &src[..60]);
+        assert!(src.trim_end().ends_with(&format!("}})({config});")), "{}", &src[src.len() - 120..]);
+        assert!(!src.contains("__VSESVIT_CONFIG__"), "the config must not be a global binding");
+        for decl in ["\nconst ", "\nlet ", "\nvar "] {
+            assert!(!src.contains(decl), "top-level {decl:?} declaration in the bootstrap");
+        }
+        assert_eq!(src.matches("(function (config)").count(), 1);
+    }
+
+    /// The shim's structural contracts with the Rust side: URLs are built on the URL host
+    /// (a Gecko id is not a valid host, see `extension::url_host`), and every page call
+    /// carries the token.
+    #[test]
+    fn shim_uses_the_url_host_and_sends_the_token() {
+        let shim = crate::API_JS;
+        assert!(shim.contains(r#"const baseUrl = "chrome-extension://" + config.host + "/";"#), "getURL must use config.host");
+        assert!(!shim.contains(r#""chrome-extension://" + config.id"#));
+        assert!(shim.contains("t: config.token"), "calls must carry the page token");
+    }
+
+    #[test]
+    fn page_guards_wrap_the_sources() {
+        let guard = page_guard("abc");
+        assert_eq!(guard, r#"(location.protocol === "chrome-extension:" && location.host === "abc")"#);
+        let e = emit_source_in_page("abc", "alarms.onAlarm", &[json!({"name": "n"})]);
+        assert_eq!(e, format!("{guard} && {}", emit_source("alarms.onAlarm", &[json!({"name": "n"})])));
+        let d = dispatch_source_in_page("abc", &json!(1), &Sender::default());
+        assert!(d.starts_with(&format!("if (!{guard}) return {{ none: true }}; if (!globalThis.__vsesvit)")), "{d}");
     }
 }

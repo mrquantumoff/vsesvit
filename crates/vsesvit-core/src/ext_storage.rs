@@ -62,6 +62,7 @@ pub enum StorageError {
 pub struct SyncItemRecord {
     pub ext: ExtensionId,
     pub key: String,
+    #[serde(with = "crate::crdt::json_register")]
     pub value: Lww<Option<JsonText>>,
 }
 

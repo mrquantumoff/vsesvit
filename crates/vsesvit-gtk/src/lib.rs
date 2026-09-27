@@ -24,6 +24,8 @@ pub mod screenshot;
 mod self_test;
 mod session;
 mod tab;
+#[cfg(test)]
+mod test_support;
 mod updates;
 mod window;
 mod zoom;

@@ -8,8 +8,10 @@
 //! - `Overridable` keys reach the page first and are taken only if it does not
 //!   `preventDefault()` them, which is how Chromium treats non-reserved browser shortcuts.
 //!
-//! The script reports keys with `chrome.webview.postMessage`, tagged with a per-process nonce so
-//! a page cannot forge them by posting its own messages.
+//! The script runs in an isolated world, created through the DevTools protocol before the page's
+//! own scripts: it shares the page's DOM but none of its JavaScript objects, so the page cannot
+//! redefine what the script reads a key press through. It reports through a DevTools binding that
+//! exists only in that world, so the page can neither see nor send its messages.
 
 use serde_json::Value;
 
@@ -133,7 +135,7 @@ pub(crate) const BINDINGS: &[Binding] = &[
     bind(vk::F, Mods::CTRL, C::Find, Native),
 ];
 
-/// A message the injected page script posted to the host.
+/// A message the shortcut script sent to the host.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PageMessage {
     Key(Command),
@@ -142,11 +144,37 @@ pub(crate) enum PageMessage {
     BackgroundLink(String),
 }
 
-pub(crate) fn parse_page_message(message: &str, nonce: &str) -> Option<PageMessage> {
-    let value: Value = serde_json::from_str(message).ok()?;
-    if value.get("vsesvit")?.as_str()? != nonce {
+/// The binding the script reports through (`Runtime.bindingCalled` events carry its name).
+pub(crate) const BINDING: &str = "vsesvitShortcut";
+
+/// The script and the isolated world it runs in.
+pub(crate) struct PageScript {
+    /// Secret: the engine exposes the binding to every world of this name, and extensions'
+    /// content scripts run in worlds named after the extension.
+    pub world: String,
+    pub source: String,
+}
+
+impl PageScript {
+    pub fn new(secret: &str) -> Self {
+        Self {
+            world: format!("vsesvit-{secret}"),
+            source: page_script(),
+        }
+    }
+}
+
+/// A `Runtime.bindingCalled` event's parameters: a message if it is a call of `BINDING`.
+pub(crate) fn parse_binding_call(event: &str) -> Option<PageMessage> {
+    let value: Value = serde_json::from_str(event).ok()?;
+    if value.get("name")?.as_str()? != BINDING {
         return None;
     }
+    parse_page_message(value.get("payload")?.as_str()?)
+}
+
+fn parse_page_message(message: &str) -> Option<PageMessage> {
+    let value: Value = serde_json::from_str(message).ok()?;
     match value.get("t")?.as_str()? {
         "key" => {
             let vk = u16::try_from(value.get("vk")?.as_u64()?).ok()?;
@@ -163,9 +191,8 @@ pub(crate) fn parse_page_message(message: &str, nonce: &str) -> Option<PageMessa
     }
 }
 
-/// The script added to every tab with `AddScriptToExecuteOnDocumentCreatedAsync`. It keeps its
-/// own references to `postMessage` and `JSON.stringify`, taken before any page script runs.
-pub(crate) fn page_script(nonce: &str) -> String {
+/// The script every new top-level document runs in the shortcut world.
+fn page_script() -> String {
     let keys = |kind: InPage| {
         BINDINGS
             .iter()
@@ -176,28 +203,26 @@ pub(crate) fn page_script(nonce: &str) -> String {
     };
     format!(
         r#"(() => {{
-  const webview = globalThis.chrome && chrome.webview;
-  if (!webview || window !== window.top) return;
-  const post = webview.postMessage.bind(webview);
-  const stringify = JSON.stringify;
-  const nonce = "{nonce}";
+  const report = globalThis.{binding};
+  if (typeof report !== "function" || window !== window.top) return;
   const reserved = new Set([{reserved}]);
   const overridable = new Set([{overridable}]);
   const chord = (e) => e.keyCode + ":" + ((e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0));
   const send = (e) => {{
     e.preventDefault();
     e.stopImmediatePropagation();
-    post(stringify({{ vsesvit: nonce, t: "key", vk: e.keyCode, m: (e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0) }}));
+    report(JSON.stringify({{ t: "key", vk: e.keyCode, m: (e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0) }}));
   }};
   addEventListener("keydown", (e) => {{ if (e.isTrusted && reserved.has(chord(e))) send(e); }}, true);
   addEventListener("keydown", (e) => {{ if (e.isTrusted && !e.defaultPrevented && overridable.has(chord(e))) send(e); }}, false);
   const link = (e) => {{
     const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
-    if (a) post(stringify({{ vsesvit: nonce, t: "link", url: a.href }}));
+    if (a) report(JSON.stringify({{ t: "link", url: a.href }}));
   }};
   addEventListener("click", (e) => {{ if (e.isTrusted && (e.ctrlKey || e.metaKey) && !e.shiftKey) link(e); }}, true);
   addEventListener("auxclick", (e) => {{ if (e.isTrusted && e.button === 1 && !e.shiftKey) link(e); }}, true);
 }})();"#,
+        binding = BINDING,
         reserved = keys(Reserved),
         overridable = keys(Overridable),
     )
@@ -239,46 +264,58 @@ mod tests {
         assert_eq!(lookup(0x54, Mods::ALT), None);
     }
 
+    /// A `Runtime.bindingCalled` event as WebView2 hands it over.
+    fn called(name: &str, payload: &str) -> String {
+        serde_json::json!({ "name": name, "payload": payload, "executionContextId": 7 }).to_string()
+    }
+
     #[test]
-    fn page_messages_need_the_nonce() {
-        let key = r#"{"vsesvit":"n1","t":"key","vk":87,"m":1}"#;
+    fn only_calls_of_the_shortcut_binding_count() {
+        let key = r#"{"t":"key","vk":87,"m":1}"#;
         assert_eq!(
-            parse_page_message(key, "n1"),
+            parse_binding_call(&called(BINDING, key)),
             Some(PageMessage::Key(Command::CloseTab))
         );
-        assert_eq!(parse_page_message(key, "n2"), None);
-        assert_eq!(
-            parse_page_message(r#"{"t":"key","vk":87,"m":1}"#, "n1"),
-            None
-        );
+        assert_eq!(parse_binding_call(&called("other", key)), None);
+        assert_eq!(parse_binding_call(r#"{"payload":"{}"}"#), None);
     }
 
     #[test]
     fn pages_cannot_trigger_native_bindings_or_garbage() {
-        let reload = r#"{"vsesvit":"n","t":"key","vk":82,"m":1}"#;
-        assert_eq!(parse_page_message(reload, "n"), None);
-        assert_eq!(
-            parse_page_message(r#"{"vsesvit":"n","t":"key","vk":87,"m":9}"#, "n"),
-            None
-        );
-        assert_eq!(parse_page_message("not json", "n"), None);
+        let reload = r#"{"t":"key","vk":82,"m":1}"#;
+        assert_eq!(parse_binding_call(&called(BINDING, reload)), None);
+        let bad_mods = r#"{"t":"key","vk":87,"m":9}"#;
+        assert_eq!(parse_binding_call(&called(BINDING, bad_mods)), None);
+        assert_eq!(parse_binding_call(&called(BINDING, "not json")), None);
+        assert_eq!(parse_binding_call("not json"), None);
     }
 
     #[test]
     fn link_hints_parse() {
-        let link = r#"{"vsesvit":"n","t":"link","url":"https://a.test/x"}"#;
+        let link = r#"{"t":"link","url":"https://a.test/x"}"#;
         assert_eq!(
-            parse_page_message(link, "n"),
+            parse_binding_call(&called(BINDING, link)),
             Some(PageMessage::BackgroundLink("https://a.test/x".into()))
         );
     }
 
     #[test]
     fn script_lists_only_page_handled_keys() {
-        let script = page_script("abc");
+        let script = page_script();
         assert!(script.contains("\"87:1\""), "Ctrl+W is reserved");
         assert!(script.contains("\"68:1\""), "Ctrl+D is overridable");
         assert!(!script.contains("\"82:1\""), "Ctrl+R is left to WebView2");
-        assert!(script.contains("const nonce = \"abc\""));
+    }
+
+    #[test]
+    fn the_script_reports_only_through_its_binding() {
+        let script = PageScript::new("q7x9secret");
+        assert_eq!(script.world, "vsesvit-q7x9secret");
+        assert!(script.source.contains(&format!("globalThis.{BINDING};")));
+        assert!(!script.source.contains("webview"));
+        assert!(
+            !script.source.contains("q7x9secret"),
+            "the world's name stays out of the page"
+        );
     }
 }

@@ -260,7 +260,8 @@ impl<T: Lattice> Lattice for Record<T> {
 
 /// Canonical JSON (the `serde_json::to_string` form of a `Value`, object keys sorted).
 /// `Ord` by bytes so it can sit inside an `Lww`. Prefs, `storage.sync` values and
-/// unknown fields use it.
+/// unknown fields use it. On the wire it is the JSON value itself, which is what
+/// [`Extra`] needs; an `Lww<Option<JsonText>>` register uses [`json_register`] instead.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "serde_json::Value", from = "serde_json::Value")]
 pub struct JsonText(String);
@@ -295,6 +296,41 @@ impl From<JsonText> for serde_json::Value {
 impl From<serde_json::Value> for JsonText {
     fn from(v: serde_json::Value) -> Self {
         JsonText::from_value(&v)
+    }
+}
+
+/// Serde form of an `Lww<Option<JsonText>>` register (prefs, `storage.sync` items):
+/// `{"v": "<canonical json>" | null, "at": "<stamp>"}`, the two states of the DB column.
+///
+/// The value travels as text rather than as the JSON value itself because the value may
+/// be JSON `null`, which `Option` would read back as "no value" (a reset or removal). A
+/// peer would then drop the key, and a device re-downloading its own upload would merge it
+/// as different and re-upload it every round. `Extra` keeps the value form: a newer
+/// build's typed field must come back exactly as it was sent.
+pub mod json_register {
+    use std::borrow::Cow;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::{JsonText, Lww, Stamp};
+
+    #[derive(Serialize, Deserialize)]
+    struct Wire<'a> {
+        v: Option<Cow<'a, str>>,
+        at: Stamp,
+    }
+
+    pub fn serialize<S: Serializer>(reg: &Lww<Option<JsonText>>, s: S) -> Result<S::Ok, S::Error> {
+        Wire { v: reg.v.as_ref().map(|j| Cow::Borrowed(j.as_str())), at: reg.at }.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Lww<Option<JsonText>>, D::Error> {
+        let Wire { v, at } = Wire::deserialize(d)?;
+        let v = match v {
+            None => None,
+            Some(text) => Some(JsonText::parse(&text).ok_or_else(|| serde::de::Error::custom("value is not JSON"))?),
+        };
+        Ok(Lww { v, at })
     }
 }
 

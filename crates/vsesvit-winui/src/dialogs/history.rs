@@ -158,16 +158,16 @@ impl Page {
         };
         let _ = items.Clear();
         let now = now_ms();
-        for entry in &entries {
-            match row(entry, now) {
-                Ok(row) => {
-                    let _ = items.Append(&row);
-                }
+        // Only entries that got a row, so a row's index always finds its own entry.
+        let mut shown = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match row(&entry, now).and_then(|row| items.Append(&row)) {
+                Ok(()) => shown.push(entry),
                 Err(e) => log::warn!("history row: {e}"),
             }
         }
-        let _ = xaml::set_visible(&self.empty, entries.is_empty());
-        *self.shown.borrow_mut() = entries;
+        let _ = xaml::set_visible(&self.empty, shown.is_empty());
+        *self.shown.borrow_mut() = shown;
     }
 
     fn selected(&self) -> Option<HistoryEntry> {

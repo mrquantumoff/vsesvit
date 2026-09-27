@@ -1,4 +1,4 @@
-//! Content scripts and CSS as WebKit user content, and the shim bootstrap source.
+//! Content scripts and CSS as WebKit user content.
 
 use std::path::Path;
 
@@ -8,14 +8,10 @@ use crate::dnr;
 use crate::patterns;
 use crate::runtime::LoadError;
 
-/// `api.js` with the per-context configuration prepended.
-pub(crate) fn bootstrap(config: &serde_json::Value) -> String {
-    format!("const __VSESVIT_CONFIG__ = {};\n{}", config, crate::API_JS)
-}
-
 /// One `UserScript` per `content_scripts` entry (its files concatenated in order, in the
 /// extension's world, with the bootstrap in front so `chrome` exists before the first
-/// line runs) and one `UserStyleSheet` per entry with CSS.
+/// line runs; every entry carries it, since WebKit gives no order between user scripts)
+/// and one `UserStyleSheet` per entry with CSS.
 pub(crate) fn user_content(
     dir: &Path,
     manifest: &Manifest,

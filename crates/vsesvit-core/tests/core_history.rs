@@ -1,12 +1,14 @@
 //! History through the API: visits, titles, search, deletion directives, the 64-visit cap.
 
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use vsesvit_core::crdt::{DeviceId, Seq, TimeSource};
-use vsesvit_core::history::{PageRecord, Transition, MAX_VISITS};
-use vsesvit_core::sync::Kind;
+use vsesvit_core::crdt::{DeviceId, Extra, Lww, Seq, Stamp, TimeSource};
+use vsesvit_core::history::{PageRecord, Transition, Visit, MAX_VISITS};
+use vsesvit_core::prefs::{keys, Theme};
+use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::{OpenOptions, Profile, Url};
 
 struct TempDir(PathBuf);
@@ -122,4 +124,76 @@ fn delete_url_and_delete_range() {
     p.history().delete_range(0, i64::MAX).unwrap();
     assert!(pages(&mut p).is_empty());
     assert!(p.history().visits_between(0, i64::MAX, 10).unwrap().is_empty());
+}
+
+fn visit(at_ms: i64, device: u64, transition: Transition) -> Visit {
+    Visit { at_ms, device: DeviceId(device), transition }
+}
+
+fn page_wire(page: &PageRecord) -> WireRecord {
+    WireRecord { kind: Kind::HistoryPages, id: page.url.to_string(), body: serde_json::to_vec(page).unwrap() }
+}
+
+/// The table keys visits by `(url, at_ms, device)`. A record from a peer (buggy, hostile,
+/// or a copied profile) may hold two visits for one such key that differ only in
+/// transition. Storing it must not fail, let alone roll back the batch it arrived in.
+#[test]
+fn a_record_with_two_transitions_at_one_visit_key_is_stored_as_one_visit_and_repaired() {
+    let (mut p, _time, _dir) = open();
+    let a = url("https://a.example/");
+    let visits: BTreeSet<Visit> = [visit(100, 7, Transition::Link), visit(100, 7, Transition::Typed), visit(50, 7, Transition::Link)].into();
+    let doubled = PageRecord { url: a.clone(), title: Lww::new(String::new(), Stamp::ZERO), visits, extra: Extra::default() };
+    let good = PageRecord {
+        url: url("https://b.example/"),
+        title: Lww::new(String::new(), Stamp::ZERO),
+        visits: [visit(1, 7, Transition::Link)].into(),
+        extra: Extra::default(),
+    };
+    let cursor = p.sync().changes_since(Kind::HistoryPages, Seq::ZERO, usize::MAX).unwrap().upto;
+
+    let report = p.sync().apply(vec![page_wire(&doubled), page_wire(&good)]).unwrap();
+    assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+    assert_eq!(report.merged, 2);
+    assert!(report.changed.history);
+    let stored = pages(&mut p);
+    assert_eq!(stored.len(), 2, "the other record in the batch is applied too");
+    let page = stored.iter().find(|pg| pg.url == a).unwrap();
+    assert_eq!(page.visits, [visit(50, 7, Transition::Link), visit(100, 7, Transition::Typed)].into(), "one visit per key, the greatest transition");
+    assert_eq!(p.history().search("a.example", 1).unwrap()[0].typed_count, 1);
+
+    // The stored form differs from the incoming record, so it is re-uploaded to repair the
+    // server copy; the repaired record then applies as a no-op everywhere.
+    let pending = p.sync().changes_since(Kind::HistoryPages, cursor, usize::MAX).unwrap();
+    let repaired: Vec<PageRecord> = pending.records.iter().map(|w| serde_json::from_slice(&w.body).unwrap()).collect();
+    assert!(repaired.iter().any(|pg| pg == page), "the canonical record is pending upload: {repaired:?}");
+    let report = p.sync().apply(vec![page_wire(page)]).unwrap();
+    assert_eq!((report.merged, report.unchanged), (0, 1));
+    assert!(p.sync().changes_since(Kind::HistoryPages, pending.upto, usize::MAX).unwrap().records.is_empty(), "no echo");
+}
+
+/// A copied profile directory shares its device id. Two such devices visiting the same
+/// page in the same millisecond with different transitions produce the duplicate key
+/// through the ordinary API, not through a crafted record.
+#[test]
+fn copied_profiles_visiting_in_the_same_millisecond_still_merge() {
+    let (mut a, _ta, _da) = open();
+    let (mut b, _tb, _db) = open(); // same DeviceId(3), same clock start
+    let u = url("https://a.example/");
+    a.history().record_visit(&u, Transition::Link).unwrap();
+    b.history().record_visit(&u, Transition::Typed).unwrap();
+    b.prefs().set(&keys::THEME, &Theme::Dark).unwrap();
+    let mut batch = b.sync().changes_since(Kind::HistoryPages, Seq::ZERO, usize::MAX).unwrap().records;
+    batch.extend(b.sync().changes_since(Kind::Prefs, Seq::ZERO, usize::MAX).unwrap().records);
+
+    let report = a.sync().apply(batch).unwrap();
+    assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+    assert_eq!(a.prefs().get(&keys::THEME), Theme::Dark, "an unrelated record in the same batch survives");
+    let page = &pages(&mut a)[0];
+    assert_eq!(page.visits.len(), 1);
+    assert_eq!(page.visits.first().unwrap().transition, Transition::Typed);
+    assert_eq!(a.history().search("a.example", 1).unwrap()[0].visit_count, 1);
+    // b, once it holds a's record, agrees byte for byte
+    let from_a = a.sync().changes_since(Kind::HistoryPages, Seq::ZERO, usize::MAX).unwrap().records;
+    b.sync().apply(from_a.clone()).unwrap();
+    assert_eq!(b.sync().changes_since(Kind::HistoryPages, Seq::ZERO, usize::MAX).unwrap().records, from_a);
 }

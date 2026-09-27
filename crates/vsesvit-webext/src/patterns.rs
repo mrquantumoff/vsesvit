@@ -76,6 +76,15 @@ pub fn glob(pattern: &str, text: &str) -> bool {
     p[pi..].iter().all(|&c| c == b'*')
 }
 
+/// The extension-relative path a runtime API argument names. Chrome resolves these
+/// against the extension root, so `/x.js` is `x.js`, and an absolute URL of the
+/// extension itself (`chrome.runtime.getURL(..)`, accepted by `action.setPopup` and
+/// friends) is its path. `base_url` is `chrome-extension://<host>/`.
+pub fn resource_path<'a>(base_url: &str, reference: &'a str) -> &'a str {
+    let path = reference.strip_prefix(base_url).or_else(|| (reference == base_url.trim_end_matches('/')).then_some("")).unwrap_or(reference);
+    path.trim_start_matches('/')
+}
+
 /// May a document at `page_url` load `path` (no leading slash) from an extension whose
 /// `web_accessible_resources` entries are `(resources, matches)`? An entry with no
 /// `matches` (MV2 lists only resources) is open to every site.
@@ -122,5 +131,17 @@ mod tests {
         assert!(!web_accessible([(&res[..], &sites[..])], "secret.js", "https://www.allowed.test/"));
         assert!(web_accessible([(&res[..], &none[..])], "public.js", "https://anything.test/"));
         assert!(!web_accessible(std::iter::empty(), "public.js", "https://anything.test/"));
+    }
+
+    #[test]
+    fn resource_references_resolve_against_the_extension_root() {
+        let base = "chrome-extension://abc/";
+        assert_eq!(resource_path(base, "content.js"), "content.js");
+        assert_eq!(resource_path(base, "/content.js"), "content.js");
+        assert_eq!(resource_path(base, "//images/on.png"), "images/on.png");
+        assert_eq!(resource_path(base, "chrome-extension://abc/popup.html"), "popup.html");
+        assert_eq!(resource_path(base, "chrome-extension://abc"), "");
+        assert_eq!(resource_path(base, "chrome-extension://other/popup.html"), "chrome-extension://other/popup.html");
+        assert_eq!(resource_path(base, ""), "");
     }
 }

@@ -66,8 +66,7 @@ pub(crate) struct Browser {
     config: Config,
     profile: RefCell<Profile>,
     engine: Engine,
-    page_nonce: String,
-    page_script: Rc<str>,
+    page_script: Rc<shortcuts::PageScript>,
     windows: RefCell<Vec<Rc<BrowserWindow>>>,
     closed_tabs: RefCell<Vec<ClosedTab>>,
     next_tab_id: Cell<u64>,
@@ -113,8 +112,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         profile_open_ms,
     } = launch;
     let engine = Engine::create(&profile.paths().engine_data).await?;
-    let page_nonce = nonce();
-    let page_script: Rc<str> = shortcuts::page_script(&page_nonce).into();
+    let page_script = Rc::new(shortcuts::PageScript::new(&secret()));
     let prefs = WindowPrefs {
         tabs: profile.prefs().get(&keys::TABS_POSITION),
         pane_collapsed: profile.prefs().get(&TAB_PANE_COLLAPSED),
@@ -130,7 +128,6 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         config,
         profile: RefCell::new(profile),
         engine,
-        page_nonce,
         page_script,
         windows: RefCell::new(Vec::new()),
         closed_tabs: RefCell::new(Vec::new()),
@@ -193,8 +190,8 @@ pub(crate) fn current() -> Option<Rc<Browser>> {
     BROWSER.with_borrow(Clone::clone)
 }
 
-/// Unguessable by pages: `RandomState` keys come from the OS random source.
-fn nonce() -> String {
+/// Unguessable: `RandomState` keys come from the OS random source.
+fn secret() -> String {
     let a = RandomState::new().hash_one(std::process::id());
     let b = RandomState::new().hash_one(std::time::SystemTime::now());
     format!("{a:016x}{b:016x}")
@@ -231,11 +228,7 @@ impl Browser {
         &self.engine
     }
 
-    pub fn page_nonce(&self) -> &str {
-        &self.page_nonce
-    }
-
-    pub fn page_script(&self) -> Rc<str> {
+    pub fn page_script(&self) -> Rc<shortcuts::PageScript> {
         self.page_script.clone()
     }
 

@@ -1,0 +1,1 @@
+Both clippy passes are clean (Windows and Linux, exit 0); the workspace tests and the old-runtime harness are still running. Everything left depends on those finishing (the Linux self-test needs the WSL target dir free), so I'm waiting on the monitor's notification.

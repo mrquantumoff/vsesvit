@@ -201,12 +201,20 @@ pub enum Verification {
     Unpacked,
 }
 
+impl Verification {
+    /// The id is the hash of a developer key this device saw sign the package. A manifest
+    /// `key` proves nothing: it is a public key.
+    fn binds_key(&self) -> bool {
+        matches!(self, Verification::ChromeWebStore { .. } | Verification::LocalCrx)
+    }
+}
+
 /// What a shell loads into its engine.
 #[derive(Clone, Debug)]
 pub struct InstalledExtension {
     pub id: ExtensionId,
     pub version: String,
-    /// Absolute. Managed installs: `<root>/extensions/<id>/<version>_<hash8>`, immutable,
+    /// Absolute. Managed installs: `<root>/extensions/<id>/<version>_<hash32>`, immutable,
     /// since WebView2 drops an extension whose files change. Unpacked: the developer's dir.
     pub dir: PathBuf,
     /// Parsed and localized at install time. The dir is immutable, so this never goes stale.
@@ -219,8 +227,8 @@ pub struct InstalledExtension {
     /// (`CoreWebView2BrowserExtension.Id`), recorded by the Windows shell.
     /// `None` means the engine has not loaded the current dir yet: a fresh install,
     /// or an update. `commit` clears it whenever `dir` changes. It equals `id` when the
-    /// manifest carries `key` (every CRX install) and differs for XPI and keyless unpacked
-    /// installs, which is why it is stored.
+    /// manifest carries `key` (every CRX install) and differs for XPI (whose `key` is
+    /// removed at install) and keyless unpacked installs, which is why it is stored.
     pub engine_id: Option<String>,
 }
 
@@ -253,7 +261,13 @@ impl Extensions<'_> {
 
     /// Cheap and synchronous: allocates a staging dir name and captures the paths and
     /// `chrome_version` the job needs. Performs no I/O beyond that. `Intent::User`.
+    /// Refuses a path that is not Unicode: the source is stored as JSON, which cannot spell it.
     pub fn prepare_install(&mut self, source: InstallSource) -> Result<InstallJob, Error> {
+        if let InstallSource::CrxFile { path } | InstallSource::XpiFile { path } | InstallSource::Unpacked { dir: path } = &source
+            && path.to_str().is_none()
+        {
+            return Err(InstallError::PathNotUnicode(path.clone()).into());
+        }
         Ok(self.job(source, Intent::User))
     }
 
@@ -262,15 +276,16 @@ impl Extensions<'_> {
     /// 1. `Intent::Reconcile`: returns `Ok(None)` and discards the files if the desired
     ///    record no longer wants this extension (it was uninstalled on another device
     ///    while we downloaded). Reconcile commits never touch desired state.
-    /// 2. If the staged version is older than the installed one, keep the installed one.
-    /// 3. If `extensions/<id>/<version>_<hash8>` exists, it is complete (only a finished
-    ///    staging dir is ever renamed into place), so drop the staged copy. Otherwise
-    ///    rename the staging root into place (same volume, atomic).
-    /// 4. `Intent::User` with a store source: `installed := true`, `store := ..`. A new
+    /// 2. Refuse an id this install may not take (see `check_id`).
+    /// 3. If the staged version is older than the installed one, keep the installed one.
+    /// 4. If `extensions/<id>/<version>_<hash32>` exists, it is complete (only a finished
+    ///    staging dir is ever renamed into place, and dirs leave by a rename too), so drop
+    ///    the staged copy. Otherwise rename the staging root into place (same volume, atomic).
+    /// 5. `Intent::User` with a store source: `installed := true`, `store := ..`. A new
     ///    record starts `enabled := true`; re-installing keeps the current enabled state.
     ///    Unchanged registers mint no stamp, so re-running an install of the same
     ///    version changes nothing and causes no sync traffic.
-    /// 5. Upsert the `extension_installs` row. Crash after the rename but before the
+    /// 6. Upsert the `extension_installs` row. Crash after the rename but before the
     ///    commit leaves an unreferenced dir that the next open GCs or the next install reuses.
     pub fn commit(&mut self, staged: StagedInstall) -> Result<Option<InstalledExtension>, Error> {
         let StagedInstall { id, version, source, intent, files, manifest, verification } = staged;
@@ -279,6 +294,7 @@ impl Extensions<'_> {
         }
         let wanted_store = source.store().filter(|_| intent == Intent::User);
         let existing = self.row(&id)?;
+        self.check_id(&id, &verification, existing.as_ref())?;
         if let Some(row) = &existing
             && cmp_versions(&version, &row.version) == Ordering::Less
         {
@@ -338,15 +354,18 @@ impl Extensions<'_> {
         })
     }
 
-    /// Store installs: `installed := false` (synced). Deletes the local row and
+    /// Store installs: `installed := false` (synced). A local install that took a store
+    /// extension's id never wrote the synced record, so removing it leaves the record
+    /// alone, and `reconcile` brings the store copy back. Deletes the local row and
     /// `storage.local`, and keeps `storage.sync` (Chrome keeps it too, so a reinstall gets
     /// its settings back). Dir removal is best effort. If the engine still holds files
     /// open, GC at next open removes the dir. A developer's unpacked dir is never touched.
     pub fn uninstall(&mut self, id: &ExtensionId) -> Result<(), Error> {
         let row = self.row(id)?;
+        let owns_desired = row.as_ref().is_none_or(|r| r.source.store().is_some());
         self.p.write(|tx| {
             let mut was_wanted = false;
-            if let Some(mut rec) = ExtensionsTable::load(&tx.sql, id.as_str())? {
+            if owns_desired && let Some(mut rec) = ExtensionsTable::load(&tx.sql, id.as_str())? {
                 was_wanted = rec.installed.v;
                 if set_register(tx, &mut rec.installed, false) {
                     let seq = tx.seq();
@@ -359,7 +378,7 @@ impl Extensions<'_> {
             delete_local(tx, id)
         })?;
         if row.is_some_and(|r| r.is_managed()) {
-            let _ = fs::remove_dir_all(self.p.paths.extensions.join(id.as_str()));
+            remove_whole(&self.p.paths.extensions.join(id.as_str()), &self.p.paths.staging);
         }
         Ok(())
     }
@@ -484,6 +503,35 @@ impl Extensions<'_> {
             self.p.conn.query_row("SELECT installed FROM extensions WHERE id = ?1", [id.as_str()], |r| r.get::<_, bool>(0)).optional()?;
         Ok(installed.unwrap_or(false))
     }
+
+    /// An install may not take:
+    /// - the id of a signature-verified package, installed here or wanted from the Chrome
+    ///   Web Store, unless it verified a developer key too (the id is that key's hash, so
+    ///   it is the same key). The id owns the extension's storage and engine identity.
+    /// - an id that differs from an installed one only in letter case, since on Windows
+    ///   both would share `extensions/<id>`.
+    fn check_id(&self, id: &ExtensionId, verification: &Verification, existing: Option<&InstallRow>) -> Result<(), Error> {
+        if !verification.binds_key() {
+            let wanted_from_cws = self
+                .p
+                .conn
+                .query_row("SELECT 1 FROM extensions WHERE id = ?1 AND installed AND store = 'chrome_web_store'", [id.as_str()], |_| Ok(()))
+                .optional()?
+                .is_some();
+            if wanted_from_cws || existing.is_some_and(|r| r.verification.binds_key()) {
+                return Err(InstallError::VerifiedIdTaken(id.as_str().to_owned()).into());
+            }
+        }
+        let other: Option<String> = self
+            .p
+            .conn
+            .query_row("SELECT id FROM extension_installs WHERE id = ?1 COLLATE NOCASE AND id <> ?1", [id.as_str()], |r| r.get(0))
+            .optional()?;
+        match other {
+            Some(installed) => Err(InstallError::IdCaseConflict { id: id.as_str().to_owned(), installed }.into()),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Sets a synced register, minting a stamp only if the value changes.
@@ -551,6 +599,18 @@ fn place(staging: StagingDir, id_dir: &Path, dir_name: &str) -> Result<(), Error
     }
 }
 
+/// Best-effort delete of a dir under `extensions/` that never leaves part of it behind,
+/// because `place` takes an existing content-addressed dir as complete. Windows deletes
+/// file by file and stops at one another process holds open, so the dir is first renamed
+/// into `staging/`, which every open wipes. A rename Windows refuses (a file inside is
+/// open) leaves the dir whole, and the GC at next open tries again.
+fn remove_whole(path: &Path, staging: &Path) {
+    let trash = staging.join(uuid::Uuid::new_v4().simple().to_string());
+    if fs::rename(path, &trash).is_ok() {
+        let _ = fs::remove_dir_all(&trash).or_else(|_| fs::remove_file(&trash));
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
@@ -560,7 +620,7 @@ fn conversion_error(column: usize, e: impl std::error::Error + Send + Sync + 'st
 }
 
 enum StoredDir {
-    /// `<id>/<version>_<hash8>`, relative to `<root>/extensions`.
+    /// `<id>/<version>_<hash32>`, relative to `<root>/extensions`.
     Managed(String),
     InPlace(PathBuf),
 }
@@ -698,15 +758,17 @@ pub(crate) fn on_open(p: &mut Profile) -> Result<(), Error> {
         })?;
     }
 
-    let referenced: HashSet<&str> = present.iter().filter(|r| r.is_managed()).map(|r| r.dir.as_str()).collect();
+    // Compared ignoring case: on Windows `extensions/<id>` may be an existing dir spelled in
+    // another case, and `commit` keeps installed ids distinct ignoring case.
+    let referenced: HashSet<String> = present.iter().filter(|r| r.is_managed()).map(|r| r.dir.to_ascii_lowercase()).collect();
     let Ok(id_dirs) = fs::read_dir(&p.paths.extensions) else { return Ok(()) };
     for id_dir in id_dirs.flatten() {
         let id_name = id_dir.file_name().to_string_lossy().into_owned();
         if let Ok(versions) = fs::read_dir(id_dir.path()) {
             for version in versions.flatten() {
                 let rel = format!("{id_name}/{}", version.file_name().to_string_lossy());
-                if !referenced.contains(rel.as_str()) {
-                    let _ = fs::remove_dir_all(version.path()).or_else(|_| fs::remove_file(version.path()));
+                if !referenced.contains(&rel.to_ascii_lowercase()) {
+                    remove_whole(&version.path(), &p.paths.staging);
                 }
             }
         }
@@ -906,5 +968,72 @@ mod store_tests {
         assert_eq!(work.install.len(), 1);
         assert_eq!(work.install[0].source(), &InstallSource::Amo { slug_or_guid: "uBlock0@raymondhill.net".into() });
         assert!(t.p().extensions().set_enabled(&ExtensionId::parse("uBlock0@raymondhill.net").unwrap(), false).is_ok());
+    }
+
+    #[test]
+    fn removing_a_local_copy_leaves_the_store_extension_wanted() {
+        let mut t = TempProfile::new();
+        let staged = staged_from_store(&mut t, Intent::User);
+        t.p().extensions().commit(staged).unwrap().unwrap();
+        // The same extension from a local .crx: same developer key, so it may replace the store row.
+        let crx = InstallSource::CrxFile { path: t.dir.join("probe.crx") };
+        let staged = t.p().extensions().prepare_install(crx.clone()).unwrap().run(&mut |_| {}).unwrap();
+        assert_eq!(t.p().extensions().commit(staged).unwrap().unwrap().source, crx);
+
+        let before = desired(&mut t).unwrap();
+        t.p().extensions().uninstall(&probe_id()).unwrap();
+        assert_eq!(desired(&mut t).unwrap(), before, "a local copy does not own the synced record");
+        let work = t.p().extensions().reconcile().unwrap();
+        assert!(work.removed.is_empty());
+        let [job] = <[InstallJob; 1]>::try_from(work.install).ok().unwrap();
+        assert_eq!(job.source(), &InstallSource::ChromeWebStore { id: probe_id() }, "the store copy comes back");
+    }
+
+    #[test]
+    fn an_unpacked_dir_with_a_store_extension_key_cannot_take_its_id() {
+        use base64::Engine as _;
+        let mut t = TempProfile::new();
+        let dev = t.dir.join("dev");
+        fs::create_dir_all(&dev).unwrap();
+        for (name, bytes) in testkit::PROBE_FILES {
+            fs::write(dev.join(name), bytes).unwrap();
+        }
+        let key = base64::engine::general_purpose::STANDARD.encode(testkit::CrxKey::probe().public_key_der());
+        let manifest = String::from_utf8(testkit::PROBE_FILES[0].1.to_vec()).unwrap();
+        fs::write(dev.join("manifest.json"), manifest.replacen('{', &format!("{{\"key\": \"{key}\","), 1).replace("\"1.0.0\"", "\"9.0\""))
+            .unwrap();
+        let unpacked = |t: &mut TempProfile| {
+            let job = t.p().extensions().prepare_install(InstallSource::Unpacked { dir: dev.clone() }).unwrap();
+            let staged = job.run(&mut |_| {}).unwrap();
+            assert_eq!(staged.id, probe_id());
+            staged
+        };
+
+        // Wanted from the Chrome Web Store (another device installed it), not here yet.
+        t.p()
+            .write(|tx| {
+                let at = tx.stamp();
+                let rec = ExtensionRecord {
+                    id: probe_id(),
+                    store: Lww::new(StoreRef::ChromeWebStore, at),
+                    installed: Lww::new(true, at),
+                    enabled: Lww::new(true, at),
+                    extra: Extra::new(),
+                };
+                let seq = tx.seq();
+                ExtensionsTable::store(&tx.sql, &rec, seq)
+            })
+            .unwrap();
+        let staged = unpacked(&mut t);
+        assert!(matches!(t.p().extensions().commit(staged), Err(Error::Install(InstallError::VerifiedIdTaken(_)))));
+        assert!(t.p().extensions().list().unwrap().is_empty());
+
+        // Installed from the store here.
+        let staged = staged_from_store(&mut t, Intent::Reconcile);
+        t.p().extensions().commit(staged).unwrap().unwrap();
+        let staged = unpacked(&mut t);
+        assert!(matches!(t.p().extensions().commit(staged), Err(Error::Install(InstallError::VerifiedIdTaken(_)))));
+        let ext = t.p().extensions().get(&probe_id()).unwrap().unwrap();
+        assert_eq!((ext.version.as_str(), &ext.verification), ("1.0.0", &Verification::ChromeWebStore { publisher_verified: true }));
     }
 }

@@ -20,12 +20,16 @@ impl Drop for TempDir {
 }
 
 fn open() -> (Profile, TempDir) {
+    open_as(2)
+}
+
+fn open_as(device: u64) -> (Profile, TempDir) {
     let dir = TempDir(std::env::temp_dir().join(format!("vsesvit-stor-{}", uuid::Uuid::new_v4())));
     let p = Profile::open(
         &dir.0,
         OpenOptions {
-            time: TimeSource::Manual(Rc::new(Cell::new(1_780_000_000_000))),
-            new_device_id: Some(DeviceId(2)),
+            time: TimeSource::Manual(Rc::new(Cell::new(1_780_000_000_000 + device))),
+            new_device_id: Some(DeviceId(device)),
             ..OpenOptions::default()
         },
     )
@@ -90,6 +94,36 @@ fn only_the_sync_area_is_exported_and_removals_are_tombstones() {
     let ids: Vec<String> = p.sync().changes_since(Kind::ExtStorageSync, Seq::ZERO, usize::MAX).unwrap().records.into_iter().map(|w| w.id).collect();
     assert!(ids[0].starts_with("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:"));
     assert_eq!(ids[0].len(), 32 + 1 + 32);
+}
+
+/// `storage.sync.set({k: null})` stores the value `null`, as Chrome does. Every device must
+/// see it as a value, not as a removal, and a device's own upload must apply back as a no-op.
+#[test]
+fn a_null_value_is_a_value_on_every_device_and_never_echoes() {
+    let (mut a, _da) = open_as(2);
+    let (mut b, _db) = open_as(3);
+    let changes = a.ext_storage().set(&ext(), Area::Sync, items(&[("k", json!(null))])).unwrap();
+    assert_eq!(changes, [StorageChange { key: "k".into(), old_value: None, new_value: Some(json!(null)) }]);
+    assert_eq!(a.ext_storage().get(&ext(), Area::Sync, None).unwrap(), items(&[("k", json!(null))]));
+    let upload = a.sync().changes_since(Kind::ExtStorageSync, Seq::ZERO, usize::MAX).unwrap();
+
+    let report = b.sync().apply(upload.records.clone()).unwrap();
+    assert_eq!(report.merged, 1);
+    assert_eq!(b.ext_storage().get(&ext(), Area::Sync, None).unwrap(), items(&[("k", json!(null))]), "the peer holds k = null");
+    assert_eq!(report.changed.ext_storage, [(ext(), vec![StorageChange { key: "k".into(), old_value: None, new_value: Some(json!(null)) }])]);
+
+    // a's own record echoed back from the server: nothing merged, nothing re-uploaded
+    let report = a.sync().apply(upload.records).unwrap();
+    assert_eq!((report.merged, report.unchanged), (0, 1));
+    assert!(a.sync().changes_since(Kind::ExtStorageSync, upload.upto, usize::MAX).unwrap().records.is_empty(), "the record echoes");
+    let export = |p: &mut Profile| p.sync().changes_since(Kind::ExtStorageSync, Seq::ZERO, usize::MAX).unwrap().records;
+    assert_eq!(export(&mut a), export(&mut b));
+
+    // null is distinct from removed, in both directions
+    let changes = a.ext_storage().remove(&ext(), Area::Sync, &keys(&["k"])).unwrap();
+    assert_eq!(changes, [StorageChange { key: "k".into(), old_value: Some(json!(null)), new_value: None }]);
+    b.sync().apply(export(&mut a)).unwrap();
+    assert!(b.ext_storage().get(&ext(), Area::Sync, None).unwrap().is_empty());
 }
 
 #[test]

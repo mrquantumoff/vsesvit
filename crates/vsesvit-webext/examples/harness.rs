@@ -1,12 +1,27 @@
 //! End-to-end check of the runtime under a real WebKitGTK, mirroring the self-test's
-//! `content_script`, `dnr_blocked` and `popup` checks (docs/design/self-test.md):
+//! `content_script`, `dnr_blocked` and `popup` checks (docs/design/self-test.md) and
+//! covering what the self-test's single fixture cannot:
 //!
 //! 1. serve `tests/fixtures/site/` from a local HTTP server that logs request paths;
-//! 2. load `tests/fixtures/extensions/probe/` through `Runtime::load` into a fresh profile;
-//! 3. open one tab on `/index.html` and wait for the content script's round trip to the
-//!    background (`dataset.vsesvitProbe == "background-replied"`);
-//! 4. check the server saw `/allowed.png` and never `/vsesvit-blocked/pixel.png`;
-//! 5. open the action popup and wait for its title to become `visits=N`, N >= 1.
+//! 2. install three extensions through the real pipeline into a fresh profile: the probe
+//!    (`tests/fixtures/extensions/probe/`, a signed CRX), the *twin* (an XPI with a Gecko
+//!    id, two `content_scripts` entries, an options page, `scripting` + `activeTab` and a
+//!    host permission for the fixture server only) and the *widget* (a popup that frames
+//!    a fixture page, no host permissions);
+//! 3. open a tab on `/index.html`: the probe's content script round-trips to its
+//!    background; both twin entries run in one world;
+//! 4. the server saw `/allowed.png` and never `/vsesvit-blocked/pixel.png`;
+//! 5. the probe popup shows `visits=N`; page APIs and events work in it; its
+//!    `scripting.executeScript` is refused (no `scripting` permission);
+//! 6. the widget popup's iframe loads in place instead of being blanked and opened as a tab;
+//! 7. the twin popup opens the options page in a tab, where `chrome.*` works
+//!    (storage, `runtime.getURL` on the hashed host, messaging both ways, `tabs.getCurrent`,
+//!    `tabs.onUpdated`); `scripting.executeScript` injects the content-script API into a
+//!    tab without a manifest content script, accepts `/`-prefixed files, is refused for a
+//!    tab outside the host permissions until `activeTab` grants it; `tabs.query` hides
+//!    that tab's URL; `action.setPopup(getURL(..))` and `setIcon('/..')` resolve;
+//! 8. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//!    and an uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
 //! Prints every observation and exits non-zero on failure. Runs under WSLg; the window
 //! is created but not presented unless `--show` is given, so nothing steals focus.
@@ -37,13 +52,15 @@ mod linux {
     use std::time::{Duration, Instant};
 
     use serde_json::Value;
+    use vsesvit_core::ext_storage::Area;
     use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension};
     use vsesvit_core::{OpenOptions, Profile};
-    use vsesvit_webext::{Runtime, TabHost, TabId, TabInfo};
-    use webkit::prelude::*;
+    use vsesvit_webext::{LoadReason, Runtime, TabHost, TabId, TabInfo};
     use webkit::glib;
+    use webkit::prelude::*;
 
     const TIMEOUT: Duration = Duration::from_secs(20);
+    const TWIN_ID: &str = "twin@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -67,30 +84,59 @@ mod linux {
         let profile = Rc::new(RefCell::new(profile));
         let session = webkit::NetworkSession::new(paths.engine_data.to_str(), paths.engine_cache.to_str());
 
-        let host = Rc::new(Host::default());
-        let runtime = Runtime::new(profile.clone(), &session, host.clone());
-
-        let installed = install_probe(&profile, &out_dir);
-        if let Err(e) = runtime.load(&installed) {
-            println!("[harness] FAIL: Runtime::load: {e}");
-            return ExitCode::FAILURE;
-        }
-        println!("[harness] loaded {:?}; pending filters = {}", runtime.loaded().iter().map(|i| i.as_str()).collect::<Vec<_>>(), runtime.pending_filters());
-
-        let tab = TabId(1);
-        let view = webkit::WebView::builder().network_session(&session).user_content_manager(&runtime.user_content_manager(tab)).build();
-        host.tabs.borrow_mut().push(Tab { id: tab, view: view.clone() });
         let window = gtk::Window::new();
         window.set_default_size(800, 600);
         window.set_title(Some("vsesvit-webext harness"));
-        window.set_child(Some(&view));
+        let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        window.set_child(Some(&container));
         if show {
             window.present();
         }
 
+        let host = Rc::new(Host::new(session.clone(), container));
+        let runtime = Runtime::new(profile.clone(), &session, host.clone());
+        *host.runtime.borrow_mut() = Some(runtime.clone());
+
+        let probe_crx = out_dir.join("probe.crx");
+        std::fs::write(&probe_crx, vsesvit_core::testkit::probe_crx()).expect("write probe.crx");
+        let twin_xpi = out_dir.join("twin.xpi");
+        write_xpi(&twin_xpi, &twin_files());
+        let widget_xpi = out_dir.join("widget.xpi");
+        write_xpi(&widget_xpi, &widget_files(server.port));
+
+        let probe = install(&profile, &probe_crx);
+        assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
+        let twin = install(&profile, &twin_xpi);
+        assert_eq!(twin.id.as_str(), TWIN_ID);
+        let widget = install(&profile, &widget_xpi);
+        for ext in [&probe, &twin, &widget] {
+            if let Err(e) = runtime.load(ext) {
+                println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
+                return ExitCode::FAILURE;
+            }
+        }
+        println!("[harness] loaded {:?}; pending filters = {}", runtime.loaded().iter().map(|i| i.as_str()).collect::<Vec<_>>(), runtime.pending_filters());
+
+        let tab = host.create_tab("about:blank", true).expect("first tab");
+        let view = host.web_view(tab).expect("first tab view");
+
         let main_loop = glib::MainLoop::new(None, false);
         let outcome = Rc::new(Cell::new(false));
-        let checks = Checks { runtime: runtime.clone(), view: view.clone(), tab, server_port: server.port, hits: server.hits.clone(), installed_id: installed.id.clone(), window: window.clone() };
+        let checks = Checks {
+            runtime: runtime.clone(),
+            host: host.clone(),
+            profile: profile.clone(),
+            view,
+            tab,
+            server_port: server.port,
+            hits: server.hits.clone(),
+            probe,
+            twin: RefCell::new(twin),
+            twin_xpi,
+            widget_id: widget.id.clone(),
+            window: window.clone(),
+            results: RefCell::new(Vec::new()),
+        };
         glib::spawn_future_local({
             let (main_loop, outcome) = (main_loop.clone(), outcome.clone());
             async move {
@@ -99,7 +145,7 @@ mod linux {
                 main_loop.quit();
             }
         });
-        glib::timeout_add_local_once(TIMEOUT + Duration::from_secs(10), {
+        glib::timeout_add_local_once(TIMEOUT * 6, {
             let main_loop = main_loop.clone();
             move || {
                 println!("[harness] FAIL: global timeout");
@@ -111,7 +157,6 @@ mod linux {
         let ok = outcome.get();
         println!("[harness] RESULT: {}", if ok { "PASS" } else { "FAIL" });
         window.destroy();
-        drop(view);
         drop(runtime);
         drop(host);
         let _ = std::fs::remove_dir_all(&out_dir);
@@ -120,15 +165,26 @@ mod linux {
 
     struct Checks {
         runtime: Runtime,
+        host: Rc<Host>,
+        profile: Rc<RefCell<Profile>>,
         view: webkit::WebView,
         tab: TabId,
         server_port: u16,
         hits: Arc<Mutex<Vec<String>>>,
-        installed_id: ExtensionId,
+        probe: InstalledExtension,
+        twin: RefCell<InstalledExtension>,
+        twin_xpi: PathBuf,
+        widget_id: ExtensionId,
         window: gtk::Window,
+        results: RefCell<Vec<(&'static str, bool)>>,
     }
 
     impl Checks {
+        fn note(&self, name: &'static str, ok: bool, detail: impl std::fmt::Display) {
+            println!("[harness] {name}: {detail} -> {}", if ok { "ok" } else { "FAIL" });
+            self.results.borrow_mut().push((name, ok));
+        }
+
         async fn run(&self) -> bool {
             let started = Instant::now();
             // Filters compile asynchronously; the self-test must navigate only after they
@@ -142,70 +198,239 @@ mod linux {
             }
             println!("[harness] filters ready after {} ms", started.elapsed().as_millis());
 
-            self.view.load_uri(&format!("http://127.0.0.1:{}/index.html", self.server_port));
+            self.view.load_uri(&self.url("/index.html"));
 
-            // 1. content script -> background -> reply
+            // 1. content script -> background -> reply (probe), and both twin entries.
             let probe = self.wait_for_js(&self.view, "document.documentElement.dataset.vsesvitProbe", None, |v| v == "background-replied").await;
-            println!("[harness] content_script: dataset.vsesvitProbe = {probe:?} after {} ms", started.elapsed().as_millis());
             let visits = self.eval(&self.view, "document.documentElement.dataset.vsesvitVisits", None).await;
-            println!("[harness] content_script: dataset.vsesvitVisits = {visits:?}");
-            let content_ok = probe.as_deref() == Some("background-replied");
+            self.note("content_script", probe.as_deref() == Some("background-replied"), format!("dataset.vsesvitProbe = {probe:?}, visits = {visits:?} after {} ms", started.elapsed().as_millis()));
+            let second = self.wait_for_js(&self.view, "document.documentElement.dataset.twinSecond || ''", None, |v| !v.is_empty()).await;
+            let first = self.eval(&self.view, "document.documentElement.dataset.twinFirst || ''", None).await;
+            self.note("second_content_script", first.as_deref() == Some("1") && second.as_deref() == Some(TWIN_ID), format!("twinFirst = {first:?}, twinSecond = {second:?}"));
 
             // 2. declarativeNetRequest: control image requested, blocked image never
             glib::timeout_future(Duration::from_millis(1000)).await;
             let hits = self.hits.lock().unwrap().clone();
             let allowed = hits.iter().any(|p| p == "/allowed.png");
             let blocked = hits.iter().any(|p| p == "/vsesvit-blocked/pixel.png");
-            println!("[harness] dnr: server saw {hits:?}");
-            println!("[harness] dnr: /allowed.png requested = {allowed}; /vsesvit-blocked/pixel.png requested = {blocked}");
-            let dnr_ok = allowed && !blocked;
+            self.note("dnr_blocked", allowed && !blocked, format!("server saw {hits:?}"));
 
-            // 3. action popup
+            // 3. the probe's action popup and the page APIs in it
+            self.probe_popup().await;
+
+            // 4. an http iframe inside a popup (widget: no host permissions)
+            self.widget_popup().await;
+
+            // 5. the twin: options page in a tab, scripting, permissions, action paths
+            self.twin_popup().await;
+
+            // 6. lifecycle events
+            self.lifecycle().await;
+
+            for id in self.runtime.loaded() {
+                self.runtime.unload(&id);
+            }
+            self.note("unload", self.runtime.loaded().is_empty() && self.runtime.actions().is_empty(), format!("loaded() = {:?}, actions() = {:?}", self.runtime.loaded(), self.runtime.actions()));
+
+            let results = self.results.borrow();
+            let failed: Vec<&str> = results.iter().filter(|(_, ok)| !ok).map(|(n, _)| *n).collect();
+            println!("[harness] {} checks, failed: {failed:?}", results.len());
+            failed.is_empty()
+        }
+
+        async fn probe_popup(&self) {
             let actions = self.runtime.actions();
             println!("[harness] actions: {actions:?}");
-            let popup = self.runtime.activate_action(&self.installed_id, Some(self.tab));
-            let Some(popup) = popup else {
-                println!("[harness] FAIL: activate_action returned no popup view");
-                return false;
+            let Some(popup) = self.runtime.activate_action(&self.probe.id, Some(self.tab)) else {
+                self.note("popup", false, "activate_action returned no popup view");
+                return;
             };
-            let popup_window = gtk::Window::new();
-            popup_window.set_transient_for(Some(&self.window));
-            popup_window.set_child(Some(&popup));
+            let _window = self.park(&popup);
             let title = wait_for_value(|| popup.title().map(String::from).filter(|t| t.starts_with("visits=")), TIMEOUT).await;
             let n = title.as_deref().and_then(|t| t.strip_prefix("visits=")).and_then(|n| n.parse::<u64>().ok());
-            println!("[harness] popup: title = {title:?} (visits = {n:?})");
-            let popup_ok = n.is_some_and(|n| n >= 1);
+            self.note("popup", n.is_some_and(|n| n >= 1), format!("title = {title:?}"));
 
-            // Extra: page-only APIs from the popup, storage change events, unload.
             let query = self.eval_async(&popup, "return chrome.tabs.query({ active: true });").await;
             let query_ok = query.as_ref().and_then(|v| v.as_array()).is_some_and(|tabs| tabs.len() == 1 && tabs[0]["url"].as_str().is_some_and(|u| u.ends_with("/index.html")));
-            println!("[harness] extra: popup chrome.tabs.query({{active:true}}) = {query} -> {}", if query_ok { "ok" } else { "unexpected" }, query = query.map(|v| v.to_string()).unwrap_or_default());
+            self.note("popup_tabs_query", query_ok, format!("chrome.tabs.query({{active:true}}) = {}", query.map(|v| v.to_string()).unwrap_or_default()));
             let badge = self
                 .eval_async(&popup, "await chrome.action.setBadgeText({ text: '7' }); return chrome.runtime.getURL('x/y.png') + ' ' + chrome.i18n.getUILanguage();")
                 .await;
-            let badge_state = self.runtime.actions().first().map(|a| a.badge_text.clone());
-            println!("[harness] extra: setBadgeText -> actions().badge_text = {badge_state:?}; getURL/i18n = {badge:?}");
-            let badge_ok = badge_state.as_deref() == Some("7") && badge.as_ref().and_then(Value::as_str).is_some_and(|s| s.starts_with("chrome-extension://") && s.contains("/x/y.png "));
+            let badge_state = self.runtime.actions().iter().find(|a| a.extension == self.probe.id).map(|a| a.badge_text.clone());
+            let badge_ok = badge_state.as_deref() == Some("7") && badge.as_ref().and_then(Value::as_str).is_some_and(|s| s.starts_with(&format!("chrome-extension://{}/x/y.png ", self.probe.id.as_str())));
+            self.note("popup_badge_and_get_url", badge_ok, format!("badge_text = {badge_state:?}; getURL/i18n = {badge:?}"));
             let onchanged = self
                 .eval_async(
                     &popup,
                     "return await new Promise((resolve) => { chrome.storage.onChanged.addListener((c, area) => resolve({ area, keys: Object.keys(c), nv: c.harness && c.harness.newValue })); chrome.storage.local.set({ harness: 42 }); });",
                 )
                 .await;
-            let onchanged_ok = onchanged.as_ref().is_some_and(|v| v["area"] == "local" && v["nv"] == 42);
-            println!("[harness] extra: storage.onChanged in popup = {onchanged:?} -> {}", if onchanged_ok { "ok" } else { "unexpected" });
+            self.note("popup_storage_onchanged", onchanged.as_ref().is_some_and(|v| v["area"] == "local" && v["nv"] == 42), format!("{onchanged:?}"));
             let no_receiver = self.eval_async(&popup, "try { await chrome.tabs.sendMessage(1, { ping: 1 }); return 'replied'; } catch (e) { return String(e.message); }").await;
-            println!("[harness] extra: tabs.sendMessage to a tab without a listener -> {no_receiver:?}");
-            let no_receiver_ok = no_receiver.as_ref().and_then(Value::as_str).is_some_and(|s| s.contains("Receiving end does not exist"));
+            self.note("popup_no_receiver", no_receiver.as_ref().and_then(Value::as_str).is_some_and(|s| s.contains("Receiving end does not exist")), format!("{no_receiver:?}"));
+            // The probe has host permissions for everything but not `scripting`.
+            let refused = self.eval_async(&popup, "try { await chrome.scripting.executeScript({ target: { tabId: 1 }, func: () => 1 }); return 'ran'; } catch (e) { return String(e.message); }").await;
+            self.note("scripting_permission_required", refused.as_ref().and_then(Value::as_str).is_some_and(|s| s.contains("\"scripting\" permission")), format!("{refused:?}"));
+        }
 
-            drop(popup_window);
-            self.runtime.unload(&self.installed_id);
-            let unloaded_ok = self.runtime.loaded().is_empty() && self.runtime.actions().is_empty();
-            println!("[harness] extra: after unload loaded() = {:?}, actions() = {:?}", self.runtime.loaded(), self.runtime.actions());
+        async fn widget_popup(&self) {
+            let before = self.hits.lock().unwrap().iter().filter(|p| *p == "/page2.html").count();
+            let Some(popup) = self.runtime.activate_action(&self.widget_id, Some(self.tab)) else {
+                self.note("iframe_in_popup", false, "activate_action returned no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            let framed = wait_until(|| self.hits.lock().unwrap().iter().filter(|p| *p == "/page2.html").count() > before, Duration::from_secs(5)).await;
+            glib::timeout_future(Duration::from_millis(300)).await;
+            let opened: Vec<String> = self.host.created.borrow().iter().filter(|u| u.contains("/page2.html")).cloned().collect();
+            self.note("iframe_in_popup", framed && opened.is_empty(), format!("server got the frame = {framed}; tabs opened for it = {opened:?}"));
+        }
 
-            let extras_ok = query_ok && badge_ok && onchanged_ok && no_receiver_ok && unloaded_ok;
-            println!("[harness] content_script={content_ok} dnr_blocked={dnr_ok} popup={popup_ok} extras={extras_ok}");
-            content_ok && dnr_ok && popup_ok && extras_ok
+        async fn twin_popup(&self) {
+            let twin_id = self.twin.borrow().id.clone();
+            let Some(popup) = self.runtime.activate_action(&twin_id, Some(self.tab)) else {
+                self.note("twin_popup", false, "activate_action returned no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            let title = wait_for_value(|| popup.title().map(String::from).filter(|t| t.starts_with("twin-popup:")), TIMEOUT).await;
+            self.note("twin_popup", title.as_deref() == Some(&format!("twin-popup:{TWIN_ID}")), format!("title = {title:?}"));
+
+            // Options page in a tab.
+            let opened = self.eval_async(&popup, "await chrome.runtime.openOptionsPage(); return true;").await;
+            let options_tab = wait_for_value(|| self.host.tabs().into_iter().find(|t| t.url.ends_with("/options.html")), TIMEOUT).await;
+            let Some(options_tab) = options_tab else {
+                self.note("options_page", false, format!("openOptionsPage = {opened:?}; no tab shows options.html: {:?}", self.host.tabs()));
+                return;
+            };
+            let options_view = self.host.web_view(options_tab.id).expect("options tab view");
+            let report = self.wait_for_js(&options_view, "JSON.stringify(window.__twinOptions || null)", None, |v| v.contains("\"done\":true")).await;
+            let report: Value = report.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or(Value::Null);
+            let url_host = options_tab.url.trim_start_matches("chrome-extension://").split('/').next().unwrap_or_default().to_owned();
+            let get_url = report["getURL"].as_str().unwrap_or_default();
+            let options_ok = report["id"] == TWIN_ID
+                && report["storage"] == "visited"
+                && report["ping"]["pong"] == true
+                && report["ping"]["fromTab"] == true
+                && report["data"]["twin"] == true
+                && report["relay"]["options"] == "pong"
+                && report["current"]["id"] == options_tab.id.0
+                && report["host"] == url_host
+                && report.get("error").is_none();
+            self.note("options_page", options_ok, format!("tab {} at {}; page report = {report}", options_tab.id.0, options_tab.url));
+            let hashed = url_host.len() == 32 && url_host.bytes().all(|b| b.is_ascii_hexdigit()) && url_host != TWIN_ID;
+            self.note("gecko_id_get_url", hashed && get_url == format!("chrome-extension://{url_host}/data.json"), format!("getURL = {get_url}, URL host = {url_host}"));
+
+            // Events reach a tab-hosted page.
+            self.runtime.tab_updated(self.tab);
+            let updated = self.wait_for_js(&options_view, "JSON.stringify((window.__twinOptions && window.__twinOptions.updated) || [])", None, |v| v.contains(&self.tab.0.to_string())).await;
+            self.note("tab_page_events", updated.as_deref().is_some_and(|u| u.contains(&self.tab.0.to_string())), format!("tabs.onUpdated ids seen in the options page = {updated:?}"));
+
+            // More tabs: one the twin may not touch, one it may but has no content script in.
+            let other = self.host.create_tab("data:text/html,<title>Vsesvit other</title>", false).expect("data tab");
+            let plain = self.host.create_tab(&self.url("/page2.html"), false).expect("page2 tab");
+            let other_view = self.host.web_view(other).expect("data tab view");
+            let plain_view = self.host.web_view(plain).expect("page2 tab view");
+            let loaded = wait_until(|| other_view.title().as_deref() == Some("Vsesvit other") && plain_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
+            println!("[harness] tabs {} (data:) and {} (page2) loaded = {loaded}", other.0, plain.0);
+            let no_content_script = self.eval(&plain_view, "String(document.documentElement.dataset.twinSecond)", None).await;
+            println!("[harness] page2 has no twin content script: dataset.twinSecond = {no_content_script:?}");
+
+            let func = self.eval_async(&popup, &format!("return await chrome.scripting.executeScript({{ target: {{ tabId: {} }}, func: () => (typeof chrome === 'object' && chrome.runtime) ? chrome.runtime.id : 'no-chrome' }});", plain.0)).await;
+            self.note("execute_script_has_chrome", func.as_ref().is_some_and(|v| v[0]["result"] == TWIN_ID), format!("func injection into tab {} = {func:?}", plain.0));
+            let files = self.eval_async(&popup, &format!("return await chrome.scripting.executeScript({{ target: {{ tabId: {} }}, files: ['/inject.js'] }});", plain.0)).await;
+            self.note("execute_script_files_leading_slash", files.as_ref().is_some_and(|v| v[0]["result"] == format!("injected:{TWIN_ID}")), format!("files injection = {files:?}"));
+            let css = self.eval_async(&popup, &format!("try {{ await chrome.scripting.insertCSS({{ target: {{ tabId: {} }}, css: 'body {{ color: red }}' }}); return 'ok'; }} catch (e) {{ return String(e.message); }}", plain.0)).await;
+            self.note("insert_css", css.as_ref().and_then(Value::as_str) == Some("ok"), format!("{css:?}"));
+
+            let denied = self.eval_async(&popup, &format!("try {{ await chrome.scripting.executeScript({{ target: {{ tabId: {} }}, func: () => 1 }}); return 'ran'; }} catch (e) {{ return String(e.message); }}", other.0)).await;
+            self.note("host_permission_denied", denied.as_ref().and_then(Value::as_str).is_some_and(|s| s.starts_with("Cannot access contents of url")), format!("tab {} = {denied:?}", other.0));
+            let listing = self.eval_async(&popup, "return await chrome.tabs.query({});").await;
+            let tabs = listing.as_ref().and_then(Value::as_array).cloned().unwrap_or_default();
+            let entry = |id: TabId| tabs.iter().find(|t| t["id"] == id.0).cloned().unwrap_or(Value::Null);
+            let redacted = tabs.len() == 4 && entry(self.tab)["url"].as_str().is_some_and(|u| u.ends_with("/index.html")) && entry(other).get("url").is_none() && entry(other).get("title").is_none() && entry(other)["id"] == other.0;
+            self.note("tabs_url_redacted", redacted, format!("tabs.query({{}}) = {listing:?}"));
+
+            // activeTab: the user invokes the action on the data: tab.
+            drop(self.runtime.activate_action(&twin_id, Some(other)));
+            let granted = self.eval_async(&popup, &format!("try {{ return await chrome.scripting.executeScript({{ target: {{ tabId: {} }}, func: () => document.title }}); }} catch (e) {{ return String(e.message); }}", other.0)).await;
+            self.note("active_tab_grant", granted.as_ref().is_some_and(|v| v[0]["result"] == "Vsesvit other"), format!("after activate_action on tab {} = {granted:?}", other.0));
+
+            // Chrome-valid resource references.
+            let paths = self
+                .eval_async(&popup, "await chrome.action.setPopup({ popup: chrome.runtime.getURL('popup.html') }); await chrome.action.setIcon({ path: '/icon.png' }); return [await chrome.action.getPopup({}), chrome.runtime.getURL('popup.html')];")
+                .await;
+            let icon = self.runtime.actions().iter().find(|a| a.extension == twin_id).and_then(|a| a.icon.clone());
+            let paths_ok = paths.as_ref().and_then(Value::as_array).is_some_and(|p| p.len() == 2 && p[0] == p[1] && p[0].as_str().is_some_and(|s| s.ends_with("/popup.html") && !s.contains("chrome-extension://chrome-extension")))
+                && icon.as_ref().is_some_and(|i| i.ends_with("icon.png"));
+            self.note("action_resource_paths", paths_ok, format!("getPopup vs getURL = {paths:?}; icon = {icon:?}"));
+        }
+
+        async fn lifecycle(&self) {
+            let id = self.twin.borrow().id.clone();
+            let lives = wait_for_value(|| {
+                let lives = self.twin_lives();
+                lives.iter().any(|l| l.iter().any(|e| e == "installed:install")).then_some(lives)
+            }, TIMEOUT).await;
+            self.note("first_load_fires_installed", lives.as_ref().is_some_and(|l| l.len() == 1), format!("background lives = {lives:?}"));
+
+            self.runtime.unload(&id);
+            if let Err(e) = self.runtime.load_with(&self.twin.borrow(), LoadReason::Enable) {
+                self.note("enable_fires_nothing", false, format!("load_with(Enable): {e}"));
+                return;
+            }
+            let lives = wait_for_value(|| {
+                let lives = self.twin_lives();
+                (lives.len() == 2).then_some(lives)
+            }, TIMEOUT).await;
+            glib::timeout_future(Duration::from_millis(700)).await;
+            let lives = if lives.is_some() { Some(self.twin_lives()) } else { None };
+            let enable_ok = lives.as_ref().is_some_and(|l| l.len() == 2 && l.iter().any(|life| life == &["alive".to_owned()]));
+            self.note("enable_fires_nothing", enable_ok, format!("background lives after load_with(Enable) = {lives:?}"));
+
+            self.runtime.unload(&id);
+            if let Err(e) = self.profile.borrow_mut().extensions().uninstall(&id) {
+                self.note("reinstall_fires_installed", false, format!("core uninstall: {e}"));
+                return;
+            }
+            let wiped = self.twin_lives();
+            let reinstalled = install(&self.profile, &self.twin_xpi);
+            if let Err(e) = self.runtime.load(&reinstalled) {
+                self.note("reinstall_fires_installed", false, format!("load after reinstall: {e}"));
+                return;
+            }
+            *self.twin.borrow_mut() = reinstalled;
+            let lives = wait_for_value(|| {
+                let lives = self.twin_lives();
+                lives.iter().any(|l| l.iter().any(|e| e == "installed:install" || e == "startup")).then_some(lives)
+            }, TIMEOUT).await;
+            let reinstall_ok = wiped.is_empty() && lives.as_ref().is_some_and(|l| l.len() == 1 && l[0].iter().any(|e| e == "installed:install"));
+            self.note("reinstall_fires_installed", reinstall_ok, format!("storage after uninstall = {wiped:?}; lives after reinstall = {lives:?}"));
+        }
+
+        /// The event log of every life of the twin's background page, from its
+        /// `storage.local` (`life:<random>` -> [events]).
+        fn twin_lives(&self) -> Vec<Vec<String>> {
+            let id = self.twin.borrow().id.clone();
+            let mut profile = self.profile.borrow_mut();
+            let items = profile.ext_storage().get(&id, Area::Local, None).unwrap_or_default();
+            items
+                .iter()
+                .filter(|(k, _)| k.starts_with("life:"))
+                .map(|(_, v)| v.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect())
+                .collect()
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.server_port)
+        }
+
+        /// A window for a popup view (never presented), so it renders like the shell's popover.
+        fn park(&self, popup: &webkit::WebView) -> gtk::Window {
+            let window = gtk::Window::new();
+            window.set_transient_for(Some(&self.window));
+            window.set_child(Some(popup));
+            window
         }
 
         async fn eval(&self, view: &webkit::WebView, script: &str, world: Option<&str>) -> Option<String> {
@@ -275,16 +500,29 @@ mod linux {
         fn flush(&self) {}
     }
 
-    // --- the shell side: one window, one tab -------------------------------------------
+    // --- the shell side: one window, tabs stacked in a box ---------------------------------
 
     struct Tab {
         id: TabId,
         view: webkit::WebView,
     }
 
-    #[derive(Default)]
+    /// Builds every tab the way the GTK shell does: a WebView on the runtime's
+    /// `UserContentManager` for that tab id.
     struct Host {
+        session: webkit::NetworkSession,
+        container: gtk::Box,
         tabs: RefCell<Vec<Tab>>,
+        runtime: RefCell<Option<Runtime>>,
+        /// Every URL `create_tab` was asked to open, for checks that expect none.
+        created: RefCell<Vec<String>>,
+        next_id: Cell<u32>,
+    }
+
+    impl Host {
+        fn new(session: webkit::NetworkSession, container: gtk::Box) -> Host {
+            Host { session, container, tabs: RefCell::new(Vec::new()), runtime: RefCell::new(None), created: RefCell::new(Vec::new()), next_id: Cell::new(1) }
+        }
     }
 
     impl TabHost for Host {
@@ -305,8 +543,16 @@ mod linux {
         }
 
         fn create_tab(&self, url: &str, _active: bool) -> Option<TabId> {
-            println!("[harness] host: create_tab({url}) refused (single-tab harness)");
-            None
+            let runtime = self.runtime.borrow().clone()?;
+            let id = TabId(self.next_id.get());
+            self.next_id.set(id.0 + 1);
+            let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id)).build();
+            self.container.append(&view);
+            self.tabs.borrow_mut().push(Tab { id, view: view.clone() });
+            self.created.borrow_mut().push(url.to_owned());
+            println!("[harness] host: create_tab({url}) -> tab {}", id.0);
+            view.load_uri(url);
+            Some(id)
         }
 
         fn update_tab(&self, tab: TabId, url: Option<&str>, _active: Option<bool>) -> bool {
@@ -318,8 +564,17 @@ mod linux {
             true
         }
 
-        fn remove_tab(&self, _tab: TabId) -> bool {
-            false
+        fn remove_tab(&self, tab: TabId) -> bool {
+            let removed = {
+                let mut tabs = self.tabs.borrow_mut();
+                let Some(i) = tabs.iter().position(|t| t.id == tab) else { return false };
+                tabs.remove(i)
+            };
+            self.container.remove(&removed.view);
+            if let Some(runtime) = self.runtime.borrow().clone() {
+                runtime.tab_closed(tab);
+            }
+            true
         }
 
         fn web_view(&self, tab: TabId) -> Option<webkit::WebView> {
@@ -327,18 +582,118 @@ mod linux {
         }
     }
 
-    // --- the probe as an InstalledExtension ---------------------------------------------
+    // --- fixtures ------------------------------------------------------------------------
 
-    /// Installs the probe through the real pipeline: signed test CRX, verify, unpack, commit.
-    fn install_probe(profile: &Rc<RefCell<Profile>>, out_dir: &Path) -> InstalledExtension {
-        let crx = out_dir.join("probe.crx");
-        std::fs::write(&crx, vsesvit_core::testkit::probe_crx()).expect("write probe.crx");
-        let source = InstallSource::from_path(&crx).expect("probe.crx is an install source");
+    /// Installs through the real pipeline: parse the source, verify, unpack, commit.
+    fn install(profile: &Rc<RefCell<Profile>>, path: &Path) -> InstalledExtension {
+        let source = InstallSource::from_path(path).expect("install source");
         let job = profile.borrow_mut().extensions().prepare_install(source).expect("prepare install");
-        let staged = job.run(&mut |_| {}).expect("install probe.crx");
-        let installed = profile.borrow_mut().extensions().commit(staged).expect("commit").expect("installed");
-        assert_eq!(installed.id.as_str(), vsesvit_core::testkit::PROBE_ID);
-        installed
+        let staged = job.run(&mut |_| {}).unwrap_or_else(|e| panic!("install {}: {e}", path.display()));
+        profile.borrow_mut().extensions().commit(staged).expect("commit").expect("installed")
+    }
+
+    fn write_xpi(path: &Path, files: &[(&str, String)]) {
+        let borrowed: Vec<(&str, &[u8])> = files.iter().map(|(n, c)| (*n, c.as_bytes())).collect();
+        std::fs::write(path, vsesvit_core::testkit::zip_files(&borrowed)).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
+
+    /// An MV3 add-on with a Gecko id. Its host permission covers the fixture server only,
+    /// its content scripts match `/index.html` only, and its background logs lifecycle
+    /// events per life into `storage.local`.
+    fn twin_files() -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "manifest.json",
+                serde_json::json!({
+                    "manifest_version": 3,
+                    "name": "Vsesvit Twin",
+                    "version": "1.0.0",
+                    "browser_specific_settings": { "gecko": { "id": TWIN_ID } },
+                    "permissions": ["storage", "scripting", "activeTab"],
+                    "host_permissions": ["http://127.0.0.1/*"],
+                    "background": { "service_worker": "background.js" },
+                    "content_scripts": [
+                        { "matches": ["http://127.0.0.1/index.html"], "js": ["first.js"], "run_at": "document_start" },
+                        { "matches": ["http://127.0.0.1/index.html"], "js": ["second.js"], "run_at": "document_end" }
+                    ],
+                    "options_page": "options.html",
+                    "action": { "default_title": "Vsesvit Twin", "default_popup": "popup.html" }
+                })
+                .to_string(),
+            ),
+            ("first.js", "document.documentElement.dataset.twinFirst = \"1\";\n".to_owned()),
+            (
+                "second.js",
+                "document.documentElement.dataset.twinSecond = (typeof chrome === \"object\" && chrome.runtime) ? chrome.runtime.id : \"no-chrome\";\n".to_owned(),
+            ),
+            (
+                "background.js",
+                r#"const life = "life:" + Math.random().toString(36).slice(2);
+const events = [];
+const log = (e) => { events.push(e); return chrome.storage.local.set({ [life]: events.slice() }); };
+chrome.runtime.onInstalled.addListener((d) => log("installed:" + d.reason));
+chrome.runtime.onStartup.addListener(() => log("startup"));
+chrome.runtime.onMessage.addListener((m, sender, respond) => {
+  if (m && m.type === "ping") { respond({ pong: true, fromTab: !!sender.tab, url: sender.url }); return false; }
+  if (m && m.type === "relay") { chrome.runtime.sendMessage({ type: "to-options" }).then(respond, (e) => respond({ error: String(e) })); return true; }
+  return false;
+});
+log("alive");
+"#
+                .to_owned(),
+            ),
+            ("popup.html", "<!doctype html><html><head><meta charset=\"utf-8\"><title>twin</title></head><body><script src=\"popup.js\"></script></body></html>".to_owned()),
+            ("popup.js", "document.title = \"twin-popup:\" + chrome.runtime.id;\n".to_owned()),
+            ("options.html", "<!doctype html><html><head><meta charset=\"utf-8\"><title>Twin options</title></head><body><script src=\"options.js\"></script></body></html>".to_owned()),
+            (
+                "options.js",
+                r#"(async () => {
+  const out = { id: chrome.runtime.id, host: location.host, origin: location.origin, updated: [] };
+  window.__twinOptions = out;
+  chrome.tabs.onUpdated.addListener((tabId) => { out.updated.push(tabId); });
+  chrome.runtime.onMessage.addListener((m, sender, respond) => { if (m && m.type === "to-options") { respond({ options: "pong" }); } return false; });
+  try {
+    await chrome.storage.local.set({ options: "visited" });
+    out.storage = (await chrome.storage.local.get("options")).options;
+    out.ping = await chrome.runtime.sendMessage({ type: "ping" });
+    out.relay = await chrome.runtime.sendMessage({ type: "relay" });
+    out.getURL = chrome.runtime.getURL("data.json");
+    const res = await fetch(out.getURL);
+    out.data = res.ok ? await res.json() : "status " + res.status;
+    out.current = await chrome.tabs.getCurrent();
+  } catch (e) { out.error = String(e); }
+  out.done = true;
+  document.title = "options:" + out.id;
+})();
+"#
+                .to_owned(),
+            ),
+            ("data.json", "{\"twin\":true}".to_owned()),
+            (
+                "inject.js",
+                "document.documentElement.dataset.twinInjected = (typeof chrome === \"object\" && chrome.runtime) ? chrome.runtime.id : \"no-chrome\";\n\"injected:\" + document.documentElement.dataset.twinInjected;\n".to_owned(),
+            ),
+        ]
+    }
+
+    /// A popup that frames a fixture page. No host permissions, so the frame may load.
+    fn widget_files(port: u16) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "manifest.json",
+                serde_json::json!({
+                    "manifest_version": 3,
+                    "name": "Vsesvit Widget",
+                    "version": "1.0.0",
+                    "action": { "default_title": "Vsesvit Widget", "default_popup": "popup.html" }
+                })
+                .to_string(),
+            ),
+            (
+                "popup.html",
+                format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>widget</title></head><body><iframe src=\"http://127.0.0.1:{port}/page2.html\"></iframe></body></html>"),
+            ),
+        ]
     }
 
     // --- fixture HTTP server --------------------------------------------------------------

@@ -5,6 +5,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::Path;
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -13,7 +14,9 @@ use vsesvit_core::extensions::{
     ExtensionId, InstallJob, InstallPhase, InstallSource, InstalledExtension, Verification,
 };
 
+use crate::bindings::CoreWebView2Profile;
 use crate::browser::Browser;
+use crate::engine::EngineExtension;
 use crate::popup::ExtensionAction;
 use crate::{engine, exec};
 
@@ -289,89 +292,22 @@ impl Browser {
         self.extensions.sync_running.set(false);
     }
 
-    /// Idempotent. An extension is (re)added when WebView2 does not have the id core recorded
-    /// for its current folder; add comes before remove, because adding a folder with an id the
-    /// engine knows replaces that extension in place.
+    /// One `sync_engine` pass against the WebView2 profile.
     async fn sync_once(&self) -> Result<(), String> {
         let profile = self
             .engine_profile()
             .await
             .ok_or("no web view to reach the engine through")?;
-        let listed = engine_call(ENGINE_CALL_TIMEOUT, engine::extensions(&profile)).await?;
-        let wanted = self
-            .core(|p| p.extensions().list())
-            .map_err(|e| e.to_string())?;
-        log::debug!(
-            "extension sync: engine has {:?}; core wants {:?}",
-            listed
-                .iter()
-                .map(|e| (&e.id, e.enabled))
-                .collect::<Vec<_>>(),
-            wanted
-                .iter()
-                .map(|e| (e.id.as_str(), &e.engine_id, e.enabled))
-                .collect::<Vec<_>>()
-        );
-        let mut errors = HashMap::new();
-        for ext in &wanted {
-            let loaded = ext
-                .engine_id
-                .as_deref()
-                .is_some_and(|id| listed.iter().any(|e| e.id == id));
-            if loaded {
-                continue;
+        let list = || {
+            self.core(|p| p.extensions().list())
+                .map_err(|e| e.to_string())
+        };
+        let record = |id: &ExtensionId, engine_id: &str| {
+            if let Err(e) = self.core(|p| p.extensions().set_engine_id(id, engine_id)) {
+                log::warn!("recording the engine id of {}: {e}", id.as_str());
             }
-            match engine_call(
-                ENGINE_ADD_TIMEOUT,
-                engine::add_extension(&profile, &ext.dir),
-            )
-            .await
-            {
-                Ok(added) => {
-                    log::info!(
-                        "engine loaded {} as {} from {}",
-                        ext.id.as_str(),
-                        added.id,
-                        ext.dir.display()
-                    );
-                    if let Err(e) = self.core(|p| p.extensions().set_engine_id(&ext.id, &added.id))
-                    {
-                        log::warn!("recording the engine id of {}: {e}", ext.id.as_str());
-                    }
-                }
-                Err(e) => {
-                    log::warn!(
-                        "engine refused {} ({}): {e}",
-                        ext.id.as_str(),
-                        ext.dir.display()
-                    );
-                    errors.insert(ext.id.clone(), engine_refusal(e, &ext.dir));
-                }
-            }
-        }
-
-        let listed = engine_call(ENGINE_CALL_TIMEOUT, engine::extensions(&profile)).await?;
-        let wanted = self
-            .core(|p| p.extensions().list())
-            .map_err(|e| e.to_string())?;
-        for loaded in listed.iter().filter(|e| !e.is_builtin()) {
-            let want = wanted
-                .iter()
-                .find(|w| w.engine_id.as_deref() == Some(loaded.id.as_str()));
-            let result = match want {
-                None => {
-                    log::info!("removing {} ({}) from the engine", loaded.name, loaded.id);
-                    engine_call(ENGINE_CALL_TIMEOUT, loaded.remove()).await
-                }
-                Some(w) if w.enabled != loaded.enabled => {
-                    engine_call(ENGINE_CALL_TIMEOUT, loaded.set_enabled(w.enabled)).await
-                }
-                Some(_) => Ok(()),
-            };
-            if let Err(e) = result {
-                log::warn!("engine extension {}: {e}", loaded.id);
-            }
-        }
+        };
+        let errors = sync_engine(&ProfileEngine(profile), &list, &record).await?;
         *self.extensions.engine_errors.borrow_mut() = errors;
         Ok(())
     }
@@ -396,6 +332,234 @@ impl Browser {
             window.set_extension_actions(&actions);
         }
     }
+}
+
+/// What the sync needs from the engine: the WebView2 profile, or a fake in the tests.
+trait EngineExtensions {
+    type Loaded: LoadedExtension;
+    async fn list(&self) -> Result<Vec<Self::Loaded>, String>;
+    async fn add(&self, dir: &Path) -> Result<Self::Loaded, String>;
+}
+
+/// An extension the engine has loaded.
+trait LoadedExtension {
+    fn id(&self) -> &str;
+    fn name(&self) -> &str;
+    fn enabled(&self) -> bool;
+    async fn remove(&self) -> Result<(), String>;
+    async fn set_enabled(&self, enabled: bool) -> Result<(), String>;
+}
+
+struct ProfileEngine(CoreWebView2Profile);
+
+impl EngineExtensions for ProfileEngine {
+    type Loaded = EngineExtension;
+
+    async fn list(&self) -> Result<Vec<EngineExtension>, String> {
+        engine_call(ENGINE_CALL_TIMEOUT, engine::extensions(&self.0)).await
+    }
+
+    async fn add(&self, dir: &Path) -> Result<EngineExtension, String> {
+        engine_call(ENGINE_ADD_TIMEOUT, engine::add_extension(&self.0, dir)).await
+    }
+}
+
+impl LoadedExtension for EngineExtension {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    async fn remove(&self) -> Result<(), String> {
+        engine_call(ENGINE_CALL_TIMEOUT, EngineExtension::remove(self)).await
+    }
+
+    async fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        engine_call(
+            ENGINE_CALL_TIMEOUT,
+            EngineExtension::set_enabled(self, enabled),
+        )
+        .await
+    }
+}
+
+/// Brings the engine's extensions in line with core's `list`. Idempotent. An extension is
+/// (re)added when the engine does not have the id core recorded for its current folder; add
+/// comes before remove, because adding a folder with an id the engine knows replaces that
+/// extension in place. Returns what went wrong per extension, for the Extensions dialog.
+async fn sync_engine<E: EngineExtensions>(
+    engine: &E,
+    list: &dyn Fn() -> Result<Vec<InstalledExtension>, String>,
+    record_engine_id: &dyn Fn(&ExtensionId, &str),
+) -> Result<HashMap<ExtensionId, String>, String> {
+    let listed = engine.list().await?;
+    let wanted = list()?;
+    log::debug!(
+        "extension sync: engine has {:?}; core wants {:?}",
+        listed
+            .iter()
+            .map(|e| (e.id(), e.enabled()))
+            .collect::<Vec<_>>(),
+        wanted
+            .iter()
+            .map(|e| (e.id.as_str(), &e.engine_id, e.enabled))
+            .collect::<Vec<_>>()
+    );
+    let mut errors = HashMap::new();
+    for ext in &wanted {
+        let loaded = ext
+            .engine_id
+            .as_deref()
+            .is_some_and(|id| listed.iter().any(|e| e.id() == id));
+        if loaded {
+            continue;
+        }
+        if ext.engine_id.is_none()
+            && let Some(key) = engine_key(ext)
+            && let Err(e) = add_manifest_key(&ext.dir, &key)
+        {
+            log::warn!("{} gets no stable engine id: {e}", ext.id.as_str());
+        }
+        match engine.add(&ext.dir).await {
+            Ok(added) => {
+                log::info!(
+                    "engine loaded {} as {} from {}",
+                    ext.id.as_str(),
+                    added.id(),
+                    ext.dir.display()
+                );
+                record_engine_id(&ext.id, added.id());
+                // The engine starts every extension it adds; one that is off stops at once.
+                if !ext.enabled
+                    && added.enabled()
+                    && let Err(e) = added.set_enabled(false).await
+                {
+                    log::warn!("switching {} off: {e}", ext.id.as_str());
+                    errors.insert(ext.id.clone(), format!("could not be switched off: {e}"));
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "engine refused {} ({}): {e}",
+                    ext.id.as_str(),
+                    ext.dir.display()
+                );
+                errors.insert(ext.id.clone(), engine_refusal(e, &ext.dir));
+            }
+        }
+    }
+
+    let listed = engine.list().await?;
+    let wanted = list()?;
+    for loaded in &listed {
+        let want = wanted
+            .iter()
+            .find(|w| w.engine_id.as_deref() == Some(loaded.id()));
+        match want {
+            Some(w) if w.enabled != loaded.enabled() => {
+                if let Err(e) = loaded.set_enabled(w.enabled).await {
+                    log::warn!("engine extension {}: {e}", loaded.id());
+                    let state = if w.enabled { "on" } else { "off" };
+                    errors
+                        .entry(w.id.clone())
+                        .or_insert_with(|| format!("could not be switched {state}: {e}"));
+                }
+            }
+            Some(_) => {}
+            None if engine::is_builtin(loaded.id()) => {}
+            None => {
+                log::info!(
+                    "removing {} ({}) from the engine",
+                    loaded.name(),
+                    loaded.id()
+                );
+                if let Err(e) = loaded.remove().await {
+                    log::warn!("engine extension {}: {e}", loaded.id());
+                }
+            }
+        }
+    }
+    Ok(errors)
+}
+
+/// What the `key` of a keyless managed install is made of. Chromium derives an unpacked
+/// extension's id from its `key`, or from its folder's path when it has none, and every version
+/// of a managed install gets its own folder; a key made from core's id keeps the engine id, and
+/// with it the extension's storage, across versions.
+const ENGINE_KEY_PREFIX: &str = "vsesvit-extension:";
+
+/// The `key` to write into a managed install without one before the engine first loads it.
+/// Unpacked folders are the developer's and are never written to.
+fn engine_key(ext: &InstalledExtension) -> Option<String> {
+    let managed = !matches!(ext.source, InstallSource::Unpacked { .. });
+    (managed && ext.manifest.key.is_none())
+        .then(|| base64(format!("{ENGINE_KEY_PREFIX}{}", ext.id.as_str()).as_bytes()))
+}
+
+/// Adds `"key": key` as the first member of `dir`'s manifest.json. Inserted as text, so the
+/// comments Chromium accepts there survive. Does nothing if the manifest already has this key.
+fn add_manifest_key(dir: &Path, key: &str) -> std::io::Result<()> {
+    let path = dir.join("manifest.json");
+    let text = std::fs::read_to_string(&path)?;
+    if text.contains(&format!("\"{key}\"")) {
+        return Ok(());
+    }
+    let open = object_start(&text).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "manifest.json does not hold a JSON object",
+        )
+    })?;
+    let updated = format!(
+        "{}\n  \"key\": \"{key}\",{}",
+        &text[..=open],
+        &text[open + 1..]
+    );
+    let temp = dir.join("manifest.json.vsesvit-new");
+    std::fs::write(&temp, updated)?;
+    std::fs::rename(&temp, &path)
+}
+
+/// Where the top-level object's `{` is, past a byte order mark, whitespace and comments.
+fn object_start(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = if text.starts_with('\u{feff}') { 3 } else { 0 };
+    while let Some(&b) = bytes.get(i) {
+        match (b, bytes.get(i + 1)) {
+            (b' ' | b'\t' | b'\r' | b'\n', _) => i += 1,
+            (b'/', Some(b'/')) => i = text[i..].find('\n').map_or(bytes.len(), |n| i + n),
+            (b'/', Some(b'*')) => i = i + 2 + text[i + 2..].find("*/")? + 2,
+            (b'{', _) => return Some(i),
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            out.push(if i <= chunk.len() {
+                char::from(ALPHABET[(n >> shift) as usize & 63])
+            } else {
+                '='
+            });
+        }
+    }
+    out
 }
 
 /// Beyond this many characters in an extension's folder path, WebView2 cannot load large
@@ -431,6 +595,10 @@ async fn engine_call<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use vsesvit_core::extensions::manifest::Manifest;
+
     use super::*;
 
     #[test]
@@ -459,6 +627,326 @@ mod tests {
         let deep = format!(r"C:\{}", "d".repeat(220));
         let text = engine_refusal("Unspecified error".into(), std::path::Path::new(&deep));
         assert!(text.starts_with("Unspecified error (its folder path is 223 characters"));
+    }
+
+    #[test]
+    fn base64_is_rfc_4648() {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(plain.as_bytes()), encoded);
+        }
+        assert_eq!(base64(&[0xfb, 0xff]), "+/8=");
+    }
+
+    #[test]
+    fn the_key_goes_first_and_the_rest_of_the_manifest_is_kept() {
+        let dir = temp_dir("key-first");
+        let original = "\u{feff}// made by hand\n/* {not this} */ {\n  \"name\": \"X\", // why\n  \"version\": \"1\"\n}\n";
+        std::fs::write(dir.join("manifest.json"), original).unwrap();
+        add_manifest_key(&dir, "a2V5").unwrap();
+        let text = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
+        assert_eq!(
+            text,
+            "\u{feff}// made by hand\n/* {not this} */ {\n  \"key\": \"a2V5\",\n  \"name\": \"X\", // why\n  \"version\": \"1\"\n}\n"
+        );
+        add_manifest_key(&dir, "a2V5").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("manifest.json")).unwrap(),
+            text
+        );
+        std::fs::write(dir.join("manifest.json"), "[]").unwrap();
+        assert!(add_manifest_key(&dir, "a2V5").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_keyless_managed_installs_get_a_key() {
+        let xpi = installed("x@vsesvit.test", r"C:\p\x\1.0_ab", None, true);
+        let key = engine_key(&xpi).expect("a keyless XPI install gets a key");
+        assert_eq!(
+            engine_key(&xpi),
+            Some(key.clone()),
+            "the key depends only on the id"
+        );
+        assert_ne!(
+            engine_key(&installed("y@vsesvit.test", r"C:\p\x\1.0_ab", None, true)),
+            Some(key)
+        );
+        let mut unpacked = xpi.clone();
+        unpacked.source = InstallSource::Unpacked {
+            dir: unpacked.dir.clone(),
+        };
+        assert_eq!(
+            engine_key(&unpacked),
+            None,
+            "a developer's folder is not written to"
+        );
+        let mut keyed = xpi;
+        keyed.manifest.key = Some("a2V5".into());
+        assert_eq!(engine_key(&keyed), None);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("vsesvit-winui-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn installed(
+        id: &str,
+        dir: &str,
+        engine_id: Option<&str>,
+        enabled: bool,
+    ) -> InstalledExtension {
+        let manifest = Manifest::parse(
+            r#"{"manifest_version": 3, "name": "X", "version": "1.0"}"#,
+            &|_| None,
+        )
+        .unwrap();
+        InstalledExtension {
+            id: ExtensionId::parse(id).unwrap(),
+            version: "1.0".into(),
+            dir: PathBuf::from(dir),
+            manifest,
+            enabled,
+            source: InstallSource::XpiFile {
+                path: PathBuf::from(r"C:\x.xpi"),
+            },
+            verification: Verification::LocalXpi,
+            engine_id: engine_id.map(Into::into),
+        }
+    }
+
+    /// Engine state shared by a fake engine and the extensions it hands out.
+    #[derive(Default)]
+    struct EngineState {
+        /// Id, name and whether it is enabled, in load order.
+        loaded: Vec<(String, String, bool)>,
+        /// Every call that changed something, in order.
+        calls: Vec<String>,
+        /// Ids whose `set_enabled` fails.
+        broken: Vec<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct FakeEngine(Rc<RefCell<EngineState>>);
+
+    struct FakeLoaded {
+        id: String,
+        name: String,
+        enabled: bool,
+        state: Rc<RefCell<EngineState>>,
+    }
+
+    impl FakeEngine {
+        fn with(loaded: &[(&str, &str, bool)]) -> Self {
+            let engine = Self::default();
+            engine.0.borrow_mut().loaded = loaded
+                .iter()
+                .map(|(id, name, on)| ((*id).into(), (*name).into(), *on))
+                .collect();
+            engine
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.0.borrow().calls.clone()
+        }
+
+        fn handle(&self, (id, name, enabled): &(String, String, bool)) -> FakeLoaded {
+            FakeLoaded {
+                id: id.clone(),
+                name: name.clone(),
+                enabled: *enabled,
+                state: self.0.clone(),
+            }
+        }
+    }
+
+    impl EngineExtensions for FakeEngine {
+        type Loaded = FakeLoaded;
+
+        async fn list(&self) -> Result<Vec<FakeLoaded>, String> {
+            let loaded = self.0.borrow().loaded.clone();
+            Ok(loaded.iter().map(|e| self.handle(e)).collect())
+        }
+
+        /// Chromium's rule: the id comes from the manifest's `key`, else from the folder path.
+        async fn add(&self, dir: &Path) -> Result<FakeLoaded, String> {
+            let id = Manifest::load(dir, "en")
+                .ok()
+                .and_then(|m| m.key_id())
+                .unwrap_or_else(|| ExtensionId::for_unpacked_dir(dir));
+            let entry = (id.as_str().to_owned(), "Added".to_owned(), true);
+            let mut state = self.0.borrow_mut();
+            state.calls.push(format!("add {}", dir.display()));
+            state.loaded.retain(|(id, _, _)| *id != entry.0);
+            state.loaded.push(entry.clone());
+            drop(state);
+            Ok(self.handle(&entry))
+        }
+    }
+
+    impl LoadedExtension for FakeLoaded {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn enabled(&self) -> bool {
+            self.enabled
+        }
+
+        async fn remove(&self) -> Result<(), String> {
+            let mut state = self.state.borrow_mut();
+            state.calls.push(format!("remove {}", self.id));
+            state.loaded.retain(|(id, _, _)| *id != self.id);
+            Ok(())
+        }
+
+        async fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+            let mut state = self.state.borrow_mut();
+            state.calls.push(format!("enable {} {enabled}", self.id));
+            if state.broken.contains(&self.id) {
+                return Err("EnableAsync failed".into());
+            }
+            for entry in state.loaded.iter_mut().filter(|(id, _, _)| *id == self.id) {
+                entry.2 = enabled;
+            }
+            Ok(())
+        }
+    }
+
+    /// One sync against `engine`, with `core` as core's list; engine ids are recorded into it.
+    fn sync(
+        engine: &FakeEngine,
+        core: &RefCell<Vec<InstalledExtension>>,
+    ) -> HashMap<ExtensionId, String> {
+        let list = || Ok(core.borrow().clone());
+        let record = |id: &ExtensionId, engine_id: &str| {
+            for ext in core.borrow_mut().iter_mut().filter(|e| e.id == *id) {
+                ext.engine_id = Some(engine_id.to_owned());
+            }
+        };
+        let mut future = std::pin::pin!(sync_engine(engine, &list, &record));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            std::task::Poll::Ready(result) => result.unwrap(),
+            std::task::Poll::Pending => panic!("the fake engine answers at once"),
+        }
+    }
+
+    const PDF_VIEWER: &str = "mhjfbmdgcfjbbpaeojofohoefgiehjai";
+    const CLIPBOARD: &str = "dgiklkfkllikcanfonkcabmbdfmgleag";
+
+    #[test]
+    fn the_engines_own_extensions_are_left_alone() {
+        let engine = FakeEngine::with(&[
+            (CLIPBOARD, "Microsoft Clipboard Extension", true),
+            (PDF_VIEWER, "Microsoft Edge PDF Viewer", true),
+        ]);
+        sync(&engine, &RefCell::new(Vec::new()));
+        assert_eq!(engine.calls(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_extension_core_recorded_follows_core_whatever_its_name() {
+        let impostor = "aaaabbbbccccddddeeeeffffgggghhhh";
+        let engine = FakeEngine::with(&[(impostor, "Microsoft Edge PDF Viewer", true)]);
+        let core = RefCell::new(vec![installed(
+            "x@vsesvit.test",
+            r"C:\p\x",
+            Some(impostor),
+            false,
+        )]);
+        sync(&engine, &core);
+        assert_eq!(engine.calls(), [format!("enable {impostor} false")]);
+    }
+
+    #[test]
+    fn an_unrecorded_extension_is_removed_whatever_its_name() {
+        let leftover = "aaaabbbbccccddddeeeeffffgggghhhh";
+        let engine = FakeEngine::with(&[
+            (leftover, "Microsoft Clipboard Extension", true),
+            (CLIPBOARD, "Microsoft Clipboard Extension", true),
+        ]);
+        sync(&engine, &RefCell::new(Vec::new()));
+        assert_eq!(engine.calls(), [format!("remove {leftover}")]);
+    }
+
+    #[test]
+    fn a_disabled_extension_is_switched_off_right_after_it_is_added() {
+        let engine = FakeEngine::default();
+        let (off, on) = (r"C:\p\off", r"C:\p\on");
+        let core = RefCell::new(vec![
+            installed("off@vsesvit.test", off, None, false),
+            installed("on@vsesvit.test", on, None, true),
+        ]);
+        sync(&engine, &core);
+        let off_id = ExtensionId::for_unpacked_dir(Path::new(off));
+        assert_eq!(
+            engine.calls(),
+            [
+                format!("add {off}"),
+                format!("enable {} false", off_id.as_str()),
+                format!("add {on}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_switch_is_reported_for_the_dialog() {
+        let loaded = "aaaabbbbccccddddeeeeffffgggghhhh";
+        let engine = FakeEngine::with(&[(loaded, "X", true)]);
+        engine.0.borrow_mut().broken.push(loaded.into());
+        let core = RefCell::new(vec![installed(
+            "x@vsesvit.test",
+            r"C:\p\x",
+            Some(loaded),
+            false,
+        )]);
+        let errors = sync(&engine, &core);
+        let id = ExtensionId::parse("x@vsesvit.test").unwrap();
+        assert!(
+            errors
+                .get(&id)
+                .is_some_and(|e| e.contains("EnableAsync failed")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_new_version_of_a_keyless_install_keeps_its_engine_id() {
+        let root = temp_dir("versions");
+        let mut ids = Vec::new();
+        for version in ["1.0", "1.1"] {
+            let dir = root.join(format!("{version}_ab"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let manifest =
+                format!(r#"{{"manifest_version": 3, "name": "X", "version": "{version}"}}"#);
+            std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+            let engine = FakeEngine::default();
+            let core = RefCell::new(vec![installed(
+                "x@vsesvit.test",
+                &dir.to_string_lossy(),
+                None,
+                true,
+            )]);
+            sync(&engine, &core);
+            ids.push(core.borrow()[0].engine_id.clone().unwrap());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(ids[0], ids[1]);
     }
 
     #[test]

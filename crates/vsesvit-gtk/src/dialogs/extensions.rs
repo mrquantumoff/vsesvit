@@ -12,11 +12,15 @@ use gtk::{gio, glib};
 use vsesvit_core::extensions::{InstallSource, InstalledExtension, SourceParseError};
 
 use crate::browser::Browser;
-use crate::extensions::{describe_verification, icon_path, progress_to, unsupported_notice};
+use crate::extensions::{
+    EnableFailure, InstallFailure, describe_verification, icon_path, progress_to,
+    unsupported_notice,
+};
 use crate::window::BrowserWindow;
 
+/// Holds no [`Browser`] of its own: the widgets' handlers keep this state alive for as long
+/// as the dialog's widgets exist, which must not keep the profile open.
 struct State {
-    browser: Browser,
     window: glib::WeakRef<BrowserWindow>,
     dialog: adw::PreferencesDialog,
     progress: adw::ActionRow,
@@ -62,7 +66,6 @@ pub(crate) fn present(window: &BrowserWindow) {
     dialog.add(&page);
 
     let state = Rc::new(State {
-        browser: window.browser().clone(),
         window: window.downgrade(),
         dialog,
         progress,
@@ -96,6 +99,10 @@ pub(crate) fn present(window: &BrowserWindow) {
 }
 
 impl State {
+    fn browser(&self) -> Option<Browser> {
+        self.window.upgrade().map(|window| window.browser().clone())
+    }
+
     fn toast(&self, text: &str) {
         self.dialog.add_toast(adw::Toast::new(text));
     }
@@ -108,6 +115,7 @@ impl State {
                 return;
             }
         };
+        let Some(browser) = self.browser() else { return };
         self.progress.set_subtitle("Starting…");
         self.progress.set_visible(true);
         let state = self.clone();
@@ -116,11 +124,15 @@ impl State {
                 let row = state.progress.clone();
                 progress_to(move |text| row.set_subtitle(&text))
             };
-            let result = state.browser.install(source, progress).await;
+            let result = browser.install(source, progress).await;
             state.progress.set_visible(false);
             match result {
                 Ok(Some(ext)) => state.toast(&format!("Installed {} {}", ext.manifest.name, ext.version)),
                 Ok(None) => state.toast("The extension was removed elsewhere while it downloaded"),
+                Err(InstallFailure::Load(ext, e)) => state.toast(&format!(
+                    "Installed {} {}, but it cannot run: {e}",
+                    ext.manifest.name, ext.version
+                )),
                 Err(e) => state.toast(&format!("Install failed: {e}")),
             }
             state.refresh();
@@ -179,7 +191,8 @@ impl State {
         for row in self.rows.take() {
             self.installed.remove(&row);
         }
-        let extensions = self.browser.installed_extensions();
+        let Some(browser) = self.browser() else { return };
+        let extensions = browser.installed_extensions();
         let mut rows: Vec<gtk::Widget> = Vec::with_capacity(extensions.len().max(1));
         if extensions.is_empty() {
             let none = adw::ActionRow::builder()
@@ -190,14 +203,15 @@ impl State {
             rows.push(none.upcast());
         }
         for ext in extensions {
-            let row = self.extension_row(&ext);
+            let error = browser.extension_error(&ext.id).filter(|_| ext.enabled);
+            let row = self.extension_row(&ext, error);
             self.installed.add(&row);
             rows.push(row.upcast());
         }
         self.rows.replace(rows);
     }
 
-    fn extension_row(self: &Rc<Self>, ext: &InstalledExtension) -> adw::ExpanderRow {
+    fn extension_row(self: &Rc<Self>, ext: &InstalledExtension, error: Option<String>) -> adw::ExpanderRow {
         let row = adw::ExpanderRow::builder()
             .title(&ext.manifest.name)
             .subtitle(format!("{} · {}", ext.version, describe_verification(&ext.verification)))
@@ -216,9 +230,20 @@ impl State {
             #[strong(rename_to = id)]
             ext.id,
             move |_, active| {
-                if let Err(e) = state.browser.set_extension_enabled(&id, active) {
-                    state.toast(&format!("Cannot change the extension: {e}"));
-                    return glib::Propagation::Stop;
+                let Some(browser) = state.browser() else { return glib::Propagation::Stop };
+                let failed_before = browser.extension_error(&id).is_some();
+                match browser.set_extension_enabled(&id, active) {
+                    Ok(()) => {}
+                    Err(EnableFailure::Load(e)) => state.toast(&format!("Enabled, but it cannot run: {e}")),
+                    Err(e) => {
+                        state.toast(&format!("Cannot change the extension: {e}"));
+                        return glib::Propagation::Stop;
+                    }
+                }
+                if failed_before != browser.extension_error(&id).is_some() {
+                    // After this handler returns, so the switch is not replaced under it.
+                    let state = state.clone();
+                    glib::idle_add_local_once(move || state.refresh());
                 }
                 glib::Propagation::Proceed
             }
@@ -237,7 +262,8 @@ impl State {
             #[strong(rename_to = id)]
             ext.id,
             move |_| {
-                if let Err(e) = state.browser.uninstall_extension(&id) {
+                let Some(browser) = state.browser() else { return };
+                if let Err(e) = browser.uninstall_extension(&id) {
                     state.toast(&format!("Cannot remove the extension: {e}"));
                 }
                 state.refresh();
@@ -255,6 +281,18 @@ impl State {
                 .build();
             unsupported.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
             row.add_row(&unsupported);
+            row.set_expanded(true);
+        }
+        if let Some(error) = error {
+            let failed = adw::ActionRow::builder()
+                .title("Not running")
+                .subtitle(error)
+                .subtitle_lines(0)
+                .use_markup(false)
+                .css_classes(["error"])
+                .build();
+            failed.add_prefix(&gtk::Image::from_icon_name("dialog-error-symbolic"));
+            row.add_row(&failed);
             row.set_expanded(true);
         }
         let id_row = adw::ActionRow::builder()

@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 
-use vsesvit_core::extensions::manifest::Manifest;
+use vsesvit_core::extensions::manifest::{Manifest, ManifestError};
 use vsesvit_core::extensions::{
     ExtensionId, InstallError, InstallJob, InstallPhase, InstallSource, InstalledExtension, StagedInstall, Verification,
 };
@@ -113,12 +113,12 @@ fn probe_crx_installs_end_to_end() {
     assert!(ext.enabled);
     assert_eq!(ext.engine_id, None);
 
-    // Content-addressed, immutable dir: extensions/<id>/<version>_<hash8>.
+    // Content-addressed, immutable dir: extensions/<id>/<version>_<hash32>.
     let id_dir = t.profile_root().join("extensions").join(testkit::PROBE_ID);
     assert_eq!(ext.dir.parent().unwrap(), id_dir);
     let dir_name = ext.dir.file_name().unwrap().to_str().unwrap();
-    let hash8 = dir_name.strip_prefix("1.0.0_").expect("<version>_<hash8>");
-    assert!(hash8.len() == 8 && hash8.bytes().all(|b| b.is_ascii_hexdigit()), "{dir_name}");
+    let hash32 = dir_name.strip_prefix("1.0.0_").expect("<version>_<hash32>");
+    assert!(hash32.len() == 32 && hash32.bytes().all(|b| b.is_ascii_hexdigit()), "{dir_name}");
 
     // The injected key keeps the CRX id for engines that load the dir unpacked.
     let on_disk = Manifest::load(&ext.dir, "en").unwrap();
@@ -407,4 +407,184 @@ fn crx_problems_surface_as_install_errors() {
     let bad_manifest = write_crx3(&[("manifest.json", br#"{"manifest_version": 3, "name": "x", "version": "x"}"#)], &CrxKey::probe());
     assert!(matches!(install_file(&t, &mut p, "m.crx", &bad_manifest), Err(Error::Install(InstallError::Manifest(_)))));
     assert!(p.extensions().list().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Ids and dirs
+// ---------------------------------------------------------------------------
+
+fn xpi_manifest(gecko_id: &str, version: &str, extra: &str) -> Vec<u8> {
+    let gecko = format!(r#""browser_specific_settings": {{"gecko": {{"id": "{gecko_id}"}}}}"#);
+    format!(r#"{{"manifest_version": 2, "name": "Evil", "version": "{version}", {extra}{gecko}}}"#).into_bytes()
+}
+
+/// A developer dir holding the probe's files, with `manifest.json` edited by `edit`.
+fn probe_dir(t: &TempDir, name: &str, edit: impl Fn(String) -> String) -> PathBuf {
+    let dir = t.path().join(name);
+    fs::create_dir_all(&dir).unwrap();
+    for (file, bytes) in PROBE_FILES {
+        fs::write(dir.join(file), bytes).unwrap();
+    }
+    let manifest = String::from_utf8(PROBE_FILES[0].1.to_vec()).unwrap();
+    fs::write(dir.join("manifest.json"), edit(manifest)).unwrap();
+    dir
+}
+
+#[test]
+fn an_xpi_or_unpacked_dir_cannot_take_the_id_of_a_signed_install() {
+    let t = TempDir::new();
+    let mut p = t.open();
+    install_file(&t, &mut p, "probe.crx", &testkit::probe_crx()).unwrap().unwrap();
+
+    let xpi = raw_zip(&[("manifest.json", &xpi_manifest(testkit::PROBE_ID, "9.0", ""))], &[]);
+    let bad_gecko_id = |r: Result<Option<InstalledExtension>, Error>| {
+        matches!(r, Err(Error::Install(InstallError::Manifest(ManifestError::Field("browser_specific_settings.gecko.id")))))
+    };
+    assert!(bad_gecko_id(install_file(&t, &mut p, "evil.xpi", &xpi)), "an XPI with a Chrome-style gecko id");
+
+    // A manifest `key` is public, so an unpacked dir carrying it proves nothing.
+    let key = base64_spki(&CrxKey::probe());
+    let dev = probe_dir(&t, "keyed", |m| m.replacen('{', &format!("{{\"key\": \"{key}\","), 1).replace("\"1.0.0\"", "\"9.0\""));
+    let taken = install(&mut p, InstallSource::Unpacked { dir: dev });
+    assert!(matches!(&taken, Err(Error::Install(InstallError::VerifiedIdTaken(id))) if id == testkit::PROBE_ID), "{taken:?}");
+
+    let listed = p.extensions().list().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!((&listed[0].id, &listed[0].verification, listed[0].version.as_str()), (&probe_id(), &Verification::LocalCrx, "1.0.0"));
+    assert_eq!(listed[0].manifest.name, "Vsesvit Probe");
+
+    // With nothing installed under it, a Chrome-style gecko id is still not an XPI's to claim.
+    p.extensions().uninstall(&probe_id()).unwrap();
+    assert!(bad_gecko_id(install_file(&t, &mut p, "evil.xpi", &xpi)));
+    assert!(p.extensions().list().unwrap().is_empty());
+}
+
+#[test]
+fn an_xpi_manifest_key_never_reaches_the_engine() {
+    let t = TempDir::new();
+    let mut p = t.open();
+    let key = base64_spki(&CrxKey::probe());
+    let xpi = raw_zip(&[("manifest.json", &xpi_manifest("evil@example.org", "1.0", &format!("\"key\": \"{key}\", ")))], &[]);
+    let ext = install_file(&t, &mut p, "keyed.xpi", &xpi).unwrap().unwrap();
+    assert_eq!(ext.id.as_str(), "evil@example.org");
+    assert_eq!(ext.manifest.key, None);
+    let on_disk: serde_json::Value = serde_json::from_slice(&fs::read(ext.dir.join("manifest.json")).unwrap()).unwrap();
+    assert!(on_disk.get("key").is_none(), "WebView2 derives the id from the key in the dir: {on_disk}");
+    assert_eq!(Manifest::load(&ext.dir, "en").unwrap().key_id(), None);
+    assert_eq!(on_disk["browser_specific_settings"]["gecko"]["id"], "evil@example.org");
+}
+
+#[test]
+fn gecko_ids_that_differ_only_in_case_never_share_a_dir() {
+    let t = TempDir::new();
+    let mut p = t.open();
+    let victim = install_file(&t, &mut p, "a.xpi", &raw_zip(&[("manifest.json", &xpi_manifest("Victim@example.org", "1.0", ""))], &[]))
+        .unwrap()
+        .unwrap();
+    let other = raw_zip(&[("manifest.json", &xpi_manifest("victim@example.org", "1.0", "")), ("x.js", b"1")], &[]);
+    // On Windows both would live in one dir.
+    let conflict = install_file(&t, &mut p, "b.xpi", &other);
+    assert!(matches!(&conflict, Err(Error::Install(InstallError::IdCaseConflict { installed, .. })) if installed == "Victim@example.org"));
+    let _ = p.extensions().uninstall(&ExtensionId::parse("victim@example.org").unwrap());
+    drop(p);
+    let mut p = t.open();
+    let listed = p.extensions().list().unwrap();
+    assert_eq!(listed.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["Victim@example.org"]);
+    assert!(victim.dir.join("manifest.json").is_file());
+}
+
+#[test]
+fn a_leftover_dir_in_another_letter_case_does_not_get_a_live_install_collected() {
+    let t = TempDir::new();
+    let leftover = t.profile_root().join("extensions").join("VICTIM@example.org").join("0.9_deadbeef");
+    let mut p = t.open();
+    fs::create_dir_all(&leftover).unwrap();
+    let ext = install_file(&t, &mut p, "a.xpi", &raw_zip(&[("manifest.json", &xpi_manifest("victim@example.org", "1.0", ""))], &[]))
+        .unwrap()
+        .unwrap();
+    drop(p);
+    for _ in 0..2 {
+        let mut p = t.open();
+        assert!(ext.dir.join("manifest.json").is_file(), "open collected a referenced dir");
+        assert_eq!(p.extensions().list().unwrap().len(), 1);
+    }
+    assert!(!leftover.exists(), "the leftover itself is still garbage");
+}
+
+#[test]
+fn the_version_dir_name_carries_128_bits_of_the_archive_hash() {
+    use sha2::{Digest, Sha256};
+    let t = TempDir::new();
+    let mut p = t.open();
+    let crx = testkit::probe_crx();
+    let ext = install_file(&t, &mut p, "probe.crx", &crx).unwrap().unwrap();
+    let hash: String = Sha256::digest(&crx)[..16].iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(ext.dir.file_name().unwrap().to_str().unwrap(), format!("1.0.0_{hash}"));
+}
+
+#[test]
+fn a_package_path_that_is_not_unicode_fails_cleanly() {
+    let t = TempDir::new();
+    let mut p = t.open();
+    #[cfg(unix)]
+    let name = {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(b"\xe9t\xe9.crx".to_vec())
+    };
+    #[cfg(windows)]
+    let name = {
+        use std::os::windows::ffi::OsStringExt;
+        let wide: Vec<u16> = [0xD800].into_iter().chain("t.crx".encode_utf16()).collect();
+        std::ffi::OsString::from_wide(&wide)
+    };
+    let path = t.path().join(name);
+    fs::write(&path, testkit::probe_crx()).unwrap();
+    let source = InstallSource::from_path(&path).unwrap();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| install(&mut p, source).map(|_| ())));
+    assert!(matches!(result, Ok(Err(Error::Install(InstallError::PathNotUnicode(_))))), "{result:?}");
+    assert!(p.extensions().list().unwrap().is_empty());
+}
+
+/// Windows refuses to delete a file another process holds open without
+/// `FILE_SHARE_DELETE`, as an antivirus scanner or the engine may.
+#[cfg(windows)]
+#[test]
+fn a_held_file_never_leaves_a_partial_dir_for_a_reinstall_to_reuse() {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    let hold = |dir: &Path| fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(dir.join("rules.json")).unwrap();
+    fn assert_complete_probe(dir: &Path) {
+        for (name, _) in PROBE_FILES {
+            assert!(dir.join(name).is_file(), "{} lost {name}", dir.display());
+        }
+    }
+
+    let t = TempDir::new();
+    let mut p = t.open();
+    let ext = install_file(&t, &mut p, "probe.crx", &testkit::probe_crx()).unwrap().unwrap();
+    let held = hold(&ext.dir);
+    p.extensions().uninstall(&ext.id).unwrap();
+    // Gone or whole: never a partial dir at a content address.
+    if ext.dir.exists() {
+        assert_complete_probe(&ext.dir);
+    }
+    let again = install_file(&t, &mut p, "probe.crx", &testkit::probe_crx()).unwrap().unwrap();
+    assert_complete_probe(&again.dir);
+    drop(held);
+    drop(p);
+    let mut p = t.open();
+    assert_complete_probe(&p.extensions().list().unwrap()[0].dir);
+
+    // The same when open collects a dir no row references any more.
+    let changed = write_crx3(&probe_with(&[("background.js", b"// changed\n")]), &CrxKey::probe());
+    install_file(&t, &mut p, "b.crx", &changed).unwrap().unwrap();
+    let held = hold(&ext.dir);
+    drop(p);
+    let mut p = t.open();
+    if ext.dir.exists() {
+        assert_complete_probe(&ext.dir);
+    }
+    let back =install_file(&t, &mut p, "probe.crx", &testkit::probe_crx()).unwrap().unwrap();
+    assert_complete_probe(&back.dir);
+    drop(held);
 }

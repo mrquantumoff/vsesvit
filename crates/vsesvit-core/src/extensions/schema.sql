@@ -16,7 +16,7 @@ CREATE INDEX extensions_seq ON extensions(seq);
 CREATE TABLE extension_installs (        -- LOCAL: what is on this device's disk
   id             TEXT PRIMARY KEY,
   version        TEXT NOT NULL,
-  dir            TEXT NOT NULL,          -- '<id>/<version>_<hash8>' under <root>/extensions for managed installs; absolute for unpacked
+  dir            TEXT NOT NULL,          -- '<id>/<version>_<hash32>' under <root>/extensions for managed installs; absolute for unpacked
   source_kind    TEXT NOT NULL CHECK (source_kind IN ('chrome_web_store', 'amo', 'crx_file', 'xpi_file', 'unpacked')),
   source         TEXT NOT NULL,          -- JSON extensions::InstallSource
   verification   TEXT NOT NULL,          -- JSON extensions::Verification: how this device checked the files

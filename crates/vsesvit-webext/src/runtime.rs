@@ -4,6 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::UNIX_EPOCH;
 
 use serde_json::{Value, json};
 use vsesvit_core::Profile;
@@ -14,7 +15,8 @@ use webkit::prelude::*;
 
 use crate::bridge::{self, Origin};
 use crate::extension::{Extension, ViewKind};
-use crate::protocol::StorageArea;
+use crate::lifecycle::{self, InstallEvent, LoadReason};
+use crate::protocol::{Sender, StorageArea};
 use crate::tabs::{TabHost, TabId, TabInfo};
 use crate::{filters, scheme, views};
 
@@ -62,7 +64,8 @@ pub(crate) struct Inner {
 
 struct TabState {
     ucm: webkit::UserContentManager,
-    handlers: BTreeMap<ExtensionId, glib::SignalHandlerId>,
+    /// The content-script and page handlers of each attached extension.
+    handlers: BTreeMap<ExtensionId, [glib::SignalHandlerId; 2]>,
     last: Option<TabInfo>,
 }
 
@@ -101,10 +104,18 @@ impl Runtime {
         &self.0.context
     }
 
-    /// Load (or reload) an installed extension: content scripts into every tab, the
-    /// background context, the action, and the DNR rulesets (compiled asynchronously,
-    /// see [`Runtime::on_filters_ready`]).
+    /// Load (or reload) an installed extension at browser startup or right after an
+    /// install: content scripts into every tab, the background context, the action, and
+    /// the DNR rulesets (compiled asynchronously, see [`Runtime::on_filters_ready`]).
+    /// The background gets `runtime.onInstalled` on the first load of an install or
+    /// version, else `runtime.onStartup`.
     pub fn load(&self, installed: &InstalledExtension) -> Result<(), LoadError> {
+        self.load_with(installed, LoadReason::Startup)
+    }
+
+    /// [`Runtime::load`] with the shell's reason: [`LoadReason::Enable`] fires no
+    /// `runtime.onStartup`, as Chrome fires none when the user re-enables an extension.
+    pub fn load_with(&self, installed: &InstalledExtension, reason: LoadReason) -> Result<(), LoadError> {
         if self.0.extension(&installed.id).is_some() {
             self.unload(&installed.id);
         }
@@ -117,7 +128,7 @@ impl Runtime {
             }
         }
         filters::compile(&self.0, &ext);
-        let event = self.0.install_event(&ext);
+        let event = self.0.install_event(&ext, reason);
         views::start_background(&self.0, &ext, event);
         self.0.notify_actions_changed();
         log::info!("{} {}: loaded from {}", ext.id.as_str(), ext.version, ext.dir.display());
@@ -162,7 +173,8 @@ impl Runtime {
     }
 
     /// The shell reports a navigation or title change; extensions see `tabs.onUpdated`
-    /// with the fields that changed since the last report.
+    /// with the fields that changed since the last report, minus the URL and title when
+    /// they may not see the tab's contents. Leaving the origin ends `activeTab` grants.
     pub fn tab_updated(&self, tab: TabId) {
         let Some(info) = self.0.tab_info(tab) else { return };
         let previous = {
@@ -170,15 +182,25 @@ impl Runtime {
             let Some(state) = tabs.get_mut(&tab) else { return };
             state.last.replace(info.clone())
         };
-        let mut change = serde_json::Map::new();
-        if previous.as_ref().is_none_or(|p| p.url != info.url) {
-            change.insert("url".into(), json!(info.url));
+        let url_changed = previous.as_ref().is_none_or(|p| p.url != info.url);
+        let title_changed = previous.as_ref().is_none_or(|p| p.title != info.title);
+        let origin_changed = previous.as_ref().is_some_and(|p| Sender::origin_of(&p.url) != Sender::origin_of(&info.url));
+        let extensions: Vec<Rc<Extension>> = self.0.extensions.borrow().values().cloned().collect();
+        for ext in extensions {
+            if origin_changed {
+                ext.revoke_active_tab(tab);
+            }
+            let sees = ext.sees_tab(&info);
+            let mut change = serde_json::Map::new();
+            if url_changed && sees {
+                change.insert("url".into(), json!(info.url));
+            }
+            if title_changed && sees {
+                change.insert("title".into(), json!(info.title));
+            }
+            change.insert("status".into(), json!("complete"));
+            bridge::emit_to_pages(&self.0, &ext, "tabs.onUpdated", &[json!(tab.0), Value::Object(change), info.to_json_for(sees)]);
         }
-        if previous.as_ref().is_none_or(|p| p.title != info.title) {
-            change.insert("title".into(), json!(info.title));
-        }
-        change.insert("status".into(), json!("complete"));
-        self.0.emit_to_all_pages("tabs.onUpdated", &[json!(tab.0), Value::Object(change), info.to_json()]);
     }
 
     pub fn tab_activated(&self, tab: TabId) {
@@ -192,6 +214,7 @@ impl Runtime {
         let extensions: Vec<Rc<Extension>> = self.0.extensions.borrow().values().cloned().collect();
         for ext in &extensions {
             detach(ext, &mut state);
+            ext.revoke_active_tab(tab);
         }
         let window_id = state.last.as_ref().map(|t| t.window_id).unwrap_or(1);
         self.0.emit_to_all_pages("tabs.onRemoved", &[json!(tab.0), json!({ "windowId": window_id, "isWindowClosing": false })]);
@@ -220,15 +243,18 @@ impl Runtime {
         self.0.actions_changed.borrow_mut().push(Rc::new(f));
     }
 
-    /// The user clicked the action. Returns the popup WebView (already loading) when the
-    /// action has a popup; the shell owns it and drops it to close. Otherwise fires
-    /// `action.onClicked` with `tab` and returns `None`.
+    /// The user clicked the action on `tab` (which grants `activeTab` there). Returns the
+    /// popup WebView (already loading) when the action has a popup; the shell owns it and
+    /// drops it to close. Otherwise fires `action.onClicked` with `tab` and returns `None`.
     pub fn activate_action(&self, id: &ExtensionId, tab: Option<TabId>) -> Option<webkit::WebView> {
         let ext = self.0.extension(id)?;
         let state = ext.action.borrow().clone()?;
+        if let Some(tab) = tab {
+            ext.grant_active_tab(tab);
+        }
         if state.popup.is_empty() {
-            let tab_json = tab.and_then(|t| self.0.tab_json(t)).unwrap_or(Value::Null);
-            bridge::emit_to_pages(&ext, "action.onClicked", &[tab_json]);
+            let tab_json = tab.and_then(|t| self.0.tab_info(t)).map(|t| ext.tab_json(&t)).unwrap_or(Value::Null);
+            bridge::emit_to_pages(&self.0, &ext, "action.onClicked", &[tab_json]);
             return None;
         }
         let view = views::build(&self.0, &ext, ViewKind::Popup);
@@ -259,6 +285,9 @@ impl Runtime {
     }
 }
 
+/// Content scripts in the extension's world, the page shim (default world, the
+/// extension's own documents only) and one handler for each, so an extension page the
+/// tab navigates to has its API.
 fn attach(inner: &Rc<Inner>, ext: &Rc<Extension>, tab: TabId, state: &mut TabState) {
     for script in &ext.scripts {
         state.ucm.add_script(script);
@@ -266,11 +295,13 @@ fn attach(inner: &Rc<Inner>, ext: &Rc<Extension>, tab: TabId, state: &mut TabSta
     for style in &ext.styles {
         state.ucm.add_style_sheet(style);
     }
+    state.ucm.add_script(&ext.page_script);
     if let Some(filter) = ext.filter.borrow().as_ref() {
         state.ucm.add_filter(filter);
     }
-    let handler = bridge::register(inner, &state.ucm, ext, Origin::Content { tab }, Some(&ext.world));
-    state.handlers.insert(ext.id.clone(), handler);
+    let content = bridge::register(inner, &state.ucm, ext, Origin::Content { tab }, Some(&ext.world));
+    let page = bridge::register(inner, &state.ucm, ext, Origin::TabPage { tab }, None);
+    state.handlers.insert(ext.id.clone(), [content, page]);
 }
 
 fn detach(ext: &Extension, state: &mut TabState) {
@@ -280,12 +311,15 @@ fn detach(ext: &Extension, state: &mut TabState) {
     for style in &ext.styles {
         state.ucm.remove_style_sheet(style);
     }
+    state.ucm.remove_script(&ext.page_script);
     if let Some(filter) = ext.filter.borrow().as_ref() {
         state.ucm.remove_filter(filter);
     }
-    if let Some(handler) = state.handlers.remove(&ext.id) {
-        state.ucm.disconnect(handler);
+    if let Some([content, page]) = state.handlers.remove(&ext.id) {
+        state.ucm.disconnect(content);
+        state.ucm.disconnect(page);
         state.ucm.unregister_script_message_handler(&ext.handler, Some(&ext.world));
+        state.ucm.unregister_script_message_handler(&ext.page_handler, None);
     }
 }
 
@@ -305,18 +339,23 @@ impl Inner {
         ids.into_iter().filter_map(|id| self.host.web_view(id)).collect()
     }
 
-    pub(crate) fn tab_info(&self, tab: TabId) -> Option<TabInfo> {
-        self.host.tabs().into_iter().find(|t| t.id == tab)
+    /// The tabs whose view is showing (or loading) one of `ext`'s own documents.
+    pub(crate) fn page_tab_views(&self, ext: &Extension) -> Vec<(TabId, webkit::WebView)> {
+        let ids: Vec<TabId> = self.tabs.borrow().keys().copied().collect();
+        ids.into_iter()
+            .filter_map(|id| self.host.web_view(id).map(|v| (id, v)))
+            .filter(|(_, v)| v.uri().is_some_and(|u| ext.owns_url(&u)))
+            .collect()
     }
 
-    pub(crate) fn tab_json(&self, tab: TabId) -> Option<Value> {
-        self.tab_info(tab).map(|t| t.to_json())
+    pub(crate) fn tab_info(&self, tab: TabId) -> Option<TabInfo> {
+        self.host.tabs().into_iter().find(|t| t.id == tab)
     }
 
     pub(crate) fn emit_to_all_pages(&self, event: &str, args: &[Value]) {
         let extensions: Vec<Rc<Extension>> = self.extensions.borrow().values().cloned().collect();
         for ext in extensions {
-            bridge::emit_to_pages(&ext, event, args);
+            bridge::emit_to_pages(self, &ext, event, args);
         }
     }
 
@@ -328,18 +367,21 @@ impl Inner {
         }
     }
 
-    /// First load of this version fires `runtime.onInstalled`; later loads `onStartup`.
-    /// The marker is a file under `<profile>/webext/installed/`.
-    fn install_event(&self, ext: &Extension) -> views::InstallEvent {
+    /// See [`lifecycle::install_event`]. The marker is a file under
+    /// `<profile>/webext/installed/`; the install stamp is the extension directory's
+    /// modification time, which a reinstall (a new directory) changes.
+    fn install_event(&self, ext: &Extension, reason: LoadReason) -> InstallEvent {
         let marker = self.state_dir.join("installed").join(&ext.host);
-        let previous = std::fs::read_to_string(&marker).ok().map(|s| s.trim().to_owned());
-        let event = match previous {
-            None => views::InstallEvent::Installed,
-            Some(v) if v != ext.version => views::InstallEvent::Updated { previous: v },
-            Some(_) => views::InstallEvent::Startup,
-        };
-        if !matches!(event, views::InstallEvent::Startup)
-            && let Err(e) = std::fs::write(&marker, &ext.version)
+        let previous = std::fs::read_to_string(&marker).ok();
+        let stamp = std::fs::metadata(&ext.dir)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos().to_string())
+            .unwrap_or_default();
+        let (event, updated) = lifecycle::install_event(previous.as_deref(), &ext.version, &stamp, reason);
+        if let Some(text) = updated
+            && let Err(e) = std::fs::write(&marker, text)
         {
             log::warn!("{}: {e}", marker.display());
         }

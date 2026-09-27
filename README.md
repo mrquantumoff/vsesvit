@@ -8,7 +8,7 @@ The plan, the decisions and their evidence are in [docs/PLAN.md](docs/PLAN.md).
 
 ### Linux
 
-Install the build dependencies (Debian/Ubuntu names):
+The build needs GTK 4.22, libadwaita 1.9, WebKitGTK 2.52 and GLib 2.80 or newer. Ubuntu 26.04 ships these. On older releases the build fails in a `-sys` crate with a pkg-config version error. Install the build dependencies (Debian/Ubuntu names):
 
 ```bash
 sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev
@@ -34,7 +34,7 @@ You need:
 
 - the Rust MSVC toolchain
 - Visual Studio Build Tools with the C++ workload
-- the Windows App Runtime 2.x
+- the Windows App Runtime 2.5.1 or newer (x64)
 - the WebView2 runtime, which ships with Windows 11
 
 The build downloads `Microsoft.Web.WebView2.Core.dll` from NuGet and checks it against a pinned SHA-256.

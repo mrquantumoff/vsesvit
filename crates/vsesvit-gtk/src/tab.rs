@@ -195,6 +195,21 @@ impl Tab {
         self.imp().committed_uri.borrow().clone()
     }
 
+    /// What the session saves for this tab: the committed URI, else the one still loading,
+    /// as for a restored or background tab whose first page has not arrived yet.
+    pub(crate) fn session_uri(&self) -> Option<String> {
+        self.committed_uri().or_else(|| {
+            let requested = self.web_view().uri()?;
+            (!requested.is_empty() && requested != "about:blank").then(|| requested.into())
+        })
+    }
+
+    /// Whether the document on screen is one of our error pages, shown under the URI that
+    /// failed.
+    pub(crate) fn shows_error_page(&self) -> bool {
+        self.imp().error_page_shown.get().is_some()
+    }
+
     /// What the address bar should say about the connection. An error page is never "secure",
     /// even under an `https` URI, and a certificate error page is flagged as insecure.
     pub(crate) fn security(&self) -> Security {
@@ -242,8 +257,11 @@ impl Tab {
     /// Restores a tab from the profile's session: its saved back/forward state when there
     /// is one, else its URI.
     pub(crate) fn restore_saved(&self, state: Option<&[u8]>, uri: &str) {
-        let state = state.map(|bytes| webkit::WebViewSessionState::new(&glib::Bytes::from(bytes)));
-        self.restore(state.as_ref(), uri);
+        let decoded = state.and_then(decode_session_state);
+        if state.is_some() && decoded.is_none() {
+            log::info!("this WebKit cannot read the saved history of {uri}; loading the page alone");
+        }
+        self.restore(decoded.as_ref(), uri);
     }
 
     /// Restores a closed tab: its back/forward history when the engine gave us one, else its URI.
@@ -533,6 +551,19 @@ impl Tab {
     }
 }
 
+/// Saved back/forward state, or `None` when this WebKit cannot decode it: a format from
+/// another WebKitGTK version, or a damaged row. The binding's `WebViewSessionState::new`
+/// assumes a result, but WebKit returns NULL for such data.
+fn decode_session_state(bytes: &[u8]) -> Option<webkit::WebViewSessionState> {
+    use glib::translate::{FromGlibPtrFull, ToGlibPtr};
+    let bytes = glib::Bytes::from(bytes);
+    // SAFETY: `bytes` outlives the call, and a non-NULL result is a reference we own.
+    unsafe {
+        let state = webkit::ffi::webkit_web_view_session_state_new(bytes.to_glib_none().0);
+        (!state.is_null()).then(|| webkit::WebViewSessionState::from_glib_full(state))
+    }
+}
+
 /// Middle click, or Ctrl+click, on a link opens it in a new tab; Shift also switches to it.
 fn new_tab_for_click(
     kind: webkit::NavigationType,
@@ -604,5 +635,20 @@ mod tests {
             new_tab_for_click(Other, gdk::BUTTON_MIDDLE, M::empty()),
             None
         );
+    }
+
+    #[gtk::test]
+    fn saved_state_the_engine_cannot_read_falls_back_to_the_url() {
+        use crate::test_support::{Reply, Server, browser, wait_until};
+
+        let server = Server::start("127.0.0.1", |_| Reply::Page("Restored"));
+        let window = BrowserWindow::new(&browser());
+        let tab = window.open_tab(None, None, Focus::Background);
+        let url = server.url("/");
+        tab.restore_saved(Some(b"not a WebKit session state"), &url);
+        wait_until("the saved URL to load", || {
+            tab.committed_uri().as_deref() == Some(url.as_str())
+        });
+        window.destroy();
     }
 }

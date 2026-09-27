@@ -8,9 +8,9 @@
 //! - [`DeletionDirective`]: an immutable record "forget visits to `url` (or all urls) in
 //!   `[from_ms, to_ms]`". Directives form a grow-only set.
 //!
-//! The effective history is `union(visits) - covered_by(union(directives))`, capped to
-//! the newest [`MAX_VISITS`] per page. That is a deterministic function of the two
-//! unions, so it converges. Deletion propagates as a directive, and a visit made later
+//! The effective history is `union(visits) - covered_by(union(directives))`, collapsed to
+//! one visit per `(at_ms, device)` and capped to the newest [`MAX_VISITS`] per page. That
+//! is a deterministic function of the two unions, so it converges. Deletion propagates as a directive, and a visit made later
 //! on another device (outside the range) correctly survives. "Clear all history" is one
 //! directive with `url: None`. There is no retention cutoff: history stays until the
 //! user clears it (a per-device cutoff inside the join would make devices echo forever).
@@ -73,8 +73,9 @@ impl Transition {
     }
 }
 
-/// Identity = `(at_ms, device)`. Two navigations in the same millisecond on one device
-/// count as one visit.
+/// Identity in the table is `(at_ms, device)`: two navigations in the same millisecond on
+/// one device count as one visit. The set orders by the whole triple so that the union
+/// join stays a semilattice; [`normalize`] collapses duplicate keys before every store.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Visit {
     pub at_ms: i64,
@@ -132,13 +133,35 @@ pub fn covers(d: &DeletionDirective, url: &Url, v: &Visit) -> bool {
     d.url.as_ref().is_none_or(|u| u == url) && (d.from_ms..=d.to_ms).contains(&v.at_ms)
 }
 
-/// Drop covered visits, then cap. Returns `None` when no visits remain; the page row
-/// is then deleted. It is not a tombstone: page existence is derived from visits.
+/// Drop covered visits, collapse to one visit per `(at_ms, device)`, then cap. Returns
+/// `None` when no visits remain; the page row is then deleted. It is not a tombstone:
+/// page existence is derived from visits.
 pub(crate) fn normalize(mut page: PageRecord, directives: &[DeletionDirective]) -> Option<PageRecord> {
     let url = page.url.clone();
     page.visits.retain(|v| !directives.iter().any(|d| covers(d, &url, v)));
+    dedupe(&mut page.visits);
     page.cap();
     (!page.visits.is_empty()).then_some(page)
+}
+
+/// One visit per `(at_ms, device)`, the `history_visits` key. The join is a plain union
+/// over the whole triple, so a record from a peer (or a copied profile sharing our device
+/// id) can carry two transitions for one key. The greatest transition wins: a rule every
+/// device applies alike, so the stored form never depends on arrival order. Equal keys
+/// are adjacent in the set's order with the greatest transition last.
+fn dedupe(visits: &mut BTreeSet<Visit>) {
+    let same_key = |a: &Visit, b: &Visit| a.at_ms == b.at_ms && a.device == b.device;
+    if !visits.iter().zip(visits.iter().skip(1)).any(|(a, b)| same_key(a, b)) {
+        return;
+    }
+    let mut kept = BTreeSet::new();
+    let mut run = visits.iter().peekable();
+    while let Some(v) = run.next() {
+        if !run.peek().is_some_and(|next| same_key(v, next)) {
+            kept.insert(*v);
+        }
+    }
+    *visits = kept;
 }
 
 /// `http`, `https`, `file` only. Internal pages (`about:`, `vsesvit:`, `data:`, extension pages) are not history.
@@ -532,6 +555,29 @@ mod tests {
         assert_eq!(kept.visits.first().unwrap().at_ms, 36);
         let all = DeletionDirective { id: Uuid::nil(), url: Some(url), from_ms: 0, to_ms: 1000 };
         assert!(normalize(page, &[all]).is_none());
+    }
+
+    #[test]
+    fn normalize_keeps_one_visit_per_key_with_the_greatest_transition() {
+        let url = Url::parse("https://a.example/").unwrap();
+        let mut page = PageRecord::new(url.clone());
+        page.visits.insert(visit(5, 1));
+        page.visits.insert(Visit { at_ms: 5, device: DeviceId(1), transition: Transition::Typed });
+        page.visits.insert(visit(5, 2));
+        let kept = normalize(page, &[]).unwrap();
+        assert_eq!(kept.visits.len(), 2);
+        assert_eq!(kept.visits.iter().find(|v| v.device == DeviceId(1)).unwrap().transition, Transition::Typed);
+
+        // duplicates never eat into the cap
+        let mut page = PageRecord::new(url);
+        for i in 0..70 {
+            page.visits.insert(visit(i, 1));
+            page.visits.insert(Visit { at_ms: i, device: DeviceId(1), transition: Transition::Reload });
+        }
+        let kept = normalize(page, &[]).unwrap();
+        assert_eq!(kept.visits.len(), MAX_VISITS);
+        assert_eq!(kept.visits.first().unwrap().at_ms, 6);
+        assert!(kept.visits.iter().all(|v| v.transition == Transition::Reload));
     }
 
     #[test]

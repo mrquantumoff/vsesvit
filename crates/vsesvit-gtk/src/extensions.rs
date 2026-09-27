@@ -16,7 +16,7 @@ use vsesvit_core::extensions::{
     ExtensionId, InstallError, InstallJob, InstallPhase, InstallSource, InstalledExtension,
     Verification,
 };
-use vsesvit_webext::Unsupported;
+use vsesvit_webext::{LoadError, Unsupported};
 
 use crate::browser::Browser;
 
@@ -28,6 +28,9 @@ pub(crate) enum InstallFailure {
     Prepare(vsesvit_core::Error),
     Run(InstallError),
     Commit(vsesvit_core::Error),
+    /// Committed to the profile, but the runtime cannot run it (a file the manifest names
+    /// is missing or unreadable, a ruleset does not parse).
+    Load(Box<InstalledExtension>, LoadError),
     WorkerPanicked,
 }
 
@@ -36,12 +39,40 @@ impl fmt::Display for InstallFailure {
         match self {
             InstallFailure::Prepare(e) | InstallFailure::Commit(e) => write!(f, "{e}"),
             InstallFailure::Run(e) => write!(f, "{e}"),
+            InstallFailure::Load(ext, e) => {
+                write!(f, "{} {} is installed but cannot run: {e}", ext.manifest.name, ext.version)
+            }
             InstallFailure::WorkerPanicked => write!(f, "the install thread panicked"),
         }
     }
 }
 
 impl std::error::Error for InstallFailure {}
+
+/// Why an extension could not be switched on or off.
+#[derive(Debug)]
+pub(crate) enum EnableFailure {
+    Core(vsesvit_core::Error),
+    /// The switch is stored, but the runtime cannot run the extension.
+    Load(LoadError),
+}
+
+impl fmt::Display for EnableFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EnableFailure::Core(e) => write!(f, "{e}"),
+            EnableFailure::Load(e) => write!(f, "it cannot run: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for EnableFailure {}
+
+impl From<vsesvit_core::Error> for EnableFailure {
+    fn from(e: vsesvit_core::Error) -> Self {
+        EnableFailure::Core(e)
+    }
+}
 
 impl Browser {
     /// Installs from a parsed source. `Ok(None)` means the extension was uninstalled on
@@ -84,8 +115,10 @@ impl Browser {
         let staged = staged.map_err(InstallFailure::Run)?;
         let committed = self.core().borrow_mut().extensions().commit(staged);
         let committed = committed.map_err(InstallFailure::Commit)?;
-        if let Some(ext) = &committed {
-            self.load_into_runtime(ext);
+        if let Some(ext) = &committed
+            && let Err(e) = self.load_into_runtime(ext)
+        {
+            return Err(InstallFailure::Load(Box::new(ext.clone()), e));
         }
         Ok(committed)
     }
@@ -101,7 +134,7 @@ impl Browser {
             }
         };
         for id in &work.removed {
-            self.runtime().unload(id);
+            self.unload_from_runtime(id);
         }
         for job in work.install {
             let browser = self.clone();
@@ -128,29 +161,42 @@ impl Browser {
         &self,
         id: &ExtensionId,
         enabled: bool,
-    ) -> Result<(), vsesvit_core::Error> {
+    ) -> Result<(), EnableFailure> {
         self.core().borrow_mut().extensions().set_enabled(id, enabled)?;
         let ext = self.core().borrow_mut().extensions().get(id)?;
         match ext {
-            Some(ext) if ext.enabled => self.load_into_runtime(&ext),
-            _ => self.runtime().unload(id),
+            Some(ext) => self.load_into_runtime(&ext).map_err(EnableFailure::Load),
+            None => {
+                self.unload_from_runtime(id);
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     pub(crate) fn uninstall_extension(&self, id: &ExtensionId) -> Result<(), vsesvit_core::Error> {
-        self.runtime().unload(id);
+        self.unload_from_runtime(id);
         self.core().borrow_mut().extensions().uninstall(id)
     }
 
-    fn load_into_runtime(&self, ext: &InstalledExtension) {
+    /// Runs an enabled extension, or stops a disabled one. A load failure is also kept for
+    /// the extensions page, which shows the extension as not running.
+    pub(crate) fn load_into_runtime(&self, ext: &InstalledExtension) -> Result<(), LoadError> {
         if !ext.enabled {
-            self.runtime().unload(&ext.id);
-            return;
+            self.unload_from_runtime(&ext.id);
+            return Ok(());
         }
-        if let Err(e) = self.runtime().load(ext) {
+        let loaded = self.runtime().load(ext);
+        let error = loaded.as_ref().err().map(|e| {
             log::warn!("extension {}: {e}", ext.id.as_str());
-        }
+            e.to_string()
+        });
+        self.set_extension_error(&ext.id, error);
+        loaded
+    }
+
+    fn unload_from_runtime(&self, id: &ExtensionId) {
+        self.runtime().unload(id);
+        self.set_extension_error(id, None);
     }
 }
 
@@ -237,5 +283,33 @@ mod tests {
         assert_eq!(unsupported_notice(&manifest).as_deref(), Some("webRequest"));
         let clean = Manifest::parse(r#"{ "manifest_version": 3, "name": "x", "version": "1" }"#, &|_| None).unwrap();
         assert_eq!(unsupported_notice(&clean), None);
+    }
+
+    #[gtk::test]
+    async fn an_extension_the_runtime_cannot_load_is_not_reported_as_installed() {
+        use crate::test_support::{browser, scratch_dir};
+
+        let browser = browser();
+        let dir = scratch_dir("broken-extension");
+        let manifest = r#"{ "manifest_version": 3, "name": "Broken", "version": "1.0",
+            "content_scripts": [{ "matches": ["<all_urls>"], "js": ["missing.js"] }] }"#;
+        std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+        let source = InstallSource::from_path(&dir).unwrap();
+        let installed = browser.install(source, |_| {}).await;
+        assert!(installed.is_err(), "the install reported success: {installed:?}");
+
+        let id = browser
+            .installed_extensions()
+            .into_iter()
+            .find(|e| e.manifest.name == "Broken")
+            .map(|e| e.id)
+            .expect("core committed the extension");
+        assert!(browser.set_extension_enabled(&id, false).is_ok());
+        assert!(browser.set_extension_enabled(&id, true).is_err(), "enabling it reported success");
+        assert!(!browser.runtime().loaded().contains(&id));
+        let shown = browser.extension_error(&id);
+        assert!(shown.as_deref().is_some_and(|e| e.contains("missing.js")), "the page shows {shown:?}");
+        browser.set_extension_enabled(&id, false).unwrap();
+        assert_eq!(browser.extension_error(&id), None);
     }
 }

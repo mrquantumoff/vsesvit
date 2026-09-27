@@ -102,6 +102,26 @@ fn undecodable_values_read_as_default_and_unknown_keys_round_trip() {
     assert_eq!(p.prefs().get(&custom), 3);
 }
 
+/// `Prefs::set` is generic: a `Pref<Option<T>>` set to `None` serializes to JSON `null`,
+/// which is a stored value, not a reset. It must reach other devices as that value.
+#[test]
+fn a_pref_whose_value_is_json_null_syncs_as_a_value() {
+    let opt: Pref<Option<String>> = Pref { key: "future.opt", scope: Scope::Synced, default: || Some("d".to_owned()) };
+    let (mut a, _da) = open();
+    let (mut b, _db) = open();
+    a.prefs().set(&opt, &None).unwrap();
+    assert_eq!(a.prefs().get(&opt), None, "the stored null wins over the default");
+    let upload = a.sync().changes_since(Kind::Prefs, Seq::ZERO, usize::MAX).unwrap();
+    let report = b.sync().apply(upload.records.clone()).unwrap();
+    assert_eq!(report.merged, 1);
+    assert_eq!(exported(&mut b), exported(&mut a));
+    assert_eq!(exported(&mut b)[0].1.value.v, Some(JsonText::from_value(&serde_json::Value::Null)));
+    assert_eq!(b.prefs().get(&opt), None);
+    let report = a.sync().apply(upload.records).unwrap();
+    assert_eq!((report.merged, report.unchanged), (0, 1));
+    assert!(a.sync().changes_since(Kind::Prefs, upload.upto, usize::MAX).unwrap().records.is_empty(), "the record echoes");
+}
+
 #[test]
 fn tabs_are_vertical_on_the_left_by_default_and_the_choice_is_synced() {
     use vsesvit_core::prefs::TabsPosition;

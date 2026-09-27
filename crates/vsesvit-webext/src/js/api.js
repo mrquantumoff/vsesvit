@@ -1,15 +1,17 @@
-// chrome.* / browser.* for one extension context. Injected as a user script with a
-// `__VSESVIT_CONFIG__` object prepended by the runtime:
-//   { id, handler, kind: "content" | "page", manifest, i18n: { locale, messages },
-//     permissions, hostPermissions, optionsPage }
-// Calls that need the browser go through window.webkit.messageHandlers[handler]
-// (a Promise-returning postMessage); see src/protocol.rs for the wire format.
 (function (config) {
+  // chrome.* / browser.* for one extension context. One function expression, which the
+  // runtime applies to the context's configuration (protocol::bootstrap), so nothing is
+  // declared in the global scope and the bootstrap can run more than once per world:
+  //   { id, host, handler, token?, kind: "content" | "page", manifest,
+  //     i18n: { locale, messages }, permissions, hostPermissions, optionsPage }
+  // `host` is the extension's URL host (not the id for Gecko ids). Calls that need the
+  // browser go through window.webkit.messageHandlers[handler] (a Promise-returning
+  // postMessage); see src/protocol.rs for the wire format and what `token` is for.
   "use strict";
   const g = globalThis;
   if (g.__vsesvit) return;
   const isPage = config.kind === "page";
-  const baseUrl = "chrome-extension://" + config.id + "/";
+  const baseUrl = "chrome-extension://" + config.host + "/";
   const messageHandlers = g.webkit && g.webkit.messageHandlers;
   const handler = messageHandlers && messageHandlers[config.handler];
 
@@ -21,7 +23,7 @@
     if (!handler) return Promise.reject(new Error("Vsesvit: the extension bridge is unavailable in this context"));
     let promise;
     try {
-      promise = handler.postMessage({ m: method, a: args, u: String(g.location && g.location.href), top: isTop() });
+      promise = handler.postMessage({ m: method, a: args, u: String(g.location && g.location.href), top: isTop(), t: config.token });
     } catch (e) {
       return Promise.reject(e instanceof Error ? e : new Error(String(e)));
     }
@@ -317,4 +319,4 @@
   Object.defineProperty(g, "__vsesvit", { value: Object.freeze({ dispatchMessage, emit, id: config.id, kind: config.kind }), configurable: false, enumerable: false });
   g.chrome = api;
   g.browser = api;
-})(__VSESVIT_CONFIG__);
+})

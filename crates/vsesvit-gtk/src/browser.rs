@@ -7,6 +7,7 @@
 //! sees exactly what the user sees.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
@@ -14,6 +15,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::glib;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
+use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Startup, TabsPosition, Theme, keys};
 use vsesvit_core::sync::Changed;
@@ -43,10 +45,14 @@ pub(crate) struct Inner {
     runtime: Runtime,
     downloads_dir: PathBuf,
     closed_tabs: RefCell<ClosedTabs<ClosedTab>>,
+    /// Why the runtime could not load an enabled extension, by extension.
+    extension_errors: RefCell<HashMap<ExtensionId, String>>,
     next_tab_id: Cell<u32>,
     next_window_id: Cell<u32>,
     /// The pending debounced session save, if any.
     session_save: RefCell<Option<glib::SourceId>>,
+    /// Set once the application has shut down: the session saved then is final.
+    shut_down: Cell<bool>,
     updates: Option<Updates>,
 }
 
@@ -77,9 +83,11 @@ impl Browser {
                 runtime,
                 downloads_dir,
                 closed_tabs: RefCell::new(ClosedTabs::new(CLOSED_TABS_KEPT)),
+                extension_errors: RefCell::new(HashMap::new()),
                 next_tab_id: Cell::new(1),
                 next_window_id: Cell::new(1),
                 session_save: RefCell::new(None),
+                shut_down: Cell::new(false),
                 updates: Updates::new(app, updates_automatic),
             }
         });
@@ -103,9 +111,8 @@ impl Browser {
         match installed {
             Ok(list) => {
                 for ext in list.into_iter().filter(|e| e.enabled) {
-                    if let Err(e) = self.runtime().load(&ext) {
-                        log::warn!("extension {}: {e}", ext.id.as_str());
-                    }
+                    // A failure is logged and shown on the extensions page.
+                    let _ = self.load_into_runtime(&ext);
                 }
             }
             Err(e) => log::warn!("cannot list extensions: {e}"),
@@ -131,6 +138,19 @@ impl Browser {
 
     pub(crate) fn downloads_dir(&self) -> &Path {
         &self.0.downloads_dir
+    }
+
+    /// Why the runtime is not running this enabled extension, when it failed to load it.
+    pub(crate) fn extension_error(&self, id: &ExtensionId) -> Option<String> {
+        self.0.extension_errors.borrow().get(id).cloned()
+    }
+
+    pub(crate) fn set_extension_error(&self, id: &ExtensionId, error: Option<String>) {
+        let mut errors = self.0.extension_errors.borrow_mut();
+        match error {
+            Some(error) => errors.insert(id.clone(), error),
+            None => errors.remove(id),
+        };
     }
 
     /// `None` when this copy does not update itself.
@@ -240,10 +260,11 @@ impl Browser {
         }
     }
 
-    /// Called from the application's `shutdown`. The windows are gone by then, so this only
-    /// flushes; the last window saves the session as it closes.
+    /// Called from the application's `shutdown`: the last session write. Nothing writes it
+    /// afterwards, so tearing the windows down for a restart cannot overwrite it.
     pub(crate) fn shutdown(&self) {
         self.save_session_now();
+        self.0.shut_down.set(true);
     }
 
     // Tabs.
@@ -296,9 +317,14 @@ impl Browser {
         self.schedule_session_save();
     }
 
-    /// Titles arrive after the commit.
+    /// Titles arrive after the commit, and are written to history under the committed URI,
+    /// with two exceptions. WebKit clears the title as the next document commits, before it
+    /// reports the commit, so an empty title would land on the page being left. An error
+    /// page's title is ours, not that of the URI that failed.
     pub(crate) fn title_changed(&self, tab: &Tab) {
-        if let (Some(uri), Some(title)) = (tab.committed_uri(), tab.web_view().title())
+        if !tab.shows_error_page()
+            && let (Some(uri), Some(title)) = (tab.committed_uri(), tab.web_view().title())
+            && !title.is_empty()
             && let Ok(url) = Url::parse(&uri)
         {
             let set = self.core().borrow_mut().history().set_title(&url, &title);
@@ -484,7 +510,7 @@ impl Browser {
     /// About two seconds after the last tab change.
     pub(crate) fn schedule_session_save(&self) {
         let mut pending = self.0.session_save.borrow_mut();
-        if pending.is_some() {
+        if pending.is_some() || self.0.shut_down.get() {
             return;
         }
         let weak = Rc::downgrade(&self.0);
@@ -502,7 +528,7 @@ impl Browser {
         if let Some(pending) = self.0.session_save.borrow_mut().take() {
             pending.remove();
         }
-        if self.windows().is_empty() {
+        if self.windows().is_empty() || self.0.shut_down.get() {
             return;
         }
         let snapshot = session::snapshot(self);
@@ -539,7 +565,8 @@ impl TabHost for Host {
                         id: tab.id(),
                         window_id,
                         index: u32::try_from(index).unwrap_or(u32::MAX),
-                        url: tab.web_view().uri().map(String::from).unwrap_or_default(),
+                        // chrome.tabs' `url` is the committed URL, never one still loading.
+                        url: tab.committed_uri().unwrap_or_default(),
                         title: tab.display_title(),
                         active: selected.as_ref() == Some(&tab),
                     })
@@ -584,5 +611,89 @@ impl TabHost for Host {
         self.browser()
             .and_then(|b| b.find_tab(tab))
             .map(|(_, tab)| tab.web_view().clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+    use crate::test_support::{Reply, Server, browser, wait_until};
+
+    fn history_title(browser: &Browser, url: &str) -> Option<String> {
+        let found = browser.core().borrow_mut().history().search(url, 10).ok()?;
+        found.into_iter().find(|e| e.url.as_str() == url).map(|e| e.title)
+    }
+
+    #[gtk::test]
+    fn an_error_page_leaves_the_history_title_of_the_page_that_failed() {
+        let offline = Arc::new(AtomicBool::new(false));
+        let server = Server::start("127.0.0.1", {
+            let offline = offline.clone();
+            move |path| match path {
+                "/news" if offline.load(Ordering::SeqCst) => Reply::Drop,
+                "/news" => Reply::Page("News"),
+                _ => Reply::NotFound,
+            }
+        });
+        let browser = browser();
+        let url = server.url("/news");
+        let window = BrowserWindow::new(&browser);
+        let tab = window.open_tab(Some(&url), None, Focus::Foreground);
+        wait_until("the visit to get its title", || {
+            history_title(&browser, &url).as_deref() == Some("News")
+        });
+
+        offline.store(true, Ordering::SeqCst);
+        tab.web_view().reload();
+        wait_until("the error page", || {
+            tab.web_view().title().as_deref() == Some("Problem Loading Page")
+        });
+        let title = history_title(&browser, &url);
+        window.destroy();
+        assert_eq!(title.as_deref(), Some("News"));
+    }
+
+    #[gtk::test]
+    fn leaving_a_page_leaves_its_history_title() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/a" => Reply::Page("A"),
+            "/b" => Reply::Page("B"),
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let (a, b) = (server.url("/a"), server.url("/b"));
+        let window = BrowserWindow::new(&browser);
+        let tab = window.open_tab(Some(&a), None, Focus::Foreground);
+        wait_until("A to get its title", || history_title(&browser, &a).as_deref() == Some("A"));
+        tab.load(&b);
+        wait_until("B to get its title", || history_title(&browser, &b).as_deref() == Some("B"));
+        let title = history_title(&browser, &a);
+        window.destroy();
+        assert_eq!(title.as_deref(), Some("A"));
+    }
+
+    #[gtk::test]
+    fn extensions_see_the_committed_url_while_the_next_page_loads() {
+        let shown = Server::start("127.0.0.1", |_| Reply::Page("Shown"));
+        let requested = Server::start("127.0.0.2", |_| Reply::Hang);
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let url = shown.url("/");
+        let tab = window.open_tab(Some(&url), None, Focus::Foreground);
+        wait_until("the first page to commit", || tab.committed_uri().is_some());
+        let pending = requested.url("/slow");
+        tab.load(&pending);
+        wait_until("the next load to start", || {
+            tab.web_view().uri().as_deref() == Some(pending.as_str())
+        });
+        let info = Host(Rc::downgrade(&browser.0))
+            .tabs()
+            .into_iter()
+            .find(|info| info.id == tab.id());
+        window.destroy();
+        assert_eq!(info.map(|info| info.url), Some(url));
     }
 }

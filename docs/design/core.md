@@ -322,7 +322,7 @@ kind/field agreement, tombstone shape, and who owns `enabled`). Local-only table
 %LOCALAPPDATA%\Vsesvit\data\profiles\<name>\   |  ~/.local/share/vsesvit/profiles/<name>/
   LOCK                        std File::try_lock, held for the process lifetime; the OS frees it on crash
   vsesvit.db (-wal, -shm)
-  extensions/<id>/<version>_<hash8>/   unpacked, key-injected, IMMUTABLE (WebView2 drops changed extensions)
+  extensions/<id>/<version>_<sha256 prefix, 32 hex>/   unpacked, key-injected, IMMUTABLE (WebView2 drops changed extensions)
   staging/<uuid>/             in-flight installs; wiped at open
   engine/                     WebView2 user data folder | WebKit NetworkSession data dir
 ~/.cache/vsesvit/<name>/      WebKit cache (Linux)

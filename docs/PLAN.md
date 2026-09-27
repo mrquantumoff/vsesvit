@@ -55,7 +55,7 @@ Profile directory, one per profile:
 <data dir>/Vsesvit/profiles/<name>/
   LOCK                                 OS file lock; a second process gets "profile in use"
   vsesvit.db (+ -wal, -shm)            all synced and local records
-  extensions/<id>/<version>_<hash8>/   unpacked extensions, immutable once committed
+  extensions/<id>/<version>_<sha256 prefix, 32 hex>/   unpacked extensions, immutable once committed
   staging/                             in-flight installs, wiped at open
   engine/                              WebView2 user data folder / WebKit network session data
 ```
@@ -84,7 +84,7 @@ Tabs are vertical by default, in a sidebar on the left. A setting moves the side
 
 ## Extensions in detail
 
-Install sources are Chrome Web Store URLs or ids, AMO URLs or slugs, local `.crx`/`.xpi` files, and unpacked developer directories. Each install records how it was verified.
+Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (a bare slug is not accepted, because it cannot be told apart from a relative path), local `.crx`/`.xpi` files, and unpacked developer directories. Each install records how it was verified.
 
 **Windows.** WebView2 runs extensions natively: MV3 service workers, content scripts, `chrome.storage`, `chrome.tabs` inside extension pages, and declarativeNetRequest. WebView2 has no browser chrome for extensions, so Vsesvit draws the toolbar action buttons and shows each popup page in a flyout. `chrome.tabs` in WebView2 does not know about Vsesvit's tabs (WebView2Feedback #3853 and #3854).
 
@@ -117,7 +117,7 @@ Install sources are Chrome Web Store URLs or ids, AMO URLs or slugs, local `.crx
 
 ## Dependencies
 
-Linux build (Ubuntu/Debian package names):
+Linux build. It needs GTK 4.22, libadwaita 1.9, WebKitGTK 2.52 and GLib 2.80 or newer (Ubuntu 26.04 or newer), because the bindings are built with those version features and their build scripts check the system libraries through pkg-config. Ubuntu/Debian package names:
 
 ```
 sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev
@@ -130,7 +130,7 @@ Windows build:
 - The Rust MSVC toolchain.
 - Visual Studio 2022+ Build Tools with the C++ workload.
 - The WebView2 Evergreen runtime, which ships with Windows 11.
-- The Windows App Runtime 2.x.
+- The Windows App Runtime 2.5.1 or newer (x64). The shell checks this at startup and explains how to install it.
 
 The build fetches `Microsoft.Web.WebView2.Core.dll` from NuGet, pinned by SHA-256.
 

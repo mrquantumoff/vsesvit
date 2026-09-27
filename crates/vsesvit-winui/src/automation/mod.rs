@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
-use vsesvit_core::extensions::InstallSource;
+use vsesvit_core::extensions::{ExtensionId, InstallSource};
 use vsesvit_core::prefs::{TabsPosition, Theme};
 use vsesvit_core::testkit::{self, FixtureServer};
 
@@ -24,7 +24,7 @@ use crate::popup::Activation;
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
-use crate::{app, capture, exec};
+use crate::{app, capture, engine, exec};
 
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const STEP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -106,6 +106,20 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
         }
     }
 
+    // A session saved before a tab's engine view exists still has the URL the tab will load.
+    let planned = server.url("/page2.html");
+    let pending = window
+        .open_url_tab(planned.as_str(), false)
+        .map_err(|e| e.to_string())?;
+    let before_start = pending.session_url();
+    steps.push(json!({
+        "name": "01b-planned-url-before-the-engine",
+        "session_url": before_start,
+        "ok": before_start == planned.as_str(),
+    }));
+    wait_loaded(&pending).await?;
+    window.close_tab(pending.id);
+
     window.run(Command::SelectTab(1));
     let options = browser
         .engine()
@@ -167,6 +181,9 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
         "ctrl_w_presses": presses,
         "ok": opened_blank && closed && active_is(&window, &first),
     }));
+    steps.push(page_forgery(&window, index.as_str()).await?);
+    close_all_but(&window, &first);
+    window.run(Command::SelectTab(0));
 
     // window.open becomes a tab right after its opener, and keeps window.opener.
     eval(&first, "window.open('/page2.html'); 0").await?;
@@ -188,10 +205,28 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     window.close_tab(popup_tab.id);
     window.run(Command::SelectTab(0));
 
+    // A window.open no user gesture led to (at load, from a timer) is blocked.
+    let target = server.url("/page2.html");
+    let opener_page = format!(
+        "data:text/html,<title>Popup opener</title><script>window.open('{target}');\
+         setTimeout(() => window.open('{target}'), 300)</script>"
+    );
+    let before = window.tab_count();
+    let opener = window
+        .open_url_tab(&opener_page, true)
+        .map_err(|e| e.to_string())?;
+    wait_loaded(&opener).await?;
+    exec::sleep(Duration::from_millis(1500)).await;
+    let popups = window.tab_count().saturating_sub(before + 1);
+    steps.push(json!({
+        "name": "06b-popups-without-a-gesture",
+        "popups": popups,
+        "ok": popups == 0 && window.tab(opener.id).is_some(),
+    }));
+    close_all_but(&window, &first);
+    window.run(Command::SelectTab(0));
+
     // Ctrl+click on a link opens it in a background tab.
-    const LINK_CENTER: &str = "(() => { const a = document.querySelector('a[href]'); \
-        if (!a) return null; const r = a.getBoundingClientRect(); \
-        return [r.x + r.width / 2, r.y + r.height / 2]; })()";
     let link = eval(&first, LINK_CENTER).await?;
     let background = match serde_json::from_str::<Vec<f64>>(&link) {
         Ok(point) if point.len() == 2 => {
@@ -348,6 +383,8 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     .await;
     browser.set_theme(Theme::System);
 
+    steps.push(xpi_update(browser, &first, &server, out_dir).await);
+
     let other = browser
         .open_blank_window(crate::window::Show::NoActivate)
         .map_err(|e| e.to_string())?;
@@ -360,6 +397,196 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     other.close_tab(other_tab.id);
     exec::sleep(Duration::from_millis(300)).await;
     Ok(())
+}
+
+const LINK_CENTER: &str = "(() => { const a = document.querySelector('a[href]'); \
+    if (!a) return null; const r = a.getBoundingClientRect(); \
+    return [r.x + r.width / 2, r.y + r.height / 2]; })()";
+
+/// Every real key press reads as Ctrl+W to anything that asks the page's `KeyboardEvent`.
+const REMAP_KEYS: &str = "(() => { const p = KeyboardEvent.prototype; \
+    for (const [name, value] of [['keyCode', 87], ['which', 87], ['key', 'w'], ['code', 'KeyW'], \
+      ['ctrlKey', true], ['shiftKey', false], ['altKey', false], ['metaKey', false]]) \
+      Object.defineProperty(p, name, { configurable: true, get() { return value; } }); \
+    return 1; })()";
+
+/// Records the `vsesvit` member of any object serialized with `JSON.stringify`.
+const WATCH_JSON: &str = "(() => { window.__leaked = []; \
+    Object.defineProperty(Object.prototype, 'toJSON', { configurable: true, get() { \
+      if (this && typeof this.vsesvit === 'string') window.__leaked.push(this.vsesvit); \
+      return undefined; } }); \
+    return 1; })()";
+
+/// Posts a Ctrl+T with every secret seen, and calls anything shortcut-like the page can reach.
+const FORGE: &str = "(() => { const leaked = window.__leaked || []; let tries = 0; \
+    for (const secret of new Set(leaked)) { try { \
+      chrome.webview.postMessage(JSON.stringify({ vsesvit: secret, t: 'key', vk: 84, m: 1 })); \
+      tries++; } catch (e) {} } \
+    for (const name of Object.getOwnPropertyNames(window)) { \
+      if (/vsesvit/i.test(name) && typeof window[name] === 'function') { \
+        try { window[name](JSON.stringify({ t: 'key', vk: 84, m: 1 })); tries++; } catch (e) {} } } \
+    return leaked.length + ':' + tries; })()";
+
+/// A page must not be able to run browser commands: not by redefining the getters its real key
+/// presses are read through, and not by posting shortcut messages of its own, even after
+/// watching the shell's page script serialize its messages.
+async fn page_forgery(window: &Rc<BrowserWindow>, url: &str) -> Result<Value, String> {
+    let open = || async {
+        let tab = window.open_url_tab(url, true).map_err(|e| e.to_string())?;
+        wait_loaded(&tab).await?;
+        Ok::<_, String>(tab)
+    };
+    let attack = open().await?;
+    eval(&attack, REMAP_KEYS).await?;
+    press(&attack, 0x41, 0).await?;
+    exec::sleep(Duration::from_millis(1500)).await;
+    let remap_closed_the_tab = window.tab(attack.id).is_none();
+    let attack = if remap_closed_the_tab {
+        open().await?
+    } else {
+        attack
+    };
+
+    eval(&attack, WATCH_JSON).await?;
+    let link = eval(&attack, LINK_CENTER).await?;
+    let point: Vec<f64> = serde_json::from_str(&link).map_err(|e| format!("{link}: {e}"))?;
+    let before_click = window.tab_count();
+    ctrl_click(&attack, point[0], point[1]).await?;
+    let background = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        (window.tab_count() > before_click)
+            .then(|| window.tabs_in_order().into_iter().max_by_key(|t| t.id))
+            .flatten()
+    })
+    .await;
+    if let Some(tab) = &background {
+        let _ = wait_loaded(tab).await;
+        window.close_tab(tab.id);
+    }
+    let leaked = eval(&attack, "(window.__leaked || []).length").await?;
+    let before_forge = window.tab_count();
+    let forged = eval(&attack, FORGE).await?;
+    exec::sleep(Duration::from_millis(1500)).await;
+    let forged_command_ran = window.tab_count() != before_forge;
+    Ok(json!({
+        "name": "05b-pages-cannot-forge-shortcuts",
+        "remapped_key_closed_the_tab": remap_closed_the_tab,
+        "secrets_seen": leaked,
+        "forge_attempts": forged,
+        "forged_command_ran": forged_command_ran,
+        "ctrl_click_still_opens_a_background_tab": background.is_some(),
+        "ok": !remap_closed_the_tab
+            && leaked == "0"
+            && !forged_command_ran
+            && background.is_some()
+            && active_is(window, &attack),
+    }))
+}
+
+const XPI_NAME: &str = "Vsesvit Probe XPI";
+
+/// The probe as an unsigned add-on file: a gecko id, no `key`, and page attributes of its own
+/// so the CRX probe's content script does not answer for it.
+fn probe_xpi(gecko_id: &str, version: &str) -> Vec<u8> {
+    let files: Vec<(&str, Vec<u8>)> = testkit::PROBE_FILES
+        .iter()
+        .map(|(name, bytes)| {
+            let data = match *name {
+                "manifest.json" => {
+                    let mut manifest: Value = serde_json::from_slice(bytes).unwrap_or_default();
+                    manifest["name"] = json!(XPI_NAME);
+                    manifest["version"] = json!(version);
+                    manifest["browser_specific_settings"] = json!({ "gecko": { "id": gecko_id } });
+                    if let Some(manifest) = manifest.as_object_mut() {
+                        manifest.remove("action");
+                        manifest.remove("declarative_net_request");
+                    }
+                    serde_json::to_vec_pretty(&manifest).unwrap_or_default()
+                }
+                "content.js" => String::from_utf8_lossy(bytes)
+                    .replace("vsesvitProbe", "vsesvitXpiProbe")
+                    .replace("vsesvitVisits", "vsesvitXpiVisits")
+                    .into_bytes(),
+                _ => bytes.to_vec(),
+            };
+            (*name, data)
+        })
+        .collect();
+    let entries: Vec<(&str, &[u8])> = files.iter().map(|(n, d)| (*n, d.as_slice())).collect();
+    testkit::zip_files(&entries)
+}
+
+/// An add-on installed from a file and then updated to a newer version keeps its engine id,
+/// and with it what it stored: its content script's visit count goes on from 1 to 2.
+async fn xpi_update(
+    browser: &Rc<Browser>,
+    tab: &Rc<Tab>,
+    server: &FixtureServer,
+    out_dir: &Path,
+) -> Value {
+    const GECKO_ID: &str = "probe-xpi@vsesvit.test";
+    let mut engine_ids = Vec::new();
+    let mut visits = Vec::new();
+    for version in ["1.0.0", "1.0.1"] {
+        let path = out_dir.join(format!("probe-{version}.xpi"));
+        let installed = match std::fs::write(&path, probe_xpi(GECKO_ID, version)) {
+            Ok(()) => match InstallSource::from_path(&path) {
+                Ok(source) => browser.install_extension(source, &|_| {}).await,
+                Err(e) => Err(e.to_string()),
+            },
+            Err(e) => Err(e.to_string()),
+        };
+        engine_ids.push(installed.map(|e| e.engine_id));
+        tab.navigate(server.url("/index.html").as_str());
+        exec::sleep(Duration::from_millis(300)).await;
+        let _ = wait_loaded(tab).await;
+        let mut seen = String::new();
+        let deadline = Instant::now() + STEP_TIMEOUT;
+        while Instant::now() < deadline {
+            seen = eval(
+                tab,
+                "document.documentElement.dataset.vsesvitXpiVisits || ''",
+            )
+            .await
+            .unwrap_or_default();
+            if seen.trim_matches('"').is_empty() {
+                exec::sleep(Duration::from_millis(200)).await;
+            } else {
+                break;
+            }
+        }
+        visits.push(seen.trim_matches('"').to_owned());
+    }
+    let loaded = match browser.engine_profile().await {
+        Some(profile) => exec::timeout(STEP_TIMEOUT, engine::extensions(&profile))
+            .await
+            .and_then(Result::ok)
+            .map(|list| list.iter().filter(|e| e.name == XPI_NAME).count()),
+        None => None,
+    };
+    let removed = match ExtensionId::parse(GECKO_ID) {
+        Ok(id) => browser.uninstall_extension(&id).await,
+        Err(e) => Err(e.to_string()),
+    };
+    let same_id = matches!(
+        (engine_ids.first(), engine_ids.get(1)),
+        (Some(Ok(Some(a))), Some(Ok(Some(b)))) if a == b
+    );
+    json!({
+        "name": "22-xpi-update-keeps-its-engine-id",
+        "engine_ids": format!("{engine_ids:?}"),
+        "visits": visits,
+        "engine_entries": loaded,
+        "removed": format!("{removed:?}"),
+        "ok": same_id && visits == ["1", "2"] && loaded == Some(1) && removed.is_ok(),
+    })
+}
+
+fn close_all_but(window: &BrowserWindow, keep: &Tab) {
+    for tab in window.tabs_in_order() {
+        if tab.id != keep.id {
+            window.close_tab(tab.id);
+        }
+    }
 }
 
 /// Runs this executable again on the same profile; it should forward and exit at once.

@@ -96,6 +96,8 @@ pub(crate) fn escape(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '{' if out.is_empty() => out.push_str("{}{"),
+            // Not characters XML can hold, so the markup would not parse.
+            '\u{FFFE}' | '\u{FFFF}' => {}
             c if c.is_control() => {}
             c => out.push(c),
         }
@@ -121,5 +123,14 @@ mod tests {
     #[test]
     fn control_characters_are_dropped() {
         assert_eq!(escape("a\u{0}b\nc"), "abc");
+    }
+
+    #[test]
+    fn characters_xml_cannot_hold_are_dropped() {
+        assert_eq!(escape("a\u{FFFE}b\u{FFFF}c"), "abc");
+        assert_eq!(
+            escape("\u{FDD0}\u{1FFFF}\u{1F600}"),
+            "\u{FDD0}\u{1FFFF}\u{1F600}"
+        );
     }
 }

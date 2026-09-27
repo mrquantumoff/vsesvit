@@ -1,7 +1,7 @@
 //! WebViews for extension pages: the hidden background view and action popups. Each
 //! gets its own `UserContentManager` with the page shim and a message handler in the
-//! default world, the manifest's CSP, CORS for host permissions, and navigation pinned
-//! to the extension origin (anything else opens as a tab).
+//! default world, the manifest's CSP, CORS for host permissions, and its main frame
+//! pinned to the extension origin (anything else opens as a tab).
 
 use std::rc::Rc;
 
@@ -10,6 +10,7 @@ use webkit::prelude::*;
 
 use crate::bridge::{self, Origin};
 use crate::extension::{ExtView, Extension, ViewId, ViewKind};
+use crate::lifecycle::InstallEvent;
 use crate::runtime::Inner;
 
 pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> webkit::WebView {
@@ -31,7 +32,8 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
     };
 
     let allowlist: Vec<&str> = ext.host_permissions.iter().map(String::as_str).collect();
-    if !allowlist.is_empty() {
+    let cors_bypass = !allowlist.is_empty();
+    if cors_bypass {
         view.set_cors_allowlist(&allowlist);
     }
     if let Some(settings) = WebViewExt::settings(&view) {
@@ -41,23 +43,65 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
 
     let weak_inner = Rc::downgrade(inner);
     let base = ext.base_url.clone();
+    let ext_id = ext.id.as_str().to_owned();
     view.connect_decide_policy(move |_, decision, decision_type| {
-        if !matches!(decision_type, webkit::PolicyDecisionType::NavigationAction | webkit::PolicyDecisionType::NewWindowAction) {
-            return false;
+        let inside = |uri: &str| uri.starts_with(&base) || uri == base.trim_end_matches('/') || uri.starts_with("about:") || uri.starts_with("blob:") || uri.starts_with("data:");
+        let leave = |uri: &str, inside: bool| {
+            if (uri.starts_with("http://") || uri.starts_with("https://") || inside)
+                && let Some(inner) = weak_inner.upgrade()
+            {
+                inner.host.create_tab(uri, true);
+            }
+        };
+        match decision_type {
+            webkit::PolicyDecisionType::NavigationAction | webkit::PolicyDecisionType::NewWindowAction => {
+                let Some(nav) = decision.downcast_ref::<webkit::NavigationPolicyDecision>() else { return false };
+                let action = nav.navigation_action();
+                let uri = action.as_ref().and_then(|a| a.request()).and_then(|r| r.uri()).map(String::from).unwrap_or_default();
+                let inside = inside(&uri);
+                if decision_type == webkit::PolicyDecisionType::NavigationAction {
+                    if inside {
+                        return false;
+                    }
+                    // WebKitGTK raises this for subframe loads too and does not say which
+                    // frame. Only what the user did in the page (a link, a form) is taken
+                    // as leaving it here; anything else is judged at the response, where
+                    // the frame is known.
+                    let user_driven = action.is_some_and(|a| {
+                        matches!(a.navigation_type(), webkit::NavigationType::LinkClicked | webkit::NavigationType::FormSubmitted | webkit::NavigationType::FormResubmitted)
+                    });
+                    if !user_driven {
+                        return false;
+                    }
+                }
+                decision.ignore();
+                leave(&uri, inside);
+                true
+            }
+            webkit::PolicyDecisionType::Response => {
+                let Some(response) = decision.downcast_ref::<webkit::ResponsePolicyDecision>() else { return false };
+                let uri = response.response().and_then(|r| r.uri()).map(String::from).unwrap_or_default();
+                if inside(&uri) {
+                    return false;
+                }
+                if response.is_main_frame_main_resource() {
+                    decision.ignore();
+                    leave(&uri, false);
+                    return true;
+                }
+                // A subframe outside the extension origin. The CORS allowlist applies to
+                // every frame of the view (WebKit checks the page, not the frame), so a
+                // third-party frame would get the extension's host-permission fetches,
+                // which Chrome gives only to the extension's own frames.
+                if cors_bypass {
+                    log::debug!("{ext_id}: refused subframe {uri} in an extension view with host permissions");
+                    decision.ignore();
+                    return true;
+                }
+                false
+            }
+            _ => false,
         }
-        let Some(nav) = decision.downcast_ref::<webkit::NavigationPolicyDecision>() else { return false };
-        let uri = nav.navigation_action().and_then(|a| a.request()).and_then(|r| r.uri()).map(String::from).unwrap_or_default();
-        let inside = uri.starts_with(&base) || uri == base.trim_end_matches('/') || uri.starts_with("about:") || uri.starts_with("blob:") || uri.starts_with("data:");
-        if inside && decision_type == webkit::PolicyDecisionType::NavigationAction {
-            return false;
-        }
-        decision.ignore();
-        if (uri.starts_with("http://") || uri.starts_with("https://") || inside)
-            && let Some(inner) = weak_inner.upgrade()
-        {
-            inner.host.create_tab(&uri, true);
-        }
-        true
     });
 
     let ext_id = ext.id.as_str().to_owned();
@@ -79,24 +123,20 @@ pub(crate) fn start_background(inner: &Rc<Inner>, ext: &Rc<Extension>, install: 
         if event != webkit::LoadEvent::Finished || fired.replace(true) {
             return;
         }
-        let (event_name, detail) = match &install {
-            InstallEvent::Installed => ("runtime.onInstalled", json!({ "reason": "install" })),
-            InstallEvent::Updated { previous } => ("runtime.onInstalled", json!({ "reason": "update", "previousVersion": previous })),
-            InstallEvent::Startup => ("runtime.onStartup", json!({})),
+        let (event_name, args) = match &install {
+            InstallEvent::Installed => ("runtime.onInstalled", vec![json!({ "reason": "install" })]),
+            InstallEvent::Updated { previous } => ("runtime.onInstalled", vec![json!({ "reason": "update", "previousVersion": previous })]),
+            InstallEvent::Startup => ("runtime.onStartup", vec![]),
+            InstallEvent::Nothing => {
+                log::debug!("{}: background ready (re-enabled, no lifecycle event)", ext_for_load.id.as_str());
+                return;
+            }
         };
-        let args = if event_name == "runtime.onStartup" { vec![] } else { vec![detail] };
         bridge::emit(view, None, event_name, &args);
         log::debug!("{}: background ready, fired {event_name}", ext_for_load.id.as_str());
     });
     *ext.background.borrow_mut() = Some(view.clone());
     view.load_uri(&url);
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum InstallEvent {
-    Installed,
-    Updated { previous: String },
-    Startup,
 }
 
 impl Inner {

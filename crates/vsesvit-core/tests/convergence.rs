@@ -295,7 +295,9 @@ fn run_op(p: &mut Profile, op: &Op, expect: &mut Expect) {
             p.prefs().set(&keys::THEME, &t).unwrap();
         }
         Op::StorageSet { key, value } => {
-            let items = BTreeMap::from([(format!("k{}", key % 4), serde_json::json!(value))]);
+            // JSON null is a stored value (Chrome semantics), distinct from a removed key.
+            let value = if value % 4 == 0 { serde_json::Value::Null } else { serde_json::json!(value) };
+            let items = BTreeMap::from([(format!("k{}", key % 4), value)]);
             p.ext_storage().set(&ext(), Area::Sync, items).unwrap();
         }
         Op::StorageRemove { key } => {
@@ -553,7 +555,8 @@ fn extension_record() -> impl Strategy<Value = ExtensionRecord> {
 }
 
 fn json_value() -> impl Strategy<Value = Option<JsonText>> {
-    prop::option::of((0u8..3).prop_map(|n| JsonText::from_value(&serde_json::json!(n))))
+    let value = prop_oneof![Just(serde_json::Value::Null), (0u8..3).prop_map(serde_json::Value::from)];
+    prop::option::of(value.prop_map(|v| JsonText::from_value(&v)))
 }
 
 fn storage_record() -> impl Strategy<Value = SyncItemRecord> {
@@ -604,6 +607,40 @@ proptest! {
         check_laws(ia, ib, ic)?;
         check_laws(ra, rb, rc)?;
         check_laws(ea, eb, ec)?;
+    }
+
+    /// The stored form of a page is a deterministic function of the union, whatever the
+    /// arrival order and whatever duplicate `(at_ms, device)` keys (the table's primary
+    /// key) the records carry. `devices_converge` cannot reach that case: its devices have
+    /// distinct ids, so only a copied profile or a foreign record produces it. Records are
+    /// what a device can export: a page with no visits has no row and is never sent.
+    #[test]
+    fn page_records_converge_through_the_table(
+        records in prop::collection::vec(page_record().prop_filter("exported pages have a visit", |p| !p.visits.is_empty()), 1..4),
+        seed in any::<u64>(),
+    ) {
+        let base = 1_780_000_000_000u64;
+        let mut a = Device::new(0, base);
+        let mut b = Device::new(1, base);
+        let wire = |r: &PageRecord| WireRecord { kind: Kind::HistoryPages, id: r.url.to_string(), body: serde_json::to_vec(r).unwrap() };
+        let forward: Vec<WireRecord> = records.iter().map(wire).collect();
+        let mut shuffled = forward.clone();
+        shuffle(&mut shuffled, seed);
+        for w in &forward {
+            let report = a.profile.sync().apply(vec![w.clone()]).unwrap();
+            prop_assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        }
+        let report = b.profile.sync().apply(shuffled).unwrap();
+        prop_assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        let export = a.export();
+        prop_assert_eq!(&export, &b.export());
+
+        // the stored form is a fixpoint: re-applying it merges nothing and marks nothing dirty
+        a.upload(&mut Server::default(), usize::MAX);
+        let replay: Vec<WireRecord> = export.iter().map(|((kind, id), body)| WireRecord { kind: *kind, id: id.clone(), body: body.clone() }).collect();
+        let report = a.profile.sync().apply(replay).unwrap();
+        prop_assert_eq!(report.merged, 0);
+        prop_assert!(!a.pending_upload(), "the stored form echoes");
     }
 
     // -----------------------------------------------------------------------

@@ -1,17 +1,21 @@
 //! Everything the runtime keeps per loaded extension.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use vsesvit_core::extensions::manifest::{Background, Manifest, ManifestVersion};
+use vsesvit_core::extensions::manifest::{Background, Manifest, ManifestVersion, RelPath};
 use vsesvit_core::extensions::{ExtensionId, InstalledExtension};
 use webkit::glib;
 
 use crate::content;
 use crate::i18n;
+use crate::patterns;
+use crate::protocol;
 use crate::runtime::LoadError;
+use crate::tabs::{TabId, TabInfo};
 
 pub(crate) const SCHEME: &str = "chrome-extension";
 /// Chrome's name for the page that hosts `background.scripts` / the service worker.
@@ -59,12 +63,25 @@ pub(crate) struct Extension {
     pub base_url: String,
     /// Isolated-world name for content scripts.
     pub world: String,
-    /// `window.webkit.messageHandlers.<handler>`; unique per extension so the signal
-    /// detail identifies it.
+    /// `window.webkit.messageHandlers.<handler>` for content scripts, registered in
+    /// `world`; unique per extension so the signal detail identifies it.
     pub handler: String,
+    /// The handler extension pages use, registered in the default world. A different
+    /// name, because both handlers live on a tab's manager and the signal detail is
+    /// all that tells them apart.
+    pub page_handler: String,
+    /// Secret the page bootstrap carries and every page call must repeat (see
+    /// `protocol`): the default-world handler is reachable by any document in the same
+    /// view, the bootstrap only by this extension's documents.
+    pub page_token: String,
     pub scripts: Vec<webkit::UserScript>,
     pub styles: Vec<webkit::UserStyleSheet>,
+    /// The page shim, injected into this extension's documents (and no others) in the
+    /// default world of every view.
     pub page_script: webkit::UserScript,
+    /// The content-script shim, for isolated-world code the manifest did not declare
+    /// (`scripting.executeScript`).
+    pub content_bootstrap: String,
     pub csp: String,
     pub host_permissions: Vec<String>,
     /// Content-blocker JSON for the enabled static rulesets; `None` when there are none.
@@ -74,6 +91,8 @@ pub(crate) struct Extension {
     pub action: RefCell<Option<ActionState>>,
     pub filter: RefCell<Option<webkit::UserContentFilter>>,
     pub alarms: RefCell<BTreeMap<String, Alarm>>,
+    /// Tabs the user invoked the action on, while the `activeTab` permission applies.
+    pub active_tabs: RefCell<BTreeSet<TabId>>,
 }
 
 impl Extension {
@@ -83,14 +102,17 @@ impl Extension {
         let base_url = format!("{SCHEME}://{host}/");
         let world = installed.id.as_str().to_owned();
         let handler = format!("vsesvit_{host}");
+        let page_handler = format!("vsesvit_{host}_page");
+        let page_token = random_token();
         let catalog = i18n::load_catalog(&installed.dir, ui_locale, manifest.default_locale.as_deref());
         let host_permissions: Vec<String> = manifest.host_permissions.iter().map(|p| p.as_str().to_owned()).collect();
 
-        let config = |kind: &str| {
+        let config = |kind: &str, handler: &str, token: Option<&str>| {
             json!({
                 "id": installed.id.as_str(),
                 "host": host,
                 "handler": handler,
+                "token": token,
                 "kind": kind,
                 "manifest": manifest.raw,
                 "i18n": { "locale": ui_locale, "messages": catalog },
@@ -99,15 +121,16 @@ impl Extension {
                 "optionsPage": manifest.options_page.as_ref().map(|p| p.as_str()),
             })
         };
-        let content_bootstrap = content::bootstrap(&config("content"));
-        let page_bootstrap = content::bootstrap(&config("page"));
+        let content_bootstrap = protocol::bootstrap(&config("content", &handler, None));
+        let page_bootstrap = protocol::bootstrap(&config("page", &page_handler, Some(&page_token)));
 
         let (scripts, styles) = content::user_content(&installed.dir, manifest, &world, &content_bootstrap)?;
+        let own_documents = format!("{base_url}*");
         let page_script = webkit::UserScript::new(
             &page_bootstrap,
             webkit::UserContentInjectedFrames::AllFrames,
             webkit::UserScriptInjectionTime::Start,
-            &[],
+            &[own_documents.as_str()],
             &[],
         );
 
@@ -128,9 +151,12 @@ impl Extension {
             base_url,
             world,
             handler,
+            page_handler,
+            page_token,
             scripts,
             styles,
             page_script,
+            content_bootstrap,
             csp: content_security_policy(manifest),
             host_permissions,
             dnr_json,
@@ -139,11 +165,63 @@ impl Extension {
             action: RefCell::new(action),
             filter: RefCell::new(None),
             alarms: RefCell::new(BTreeMap::new()),
+            active_tabs: RefCell::new(BTreeSet::new()),
         })
     }
 
     pub fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path.trim_start_matches('/'))
+    }
+
+    /// Is `url` a document of this extension?
+    pub fn owns_url(&self, url: &str) -> bool {
+        url.starts_with(&self.base_url) || url == self.base_url.trim_end_matches('/')
+    }
+
+    /// A runtime API's file reference (`files`, `path`, `popup`) as a path inside the
+    /// extension, accepting Chrome's spellings (leading `/`, the extension's own URL).
+    pub fn resource(&self, reference: &str) -> Result<RelPath, String> {
+        RelPath::parse(patterns::resource_path(&self.base_url, reference)).map_err(|e| e.to_string())
+    }
+
+    pub fn has_permission(&self, name: &str) -> bool {
+        self.manifest.permissions.iter().any(|p| p == name)
+    }
+
+    /// May this extension act on a document at `url` (inject scripts, read the tab's
+    /// URL and title)? Its own pages, its host permissions, and an `activeTab` grant on
+    /// `tab` say yes.
+    pub fn host_access(&self, url: &str, tab: Option<TabId>) -> bool {
+        if self.owns_url(url) || tab.is_some_and(|t| self.active_tabs.borrow().contains(&t)) {
+            return true;
+        }
+        match url::Url::parse(url) {
+            Ok(parsed) => self.manifest.host_permissions.iter().any(|p| p.matches(&parsed)),
+            Err(_) => false,
+        }
+    }
+
+    /// May this extension see `tab`'s URL and title? The `tabs` permission or host
+    /// access to the URL, as in Chrome.
+    pub fn sees_tab(&self, tab: &TabInfo) -> bool {
+        self.has_permission("tabs") || self.host_access(&tab.url, Some(tab.id))
+    }
+
+    /// `chrome.tabs.Tab` as this extension may see it.
+    pub fn tab_json(&self, tab: &TabInfo) -> Value {
+        tab.to_json_for(self.sees_tab(tab))
+    }
+
+    /// The user invoked the action on `tab`: with `activeTab`, that grants host access
+    /// to the tab until it leaves its origin or closes.
+    pub fn grant_active_tab(&self, tab: TabId) {
+        if self.has_permission("activeTab") {
+            self.active_tabs.borrow_mut().insert(tab);
+        }
+    }
+
+    pub fn revoke_active_tab(&self, tab: TabId) {
+        self.active_tabs.borrow_mut().remove(&tab);
     }
 
     pub fn background_url(&self) -> Option<String> {
@@ -238,7 +316,22 @@ fn fnv1a(bytes: &[u8], seed: u64) -> u64 {
     bytes.iter().fold(seed, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
-fn largest_icon(dir: &Path, icons: &BTreeMap<u32, vsesvit_core::extensions::manifest::RelPath>) -> Option<PathBuf> {
+/// 128 bits from the kernel; a per-process hash of the clock if `/dev/urandom` is
+/// somehow unavailable.
+fn random_token() -> String {
+    let mut bytes = [0u8; 16];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).is_err() {
+        use std::hash::{BuildHasher, Hasher};
+        let mut hasher = std::hash::RandomState::new().build_hasher();
+        hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        bytes[..8].copy_from_slice(&hasher.finish().to_le_bytes());
+        hasher.write_u32(std::process::id());
+        bytes[8..].copy_from_slice(&hasher.finish().to_le_bytes());
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn largest_icon(dir: &Path, icons: &BTreeMap<u32, RelPath>) -> Option<PathBuf> {
     icons.iter().next_back().map(|(_, p)| p.resolve(dir))
 }
 

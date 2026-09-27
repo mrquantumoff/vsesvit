@@ -17,8 +17,8 @@ pub(crate) fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// Every window with at least one committed page, most recently focused first, so the
-/// active window is index 0.
+/// Every window with at least one page, committed or still loading, most recently focused
+/// first, so the active window is index 0.
 pub(crate) fn snapshot(browser: &Browser) -> SessionSnapshot {
     let windows = browser
         .windows()
@@ -37,7 +37,7 @@ fn window_snapshot(window: &BrowserWindow) -> Option<WindowSnapshot> {
     let mut tabs = Vec::new();
     let mut active_tab = 0;
     for tab in window.tabs() {
-        let Some(url) = tab.committed_uri().and_then(|u| Url::parse(&u).ok()) else {
+        let Some(url) = tab.session_uri().and_then(|u| Url::parse(&u).ok()) else {
             continue;
         };
         if selected.as_ref() == Some(&tab) {
@@ -107,4 +107,68 @@ pub(crate) fn restore(browser: &Browser, snapshot: SessionSnapshot) -> usize {
         opened += 1;
     }
     opened
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use webkit::prelude::*;
+
+    use super::*;
+    use crate::test_support::{Reply, Server, browser, wait_until};
+
+    #[gtk::test]
+    fn a_tab_still_loading_its_first_page_is_saved() {
+        let server = Server::start("127.0.0.1", |_| Reply::Hang);
+        let window = BrowserWindow::new(&browser());
+        let url = server.url("/slow");
+        let tab = window.open_tab(Some(&url), None, Focus::Background);
+        wait_until("the load to start", || tab.web_view().is_loading());
+        let saved = window_snapshot(&window);
+        window.destroy();
+        let urls: Vec<String> = saved
+            .into_iter()
+            .flat_map(|w| w.tabs)
+            .map(|t| t.url.to_string())
+            .collect();
+        assert_eq!(urls, [url]);
+    }
+
+    #[gtk::test]
+    fn a_restored_tab_keeps_its_back_forward_state_until_it_commits() {
+        let stalled = Arc::new(AtomicBool::new(false));
+        let server = Server::start("127.0.0.1", {
+            let stalled = stalled.clone();
+            move |path| match path {
+                "/a" => Reply::Page("A"),
+                "/b" if stalled.load(Ordering::SeqCst) => Reply::Hang,
+                "/b" => Reply::Page("B"),
+                _ => Reply::NotFound,
+            }
+        });
+        let (a, b) = (server.url("/a"), server.url("/b"));
+        let window = BrowserWindow::new(&browser());
+        let visited = window.open_tab(Some(&a), None, Focus::Background);
+        wait_until("A to commit", || visited.committed_uri().as_deref() == Some(a.as_str()));
+        visited.load(&b);
+        wait_until("B to commit", || visited.committed_uri().as_deref() == Some(b.as_str()));
+        let state = visited.session_state_bytes().expect("the engine's back/forward state");
+
+        stalled.store(true, Ordering::SeqCst);
+        let restored = window.open_tab(None, None, Focus::Background);
+        restored.restore_saved(Some(&state), &b);
+        wait_until("the restore to start", || restored.web_view().is_loading());
+        let saved = window_snapshot(&window);
+        window.destroy();
+        let saved = saved.expect("the window is saved");
+        let tab = saved
+            .tabs
+            .iter()
+            .find(|t| t.id == restored.session_id())
+            .expect("the restored tab is saved");
+        assert_eq!(tab.url.as_str(), b);
+        assert!(tab.restore_state.is_some(), "its back/forward state was dropped");
+    }
 }

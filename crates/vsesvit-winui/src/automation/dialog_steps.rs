@@ -301,6 +301,19 @@ pub(super) async fn history(
     page2: &Url,
     steps: &mut Vec<Value>,
 ) -> Result<()> {
+    // A title XML cannot carry must not cost its page its row: every row below it would then
+    // open and delete the page above it.
+    if let Err(e) = browser.core(|p| p.history().set_title(page2, "Vsesvit\u{FFFF} fixture 2")) {
+        log::warn!("history title: {e}");
+    }
+    let pages = browser
+        .core(|p| p.history().visits_between(0, i64::MAX, 300))
+        .map(|visits| {
+            let urls: std::collections::HashSet<_> =
+                visits.into_iter().map(|(entry, _)| entry.url).collect();
+            urls.len()
+        })
+        .unwrap_or_default();
     let preview = open(window, Dialog::History).await?;
     let search: AutoSuggestBox = preview.find("HistorySearch")?;
     let list: ListView = preview.find("HistoryList")?;
@@ -311,6 +324,12 @@ pub(super) async fn history(
             .unwrap_or(0)
     };
     let all = shown();
+    steps.push(json!({
+        "name": "17a-history-rows-match-pages",
+        "pages": pages,
+        "rows": all,
+        "ok": all as usize == pages,
+    }));
     search.SetText("fixture 2")?;
     let found = until(|| (shown() == 1).then_some(())).await;
     exec::sleep(Duration::from_millis(400)).await;

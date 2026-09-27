@@ -34,8 +34,9 @@ struct Row {
     at_ms: i64,
 }
 
+/// Holds no [`Browser`] or profile of its own: the widgets' handlers keep this state alive
+/// for as long as the dialog's widgets exist, which must not keep the profile open.
 struct State {
-    browser: Browser,
     window: glib::WeakRef<BrowserWindow>,
     ui: LibraryDialog,
     list: gtk::ListBox,
@@ -77,7 +78,6 @@ pub(crate) fn present(window: &BrowserWindow) {
     ui.content.set_child(Some(&stack));
 
     let state = Rc::new(State {
-        browser: window.browser().clone(),
         window: window.downgrade(),
         ui,
         list,
@@ -103,10 +103,15 @@ pub(crate) fn present(window: &BrowserWindow) {
 }
 
 impl State {
+    fn browser(&self) -> Option<Browser> {
+        self.window.upgrade().map(|window| window.browser().clone())
+    }
+
     fn load(&self) -> Vec<Row> {
         let query = self.ui.search.text();
         let query = query.trim();
-        let mut profile = self.browser.core().borrow_mut();
+        let Some(browser) = self.browser() else { return Vec::new() };
+        let mut profile = browser.core().borrow_mut();
         let mut history = profile.history();
         let loaded = if query.is_empty() {
             history
@@ -173,7 +178,8 @@ impl State {
     }
 
     fn forget(self: &Rc<Self>, url: &Url) {
-        let result = self.browser.core().borrow_mut().history().delete_url(url);
+        let Some(browser) = self.browser() else { return };
+        let result = browser.core().borrow_mut().history().delete_url(url);
         if let Err(e) = result {
             self.ui.toast(&format!("History: {e}"));
         }
@@ -196,7 +202,8 @@ impl State {
         let Some((_, span)) = RANGES.get(index as usize) else { return };
         let now = now_ms();
         let from = span.map_or(0, |span| now - span);
-        let result = self.browser.core().borrow_mut().history().delete_range(from, now);
+        let Some(browser) = self.browser() else { return };
+        let result = browser.core().borrow_mut().history().delete_range(from, now);
         if let Err(e) = result {
             self.ui.toast(&format!("History: {e}"));
         }

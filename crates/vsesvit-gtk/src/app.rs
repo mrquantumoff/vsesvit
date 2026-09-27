@@ -11,6 +11,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::gio::ActionEntry;
@@ -162,7 +163,9 @@ pub(crate) fn run(profile_dir: Option<PathBuf>, args: &[OsString]) -> ExitCode {
     let status = app.run_with_args_os(args);
     // After `run`, so the new process becomes the primary instance instead of handing its
     // command line to this one.
-    if let Some(program) = slot.take().and_then(|browser| browser.restart_program()) {
+    let restart = slot.borrow().as_ref().and_then(Browser::restart_program);
+    if let Some(program) = restart {
+        release_profile(&app, &slot);
         match std::process::Command::new(&program)
             .args(location.relaunch_args())
             .spawn()
@@ -172,6 +175,32 @@ pub(crate) fn run(profile_dir: Option<PathBuf>, args: &[OsString]) -> ExitCode {
         }
     }
     status.into()
+}
+
+/// Closes the profile before a restart starts the next process, which opens it straight
+/// away and gives up if this one still holds its lock. The windows hold the browser, and
+/// GTK keeps them after `run` returns, so they are destroyed first; the session was already
+/// saved at shutdown.
+fn release_profile(app: &adw::Application, slot: &Slot) {
+    let Some(browser) = slot.take() else { return };
+    let profile = Rc::downgrade(browser.core());
+    drop(browser);
+    for window in app.windows() {
+        if let Some(window) = window.downcast_ref::<adw::ApplicationWindow>()
+            && let Some(dialog) = window.visible_dialog()
+        {
+            dialog.force_close();
+        }
+        window.destroy();
+    }
+    // What the teardown queued (finalizing widgets, answering force-closed dialogs), bounded
+    // in case a source keeps rescheduling itself.
+    let context = glib::MainContext::default();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && context.iteration(false) {}
+    if profile.strong_count() > 0 {
+        log::warn!("the profile is still open; the restarted browser may find it locked");
+    }
 }
 
 /// Everything a window needs before the first one exists. Shared with the self-test, which
@@ -413,4 +442,60 @@ fn load_css() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{registered_app, scratch_dir};
+    use crate::window::BrowserWindow;
+
+    const CHILD: &str = "app::tests::releasing_the_profile_frees_its_lock";
+
+    #[test]
+    fn a_restart_frees_the_profile_before_the_new_process_starts() {
+        // The check tears down a browser of its own, and the extension runtime allows one
+        // per process, so it runs in a child process.
+        let exe = std::env::current_exe().expect("the test binary");
+        let output = std::process::Command::new(exe)
+            .args([CHILD, "--exact", "--include-ignored", "--test-threads=1", "--nocapture"])
+            .output()
+            .expect("the test binary runs");
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "{log}");
+        assert!(log.contains("1 passed"), "{log}");
+    }
+
+    #[gtk::test]
+    #[ignore = "run in a child process by a_restart_frees_the_profile_before_the_new_process_starts"]
+    fn releasing_the_profile_frees_its_lock() {
+        let root = scratch_dir("restart");
+        let profile = Profile::open(&root, OpenOptions::default()).expect("a scratch profile");
+        let app = registered_app();
+        let browser = Browser::new(&app, profile);
+        browser.start();
+        let window = BrowserWindow::new(&browser);
+        window.new_tab();
+        // The library dialogs, one of them still open, as they can be when the user restarts.
+        let close_dialog = |window: &BrowserWindow| {
+            if let Some(dialog) = window.visible_dialog() {
+                dialog.force_close();
+            }
+        };
+        dialogs::history::present(&window);
+        close_dialog(&window);
+        dialogs::bookmarks::present(&window);
+        close_dialog(&window);
+        dialogs::extensions::present(&window);
+        let slot: Slot = Rc::new(RefCell::new(Some(browser)));
+        drop(window);
+
+        release_profile(&app, &slot);
+        let reopened = Profile::open(&root, OpenOptions::default());
+        assert!(reopened.is_ok(), "the profile is still held: {:?}", reopened.err());
+    }
 }

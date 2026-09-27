@@ -80,6 +80,7 @@ pub mod keys {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrefRecord {
     pub key: String,
+    #[serde(with = "crate::crdt::json_register")]
     pub value: Lww<Option<JsonText>>,
 }
 
