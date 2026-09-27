@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Vsesvit fixture</title></head>
+<body style="font: 16px system-ui; margin: 32px">
+  <h1>Vsesvit fixture page</h1>
+  <p>The self-test loads this page, checks the probe extension's content script, and checks that its
+  declarativeNetRequest rule blocked the image below while the control image loaded.</p>
+  <p><img id="allowed" src="/allowed.png" alt="allowed" width="16" height="16"> control image (should load)</p>
+  <p><img id="blocked" src="/vsesvit-blocked/pixel.png" alt="blocked" width="16" height="16"> blocked image (should not be requested)</p>
+  <p><a href="/page2.html">Second page</a></p>
+</body>
+</html>

@@ -1,0 +1,185 @@
+# Builds every package, signs the updater artifacts, creates the GitHub release and registers it
+# with the update server (docs/design/packaging.md).
+#
+#   git tag v0.2.0 && git push --tags        stable; server rows wait for a release manager
+#   git tag v0.2.0-beta.1 && git push --tags beta;   server rows wait for a release manager
+#   schedule, or "Run workflow"              nightly / weekly; live on the server at once
+#
+# Secrets: TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD (the key whose public
+# half is in packaging/updater.json) and VERSION_UPDATE_TRIGGER_TOKEN (update server API key).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    - cron: "0 2 * * *" # nightly
+    - cron: "0 3 * * 1" # weekly, Mondays
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Channel to build
+        type: choice
+        options: [nightly, weekly]
+        default: nightly
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ github.event.schedule || inputs.channel || 'tag' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  UPDATE_SERVER: https://api.usequadrant.dev/api/any/vsesvit
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      channel: ${{ steps.plan.outputs.channel }}
+      tag: ${{ steps.plan.outputs.tag }}
+      publish: ${{ steps.plan.outputs.publish }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      skip: ${{ steps.plan.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          CHANNEL: ${{ github.event_name == 'schedule' && (github.event.schedule == '0 3 * * 1' && 'weekly' || 'nightly') || inputs.channel }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/release-plan.sh | tee -a "$GITHUB_OUTPUT"
+
+  windows:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: NSIS
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+            choco install nsis --no-progress -y
+          }
+      - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
+      - name: Build and sign
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo xtask package nsis --sign
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: target/dist/*
+          if-no-files-found: error
+
+  linux:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    # GTK 4.22, libadwaita 1.9 and WebKitGTK 2.52 need Ubuntu 26.04; the AppImage bundles its
+    # libraries from this image's archive.
+    container: ubuntu:26.04
+    steps:
+      - name: Build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl ca-certificates git \
+            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libglib2.0-bin \
+            dpkg-dev rpm libarchive-tools zstd fakeroot squashfs-tools \
+            desktop-file-utils appstream
+      - uses: actions/checkout@v5
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
+      - name: Build and sign
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo xtask package deb rpm pacman appimage --sign
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: target/dist/*
+          if-no-files-found: error
+
+  flatpak:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          # flatpak-builder sandboxes each build step with bubblewrap in a user namespace.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
+      # Flatpak installs update through Flatpak, so the bundle is not signed or put in latest.json.
+      - run: cargo xtask package flatpak
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: target/dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [plan, windows, linux, flatpak]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      CHANNEL: ${{ needs.plan.outputs.channel }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      PUBLISH: ${{ needs.plan.outputs.publish }}
+      PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/set-version.sh "$VERSION"
+      - uses: actions/download-artifact@v5
+        with:
+          path: target/dist
+          merge-multiple: true
+      - name: Release notes
+        run: |
+          gh api "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
+            --jq .body > "$RUNNER_TEMP/notes.md"
+      # Refuses artifacts whose signatures the updater.json key would reject.
+      - run: cargo xtask manifest --base-url "https://github.com/$REPO/releases/download/$TAG" --notes "$RUNNER_TEMP/notes.md"
+      - name: GitHub release
+        run: |
+          flags=(--title "Vsesvit $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --target "$GITHUB_SHA")
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); else flags+=(--latest); fi
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then flags+=(--verify-tag); fi
+          gh release create "$TAG" --repo "$REPO" "${flags[@]}" target/dist/*
+      # After the release, so the URLs in latest.json resolve before any client is offered them.
+      - name: Register with the update server
+        env:
+          TOKEN: ${{ secrets.VERSION_UPDATE_TRIGGER_TOKEN }}
+        run: |
+          curl --fail-with-body -sS -X PUT \
+            -H "Authorization: $TOKEN" -H "Content-Type: application/json" \
+            --data-binary @target/dist/latest.json \
+            "$UPDATE_SERVER/add_updates/$CHANNEL/$VERSION?publish=$PUBLISH"

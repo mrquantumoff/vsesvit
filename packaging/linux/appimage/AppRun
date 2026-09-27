@@ -1,0 +1,40 @@
+#!/bin/sh
+# Entry point of the Vsesvit AppImage. libwebkitgtk-6.0 was patched so its compiled-in
+# directories start with ././ instead of /usr, which resolve only from $APPDIR/usr; the
+# browser therefore runs from there, with file arguments made absolute first.
+here="$(dirname "$(readlink -f "$0")")"
+lib="$here/usr/lib/x86_64-linux-gnu"
+
+export LD_LIBRARY_PATH="$lib:$here/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="$here/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export GSETTINGS_SCHEMA_DIR="$here/usr/share/glib-2.0/schemas"
+export GIO_MODULE_DIR="$lib/gio/modules"
+export GST_PLUGIN_SYSTEM_PATH_1_0="$lib/gstreamer-1.0"
+export GST_PLUGIN_SCANNER_1_0="$lib/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner"
+# The web process sandbox needs the host's bubblewrap at /usr/bin/bwrap, unprivileged user
+# namespaces and the WebKit libexec directory visible inside it; none of that holds for a
+# relocated image, so the sandbox is off, as it is in every webkit2gtk AppImage.
+export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+
+# Caches that must not be shared with a system GStreamer or gdk-pixbuf of another version. The
+# pixbuf loader cache holds absolute paths, so it is rewritten for the current mount point.
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/vsesvit/appimage"
+mkdir -p "$cache" 2>/dev/null || cache="$(mktemp -d)"
+export GST_REGISTRY_1_0="$cache/gst-registry.bin"
+export GDK_PIXBUF_MODULE_FILE="$cache/loaders.cache"
+"$lib/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders" "$lib"/gdk-pixbuf-2.0/2.10.0/loaders/*.so > "$GDK_PIXBUF_MODULE_FILE"
+
+n=$#
+while [ "$n" -gt 0 ]; do
+  arg=$1
+  shift
+  case $arg in
+    -*) ;;
+    *) [ -e "$arg" ] && arg=$(readlink -f -- "$arg") ;;
+  esac
+  set -- "$@" "$arg"
+  n=$((n - 1))
+done
+
+cd "$here/usr" || exit 1
+exec "$here/usr/lib/vsesvit/vsesvit" "$@"

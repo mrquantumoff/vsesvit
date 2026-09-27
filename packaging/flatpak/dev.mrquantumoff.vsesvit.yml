@@ -1,0 +1,53 @@
+# Built locally by `cargo xtask package flatpak`, which also regenerates cargo-sources.json from
+# Cargo.lock so the build runs offline (Flathub builders have no network). For a Flathub
+# submission, replace the `dir` source with a `git` source pinned to the release tag and commit.
+#
+# Media playback: the GNOME 51 runtime declares org.freedesktop.Platform.codecs-extra as an
+# extension of itself (see `flatpak info --show-metadata org.gnome.Platform//51`) and puts it on
+# GST_PLUGIN_SYSTEM_PATH, so gst-libav comes with the runtime; no add-extensions is needed.
+app-id: dev.mrquantumoff.vsesvit
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: vsesvit
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=xdg-download
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/vsesvit/cargo
+modules:
+  - name: vsesvit
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release -p vsesvit
+      - cargo --offline run --release -p xtask -- icons icons
+      - install -Dm755 target/release/vsesvit /app/lib/vsesvit/vsesvit
+      - echo flatpak > /app/lib/vsesvit/package-format
+      - install -d /app/bin && ln -s ../lib/vsesvit/vsesvit /app/bin/vsesvit
+      - install -Dm644 packaging/linux/dev.mrquantumoff.vsesvit.desktop /app/share/applications/dev.mrquantumoff.vsesvit.desktop
+      - |
+        version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
+        install -d /app/share/metainfo
+        sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$(date -u +%F)/" packaging/linux/dev.mrquantumoff.vsesvit.metainfo.xml > /app/share/metainfo/dev.mrquantumoff.vsesvit.metainfo.xml
+      - |
+        for size in 16 24 32 48 64 128 256 512; do
+          install -Dm644 "icons/$size.png" "/app/share/icons/hicolor/${size}x${size}/apps/dev.mrquantumoff.vsesvit.png"
+        done
+      - install -Dm644 icons/dev.mrquantumoff.vsesvit.svg /app/share/icons/hicolor/scalable/apps/dev.mrquantumoff.vsesvit.svg
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - .audit
+          - target
+      - cargo-sources.json

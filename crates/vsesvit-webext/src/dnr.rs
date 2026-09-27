@@ -1,0 +1,827 @@
+//! declarativeNetRequest static rulesets translated to WebKit content-blocker JSON.
+//!
+//! Platform-neutral and pure: `rules.json` text in, content-blocker JSON out, plus the
+//! list of rules WebKit cannot express and why. The mapping follows WebKit's own
+//! translator (`_WKWebExtensionDeclarativeNetRequestRule.mm`), as summarized in
+//! `docs/design/research-linux-extensions.md` section 6.
+//!
+//! Ordering is the one subtle point. WebKit evaluates the rules of one filter in list
+//! order and `ignore-following-rules` cancels every later rule, while DNR picks the
+//! matching rule with the highest priority and, at equal priority, prefers allow over
+//! block over upgrade over redirect. Emitting the rules sorted by priority (descending)
+//! and then by that action rank reproduces DNR's choice: an allow rule precedes exactly
+//! the block rules it may override. That only holds inside one filter, so every
+//! extension's enabled rulesets are merged into one list.
+
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
+
+use serde::Deserialize;
+use serde_json::{Map, Value, json};
+
+/// One DNR rule as written in a ruleset file. Unknown fields are ignored, as Chrome does.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rule {
+    pub id: u32,
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+    pub action: Action,
+    pub condition: Condition,
+}
+
+fn default_priority() -> u32 {
+    1
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Action {
+    #[serde(rename = "type")]
+    pub kind: ActionType,
+    pub redirect: Option<Redirect>,
+    #[serde(default)]
+    pub request_headers: Vec<HeaderOp>,
+    #[serde(default)]
+    pub response_headers: Vec<HeaderOp>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionType {
+    Block,
+    Allow,
+    AllowAllRequests,
+    UpgradeScheme,
+    Redirect,
+    ModifyHeaders,
+}
+
+impl ActionType {
+    /// DNR's tie-break at equal priority, lowest first.
+    fn rank(self) -> u8 {
+        match self {
+            ActionType::Allow => 0,
+            ActionType::AllowAllRequests => 1,
+            ActionType::Block => 2,
+            ActionType::UpgradeScheme => 3,
+            ActionType::Redirect => 4,
+            ActionType::ModifyHeaders => 5,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Redirect {
+    pub url: Option<String>,
+    pub extension_path: Option<String>,
+    pub regex_substitution: Option<String>,
+    pub transform: Option<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeaderOp {
+    pub header: String,
+    pub operation: HeaderOperation,
+    pub value: Option<String>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HeaderOperation {
+    Set,
+    Append,
+    Remove,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Condition {
+    pub url_filter: Option<String>,
+    pub regex_filter: Option<String>,
+    #[serde(default)]
+    pub is_url_filter_case_sensitive: bool,
+    pub resource_types: Option<Vec<ResourceType>>,
+    pub excluded_resource_types: Option<Vec<ResourceType>>,
+    pub domain_type: Option<DomainType>,
+    pub domains: Option<Vec<String>>,
+    pub excluded_domains: Option<Vec<String>>,
+    pub initiator_domains: Option<Vec<String>>,
+    pub excluded_initiator_domains: Option<Vec<String>>,
+    pub request_domains: Option<Vec<String>>,
+    pub excluded_request_domains: Option<Vec<String>>,
+    pub request_methods: Option<Vec<String>>,
+    pub excluded_request_methods: Option<Vec<String>>,
+    pub tab_ids: Option<Vec<i64>>,
+    pub excluded_tab_ids: Option<Vec<i64>>,
+    pub response_headers: Option<Value>,
+    pub excluded_response_headers: Option<Value>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceType {
+    MainFrame,
+    SubFrame,
+    Stylesheet,
+    Script,
+    Image,
+    Font,
+    Object,
+    Xmlhttprequest,
+    Ping,
+    CspReport,
+    Media,
+    Websocket,
+    Webtransport,
+    Webbundle,
+    Other,
+}
+
+impl ResourceType {
+    const ALL: [ResourceType; 15] = [
+        ResourceType::MainFrame,
+        ResourceType::SubFrame,
+        ResourceType::Stylesheet,
+        ResourceType::Script,
+        ResourceType::Image,
+        ResourceType::Font,
+        ResourceType::Object,
+        ResourceType::Xmlhttprequest,
+        ResourceType::Ping,
+        ResourceType::CspReport,
+        ResourceType::Media,
+        ResourceType::Websocket,
+        ResourceType::Webtransport,
+        ResourceType::Webbundle,
+        ResourceType::Other,
+    ];
+
+    /// The WebKit `resource-type` value. Types WebKit has no name for map to `other`.
+    fn webkit(self) -> &'static str {
+        match self {
+            ResourceType::MainFrame => "top-document",
+            ResourceType::SubFrame => "child-document",
+            ResourceType::Stylesheet => "style-sheet",
+            ResourceType::Script => "script",
+            ResourceType::Image => "image",
+            ResourceType::Font => "font",
+            ResourceType::Xmlhttprequest => "fetch",
+            ResourceType::Ping => "ping",
+            ResourceType::Media => "media",
+            ResourceType::Websocket => "websocket",
+            ResourceType::Object
+            | ResourceType::CspReport
+            | ResourceType::Webtransport
+            | ResourceType::Webbundle
+            | ResourceType::Other => "other",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DomainType {
+    FirstParty,
+    ThirdParty,
+}
+
+/// A rule that was left out of the filter, with the reason for the log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Skipped {
+    pub rule_id: Option<u32>,
+    pub reason: String,
+}
+
+/// The content-blocker rules for one extension plus what was dropped on the way.
+#[derive(Clone, Debug, Default)]
+pub struct Translation {
+    pub rules: Vec<Value>,
+    pub skipped: Vec<Skipped>,
+}
+
+impl Translation {
+    /// The JSON WebKit's `UserContentFilterStore` compiles.
+    pub fn to_json(&self) -> String {
+        Value::Array(self.rules.clone()).to_string()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+}
+
+/// Parse a ruleset file. A malformed rule is reported and skipped; only a file that is not
+/// a JSON array at all is an error.
+pub fn parse_rules(text: &str) -> Result<(Vec<Rule>, Vec<Skipped>), serde_json::Error> {
+    let raw: Vec<Value> = serde_json::from_str(text)?;
+    let mut rules = Vec::with_capacity(raw.len());
+    let mut skipped = Vec::new();
+    for value in raw {
+        let id = value.get("id").and_then(Value::as_u64).and_then(|id| u32::try_from(id).ok());
+        match serde_json::from_value::<Rule>(value) {
+            Ok(rule) => rules.push(rule),
+            Err(e) => skipped.push(Skipped { rule_id: id, reason: format!("malformed rule: {e}") }),
+        }
+    }
+    Ok((rules, skipped))
+}
+
+/// Translate the merged rules of one extension. `extension_base` is
+/// `chrome-extension://<id>`; `redirect.extensionPath` resolves against it.
+pub fn translate(rules: &[Rule], extension_base: &str) -> Translation {
+    let mut out = Translation::default();
+    let mut ordered: Vec<&Rule> = rules.iter().collect();
+    ordered.sort_by_key(|r| (std::cmp::Reverse(r.priority), r.action.kind.rank()));
+    for rule in ordered {
+        match translate_rule(rule, extension_base) {
+            Ok(webkit_rules) => out.rules.extend(webkit_rules),
+            Err(reason) => out.skipped.push(Skipped { rule_id: Some(rule.id), reason }),
+        }
+    }
+    out
+}
+
+fn translate_rule(rule: &Rule, extension_base: &str) -> Result<Vec<Value>, String> {
+    let c = &rule.condition;
+    if c.tab_ids.is_some() || c.excluded_tab_ids.is_some() {
+        return Err("tabIds conditions cannot be expressed as a content blocker".into());
+    }
+    if c.response_headers.is_some() || c.excluded_response_headers.is_some() {
+        return Err("responseHeaders conditions cannot be expressed as a content blocker".into());
+    }
+    if c.excluded_request_domains.is_some() {
+        return Err("excludedRequestDomains cannot be expressed as a content blocker".into());
+    }
+    if c.excluded_initiator_domains.is_some() && c.initiator_domains.is_some() {
+        return Err("initiatorDomains and excludedInitiatorDomains together are not supported".into());
+    }
+
+    let filter = url_filter_regex(c)?;
+    let mut trigger = Map::new();
+    if c.is_url_filter_case_sensitive {
+        trigger.insert("url-filter-is-case-sensitive".into(), json!(true));
+    }
+    if let Some(load_type) = c.domain_type {
+        let v = match load_type {
+            DomainType::FirstParty => "first-party",
+            DomainType::ThirdParty => "third-party",
+        };
+        trigger.insert("load-type".into(), json!([v]));
+    }
+    if let Some(domains) = &c.domains {
+        trigger.insert("if-domain".into(), domain_list(domains));
+    } else if let Some(excluded) = &c.excluded_domains {
+        trigger.insert("unless-domain".into(), domain_list(excluded));
+    }
+    if let Some(initiators) = &c.initiator_domains {
+        trigger.insert("if-frame-url".into(), frame_url_list(initiators)?);
+    } else if let Some(excluded) = &c.excluded_initiator_domains {
+        trigger.insert("unless-frame-url".into(), frame_url_list(excluded)?);
+    }
+    // WebKit takes one `request-method` string per rule, so a method list fans out.
+    let methods: Vec<Option<String>> = match request_methods(c)? {
+        Some(list) => list.into_iter().map(Some).collect(),
+        None => vec![None],
+    };
+
+    let action = translate_action(rule, extension_base)?;
+
+    if rule.action.kind == ActionType::AllowAllRequests {
+        return allow_all_requests(c, &filter, trigger, action, &methods);
+    }
+
+    trigger.insert("resource-type".into(), json!(resource_types(c)));
+
+    let url_filters = match &c.request_domains {
+        Some(domains) => fold_request_domains(domains, &filter)?,
+        None => vec![filter],
+    };
+    let mut out = Vec::new();
+    for url_filter in url_filters {
+        for method in &methods {
+            let mut t = trigger.clone();
+            t.insert("url-filter".into(), json!(url_filter));
+            if let Some(m) = method {
+                t.insert("request-method".into(), json!(m));
+            }
+            out.push(json!({ "trigger": Value::Object(t), "action": action }));
+        }
+    }
+    Ok(out)
+}
+
+/// `allowAllRequests` exempts every load inside a frame whose URL matches, so the URL
+/// condition moves from the request to the frame: `if-top-url` for `main_frame`,
+/// `if-frame-url` for `sub_frame`.
+fn allow_all_requests(
+    c: &Condition,
+    filter: &str,
+    trigger: Map<String, Value>,
+    action: Value,
+    methods: &[Option<String>],
+) -> Result<Vec<Value>, String> {
+    let types = c.resource_types.clone().unwrap_or_else(|| vec![ResourceType::MainFrame]);
+    if types.iter().any(|t| !matches!(t, ResourceType::MainFrame | ResourceType::SubFrame)) {
+        return Err("allowAllRequests resourceTypes must be main_frame or sub_frame".into());
+    }
+    if trigger.contains_key("if-frame-url") || trigger.contains_key("unless-frame-url") {
+        return Err("allowAllRequests cannot combine initiatorDomains with the frame URL condition".into());
+    }
+    if c.request_domains.is_some() {
+        return Err("allowAllRequests with requestDomains is not supported".into());
+    }
+    let mut out = Vec::new();
+    for t in types {
+        let key = match t {
+            ResourceType::MainFrame => "if-top-url",
+            _ => "if-frame-url",
+        };
+        for method in methods {
+            let mut trig = trigger.clone();
+            trig.insert("url-filter".into(), json!(".*"));
+            trig.insert(key.into(), json!([filter]));
+            if let Some(m) = method {
+                trig.insert("request-method".into(), json!(m));
+            }
+            out.push(json!({ "trigger": Value::Object(trig), "action": action }));
+        }
+    }
+    Ok(out)
+}
+
+fn translate_action(rule: &Rule, extension_base: &str) -> Result<Value, String> {
+    let a = &rule.action;
+    Ok(match a.kind {
+        ActionType::Block => json!({ "type": "block" }),
+        ActionType::Allow | ActionType::AllowAllRequests => json!({ "type": "ignore-following-rules" }),
+        ActionType::UpgradeScheme => json!({ "type": "make-https" }),
+        ActionType::Redirect => {
+            let r = a.redirect.as_ref().ok_or("redirect action without a redirect object")?;
+            let redirect = if let Some(url) = &r.url {
+                json!({ "url": url })
+            } else if let Some(path) = &r.extension_path {
+                json!({ "url": format!("{}{}", extension_base.trim_end_matches('/'), path) })
+            } else if let Some(sub) = &r.regex_substitution {
+                json!({ "regex-substitution": sub.replace('\\', "$") })
+            } else if let Some(t) = &r.transform {
+                json!({ "transform": transform(t)? })
+            } else {
+                return Err("redirect without url, extensionPath, regexSubstitution or transform".into());
+            };
+            json!({ "type": "redirect", "redirect": redirect })
+        }
+        ActionType::ModifyHeaders => {
+            if a.request_headers.is_empty() && a.response_headers.is_empty() {
+                return Err("modifyHeaders without any header operation".into());
+            }
+            let mut v = json!({ "type": "modify-headers", "priority": rule.priority });
+            if !a.request_headers.is_empty() {
+                v["request-headers"] = header_ops(&a.request_headers)?;
+            }
+            if !a.response_headers.is_empty() {
+                v["response-headers"] = header_ops(&a.response_headers)?;
+            }
+            v
+        }
+    })
+}
+
+fn header_ops(ops: &[HeaderOp]) -> Result<Value, String> {
+    ops.iter()
+        .map(|op| {
+            let operation = match op.operation {
+                HeaderOperation::Set => "set",
+                HeaderOperation::Append => "append",
+                HeaderOperation::Remove => "remove",
+            };
+            let mut v = json!({ "operation": operation, "header": op.header });
+            match (&op.value, op.operation) {
+                (Some(value), HeaderOperation::Set | HeaderOperation::Append) => v["value"] = json!(value),
+                (None, HeaderOperation::Set | HeaderOperation::Append) => {
+                    return Err(format!("header operation on {:?} needs a value", op.header));
+                }
+                (_, HeaderOperation::Remove) => {}
+            }
+            Ok(v)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Value::Array)
+}
+
+/// DNR `URLTransform` (camelCase) to WebKit's kebab-case transform object.
+fn transform(t: &Value) -> Result<Value, String> {
+    let obj = t.as_object().ok_or("redirect.transform must be an object")?;
+    let mut out = Map::new();
+    for (k, v) in obj {
+        match k.as_str() {
+            "scheme" | "host" | "port" | "path" | "query" | "fragment" | "username" | "password" => {
+                out.insert(k.clone(), v.clone());
+            }
+            "queryTransform" => {
+                let qt = v.as_object().ok_or("queryTransform must be an object")?;
+                let mut q = Map::new();
+                if let Some(add) = qt.get("addOrReplaceParams") {
+                    let items = add.as_array().ok_or("addOrReplaceParams must be an array")?;
+                    let mapped: Vec<Value> = items
+                        .iter()
+                        .map(|p| {
+                            let mut m = json!({ "key": p.get("key").cloned().unwrap_or(Value::Null), "value": p.get("value").cloned().unwrap_or(Value::Null) });
+                            if let Some(r) = p.get("replaceOnly") {
+                                m["replace-only"] = r.clone();
+                            }
+                            m
+                        })
+                        .collect();
+                    q.insert("add-or-replace-parameters".into(), Value::Array(mapped));
+                }
+                if let Some(remove) = qt.get("removeParams") {
+                    q.insert("remove-parameters".into(), remove.clone());
+                }
+                out.insert("query-transform".into(), Value::Object(q));
+            }
+            other => return Err(format!("unsupported transform key {other:?}")),
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+fn resource_types(c: &Condition) -> Vec<&'static str> {
+    let selected: Vec<ResourceType> = match (&c.resource_types, &c.excluded_resource_types) {
+        (Some(types), _) => types.clone(),
+        (None, Some(excluded)) => ResourceType::ALL.iter().copied().filter(|t| !excluded.contains(t)).collect(),
+        // DNR default: everything but the main frame.
+        (None, None) => ResourceType::ALL.iter().copied().filter(|t| *t != ResourceType::MainFrame).collect(),
+    };
+    let set: BTreeSet<&'static str> = selected.into_iter().map(ResourceType::webkit).collect();
+    set.into_iter().collect()
+}
+
+const ALL_METHODS: [&str; 9] = ["connect", "delete", "get", "head", "options", "patch", "post", "put", "trace"];
+
+fn request_methods(c: &Condition) -> Result<Option<Vec<String>>, String> {
+    let normalize = |methods: &[String]| -> Result<Vec<String>, String> {
+        methods
+            .iter()
+            .map(|m| {
+                let m = m.to_ascii_lowercase();
+                if ALL_METHODS.contains(&m.as_str()) { Ok(m) } else { Err(format!("unsupported request method {m:?}")) }
+            })
+            .collect()
+    };
+    Ok(match (&c.request_methods, &c.excluded_request_methods) {
+        (Some(methods), _) => Some(normalize(methods)?),
+        (None, Some(excluded)) => {
+            let excluded = normalize(excluded)?;
+            Some(ALL_METHODS.iter().filter(|m| !excluded.iter().any(|e| e == *m)).map(|m| (*m).to_owned()).collect())
+        }
+        (None, None) => None,
+    })
+}
+
+/// `if-domain` / `unless-domain` entries: `*` prefix so subdomains match, as DNR does.
+fn domain_list(domains: &[String]) -> Value {
+    Value::Array(domains.iter().map(|d| json!(format!("*{}", d.trim_start_matches("*.").to_ascii_lowercase()))).collect())
+}
+
+fn frame_url_list(domains: &[String]) -> Result<Value, String> {
+    domains.iter().map(|d| domain_regex(d).map(Value::String)).collect::<Result<Vec<_>, _>>().map(Value::Array)
+}
+
+/// `^[^:]+://+([^:/]+\.)?example\.com[:/]`: the host is `domain` or a subdomain of it.
+fn domain_regex(domain: &str) -> Result<String, String> {
+    if !domain.is_ascii() || domain.is_empty() {
+        return Err(format!("domain {domain:?} is not ASCII"));
+    }
+    let mut re = String::from("^[^:]+://+([^:/]+\\.)?");
+    for ch in domain.trim_start_matches("*.").chars() {
+        push_literal(&mut re, ch.to_ascii_lowercase());
+    }
+    re.push_str("[:/]");
+    Ok(re)
+}
+
+/// `requestDomains` become a host anchor in front of the filter. That only composes with
+/// a filter that is not itself anchored at the start.
+fn fold_request_domains(domains: &[String], filter: &str) -> Result<Vec<String>, String> {
+    if filter.starts_with('^') {
+        return Err("requestDomains cannot combine with a start-anchored filter".into());
+    }
+    domains
+        .iter()
+        .map(|d| {
+            let host = domain_regex(d)?;
+            Ok(if filter == ".*" { host } else { format!("{host}.*{filter}") })
+        })
+        .collect()
+}
+
+fn url_filter_regex(c: &Condition) -> Result<String, String> {
+    match (&c.url_filter, &c.regex_filter) {
+        (Some(_), Some(_)) => Err("urlFilter and regexFilter are mutually exclusive".into()),
+        (Some(f), None) => url_filter_to_regex(f),
+        (None, Some(r)) => {
+            check_webkit_regex(r)?;
+            Ok(r.clone())
+        }
+        (None, None) => Ok(".*".into()),
+    }
+}
+
+/// Chrome's URL filter grammar: `||` anchors at a host boundary, `|` at the start or the
+/// end, `*` is a wildcard, `^` a separator, everything else literal.
+pub fn url_filter_to_regex(filter: &str) -> Result<String, String> {
+    if !filter.is_ascii() {
+        return Err(format!("urlFilter {filter:?} contains non-ASCII characters"));
+    }
+    if filter.is_empty() {
+        return Ok(".*".into());
+    }
+    let mut out = String::new();
+    let mut rest = filter;
+    if let Some(r) = rest.strip_prefix("||") {
+        out.push_str("^[^:]+://+([^:/]+\\.)?");
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix('|') {
+        out.push('^');
+        rest = r;
+    }
+    let end_anchor = rest.ends_with('|');
+    if end_anchor {
+        rest = &rest[..rest.len() - 1];
+    }
+    let chars: Vec<char> = rest.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        match ch {
+            '*' => out.push_str(".*"),
+            '|' => return Err(format!("urlFilter {filter:?} has `|` in the middle")),
+            // A separator at the very end also matches the end of the URL. WebKit's regex
+            // subset cannot express "separator or end" without alternation, so the
+            // trailing separator is dropped, which matches slightly more.
+            '^' if i + 1 == chars.len() => {}
+            '^' => out.push_str("[^-.%a-zA-Z0-9_]"),
+            other => push_literal(&mut out, other),
+        }
+    }
+    if end_anchor {
+        out.push('$');
+    }
+    if out.is_empty() {
+        out.push_str(".*");
+    }
+    Ok(out)
+}
+
+fn push_literal(out: &mut String, ch: char) {
+    if matches!(ch, '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | '$' | '^' | '|' | '/') {
+        out.push('\\');
+    }
+    out.push(ch);
+}
+
+/// WebKit compiles `url-filter` with its own engine: ASCII only, no alternation, no word
+/// boundaries or character-class escapes, no back-references or counted repetition, and
+/// anchors only at the ends.
+pub fn check_webkit_regex(re: &str) -> Result<(), String> {
+    if !re.is_ascii() {
+        return Err(format!("regexFilter {re:?} contains non-ASCII characters"));
+    }
+    let bytes = re.as_bytes();
+    let mut i = 0;
+    let mut in_class = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\\' => {
+                let Some(&next) = bytes.get(i + 1) else {
+                    return Err(format!("regexFilter {re:?} ends with a backslash"));
+                };
+                if matches!(next, b'b' | b'B' | b'd' | b'D' | b'w' | b'W' | b's' | b'S' | b'1'..=b'9') {
+                    return Err(format!("regexFilter {re:?} uses \\{} which WebKit does not support", next as char));
+                }
+                i += 2;
+                continue;
+            }
+            b'[' if !in_class => in_class = true,
+            b']' if in_class => in_class = false,
+            b'|' if !in_class => return Err(format!("regexFilter {re:?} uses alternation")),
+            b'{' if !in_class => return Err(format!("regexFilter {re:?} uses counted repetition")),
+            b'(' if !in_class && bytes.get(i + 1) == Some(&b'?') => {
+                return Err(format!("regexFilter {re:?} uses a lookaround or non-capturing group"));
+            }
+            b'^' if !in_class && i != 0 => return Err(format!("regexFilter {re:?} has `^` away from the start")),
+            b'$' if !in_class && i + 1 != bytes.len() => return Err(format!("regexFilter {re:?} has `$` away from the end")),
+            _ => {}
+        }
+        i += 1;
+    }
+    if in_class {
+        return Err(format!("regexFilter {re:?} has an unterminated character class"));
+    }
+    Ok(())
+}
+
+/// Render the skipped list for one log line.
+pub fn describe_skipped(skipped: &[Skipped]) -> String {
+    let mut s = String::new();
+    for sk in skipped {
+        match sk.rule_id {
+            Some(id) => {
+                let _ = write!(s, "rule {id}: {}; ", sk.reason);
+            }
+            None => {
+                let _ = write!(s, "{}; ", sk.reason);
+            }
+        }
+    }
+    s.trim_end_matches("; ").to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+
+    fn rules(text: &str) -> Vec<Rule> {
+        let (rules, skipped) = parse_rules(text).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        rules
+    }
+
+    #[test]
+    fn probe_rule_becomes_a_block_rule() {
+        let text = include_str!("../../../tests/fixtures/extensions/probe/rules.json");
+        let t = translate(&rules(text), BASE);
+        assert!(t.skipped.is_empty(), "{:?}", t.skipped);
+        assert_eq!(t.rules.len(), 1);
+        let r = &t.rules[0];
+        assert_eq!(r["action"]["type"], "block");
+        assert_eq!(r["trigger"]["url-filter"], "\\/vsesvit-blocked\\/");
+        assert_eq!(r["trigger"]["resource-type"], json!(["child-document", "fetch", "image", "script"]));
+        assert!(r["trigger"].get("url-filter-is-case-sensitive").is_none());
+    }
+
+    #[test]
+    fn url_filter_grammar() {
+        assert_eq!(url_filter_to_regex("||example.com/ads").unwrap(), "^[^:]+://+([^:/]+\\.)?example\\.com\\/ads");
+        assert_eq!(url_filter_to_regex("|https://x.test/").unwrap(), "^https:\\/\\/x\\.test\\/");
+        assert_eq!(url_filter_to_regex("*/track?id=*|").unwrap(), ".*\\/track\\?id=.*$");
+        assert_eq!(url_filter_to_regex("abc^def").unwrap(), "abc[^-.%a-zA-Z0-9_]def");
+        assert_eq!(url_filter_to_regex("||ads.test^").unwrap(), "^[^:]+://+([^:/]+\\.)?ads\\.test");
+        assert_eq!(url_filter_to_regex("").unwrap(), ".*");
+        assert!(url_filter_to_regex("a|b").is_err());
+        assert!(url_filter_to_regex("héllo").is_err());
+    }
+
+    #[test]
+    fn regex_filter_subset() {
+        assert!(check_webkit_regex("^https?://[a-z]+\\.example\\.com/.*$").is_ok());
+        assert!(check_webkit_regex("[^:]+://x").is_ok());
+        for bad in ["a|b", "\\bword", "\\d+", "a{2,3}", "(?:x)", "x^y", "a$b", "(a)\\1", "[abc"] {
+            assert!(check_webkit_regex(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn priority_and_action_order() {
+        let text = r#"[
+          {"id": 1, "priority": 1, "action": {"type": "block"}, "condition": {"urlFilter": "ads"}},
+          {"id": 2, "priority": 2, "action": {"type": "allow"}, "condition": {"urlFilter": "ads/ok"}},
+          {"id": 3, "priority": 1, "action": {"type": "allow"}, "condition": {"urlFilter": "ads/eq"}},
+          {"id": 4, "priority": 3, "action": {"type": "block"}, "condition": {"urlFilter": "ads/strong"}},
+          {"id": 5, "priority": 1, "action": {"type": "upgradeScheme"}, "condition": {"urlFilter": "http"}}
+        ]"#;
+        let t = translate(&rules(text), BASE);
+        let types: Vec<&str> = t.rules.iter().map(|r| r["action"]["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["block", "ignore-following-rules", "ignore-following-rules", "block", "make-https"]);
+        let filters: Vec<&str> = t.rules.iter().map(|r| r["trigger"]["url-filter"].as_str().unwrap()).collect();
+        assert_eq!(filters, ["ads\\/strong", "ads\\/ok", "ads\\/eq", "ads", "http"]);
+    }
+
+    #[test]
+    fn conditions_map_to_trigger_keys() {
+        let text = r#"[{
+          "id": 7, "action": {"type": "block"},
+          "condition": {
+            "urlFilter": "pixel", "isUrlFilterCaseSensitive": true, "domainType": "thirdParty",
+            "domains": ["Example.com"], "initiatorDomains": ["a.test"],
+            "requestMethods": ["POST", "get"], "excludedResourceTypes": ["main_frame", "image"]
+          }
+        }]"#;
+        let t = translate(&rules(text), BASE);
+        assert!(t.skipped.is_empty(), "{:?}", t.skipped);
+        assert_eq!(t.rules.len(), 2, "one WebKit rule per request method");
+        let trig = &t.rules[0]["trigger"];
+        assert_eq!(trig["url-filter-is-case-sensitive"], true);
+        assert_eq!(trig["load-type"], json!(["third-party"]));
+        assert_eq!(trig["if-domain"], json!(["*example.com"]));
+        assert_eq!(trig["if-frame-url"], json!(["^[^:]+://+([^:/]+\\.)?a\\.test[:/]"]));
+        assert_eq!(trig["request-method"], "post");
+        assert_eq!(t.rules[1]["trigger"]["request-method"], "get");
+        let types = trig["resource-type"].as_array().unwrap();
+        assert!(!types.contains(&json!("top-document")) && !types.contains(&json!("image")));
+        assert!(types.contains(&json!("child-document")) && types.contains(&json!("other")));
+    }
+
+    #[test]
+    fn excluded_request_methods_fan_out_to_the_rest() {
+        let text = r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x", "excludedRequestMethods": ["get", "HEAD"]}}]"#;
+        let t = translate(&rules(text), BASE);
+        let methods: Vec<&str> = t.rules.iter().map(|r| r["trigger"]["request-method"].as_str().unwrap()).collect();
+        assert_eq!(methods, ["connect", "delete", "options", "patch", "post", "put", "trace"]);
+        let bad = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"requestMethods": ["brew"]}}]"#), BASE);
+        assert!(bad.rules.is_empty() && bad.skipped.len() == 1);
+    }
+
+    #[test]
+    fn default_resource_types_exclude_main_frame() {
+        let text = r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x"}}]"#;
+        let t = translate(&rules(text), BASE);
+        let types = t.rules[0]["trigger"]["resource-type"].as_array().unwrap();
+        assert!(!types.contains(&json!("top-document")));
+        assert!(types.contains(&json!("script")));
+    }
+
+    #[test]
+    fn request_domains_fold_into_url_filter() {
+        let text = r#"[
+          {"id": 1, "action": {"type": "block"}, "condition": {"requestDomains": ["a.test", "b.test"]}},
+          {"id": 2, "action": {"type": "block"}, "condition": {"requestDomains": ["a.test"], "urlFilter": "/img/"}},
+          {"id": 3, "action": {"type": "block"}, "condition": {"requestDomains": ["a.test"], "urlFilter": "||c.test/"}}
+        ]"#;
+        let t = translate(&rules(text), BASE);
+        assert_eq!(t.rules.len(), 3);
+        assert_eq!(t.rules[0]["trigger"]["url-filter"], "^[^:]+://+([^:/]+\\.)?a\\.test[:/]");
+        assert_eq!(t.rules[1]["trigger"]["url-filter"], "^[^:]+://+([^:/]+\\.)?b\\.test[:/]");
+        assert_eq!(t.rules[2]["trigger"]["url-filter"], "^[^:]+://+([^:/]+\\.)?a\\.test[:/].*\\/img\\/");
+        assert_eq!(t.skipped.len(), 1);
+        assert_eq!(t.skipped[0].rule_id, Some(3));
+    }
+
+    #[test]
+    fn allow_all_requests_moves_filter_to_frame_url() {
+        let text = r#"[{"id": 9, "priority": 5, "action": {"type": "allowAllRequests"},
+          "condition": {"urlFilter": "||trusted.test", "resourceTypes": ["main_frame", "sub_frame"]}}]"#;
+        let t = translate(&rules(text), BASE);
+        assert!(t.skipped.is_empty(), "{:?}", t.skipped);
+        assert_eq!(t.rules.len(), 2);
+        assert_eq!(t.rules[0]["trigger"]["url-filter"], ".*");
+        assert_eq!(t.rules[0]["trigger"]["if-top-url"], json!(["^[^:]+://+([^:/]+\\.)?trusted\\.test"]));
+        assert_eq!(t.rules[1]["trigger"]["if-frame-url"], json!(["^[^:]+://+([^:/]+\\.)?trusted\\.test"]));
+        assert_eq!(t.rules[0]["action"]["type"], "ignore-following-rules");
+    }
+
+    #[test]
+    fn redirect_and_modify_headers() {
+        let text = r#"[
+          {"id": 1, "action": {"type": "redirect", "redirect": {"extensionPath": "/empty.js"}}, "condition": {"urlFilter": "tracker.js"}},
+          {"id": 2, "action": {"type": "redirect", "redirect": {"transform": {"scheme": "https", "queryTransform": {"removeParams": ["utm_source"]}}}}, "condition": {"urlFilter": "utm_"}},
+          {"id": 3, "action": {"type": "modifyHeaders", "requestHeaders": [{"header": "Cookie", "operation": "remove"}], "responseHeaders": [{"header": "X-A", "operation": "set", "value": "1"}]}, "condition": {"urlFilter": "x"}},
+          {"id": 4, "action": {"type": "modifyHeaders", "requestHeaders": [{"header": "X", "operation": "set"}]}, "condition": {"urlFilter": "x"}}
+        ]"#;
+        let t = translate(&rules(text), BASE);
+        assert_eq!(t.rules[0]["action"]["redirect"]["url"], format!("{BASE}/empty.js"));
+        assert_eq!(t.rules[1]["action"]["redirect"]["transform"]["scheme"], "https");
+        assert_eq!(t.rules[1]["action"]["redirect"]["transform"]["query-transform"]["remove-parameters"], json!(["utm_source"]));
+        assert_eq!(t.rules[2]["action"]["type"], "modify-headers");
+        assert_eq!(t.rules[2]["action"]["request-headers"][0]["operation"], "remove");
+        assert_eq!(t.rules[2]["action"]["response-headers"][0]["value"], "1");
+        assert_eq!(t.skipped.len(), 1);
+        assert_eq!(t.skipped[0].rule_id, Some(4));
+    }
+
+    #[test]
+    fn inexpressible_rules_are_skipped_with_reasons() {
+        let text = r#"[
+          {"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x", "tabIds": [1]}},
+          {"id": 2, "action": {"type": "block"}, "condition": {"regexFilter": "a|b"}},
+          {"id": 3, "action": {"type": "block"}, "condition": {"urlFilter": "x", "excludedRequestDomains": ["a.test"]}},
+          {"id": 4, "action": {"type": "block"}, "condition": {"urlFilter": "ok"}}
+        ]"#;
+        let t = translate(&rules(text), BASE);
+        assert_eq!(t.rules.len(), 1);
+        let ids: Vec<Option<u32>> = t.skipped.iter().map(|s| s.rule_id).collect();
+        assert_eq!(ids, [Some(1), Some(2), Some(3)]);
+        assert!(describe_skipped(&t.skipped).contains("rule 2: regexFilter"));
+    }
+
+    #[test]
+    fn malformed_rules_are_reported_not_fatal() {
+        let (rules, skipped) = parse_rules(r#"[{"id": 1, "action": {"type": "nope"}, "condition": {}}, {"id": 2, "action": {"type": "block"}, "condition": {}}]"#).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].rule_id, Some(1));
+        assert!(parse_rules("{}").is_err());
+    }
+
+    #[test]
+    fn json_output_is_an_array() {
+        let t = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x"}}]"#), BASE);
+        let parsed: Value = serde_json::from_str(&t.to_json()).unwrap();
+        assert!(parsed.is_array());
+        assert!(translate(&[], BASE).is_empty());
+    }
+}

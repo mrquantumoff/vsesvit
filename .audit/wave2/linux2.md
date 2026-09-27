@@ -1,0 +1,52 @@
+WAVE 2, LINUX: report
+
+## Files changed (all under `C:\Users\mrqua\AppData\Local\Temp\claude\C--Users-mrqua-git-vsesvit\f74805b8-a346-4e4e-84ab-b88787d8eea0\scratchpad\ws\linux2\`)
+
+`crates/vsesvit-webext/`
+- `Cargo.toml`: `vsesvit-core` moved from the Linux-only section to `[dependencies]` (it has no system deps; needed so the new pure module compiles and tests on both hosts).
+- `src/support.rs` (new): `unsupported_features(&Manifest) -> Vec<Unsupported>` (Permission / OptionalPermission / ManifestKey), `SUPPORTED_PERMISSIONS`, `UNSUPPORTED_MANIFEST_KEYS`; 4 unit tests (probe manifest is clean; webRequest/nativeMessaging/cookies/optional bookmarks reported sorted and deduped; devtools_page/omnibox/commands keys; MV2 host patterns in `permissions` not reported).
+- `src/lib.rs`: module + re-exports, docs.
+
+`crates/vsesvit-gtk/`
+- `Cargo.toml`: feature `self-test` (default on) = `vsesvit-core/testkit`.
+- `src/lib.rs`, `src/cli.rs` (`--self-test OUT_DIR [--network]`), `src/profile.rs` (new: `Core = Rc<RefCell<Profile>>`, `ProfileLocation` default root / `--profile-dir`, per-profile app id; replaces the deleted `config.rs`), `src/app.rs` (profile opened before the GApplication registers; `OpenError::Locked` -> the app still runs and GApplication forwards the command line to the primary; startup/command-line/quit/shutdown wiring; debug-only D-Bus actions `debug-screenshot`, `debug-apply-sync`, `debug-set-tabs-position`, `debug-close-dialog`).
+- `src/browser.rs` (rewritten: owns Core, Engine, webext `Runtime`, ids, closed tabs; `TabHost` implemented over live windows; history/title recording, star, omnibox, prefs with live effect, `sync_applied(&Changed)`, debounced session save + save on quit/last window close, startup windows per `STARTUP` pref).
+- `src/engine.rs` (NetworkSession from `ProfilePaths::{engine_data,engine_cache}`; web views built with the runtime's `UserContentManager`), `src/tab.rs` (webext `TabId`, session `TabId`, pending `Transition`, session-state bytes/restore), `src/session.rs` (new: snapshot/restore), `src/extensions.rs` (new: install pipeline: `prepare_install` -> `gio::spawn_blocking(job.run(progress))` with progress relayed over an mpsc channel -> `commit` -> `runtime.load`; reconcile; enable/uninstall; verification/phase text; unsupported notice), `src/omnibox.rs` (new: core `suggest` rows + open-tab rows).
+- `src/window/mod.rs` (AdwOverlaySplitView with the tab list as sidebar, AdwTabBar for Top, breakpoint `max-width: 720sp` collapses the sidebar to an overlay with a header toggle, live `apply_layout`, geometry `layout_probe`, star sync, extension action buttons and popup popover), `src/window/layout.rs` (new, pure: `Layout`, `LayoutProbe`, `classify` with tests incl. mid-transition frames), `src/window/tab_list.rs` (new: `GtkListView` over `AdwTabView::pages()`; rows with favicon/spinner/title/close, middle-click close, drag-and-drop reorder via `reorder_page`, New Tab button), `src/window/ext_actions.rs` (new: buttons with badges, popover hosting the popup WebView, sized to its document), `src/window/actions.rs` (`open-bookmark`, `open-in-new-tab`, `toggle-tab-sidebar`, bookmarks-bar state -> pref, transitions on reload).
+- `src/bookmarks_bar.rs` (items from `BookmarkId::TOOLBAR`, folders as menus, "Other Bookmarks" at the end, `shows(url)`), `src/address_bar.rs` (`submit_text` for the self-test's omnibox path).
+- `src/dialogs/mod.rs` (LibraryDialog, prompt/confirm helpers), `dialogs/bookmarks.rs` (TreeListModel tree over core, search, new folder, rename, move, delete), `dialogs/history.rs` (recent visits / search, open, forget URL, clear range), `dialogs/extensions.rs` (store link/id, .crx/.xpi via GtkFileDialog, unpacked folder, progress row, list with icon/name/version/verification/switch/remove, unsupported notice, id and location), `dialogs/settings.rs` (startup, homepage, tab position, search engine, theme via AdwStyleManager, bookmarks bar, clear browsing data).
+- `src/self_test.rs` (new).
+
+Core (`vsesvit-core`): no changes.
+
+## Evidence
+
+`bash scripts/wsl.sh run -p vsesvit -- --self-test /home/dy/vsesvit-selftest` (final source), exit 0, report.json:
+
+```json
+{"checks": [{"detail": "root=/home/dy/vsesvit-selftest/profile","ms": 27,"name": "profile_open","ok": true},{"detail": "id=eonajgebgeenbhiiobbhmkafolkeghdb verification=LocalCrx dir=/home/dy/vsesvit-selftest/profile/extensions/eonajgebgeenbhiiobbhmkafolkeghdb/1.0.0_3ee6f013","ms": 337,"name": "install_crx","ok": true},{"detail": "runtime loaded [\"eonajgebgeenbhiiobbhmkafolkeghdb\"], content blockers attached","ms": 50,"name": "engine_loaded_extension","ok": true},{"detail": "title=Vsesvit fixture","ms": 330,"name": "navigate","ok": true},{"detail": "url=http://127.0.0.1:40195/index.html visits=1 title=\"Vsesvit fixture\"","ms": 0,"name": "history_recorded","ok": true},{"detail": "vsesvitProbe=background-replied vsesvitVisits=1","ms": 1,"name": "content_script","ok": true},{"detail": "server saw [\"/index.html\", \"/allowed.png\", \"/favicon.ico\"]","ms": 1000,"name": "dnr_blocked","ok": true},{"detail": "is_bookmarked=true, the bar shows the item, the star is active","ms": 1,"name": "bookmark","ok": true},{"detail": "second tab opened, switched back, closed; one tab remains on index.html","ms": 298,"name": "tabs","ok": true},{"detail": "fresh profile -> left (window width 1280; sidebar x=0..256 y=78..820; tab bar hidden; web view x=256..1280 y=78..820); Right (window width 1280; sidebar x=1024..1280 y=78..820; tab bar hidden; web view x=0..1024 y=78..820); Top (window width 1280; sidebar hidden; tab bar x=0..1280 y=43..83; web view x=0..1280 y=118..820); Left (window width 1280; sidebar x=0..256 y=78..820; tab bar hidden; web view x=256..1280 y=78..820)","ms": 619,"name": "tab_layout","ok": true},{"detail": "popup title=visits=2","ms": 64,"name": "popup","ok": true},{"detail": "\"vsesvit fixture\" -> search on DuckDuckGo (https://duckduckgo.com/?q=vsesvit+fixture); \"127.0.0.1:40195/page2.html\" -> http://127.0.0.1:40195/page2.html","ms": 0,"name": "omnibox","ok": true},{"detail": "windows=1 tabs=1 first=http://127.0.0.1:40195/index.html","ms": 0,"name": "session","ok": true},{"detail": "/home/dy/vsesvit-selftest/window.png (1280x820 px, 64 distinct colours sampled, cap 64)","ms": 230,"name": "screenshot","ok": true}],"ok": true,"platform": "linux"}
+```
+
+With `--network` (`/home/dy/vsesvit-selftest-net`): 15/15 passed, exit 0; the extra check: `cws_install ok (4447 ms) uBlock Origin Lite 2026.926.2202 verification=ChromeWebStore { publisher_verified: true }, loaded by the runtime`. (That run was on the source before two small later edits: startup blank-tab ordering and the settled-geometry classifier; the offline self-test was re-run on the final source and passes as pasted above.)
+
+Screenshots I looked at, in `...\scratchpad\ws\linux2\shots\`: `selftest-window.png` (window.png from the self-test: left sidebar with the tab, active star, fixture bookmark on the bar, probe action button), `tabs-left.png`, `tabs-right.png` (toggle moves to the header end), `tabs-top.png` (AdwTabBar strip, toggle hidden), `dialog-extensions.png` (uBlock Origin Lite with icon, version, "Chrome Web Store, publisher verified", enabled switch, remove, and the notice "This extension requests: offscreen, userScripts, commands (manifest key)"; Vsesvit Probe "Local CRX, signature verified"), `dialog-settings.png`, `dialog-bookmarks.png`, `dialog-history.png`. Captures were taken in-app via `app.debug-screenshot` over D-Bus against a copy of the network self-test profile; no desktop capture, no input to other apps.
+
+Single-instance hand-off observed: instance A on `--profile-dir P`; a second `vsesvit --profile-dir P <file-url>` exited 0 in 0.11 s and A's history then contained both URLs; A quit cleanly; `pgrep vsesvit` empty after every run.
+
+Builds and tests: Linux `bash scripts/wsl.sh clippy --workspace --all-targets` -> only "Finished" (no warnings); `bash scripts/wsl.sh test --workspace` all `test result: ok` (vsesvit-gtk 42 unit tests, vsesvit-webext 32). Windows `cargo clippy --workspace --all-targets` -> no warnings, exit 0; `cargo test --workspace` all ok (webext 32 tests incl. the 4 new ones; core 26 targets).
+
+## Decisions and deviations
+
+- Testkit: cargo feature `self-test` on vsesvit-gtk, default on. A default feature keeps the acceptance test in the binary reviewers run (debug and release) and lets a packager drop the test key material with `--no-default-features`; a `debug_assertions` cfg would silently lose the test in release builds.
+- The star bookmarks into the bookmarks bar (`BookmarkId::TOOLBAR`) as the self-test contract requires, not `OTHER` as core.md's example shows.
+- `cws_install` uses a 120 s timeout (a ~10 MB download); every other check uses 15 s.
+- `storage_sync_changed` wiring: `Browser::sync_applied(&Changed)` handles bookmarks, extensions (reconcile), `ext_storage` (-> `runtime.storage_sync_changed`) and prefs; with no sync engine its only caller is the debug-only action `app.debug-apply-sync(path)` which applies a JSON file of wire records through `sync().apply()`.
+- The self-test presents its window (GTK renders frames only for mapped windows, and the screenshot check needs a frame); under WSLg that window appears on the desktop for the run's duration (about 5 s).
+- History transitions: Typed from the omnibox, Bookmark from bookmark clicks, Reload from reload, Link otherwise. Session bounds carry width/height only (Wayland gives no positions); a tab's `last_active_ms` is stable per tab so pure saves mint no stamps.
+
+## Open problems / not observed
+
+- The narrow-window collapse (breakpoint at 720sp, sidebar becomes an overlay behind the header toggle) is implemented with `AdwBreakpoint` but was not observed: I cannot resize the window over D-Bus.
+- Tab drag-to-reorder is implemented (DragSource/DropTarget on rows, final index computed by a unit-tested function) but not exercised live; extension badges render when `badge_text` is non-empty but neither test extension sets one.
+- uBlock Origin Lite loads with the runtime's existing warning listing DNR rules WebKit cannot express (excludedRequestDomains, responseHeaders, etc.); that is runtime behaviour from wave 1, unchanged.
+- The Extensions dialog refreshes after its own installs; installs started by startup reconcile do not refresh an already-open dialog (there is no listener; reopening shows them).

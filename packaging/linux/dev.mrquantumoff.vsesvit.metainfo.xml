@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.mrquantumoff.vsesvit</id>
+  <name>Vsesvit</name>
+  <summary>Browse the web with Chrome Web Store extensions</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <developer id="dev.mrquantumoff">
+    <name>Demir Yerli</name>
+  </developer>
+  <description>
+    <p>
+      Vsesvit is a web browser built on WebKitGTK. It installs extensions from the Chrome Web
+      Store and keeps bookmarks, history, open tabs and settings in a sync-ready profile.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.mrquantumoff.vsesvit.desktop</launchable>
+  <url type="homepage">https://github.com/mrquantumoff/vsesvit</url>
+  <url type="bugtracker">https://github.com/mrquantumoff/vsesvit/issues</url>
+  <provides>
+    <binary>vsesvit</binary>
+    <mediatype>text/html</mediatype>
+    <mediatype>application/xhtml+xml</mediatype>
+    <mediatype>x-scheme-handler/http</mediatype>
+    <mediatype>x-scheme-handler/https</mediatype>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

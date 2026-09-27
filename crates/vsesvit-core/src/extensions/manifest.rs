@@ -1,0 +1,929 @@
+//! Manifest model: the manifest.json fields core and the shells act on, normalized
+//! across MV2/MV3 and Chrome/Firefox dialects at parse time. After parsing, the Linux
+//! runtime never has to check `manifest_version`. The original JSON is kept in `raw`
+//! for anything unmodeled; WebView2 reads the file itself anyway.
+//!
+//! Normalizations (done once, here):
+//! - `browser_action` / `page_action` (MV2) -> `action`
+//! - MV2 host patterns inside `permissions` -> `host_permissions`
+//! - `background.scripts` / `.page` / `.service_worker` -> [`Background`]
+//! - `applications.gecko.id` -> `browser_specific_settings.gecko.id` -> `gecko_id`
+//! - `__MSG_name__` in name/description/action title resolved from
+//!   `_locales/<ui>/messages.json`, falling back to `_locales/<default_locale>/`
+//! - every file reference becomes a [`RelPath`] (validated: relative, no `..`, no
+//!   backslash), so joining it to the extension dir cannot escape the dir
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::ExtensionId;
+use crate::Url;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Manifest {
+    pub manifest_version: ManifestVersion,
+    pub name: String,
+    /// Chrome version grammar: 1-4 dot-separated integers, each 0..=65535.
+    pub version: String,
+    pub description: Option<String>,
+    pub default_locale: Option<String>,
+    pub icons: BTreeMap<u32, RelPath>,
+    pub action: Option<Action>,
+    pub background: Option<Background>,
+    pub content_scripts: Vec<ContentScript>,
+    pub permissions: Vec<String>,
+    pub host_permissions: Vec<MatchPattern>,
+    pub optional_permissions: Vec<String>,
+    pub web_accessible_resources: Vec<WebAccessible>,
+    /// `declarative_net_request.rule_resources`. The Linux runtime translates these to
+    /// WebKit content-blocker JSON.
+    pub dnr_rulesets: Vec<DnrRuleset>,
+    pub options_page: Option<RelPath>,
+    /// base64 SPKI DER. Present for every CRX install (injected).
+    pub key: Option<String>,
+    pub gecko_id: Option<String>,
+    pub raw: serde_json::Value,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ManifestVersion {
+    V2,
+    V3,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Action {
+    pub default_popup: Option<RelPath>,
+    pub default_title: Option<String>,
+    pub default_icon: BTreeMap<u32, RelPath>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Background {
+    /// MV3. `module` = `"type": "module"`.
+    ServiceWorker {
+        script: RelPath,
+        module: bool,
+    },
+    /// MV2 or Firefox MV3 event page. A generated page loads the scripts.
+    Scripts {
+        scripts: Vec<RelPath>,
+        persistent: bool,
+    },
+    Page {
+        page: RelPath,
+        persistent: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContentScript {
+    pub matches: Vec<MatchPattern>,
+    pub exclude_matches: Vec<MatchPattern>,
+    pub js: Vec<RelPath>,
+    pub css: Vec<RelPath>,
+    pub run_at: RunAt,
+    pub all_frames: bool,
+    pub match_about_blank: bool,
+    pub world: World,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunAt {
+    DocumentStart,
+    DocumentEnd,
+    DocumentIdle,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum World {
+    Isolated,
+    Main,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WebAccessible {
+    pub resources: Vec<String>,
+    pub matches: Vec<MatchPattern>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DnrRuleset {
+    pub id: String,
+    pub enabled: bool,
+    pub path: RelPath,
+}
+
+/// A path inside the extension dir. Validated on construction, so `dir.join(p)`
+/// is always inside `dir`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RelPath(String);
+
+impl RelPath {
+    pub fn parse(s: &str) -> Result<Self, ManifestError> {
+        let trimmed = s.strip_prefix("./").unwrap_or(s);
+        let bad = trimmed.is_empty()
+            || trimmed.starts_with('/')
+            || trimmed.contains('\\')
+            || trimmed.contains(':')
+            || trimmed.contains('\0')
+            || trimmed.split('/').any(|seg| seg == ".." || seg == ".");
+        if bad {
+            return Err(ManifestError::BadPath(s.to_owned()));
+        }
+        Ok(RelPath(trimmed.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn resolve(&self, dir: &Path) -> PathBuf {
+        dir.join(&self.0)
+    }
+}
+
+impl TryFrom<String> for RelPath {
+    type Error = ManifestError;
+    fn try_from(s: String) -> Result<Self, ManifestError> {
+        RelPath::parse(&s)
+    }
+}
+
+impl From<RelPath> for String {
+    fn from(p: RelPath) -> String {
+        p.0
+    }
+}
+
+/// WebExtensions match pattern: `<all_urls>` or `<scheme>://<host><path>` with `*`
+/// wildcards. The Linux runtime uses `matches` to decide content-script injection and
+/// host permissions.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct MatchPattern {
+    source: String,
+    scheme: SchemeMatch,
+    host: HostMatch,
+    path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum SchemeMatch {
+    AllUrls,
+    /// `*`: http, https, ws, wss.
+    Web,
+    Exact(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum HostMatch {
+    Any,
+    /// `*.example.com` matches `example.com` and every subdomain.
+    DomainAndSubdomains(String),
+    Exact(String),
+}
+
+const PATTERN_SCHEMES: &[&str] = &["http", "https", "ws", "wss", "ftp", "file", "urn"];
+const ALL_URLS_SCHEMES: &[&str] = &["http", "https", "ws", "wss", "ftp", "file"];
+
+impl MatchPattern {
+    pub fn parse(s: &str) -> Result<Self, ManifestError> {
+        let bad = || ManifestError::BadPattern(s.to_owned());
+        if s == "<all_urls>" {
+            return Ok(MatchPattern { source: s.to_owned(), scheme: SchemeMatch::AllUrls, host: HostMatch::Any, path: "*".into() });
+        }
+        let (scheme, rest) = s.split_once("://").ok_or_else(bad)?;
+        let scheme = match scheme {
+            "*" => SchemeMatch::Web,
+            known if PATTERN_SCHEMES.contains(&known) => SchemeMatch::Exact(known.to_owned()),
+            _ => return Err(bad()),
+        };
+        let slash = rest.find('/').ok_or_else(bad)?;
+        let (host, path) = rest.split_at(slash);
+        let is_file = scheme == SchemeMatch::Exact("file".into());
+        // Ports are accepted and ignored, as Chrome does.
+        let host = host.rsplit_once(':').map_or(host, |(h, port)| if port == "*" || port.parse::<u16>().is_ok() { h } else { host });
+        let host = match host.to_ascii_lowercase() {
+            h if h.is_empty() && is_file => HostMatch::Any,
+            h if h.is_empty() => return Err(bad()),
+            h if h == "*" => HostMatch::Any,
+            h => match h.strip_prefix("*.") {
+                Some(domain) if !domain.is_empty() && !domain.contains('*') => HostMatch::DomainAndSubdomains(domain.to_owned()),
+                Some(_) => return Err(bad()),
+                None if h.contains('*') => return Err(bad()),
+                None => HostMatch::Exact(h),
+            },
+        };
+        Ok(MatchPattern { source: s.to_owned(), scheme, host, path: path.to_owned() })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.source
+    }
+
+    pub fn matches(&self, url: &Url) -> bool {
+        let scheme_ok = match &self.scheme {
+            SchemeMatch::AllUrls => ALL_URLS_SCHEMES.contains(&url.scheme()),
+            SchemeMatch::Web => matches!(url.scheme(), "http" | "https" | "ws" | "wss"),
+            SchemeMatch::Exact(s) => url.scheme() == s,
+        };
+        if !scheme_ok {
+            return false;
+        }
+        if self.scheme == SchemeMatch::AllUrls {
+            return true;
+        }
+        let host = url.host_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
+        let host_ok = match &self.host {
+            HostMatch::Any => true,
+            HostMatch::DomainAndSubdomains(d) => host == *d || host.strip_suffix(d.as_str()).is_some_and(|p| p.ends_with('.')),
+            HostMatch::Exact(h) => host == *h,
+        };
+        if !host_ok {
+            return false;
+        }
+        let path = match url.query() {
+            Some(q) => format!("{}?{}", url.path(), q),
+            None => url.path().to_owned(),
+        };
+        glob_match(self.path.as_bytes(), path.as_bytes())
+    }
+}
+
+/// `*` matches any run of characters, everything else matches literally.
+fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
+    let (mut p, mut t) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == b'*' {
+            star = Some((p, t));
+            p += 1;
+        } else if p < pattern.len() && pattern[p] == text[t] {
+            p += 1;
+            t += 1;
+        } else if let Some((sp, st)) = star {
+            p = sp + 1;
+            t = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&c| c == b'*')
+}
+
+impl TryFrom<String> for MatchPattern {
+    type Error = ManifestError;
+    fn try_from(s: String) -> Result<Self, ManifestError> {
+        MatchPattern::parse(&s)
+    }
+}
+
+impl From<MatchPattern> for String {
+    fn from(p: MatchPattern) -> String {
+        p.source
+    }
+}
+
+impl Manifest {
+    /// Read `dir/manifest.json` and localize for `ui_locale` (`en-US`, `uk_UA`, `de`):
+    /// each `__MSG_key__` comes from the most specific of `_locales/<ui_locale>`,
+    /// `_locales/<language>` and `_locales/<default_locale>` that defines `key`.
+    pub fn load(dir: &Path, ui_locale: &str) -> Result<Manifest, ManifestError> {
+        let raw = parse_tolerant_json(&read_text(&dir.join("manifest.json"))?)?;
+        let default_locale = raw.get("default_locale").and_then(Value::as_str);
+        let catalog = MessageCatalog::load(dir, ui_locale, default_locale);
+        Manifest::from_value(raw, &|key| catalog.get(key))
+    }
+
+    /// Parse manifest text. `messages(key)` resolves `__MSG_key__`.
+    pub fn parse(text: &str, messages: &dyn Fn(&str) -> Option<String>) -> Result<Manifest, ManifestError> {
+        Manifest::from_value(parse_tolerant_json(text)?, messages)
+    }
+
+    /// The SPKI DER in `key`, if the manifest has one.
+    pub fn key_der(&self) -> Option<Vec<u8>> {
+        self.key.as_deref().and_then(decode_key)
+    }
+
+    /// The Chrome id `key` derives to, if the manifest has one.
+    pub fn key_id(&self) -> Option<ExtensionId> {
+        self.key_der().map(|der| ExtensionId::from_public_key(&der))
+    }
+
+    fn from_value(raw: Value, messages: &dyn Fn(&str) -> Option<String>) -> Result<Manifest, ManifestError> {
+        let obj = raw.as_object().ok_or_else(|| ManifestError::Json("the top level is not an object".into()))?;
+        let l10n = |s: &str| localize(s, messages);
+
+        let manifest_version = match obj.get("manifest_version").map(Value::as_u64) {
+            Some(Some(2)) => ManifestVersion::V2,
+            Some(Some(3)) => ManifestVersion::V3,
+            Some(Some(other)) => return Err(ManifestError::UnsupportedVersion(other)),
+            _ => return Err(ManifestError::Field("manifest_version")),
+        };
+        let name = str_field(obj, "name", "name")?.map(l10n).filter(|n| !n.trim().is_empty()).ok_or(ManifestError::Field("name"))?;
+        let version = str_field(obj, "version", "version")?.filter(|v| is_valid_version(v)).ok_or(ManifestError::Field("version"))?;
+        let key = str_field(obj, "key", "key")?;
+        if key.is_some_and(|k| decode_key(k).is_none()) {
+            return Err(ManifestError::Field("key"));
+        }
+
+        let (permissions, mut host_permissions) = split_permissions(obj.get("permissions"));
+        host_permissions.extend(strings(obj.get("host_permissions")).filter_map(|s| MatchPattern::parse(s).ok()));
+        let mut seen = std::collections::HashSet::new();
+        host_permissions.retain(|p| seen.insert(p.clone()));
+
+        Ok(Manifest {
+            manifest_version,
+            version: version.to_owned(),
+            description: str_field(obj, "description", "description")?.map(l10n),
+            default_locale: str_field(obj, "default_locale", "default_locale")?.map(str::to_owned),
+            icons: icon_map(obj.get("icons"), "icons")?,
+            action: parse_action(obj, &l10n)?,
+            background: parse_background(obj.get("background"), manifest_version)?,
+            content_scripts: parse_content_scripts(obj.get("content_scripts"))?,
+            permissions,
+            host_permissions,
+            optional_permissions: strings(obj.get("optional_permissions"))
+                .chain(strings(obj.get("optional_host_permissions")))
+                .map(str::to_owned)
+                .collect(),
+            web_accessible_resources: parse_web_accessible(obj.get("web_accessible_resources"))?,
+            dnr_rulesets: parse_dnr(obj.get("declarative_net_request"))?,
+            options_page: parse_options_page(obj)?,
+            key: key.map(str::to_owned),
+            gecko_id: gecko_id(obj),
+            name,
+            raw,
+        })
+    }
+}
+
+type Object = serde_json::Map<String, Value>;
+
+/// A text file with an optional UTF-8 BOM, as Chrome reads manifest and message files.
+pub(crate) fn read_text(path: &Path) -> Result<String, ManifestError> {
+    let bytes = std::fs::read(path)?;
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+    String::from_utf8(bytes.to_vec()).map_err(|_| ManifestError::Json(format!("{} is not UTF-8", path.display())))
+}
+
+/// `Ok(None)` when absent, `Err(Field(name))` when present with the wrong type.
+fn str_field<'a>(obj: &'a Object, key: &str, name: &'static str) -> Result<Option<&'a str>, ManifestError> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(ManifestError::Field(name)),
+    }
+}
+
+fn bool_field(obj: &Object, key: &str, name: &'static str) -> Result<Option<bool>, ManifestError> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(ManifestError::Field(name)),
+    }
+}
+
+/// String entries of an optional array; anything else is skipped.
+fn strings(v: Option<&Value>) -> impl Iterator<Item = &str> {
+    v.and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
+}
+
+/// A file reference in the manifest. Chrome and Firefox both read a leading `/` as the
+/// extension root.
+fn manifest_path(s: &str) -> Result<RelPath, ManifestError> {
+    RelPath::parse(s.strip_prefix('/').unwrap_or(s)).map_err(|_| ManifestError::BadPath(s.to_owned()))
+}
+
+fn path_list(v: Option<&Value>, name: &'static str) -> Result<Vec<RelPath>, ManifestError> {
+    match v {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => {
+            items.iter().map(|item| item.as_str().ok_or(ManifestError::Field(name)).and_then(manifest_path)).collect()
+        }
+        Some(_) => Err(ManifestError::Field(name)),
+    }
+}
+
+fn pattern_list(v: Option<&Value>, name: &'static str) -> Result<Vec<MatchPattern>, ManifestError> {
+    match v {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => {
+            items.iter().map(|item| item.as_str().ok_or(ManifestError::Field(name)).and_then(MatchPattern::parse)).collect()
+        }
+        Some(_) => Err(ManifestError::Field(name)),
+    }
+}
+
+/// `{"16": "a.png", "48": "b.png"}`.
+fn icon_map(v: Option<&Value>, name: &'static str) -> Result<BTreeMap<u32, RelPath>, ManifestError> {
+    match v {
+        None | Some(Value::Null) => Ok(BTreeMap::new()),
+        Some(Value::Object(map)) => map
+            .iter()
+            .map(|(size, path)| {
+                let size = size.parse::<u32>().map_err(|_| ManifestError::Field(name))?;
+                let path = path.as_str().ok_or(ManifestError::Field(name))?;
+                Ok((size, manifest_path(path)?))
+            })
+            .collect(),
+        Some(_) => Err(ManifestError::Field(name)),
+    }
+}
+
+/// MV2 lists host patterns among API permissions; they move to `host_permissions`.
+/// Unknown or malformed entries are skipped, as Chrome skips them with a warning.
+fn split_permissions(v: Option<&Value>) -> (Vec<String>, Vec<MatchPattern>) {
+    let mut api = Vec::new();
+    let mut hosts = Vec::new();
+    for s in strings(v) {
+        if s == "<all_urls>" || s.contains("://") {
+            hosts.extend(MatchPattern::parse(s).ok());
+        } else {
+            api.push(s.to_owned());
+        }
+    }
+    (api, hosts)
+}
+
+/// `action` (MV3), else `browser_action`, else `page_action` (MV2).
+fn parse_action(obj: &Object, l10n: &dyn Fn(&str) -> String) -> Result<Option<Action>, ManifestError> {
+    let Some(v) = ["action", "browser_action", "page_action"].iter().find_map(|k| obj.get(*k).filter(|v| !v.is_null())) else {
+        return Ok(None);
+    };
+    let a = v.as_object().ok_or(ManifestError::Field("action"))?;
+    let default_popup = match str_field(a, "default_popup", "action.default_popup")? {
+        None | Some("") => None,
+        Some(p) => Some(manifest_path(p)?),
+    };
+    // A bare icon path counts as size 16, the toolbar size.
+    let default_icon = match a.get("default_icon") {
+        Some(Value::String(s)) => BTreeMap::from([(16, manifest_path(s)?)]),
+        other => icon_map(other, "action.default_icon")?,
+    };
+    Ok(Some(Action { default_popup, default_title: str_field(a, "default_title", "action.default_title")?.map(l10n), default_icon }))
+}
+
+/// MV3 prefers `service_worker`; cross-browser manifests also list `scripts` for Firefox,
+/// which Chrome ignores when a service worker is present. MV2 prefers `scripts`/`page`.
+/// `persistent` defaults to true only in MV2.
+fn parse_background(v: Option<&Value>, mv: ManifestVersion) -> Result<Option<Background>, ManifestError> {
+    let Some(v) = v.filter(|v| !v.is_null()) else { return Ok(None) };
+    let b = v.as_object().ok_or(ManifestError::Field("background"))?;
+    let persistent = bool_field(b, "persistent", "background.persistent")?.unwrap_or(mv == ManifestVersion::V2);
+    let module = match str_field(b, "type", "background.type")? {
+        None | Some("classic") => false,
+        Some("module") => true,
+        Some(_) => return Err(ManifestError::Field("background.type")),
+    };
+    let worker = str_field(b, "service_worker", "background.service_worker")?
+        .map(manifest_path)
+        .transpose()?
+        .map(|script| Background::ServiceWorker { script, module });
+    let scripts = Some(path_list(b.get("scripts"), "background.scripts")?)
+        .filter(|s| !s.is_empty())
+        .map(|scripts| Background::Scripts { scripts, persistent });
+    let page = str_field(b, "page", "background.page")?.map(manifest_path).transpose()?.map(|page| Background::Page { page, persistent });
+    Ok(match mv {
+        ManifestVersion::V3 => worker.or(scripts).or(page),
+        ManifestVersion::V2 => scripts.or(page).or(worker),
+    })
+}
+
+fn parse_content_scripts(v: Option<&Value>) -> Result<Vec<ContentScript>, ManifestError> {
+    let items = match v {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(ManifestError::Field("content_scripts")),
+    };
+    items
+        .iter()
+        .map(|item| {
+            let cs = item.as_object().ok_or(ManifestError::Field("content_scripts"))?;
+            let matches = pattern_list(cs.get("matches"), "content_scripts.matches")?;
+            if matches.is_empty() {
+                return Err(ManifestError::Field("content_scripts.matches"));
+            }
+            let run_at = match str_field(cs, "run_at", "content_scripts.run_at")? {
+                None | Some("document_idle") => RunAt::DocumentIdle,
+                Some("document_start") => RunAt::DocumentStart,
+                Some("document_end") => RunAt::DocumentEnd,
+                Some(_) => return Err(ManifestError::Field("content_scripts.run_at")),
+            };
+            let world = match str_field(cs, "world", "content_scripts.world")? {
+                None | Some("ISOLATED") => World::Isolated,
+                Some("MAIN") => World::Main,
+                Some(_) => return Err(ManifestError::Field("content_scripts.world")),
+            };
+            Ok(ContentScript {
+                matches,
+                exclude_matches: pattern_list(cs.get("exclude_matches"), "content_scripts.exclude_matches")?,
+                js: path_list(cs.get("js"), "content_scripts.js")?,
+                css: path_list(cs.get("css"), "content_scripts.css")?,
+                run_at,
+                all_frames: bool_field(cs, "all_frames", "content_scripts.all_frames")?.unwrap_or(false),
+                match_about_blank: bool_field(cs, "match_about_blank", "content_scripts.match_about_blank")?.unwrap_or(false),
+                world,
+            })
+        })
+        .collect()
+}
+
+/// MV2: a list of resource strings, reachable from every page. MV3: a list of
+/// `{resources, matches}` objects. Both shapes normalize to [`WebAccessible`].
+fn parse_web_accessible(v: Option<&Value>) -> Result<Vec<WebAccessible>, ManifestError> {
+    const NAME: &str = "web_accessible_resources";
+    let items = match v {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(ManifestError::Field(NAME)),
+    };
+    let mut out = Vec::new();
+    let mut legacy = Vec::new();
+    for item in items {
+        match item {
+            Value::String(s) => legacy.push(s.clone()),
+            Value::Object(o) => out.push(WebAccessible {
+                resources: strings(o.get("resources")).map(str::to_owned).collect(),
+                matches: pattern_list(o.get("matches"), NAME)?,
+            }),
+            _ => return Err(ManifestError::Field(NAME)),
+        }
+    }
+    if !legacy.is_empty() {
+        out.insert(0, WebAccessible { resources: legacy, matches: vec![MatchPattern::parse("<all_urls>")?] });
+    }
+    Ok(out)
+}
+
+fn parse_dnr(v: Option<&Value>) -> Result<Vec<DnrRuleset>, ManifestError> {
+    const NAME: &str = "declarative_net_request.rule_resources";
+    let Some(dnr) = v.filter(|v| !v.is_null()) else { return Ok(Vec::new()) };
+    let resources = match dnr.as_object().ok_or(ManifestError::Field("declarative_net_request"))?.get("rule_resources") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(ManifestError::Field(NAME)),
+    };
+    resources
+        .iter()
+        .map(|r| {
+            let r = r.as_object().ok_or(ManifestError::Field(NAME))?;
+            Ok(DnrRuleset {
+                id: str_field(r, "id", NAME)?.ok_or(ManifestError::Field(NAME))?.to_owned(),
+                enabled: bool_field(r, "enabled", NAME)?.ok_or(ManifestError::Field(NAME))?,
+                path: manifest_path(str_field(r, "path", NAME)?.ok_or(ManifestError::Field(NAME))?)?,
+            })
+        })
+        .collect()
+}
+
+/// `options_page`, else `options_ui.page`.
+fn parse_options_page(obj: &Object) -> Result<Option<RelPath>, ManifestError> {
+    if let Some(p) = str_field(obj, "options_page", "options_page")? {
+        return manifest_path(p).map(Some);
+    }
+    match obj.get("options_ui") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(ui)) => str_field(ui, "page", "options_ui.page")?.map(manifest_path).transpose(),
+        Some(_) => Err(ManifestError::Field("options_ui")),
+    }
+}
+
+/// `browser_specific_settings.gecko.id`, else the older spelling `applications.gecko.id`.
+fn gecko_id(obj: &Object) -> Option<String> {
+    ["browser_specific_settings", "applications"].iter().find_map(|k| obj.get(*k)?.get("gecko")?.get("id")?.as_str()).map(str::to_owned)
+}
+
+/// Chrome's grammar: 1 to 4 dot-separated integers in 0..=65535, no leading zeros.
+fn is_valid_version(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('.').collect();
+    (1..=4).contains(&parts.len())
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.len() <= 5
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && (p.len() == 1 || !p.starts_with('0'))
+                && p.parse::<u32>().is_ok_and(|n| n <= 65535)
+        })
+}
+
+/// Orders two versions that passed [`is_valid_version`]; missing parts count as 0.
+pub(crate) fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |v: &str| -> [u32; 4] {
+        let mut out = [0; 4];
+        for (slot, p) in out.iter_mut().zip(v.split('.')) {
+            *slot = p.parse().unwrap_or(0);
+        }
+        out
+    };
+    parts(a).cmp(&parts(b))
+}
+
+/// base64 SPKI DER. Whitespace and PEM armor are tolerated, as Chromium tolerates them.
+fn decode_key(key: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let body: String =
+        key.lines().filter(|l| !l.trim_start().starts_with("-----")).flat_map(str::chars).filter(|c| !c.is_ascii_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD.decode(body).ok().filter(|der| !der.is_empty())
+}
+
+/// Replaces every `__MSG_key__` that `messages` resolves. Unknown keys stay as written:
+/// an unlocalized name is better than refusing the install.
+fn localize(s: &str, messages: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("__MSG_") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + "__MSG_".len()..];
+        match after.find("__").map(|end| (&after[..end], end)) {
+            Some((key, end)) if !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'@') => {
+                match messages(key) {
+                    Some(text) => out.push_str(&text),
+                    None => out.push_str(&rest[start..start + "__MSG_".len() + end + 2]),
+                }
+                rest = &after[end + 2..];
+            }
+            _ => {
+                out.push_str("__MSG_");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `_locales/<locale>/messages.json` bundles in lookup order, keys lowercased
+/// (message names are case-insensitive).
+struct MessageCatalog(Vec<BTreeMap<String, String>>);
+
+impl MessageCatalog {
+    fn load(dir: &Path, ui_locale: &str, default_locale: Option<&str>) -> Self {
+        let ui = ui_locale.replace('-', "_");
+        let language = ui.split('_').next().unwrap_or_default().to_owned();
+        let mut chain: Vec<String> = Vec::new();
+        for locale in [Some(ui), Some(language), default_locale.map(str::to_owned)].into_iter().flatten() {
+            // default_locale comes from the manifest, so it is also a path component to check.
+            let safe = !locale.is_empty() && locale.len() <= 16 && locale.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+            if safe && !chain.contains(&locale) {
+                chain.push(locale);
+            }
+        }
+        let bundles = chain
+            .iter()
+            .filter_map(|locale| read_text(&dir.join("_locales").join(locale).join("messages.json")).ok())
+            .filter_map(|text| parse_tolerant_json(&text).ok())
+            .map(|v| message_bundle(&v))
+            .collect();
+        MessageCatalog(bundles)
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        let key = key.to_ascii_lowercase();
+        self.0.iter().find_map(|bundle| bundle.get(&key).cloned())
+    }
+}
+
+/// `{"name": {"message": "Hi $who$", "placeholders": {"who": {"content": "you"}}}}`
+/// -> `{"name": "Hi you"}`. `$$` is a literal `$`.
+fn message_bundle(v: &Value) -> BTreeMap<String, String> {
+    let Some(obj) = v.as_object() else { return BTreeMap::new() };
+    obj.iter()
+        .filter_map(|(key, entry)| {
+            let message = entry.get("message")?.as_str()?;
+            let placeholders: BTreeMap<String, &str> = entry
+                .get("placeholders")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter_map(|(name, p)| Some((name.to_ascii_lowercase(), p.get("content")?.as_str()?)))
+                .collect();
+            Some((key.to_ascii_lowercase(), expand_placeholders(message, &placeholders)))
+        })
+        .collect()
+}
+
+fn expand_placeholders(message: &str, placeholders: &BTreeMap<String, &str>) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('$') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        if let Some(tail) = after.strip_prefix('$') {
+            out.push('$');
+            rest = tail;
+            continue;
+        }
+        let name_end = after.find('$').filter(|&end| end > 0 && after[..end].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+        match name_end.and_then(|end| Some((placeholders.get(&after[..end].to_ascii_lowercase())?, end))) {
+            Some((content, end)) => {
+                out.push_str(content);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('$');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Chrome accepts `//` and `/* */` comments and trailing commas in manifest.json and
+/// messages.json. Strip them (string-literal aware) before `serde_json`.
+pub(crate) fn parse_tolerant_json(text: &str) -> Result<serde_json::Value, ManifestError> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let cleaned = strip_trailing_commas(&strip_comments(text)?);
+    serde_json::from_str(&cleaned).map_err(|e| ManifestError::Json(e.to_string()))
+}
+
+fn strip_comments(text: &str) -> Result<String, ManifestError> {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            match c {
+                '\\' => out.extend(chars.next()),
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match (c, chars.peek()) {
+            ('"', _) => {
+                in_string = true;
+                out.push(c);
+            }
+            ('/', Some('/')) => {
+                // Keep the newline so serde_json's line numbers still point at the source.
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            ('/', Some('*')) => {
+                chars.next();
+                let mut prev = '\0';
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                    if prev == '*' && c == '/' {
+                        closed = true;
+                        break;
+                    }
+                    prev = c;
+                }
+                if !closed {
+                    return Err(ManifestError::Json("unterminated /* comment".into()));
+                }
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+    }
+    Ok(out)
+}
+
+/// Drops a `,` whose next non-whitespace character closes an object or array.
+fn strip_trailing_commas(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut pending: Option<String> = None;
+    for c in text.chars() {
+        if in_string {
+            out.push(c);
+            match (escaped, c) {
+                (true, _) => escaped = false,
+                (false, '\\') => escaped = true,
+                (false, '"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        if let Some(buf) = pending.as_mut() {
+            if c.is_whitespace() {
+                buf.push(c);
+                continue;
+            }
+            let buf = pending.take().unwrap_or_default();
+            if c == '}' || c == ']' {
+                out.push_str(&buf[1..]);
+            } else {
+                out.push_str(&buf);
+            }
+        }
+        match c {
+            ',' => pending = Some(String::from(",")),
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out.extend(pending);
+    out
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestError {
+    #[error("manifest.json: {0}")]
+    Json(String),
+    #[error("manifest.json: missing or invalid `{0}`")]
+    Field(&'static str),
+    #[error("manifest_version {0} is not supported")]
+    UnsupportedVersion(u64),
+    #[error("invalid file path {0:?}")]
+    BadPath(String),
+    #[error("invalid match pattern {0:?}")]
+    BadPattern(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(pattern: &str, url: &str) -> bool {
+        MatchPattern::parse(pattern).unwrap().matches(&Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn match_patterns() {
+        assert!(m("<all_urls>", "https://example.com/a?b"));
+        assert!(m("<all_urls>", "file:///tmp/x.html"));
+        assert!(!m("<all_urls>", "chrome-extension://abc/popup.html"));
+        assert!(m("*://*/*", "http://127.0.0.1:8080/index.html"));
+        assert!(!m("*://*/*", "file:///tmp/x"));
+        assert!(m("https://*.example.com/*", "https://example.com/"));
+        assert!(m("https://*.example.com/*", "https://a.b.example.com/x"));
+        assert!(!m("https://*.example.com/*", "https://badexample.com/"));
+        assert!(m("https://example.com/foo*", "https://example.com/foobar?q=1"));
+        assert!(!m("https://example.com/foo*", "https://example.com/bar"));
+        assert!(m("http://localhost:*/*", "http://localhost:3000/x"));
+        assert!(m("file:///*", "file:///home/x.html"));
+        for bad in ["", "example.com", "https://", "https://*foo.com/", "gopher://x/", "https://a.*.com/"] {
+            assert!(MatchPattern::parse(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn rel_paths() {
+        assert_eq!(RelPath::parse("./js/a.js").unwrap().as_str(), "js/a.js");
+        for bad in ["", "/etc/passwd", "../x", "a/../../x", "a\\b", "C:/x", "a/./b"] {
+            assert!(RelPath::parse(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn tolerant_json_strips_comments_and_trailing_commas_outside_strings() {
+        let text = "\u{feff}{\n  // line comment\n  \"a\": \"http://x/*y*/,\", /* block\n comment */\n  \"b\": [1, 2, ],\n  \"c\": {\"d\": \"\\\"//\\\"\",},\n}\n";
+        let v = parse_tolerant_json(text).unwrap();
+        assert_eq!(v, serde_json::json!({"a": "http://x/*y*/,", "b": [1, 2], "c": {"d": "\"//\""}}));
+        assert!(parse_tolerant_json("{\"a\": 1 /* never closed").is_err());
+        assert!(parse_tolerant_json("{\"a\": }").is_err());
+    }
+
+    #[test]
+    fn localize_replaces_known_messages_and_keeps_unknown_ones() {
+        let messages = |k: &str| (k == "name").then(|| "Probe".to_owned());
+        assert_eq!(localize("__MSG_name__", &messages), "Probe");
+        assert_eq!(localize("x __MSG_name__ y __MSG_name__", &messages), "x Probe y Probe");
+        assert_eq!(localize("__MSG_other__", &messages), "__MSG_other__");
+        assert_eq!(localize("__MSG_ unterminated", &messages), "__MSG_ unterminated");
+        assert_eq!(localize("plain", &messages), "plain");
+    }
+
+    #[test]
+    fn message_placeholders_expand() {
+        let placeholders = BTreeMap::from([("who".to_owned(), "you")]);
+        assert_eq!(expand_placeholders("Hi $WHO$, $$5 $none$", &placeholders), "Hi you, $5 $none$");
+    }
+
+    #[test]
+    fn versions_follow_chrome_grammar() {
+        for good in ["1", "1.0", "1.2.3.4", "0.0.0.0", "65535.1"] {
+            assert!(is_valid_version(good), "{good}");
+        }
+        for bad in ["", "1.", ".1", "1..2", "1.2.3.4.5", "65536", "1.02", "01", "1.0a", "1.-1", " 1"] {
+            assert!(!is_valid_version(bad), "{bad:?}");
+        }
+        assert_eq!(cmp_versions("1.2", "1.2.0.0"), std::cmp::Ordering::Equal);
+        assert_eq!(cmp_versions("1.10", "1.9"), std::cmp::Ordering::Greater);
+        assert_eq!(cmp_versions("2", "10"), std::cmp::Ordering::Less);
+    }
+}

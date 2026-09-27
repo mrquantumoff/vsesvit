@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Vsesvit
+GenericName=Web Browser
+Comment=A web browser with Chrome Web Store extensions
+Exec=vsesvit %U
+Icon=dev.mrquantumoff.vsesvit
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+Keywords=browser;web;internet;
+StartupNotify=true
+StartupWMClass=dev.mrquantumoff.vsesvit

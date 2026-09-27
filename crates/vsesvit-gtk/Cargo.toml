@@ -1,0 +1,35 @@
+[package]
+name = "vsesvit-gtk"
+description = "Linux shell of the Vsesvit browser: GTK4 + libadwaita + WebKitGTK 6.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# `vsesvit --self-test` needs core's testkit (a fixture HTTP server and the CRX3 writer
+# with the committed test key). It is a default feature rather than a debug-only cfg
+# because the self-test is the project's acceptance check and must run against the same
+# optimized binary a reviewer ships; a packager who does not want the test key material in
+# a release build turns it off with `--no-default-features`.
+default = ["self-test"]
+self-test = ["vsesvit-core/testkit"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+vsesvit-core = { workspace = true }
+vsesvit-webext = { workspace = true }
+vsesvit-update = { workspace = true }
+gtk = { workspace = true }
+adw = { workspace = true }
+webkit = { workspace = true }
+javascriptcore = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+url = { workspace = true }
+semver = "1"
+time = { version = "0.3", features = ["formatting"] }
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false }
+# Same glib/gio as gtk4 0.11. `log` routes the `log` crate into g_log; `v2_80` exposes
+# `ApplicationCommandLine::printerr_literal` (the system has GLib 2.88).
+glib = { version = "0.22", features = ["log"] }
+gio = { version = "0.22", features = ["v2_80"] }

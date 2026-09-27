@@ -1,0 +1,14 @@
+[package]
+name = "vsesvit-winui-bindgen"
+description = "Regenerates crates/vsesvit-winui/src/bindings.rs from the pinned Windows App SDK and WebView2 NuGet packages"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# A separate workspace, so normal builds of Vsesvit never compile windows-bindgen.
+[workspace]
+
+[dependencies]
+windows-bindgen = "0.100"
+sha2 = "0.11"
+zip = { version = "9.0.0-pre3", default-features = false, features = ["deflate-flate2-zlib-rs"] }

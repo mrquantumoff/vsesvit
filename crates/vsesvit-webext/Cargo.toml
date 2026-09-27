@@ -1,0 +1,28 @@
+[package]
+name = "vsesvit-webext"
+description = "WebExtensions runtime for WebKitGTK (Linux): content scripts, background pages, chrome.* APIs, declarativeNetRequest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# The manifest model is shared with the platform-neutral support report (`support`),
+# so core is a dependency on every host; it has no system dependencies.
+vsesvit-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { workspace = true }
+webkit = { workspace = true }
+javascriptcore = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+vsesvit-core = { workspace = true, features = ["testkit"] }
+
+[[example]]
+name = "harness"
+path = "examples/harness.rs"

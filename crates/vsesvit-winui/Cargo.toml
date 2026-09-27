@@ -1,0 +1,24 @@
+[package]
+name = "vsesvit-winui"
+description = "Windows shell of the Vsesvit browser: WinUI 3 (Windows App SDK) + WebView2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+vsesvit-core = { workspace = true }
+vsesvit-update = { workspace = true }
+windows-core = { workspace = true }
+windows-future = { workspace = true }
+windows-collections = { workspace = true }
+windows-link = { workspace = true }
+windows-reference = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+semver = "1"
+time = { version = "0.3", features = ["formatting"] }
+
+# build.rs copies Microsoft.Web.WebView2.Core.dll from the pinned NuGet package next to the exe.
+[target.'cfg(windows)'.build-dependencies]
+sha2 = "0.11"
+zip = { version = "9.0.0-pre3", default-features = false, features = ["deflate-flate2-zlib-rs"] }

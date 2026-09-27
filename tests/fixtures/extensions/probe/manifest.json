@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Vsesvit Probe",
+  "version": "1.0.0",
+  "description": "Test extension that reports which WebExtension APIs work.",
+  "permissions": ["storage", "declarativeNetRequest"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_end" }
+  ],
+  "action": { "default_title": "Vsesvit Probe", "default_popup": "popup.html" },
+  "declarative_net_request": {
+    "rule_resources": [{ "id": "block", "enabled": true, "path": "rules.json" }]
+  }
+}

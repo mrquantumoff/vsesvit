@@ -1,0 +1,9 @@
+{
+  "pubkey": "",
+  "endpoints": [
+    "https://api.usequadrant.dev/api/any/vsesvit/updates/stable/{{target}}/{{arch}}/{{current_version}}?variant={{bundle_type}}"
+  ],
+  "windows": {
+    "installMode": "passive"
+  }
+}

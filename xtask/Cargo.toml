@@ -1,0 +1,22 @@
+[package]
+name = "xtask"
+description = "Builds Vsesvit's packages and update manifests: cargo xtask --help"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+base64 = "0.23.1"
+ico = "0.5.0"
+minisign = "0.10.0"
+resvg = "0.48.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11.0"
+time = { version = "0.3.55", features = ["formatting", "parsing", "macros"] }
+ureq = "3.4.2"
+minisign-verify = "0.2.5"
+
+[dev-dependencies]
+chrono = { version = "0.4.44", default-features = false, features = ["serde", "std"] }
