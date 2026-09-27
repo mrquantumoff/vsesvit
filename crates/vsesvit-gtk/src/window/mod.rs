@@ -17,6 +17,7 @@ use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
+use vsesvit_core::new_tab;
 use vsesvit_core::prefs::TabsPosition;
 use webkit::prelude::*;
 
@@ -540,9 +541,14 @@ impl BrowserWindow {
         tab
     }
 
-    /// A blank tab at the end; selecting it puts the focus in the address bar.
+    /// A new tab page at the end; selecting it puts the focus in the address bar. The page
+    /// has no base URI, so it is at `about:blank` and the tab still reads as blank.
     pub(crate) fn new_tab(&self) {
-        self.open_tab(None, None, Focus::Foreground);
+        let tab = self.open_tab(None, None, Focus::Foreground);
+        match new_tab::page(&mut self.browser().core().borrow_mut()) {
+            Ok(html) => tab.web_view().load_html(&html, None),
+            Err(e) => log::warn!("new tab page: {e}"),
+        }
     }
 
     pub(crate) fn close_tab(&self, tab: &Tab) {

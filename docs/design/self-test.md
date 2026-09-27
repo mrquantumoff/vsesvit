@@ -32,6 +32,7 @@ Both shells also accept `--profile-dir <path>` in normal runs, so development ne
 | `popup` | action popup page | opening the probe's action popup shows a document whose title is `visits=N` with N >= 1 |
 | `omnibox` | input classification | `resolve("vsesvit fixture")` is a search on the default engine; `resolve("127.0.0.1:<port>/page2.html")` is that http URL |
 | `session` | session persistence | after `session().save`, `restore()` returns at least one window with at least one tab |
+| `new_tab_page` | the new tab page | a new tab shows the page's search box and a tile linking to the fixture server's origin, while still reading as blank (`about:blank`, the shell's "New tab" title); `new-tab.png` is written, then the tab is closed |
 | `screenshot` | the window really rendered | `window.png` is written, from an in-app capture that does not steal focus, and is not a single flat color |
 | `cws_install` (only with `--network`) | real Chrome Web Store install | install `ddkjiahejlhfcafbddmgiahcphecmpfh` (uBlock Origin Lite); verification == `ChromeWebStore { publisher_verified: true }`; the engine loads it |
 

@@ -4482,6 +4482,15 @@ impl ICoreWebView2 {
             .ok()
         }
     }
+    pub fn NavigateToString(&self, htmlcontent: &str) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).NavigateToString)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(htmlcontent)),
+            )
+            .ok()
+        }
+    }
     pub fn AddScriptToExecuteOnDocumentCreatedAsync(
         &self,
         javascript: &str,
@@ -4696,7 +4705,10 @@ pub struct ICoreWebView2_Vtbl {
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
-    NavigateToString: usize,
+    pub NavigateToString: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     pub AddScriptToExecuteOnDocumentCreatedAsync:
         unsafe extern "system" fn(
             *mut core::ffi::c_void,

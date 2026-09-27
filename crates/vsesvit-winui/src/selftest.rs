@@ -34,6 +34,8 @@ const NETWORK_TIMEOUT: Duration = Duration::from_secs(240);
 const POLL: Duration = Duration::from_millis(100);
 const FIXTURE_TITLE: &str = "Vsesvit fixture";
 const PAGE2_TITLE: &str = "Vsesvit fixture 2";
+/// The new tab page's tile links, once its search box is there.
+const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...document.querySelectorAll('.tile')].map(a => a.href).join(' ') : 'no search box'";
 /// uBlock Origin Lite.
 const CWS_ID: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
 
@@ -439,6 +441,37 @@ async fn checks(
             .collect();
         let detail = format!("restored {} window(s): {tabs:?}", restored.windows.len());
         (!restored.windows.is_empty() && restored.windows.iter().any(|w| !w.tabs.is_empty()))
+            .then_some(detail.clone())
+            .ok_or(detail)
+    })
+    .await;
+
+    check(report, "new_tab_page", DEFAULT_TIMEOUT, async |p| {
+        let origin = server.url("/");
+        window.run(Command::NewTab);
+        let ntp = until(p, |p| {
+            let tabs = window.tabs_in_order();
+            p.observe(format!("{} tabs", tabs.len()));
+            tabs.into_iter().find(|t| t.id != tab.id)
+        })
+        .await;
+        wait_ready(&ntp, p).await;
+        let tiles = loop {
+            let tiles = eval(&ntp, NEW_TAB_PAGE_PROBE).await?;
+            if tiles.contains(origin.as_str()) {
+                break tiles;
+            }
+            p.observe(format!("page reports {tiles}"));
+            exec::sleep(POLL).await;
+        };
+        exec::sleep(Duration::from_millis(500)).await;
+        let shot = window.capture().await.map_err(|e| format!("capture: {e}"))?;
+        let path = out_dir.join("new-tab.png");
+        std::fs::write(&path, &shot.png).map_err(|e| format!("{}: {e}", path.display()))?;
+        let s = ntp.state();
+        let detail = format!("url={:?} title={:?} tiles {tiles}", s.url, s.title);
+        window.close_tab(ntp.id);
+        (s.url == "about:blank" && s.title == "New tab")
             .then_some(detail.clone())
             .ok_or(detail)
     })

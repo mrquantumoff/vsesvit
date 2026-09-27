@@ -32,6 +32,8 @@ const POLL: Duration = Duration::from_millis(50);
 const CWS_EXTENSION: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
 /// How many distinct colours the screenshot check samples before it is satisfied.
 const COLOR_SAMPLE_CAP: usize = 64;
+/// The new tab page's tile links, once its search box is there.
+const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...document.querySelectorAll('.tile')].map(a => a.href).join(' ') : 'no search box'";
 
 struct Check {
     name: &'static str,
@@ -458,6 +460,32 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             )),
             other => Err(format!("restore returned {other:?}")),
         }
+    })
+    .await;
+
+    ctx.check("new_tab_page", CHECK_TIMEOUT, |last| async move {
+        let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        window.new_tab();
+        let tab = window.selected_tab().filter(|t| *t != first).ok_or_else(|| "no new tab selected".to_owned())?;
+        let origin = ctx.server.url("/");
+        let tiles = loop {
+            let loaded = !tab.web_view().is_loading() && tab.committed_uri().as_deref() == Some("about:blank");
+            let tiles = if loaded { eval_js(tab.web_view(), NEW_TAB_PAGE_PROBE).await? } else { String::new() };
+            if tiles.contains(origin.as_str()) {
+                break tiles;
+            }
+            last.set(format!("uri={:?} page reports {tiles:?}", tab.committed_uri()));
+            glib::timeout_future(POLL).await;
+        };
+        let title = tab.display_title();
+        if !tab.is_blank() || title != "New Tab" {
+            return Err(format!("is_blank={} title={title:?} tiles {tiles}", tab.is_blank()));
+        }
+        glib::timeout_future(Duration::from_millis(500)).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("new-tab.png")).await.map_err(|e| e.to_string())?;
+        window.select_tab(&first);
+        window.close_tab(&tab);
+        Ok(format!("tiles {tiles}; the tab reads as blank, titled {title:?}"))
     })
     .await;
 

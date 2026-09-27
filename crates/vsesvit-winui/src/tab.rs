@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use vsesvit_core::history::Transition;
-use vsesvit_core::session;
+use vsesvit_core::{new_tab, session};
 use windows_core::{IInspectable, Interface, Ref, Result};
 
 use crate::bindings::*;
@@ -196,7 +196,7 @@ impl Tab {
         }
         match initial {
             Initial::Url(url) => self.navigate(&url),
-            Initial::Blank => self.navigate("about:blank"),
+            Initial::Blank => self.show_new_tab_page(&core),
             Initial::Opener(request) => request.fulfil(&core),
         }
     }
@@ -260,6 +260,21 @@ impl Tab {
         };
         if let Err(e) = core.Navigate(url) {
             log::warn!("tab {}: navigate to {url}: {e}", self.id);
+        }
+    }
+
+    /// The new tab page, loaded as HTML at `about:blank` so the tab still reads as blank.
+    fn show_new_tab_page(&self, core: &CoreWebView2) {
+        let shown = match self.window().and_then(|w| w.browser()) {
+            Some(browser) => browser
+                .core(new_tab::page)
+                .map_err(|e| e.to_string())
+                .and_then(|html| core.NavigateToString(&html).map_err(|e| e.to_string())),
+            None => Err("the window is gone".to_owned()),
+        };
+        if let Err(e) = shown {
+            log::warn!("tab {}: new tab page: {e}", self.id);
+            self.navigate("about:blank");
         }
     }
 

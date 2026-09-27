@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 use crate::crdt::{DeviceId, Extra, Lattice, Lww, Seq, Stamp, extra_max_stamp, join_extra};
 use crate::db::{extra_col, extra_text, seq_col, stamp_col, uuid_col};
+use crate::new_tab::TopSite;
 use crate::sync::{Kind, SyncTable, changed_rows};
 use crate::{Error, Profile, Url};
 
@@ -246,6 +247,27 @@ impl History<'_> {
         )?;
         let rows = stmt.query_map(params![prefix, substring, limit as i64], row_entry)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// New tab page tiles: the sites of the highest-frecency `http(s)` pages, one per origin,
+    /// best first.
+    pub fn top_sites(&mut self, limit: usize) -> Result<Vec<TopSite>, Error> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.p.conn.prepare_cached("SELECT url FROM history_pages ORDER BY frecency DESC, last_visit_ms DESC LIMIT ?1")?;
+        let fetch = i64::try_from(limit.saturating_mul(10)).unwrap_or(i64::MAX);
+        let mut sites: Vec<TopSite> = Vec::with_capacity(limit);
+        for url in stmt.query_map([fetch], |row| row.get::<_, String>(0))? {
+            let Some(site) = Url::parse(&url?).ok().as_ref().and_then(TopSite::of) else { continue };
+            if !sites.iter().any(|s| s.url == site.url) {
+                sites.push(site);
+                if sites.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(sites)
     }
 
     /// History page: visits newest first in `[from_ms, to_ms)`.

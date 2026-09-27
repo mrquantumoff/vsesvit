@@ -21,6 +21,7 @@
 //! | [`bookmarks`]    | records, fractional positions, in-memory tree, `materialize`          |
 //! | [`history`]      | page records (grow-only visit sets) + deletion directives             |
 //! | [`import`]       | bookmarks from other browsers: HTML export, Chromium, Firefox         |
+//! | [`new_tab`]      | the new tab page: search box + most visited sites, as HTML            |
 //! | [`session`]      | this device's windows/tabs (restore) = its published "tabs" record    |
 //! | [`prefs`]        | typed preferences                                                    |
 //! | [`search`]       | search engines, omnibox resolve + suggest                             |
@@ -39,6 +40,7 @@ pub mod ext_storage;
 pub mod extensions;
 pub mod history;
 pub mod import;
+pub mod new_tab;
 pub mod prefs;
 pub mod search;
 pub mod session;

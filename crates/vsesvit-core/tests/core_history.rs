@@ -126,6 +126,32 @@ fn delete_url_and_delete_range() {
     assert!(p.history().visits_between(0, i64::MAX, 10).unwrap().is_empty());
 }
 
+#[test]
+fn top_sites_are_origins_by_frecency() {
+    let (mut p, time, _dir) = open();
+    let visit = |p: &mut Profile, u: &str, times: u64| {
+        for _ in 0..times {
+            time.set(time.get() + 1);
+            p.history().record_visit(&url(u), Transition::Link).unwrap();
+        }
+    };
+    visit(&mut p, "https://www.example.com/docs?x=1", 3);
+    visit(&mut p, "https://example.com/", 1);
+    visit(&mut p, "http://localhost:8080/app", 2);
+    visit(&mut p, "file:///C:/notes.txt", 5);
+    visit(&mut p, "https://b.example/", 1);
+    visit(&mut p, "https://www.example.com/other", 1);
+
+    let sites = p.history().top_sites(10).unwrap();
+    let urls: Vec<&str> = sites.iter().map(|s| s.url.as_str()).collect();
+    assert_eq!(urls, ["https://www.example.com/", "http://localhost:8080/", "https://b.example/", "https://example.com/"], "file: is excluded");
+    let labels: Vec<&str> = sites.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels, ["example.com", "localhost", "b.example", "example.com"], "www. is dropped from the label only");
+
+    assert_eq!(p.history().top_sites(2).unwrap(), sites[..2]);
+    assert!(p.history().top_sites(0).unwrap().is_empty());
+}
+
 fn visit(at_ms: i64, device: u64, transition: Transition) -> Visit {
     Visit { at_ms, device: DeviceId(device), transition }
 }
