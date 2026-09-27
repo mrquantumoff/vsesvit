@@ -133,7 +133,8 @@ jobs:
       - name: Flatpak tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          # With recommends: flatpak-builder strips binaries with elfutils' eu-strip on the host.
+          sudo apt-get install -y flatpak flatpak-builder
           # flatpak-builder sandboxes each build step with bubblewrap in a user namespace.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - uses: actions/checkout@v5
