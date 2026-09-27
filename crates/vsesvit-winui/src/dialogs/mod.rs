@@ -100,7 +100,7 @@ pub(crate) fn build(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Built> {
         .SetRequestedTheme(element_theme(browser.theme()))?;
     let root = dialog.cast::<FrameworkElement>()?;
     let wired = match kind {
-        Dialog::Bookmarks => bookmarks::wire(&root, &browser)?,
+        Dialog::Bookmarks => bookmarks::wire(&root, &browser, window)?,
         Dialog::History => history::wire(&root, &browser, window)?,
         Dialog::Extensions => extensions::wire(&root, &browser, window)?,
         Dialog::Settings => settings::wire(&root, &browser)?,

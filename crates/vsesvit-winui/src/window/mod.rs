@@ -94,7 +94,11 @@ impl BrowserWindow {
         window.SetContent(&ui.root)?;
         window.SetExtendsContentIntoTitleBar(true)?;
         let window2 = window.cast::<IWindow2>()?;
-        window2.SetSystemBackdrop(&MicaBackdrop::new()?.cast::<SystemBackdrop>()?)?;
+        // Mica Alt, the tabbed-app variant; the chrome above it is translucent (see chrome.rs).
+        // Built from markup because the minimal bindings do not carry `MicaBackdrop.Kind`.
+        window2.SetSystemBackdrop(&xaml::load::<SystemBackdrop>(
+            r#"<MicaBackdrop {ns} Kind="BaseAlt"/>"#,
+        )?)?;
 
         let slot = Rc::new(OnceCell::new());
         let events = Rc::new(strip_events(&slot));

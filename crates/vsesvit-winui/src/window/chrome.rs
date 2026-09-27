@@ -8,6 +8,16 @@ use crate::xaml;
 const WINDOW_XAML: &str = r#"
 <Grid {ns}>
   <Grid.Resources>
+    <ResourceDictionary>
+    <!-- The selected tab joins the toolbar below it on the same translucent layer over Mica. -->
+    <ResourceDictionary.ThemeDictionaries>
+      <ResourceDictionary x:Key="Light">
+        <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="LayerOnMicaBaseAltFillColorDefaultBrush"/>
+      </ResourceDictionary>
+      <ResourceDictionary x:Key="Default">
+        <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="LayerOnMicaBaseAltFillColorDefaultBrush"/>
+      </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
     <Style x:Key="ToolbarButton" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="BorderThickness" Value="0"/>
@@ -36,6 +46,7 @@ const WINDOW_XAML: &str = r#"
     <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="AccentTextFillColorPrimaryBrush"/>
     <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="AccentTextFillColorPrimaryBrush"/>
     <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="AccentTextFillColorSecondaryBrush"/>
+    </ResourceDictionary>
   </Grid.Resources>
   <Grid.RowDefinitions>
     <RowDefinition Height="Auto"/>
@@ -56,7 +67,7 @@ const WINDOW_XAML: &str = r#"
   </TabView>
 
   <Grid x:Name="Toolbar" Grid.Row="1" Padding="6,4,0,4" ColumnSpacing="2"
-        Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}">
+        Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}">
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
@@ -122,7 +133,7 @@ const WINDOW_XAML: &str = r#"
   </Grid>
 
   <Grid x:Name="BookmarksBar" Grid.Row="2" Height="32" Padding="8,0,8,4"
-        Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}">
+        Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}">
     <StackPanel x:Name="BookmarkItems" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center"/>
     <TextBlock x:Name="BookmarksHint" Margin="6,0" VerticalAlignment="Center"
                Style="{StaticResource CaptionTextBlockStyle}"

@@ -1,14 +1,17 @@
-//! The Bookmarks dialog: the tree (folders expand in place), a flat search, and the edits
-//! core supports: new folder, rename, move, delete. Every edit is one core call followed
+//! The Bookmarks dialog: the tree (folders expand in place), a flat search, the edits core
+//! supports (new folder, rename, move, delete) and import from another browser or a
+//! bookmarks file. Every edit is one core call followed
 //! by a rebuild of the tree from the merged records, so the dialog always shows the tree
 //! every device would show.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
+use vsesvit_core::import::{self, Source};
 
 use super::{LibraryDialog, confirm, prompt_choice, prompt_text};
 use crate::profile::Core;
@@ -72,10 +75,12 @@ pub(crate) fn present(window: &BrowserWindow) {
     let rename = tool_button("document-edit-symbolic", "Rename");
     let move_to = tool_button("go-jump-symbolic", "Move To…");
     let delete = tool_button("user-trash-symbolic", "Delete");
+    let import = tool_button("document-open-symbolic", "Import Bookmarks…");
     let ui = LibraryDialog::new(
         "Bookmarks",
         "Search bookmarks",
         &[
+            import.upcast_ref(),
             delete.upcast_ref(),
             move_to.upcast_ref(),
             rename.upcast_ref(),
@@ -134,6 +139,11 @@ pub(crate) fn present(window: &BrowserWindow) {
         #[strong]
         state,
         move |_| state.spawn(|s| async move { s.delete().await })
+    ));
+    import.connect_clicked(glib::clone!(
+        #[strong]
+        state,
+        move |_| state.spawn(|s| async move { s.import().await })
     ));
 
     state.ui.dialog.present(Some(window));
@@ -232,6 +242,68 @@ impl State {
             self.ui.toast(&format!("Bookmarks: {e}"));
         }
         self.changed();
+    }
+
+    /// Asks for a browser profile found on this machine or a bookmarks file, and adds its
+    /// bookmarks to a new folder on the bookmarks bar.
+    async fn import(&self) {
+        let found = import::installed_browsers();
+        let mut names: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
+        names.push("Bookmarks File (HTML)…");
+        let Some(index) = prompt_choice(
+            &self.ui.dialog,
+            "Import Bookmarks",
+            "The bookmarks go into a new folder on the bookmarks bar.",
+            &names,
+            "_Import",
+        )
+        .await
+        else {
+            return;
+        };
+        let (folder, from, source) = match found.into_iter().nth(index as usize) {
+            Some(f) => (f.folder_title(), f.name, f.source),
+            None => {
+                let Some(path) = self.pick_file().await else { return };
+                let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                (import::FILE_FOLDER_TITLE.to_owned(), name, Source::File(path))
+            }
+        };
+        let items = match source.read() {
+            Ok(items) => items,
+            Err(e) => {
+                self.ui.toast(&format!("Could not read {from}: {e}"));
+                return;
+            }
+        };
+        let Some(core) = self.core() else { return };
+        let result = core.borrow_mut().bookmarks().import_folder(&folder, items);
+        match result {
+            Ok(0) => self.ui.toast(&format!("No bookmarks found in {from}")),
+            Ok(n) => self.ui.toast(&format!("Imported {n} items from {from} into “{folder}”")),
+            Err(e) => self.ui.toast(&format!("Bookmarks: {e}")),
+        }
+        self.changed();
+    }
+
+    async fn pick_file(&self) -> Option<PathBuf> {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("Bookmarks (.html, .json)"));
+        for suffix in ["html", "htm", "json"] {
+            filter.add_suffix(suffix);
+        }
+        // Chromium's own file has no extension.
+        filter.add_pattern("Bookmarks");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let chooser = gtk::FileDialog::builder()
+            .title("Import Bookmarks File")
+            .modal(true)
+            .filters(&filters)
+            .default_filter(&filter)
+            .build();
+        let window = self.window.upgrade();
+        chooser.open_future(window.as_ref()).await.ok()?.path()
     }
 
     /// Into the selected folder, or next to the selected bookmark; the bar when nothing is selected.

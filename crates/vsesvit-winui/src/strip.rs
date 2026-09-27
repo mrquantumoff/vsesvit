@@ -208,8 +208,7 @@ impl TabStrip for TopStrip {
 // ---- the vertical pane ----
 
 const PANE_XAML: &str = r#"
-<Grid {ns} Width="240" RowSpacing="2" Padding="4,4,4,4"
-      Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}">
+<Grid {ns} Width="240" RowSpacing="2" Padding="4,4,4,4" Background="Transparent">
   <Grid.RowDefinitions>
     <RowDefinition Height="Auto"/>
     <RowDefinition Height="Auto"/>

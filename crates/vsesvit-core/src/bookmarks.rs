@@ -952,6 +952,17 @@ impl Bookmarks<'_> {
         self.persist(|stamp, now| planned.into_iter().map(|p| p.record(stamp, now)).collect())?;
         Ok(count)
     }
+
+    /// Imports `items` into a new folder called `title` at the end of the bookmarks bar, where
+    /// the user sees them at once. Returns how many items it added, not counting that folder;
+    /// nothing is written when `items` is empty.
+    pub fn import_folder(&mut self, title: &str, items: Vec<ImportItem>) -> Result<usize, Error> {
+        if items.is_empty() {
+            return Ok(0);
+        }
+        let folder = ImportItem::Folder { title: title.to_owned(), children: items };
+        Ok(self.import(BookmarkId::TOOLBAR, vec![folder])? - 1)
+    }
 }
 
 fn plan_import(parent: BookmarkId, mut prev: Option<Position>, items: Vec<ImportItem>, out: &mut Vec<Planned>) {
@@ -962,7 +973,7 @@ fn plan_import(parent: BookmarkId, mut prev: Option<Position>, items: Vec<Import
         let placement = Placement { parent, pos };
         match item {
             ImportItem::Url { title, url, added_ms } => {
-                out.push(Planned { id, placement, added_ms: Some(added_ms), kind: PlannedKind::Url { title, url } });
+                out.push(Planned { id, placement, added_ms, kind: PlannedKind::Url { title, url } });
             }
             ImportItem::Folder { title, children } => {
                 out.push(Planned { id, placement, added_ms: None, kind: PlannedKind::Folder { title } });
@@ -973,8 +984,10 @@ fn plan_import(parent: BookmarkId, mut prev: Option<Position>, items: Vec<Import
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImportItem {
-    Url { title: String, url: Url, added_ms: i64 },
+    /// `added_ms` is `None` when the source did not record it; the import time is used.
+    Url { title: String, url: Url, added_ms: Option<i64> },
     Folder { title: String, children: Vec<ImportItem> },
     Separator,
 }

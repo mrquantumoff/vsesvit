@@ -1,19 +1,22 @@
 //! Bookmarks: the tree of folders and bookmarks, with add folder, rename (and edit the URL),
-//! move to another folder or up and down, and delete. Every change goes to core, then the tree,
-//! the bookmarks bars and the stars are rebuilt from core.
+//! move to another folder or up and down, delete, and import from another browser or a
+//! bookmarks file. Every change goes to core, then the tree, the bookmarks bars and the stars
+//! are rebuilt from core.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
+use vsesvit_core::import::{self, Found, Source};
 use vsesvit_core::search::classify_url;
 use windows_core::{Interface, Result};
 
 use super::{Wired, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::xaml;
+use crate::window::BrowserWindow;
+use crate::{exec, pickers, xaml};
 
 pub(super) const MARKUP: &str = r#"
   <Grid Width="760" ColumnSpacing="20">
@@ -34,6 +37,8 @@ pub(super) const MARKUP: &str = r#"
         <Button x:Name="BookmarkAddFolder" Content="New folder"/>
         <Button x:Name="BookmarkDelete" Content="Delete" IsEnabled="False"/>
       </StackPanel>
+      <ComboBox x:Name="ImportFrom" Header="Import bookmarks from" HorizontalAlignment="Stretch"/>
+      <Button x:Name="ImportRun" Content="Import"/>
       <TextBlock x:Name="BookmarkStatus" TextWrapping="Wrap"
                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
     </StackPanel>
@@ -41,12 +46,22 @@ pub(super) const MARKUP: &str = r#"
 
 const ROOTS: [BookmarkId; 3] = [BookmarkId::TOOLBAR, BookmarkId::OTHER, BookmarkId::MOBILE];
 
+/// An entry of the "Import bookmarks from" box.
+enum ImportChoice {
+    Browser(Found),
+    /// A bookmarks HTML export or a Chromium `Bookmarks` file, chosen in a picker.
+    File,
+}
+
 struct Editor {
     browser: Weak<Browser>,
+    window: Weak<BrowserWindow>,
     tree: TreeView,
     name: TextBox,
     url: TextBox,
     folder: ComboBox,
+    import_from: ComboBox,
+    import_choices: Vec<ImportChoice>,
     status: TextBlock,
     edit_controls: Vec<Control>,
     /// Tree nodes and the bookmark each shows.
@@ -61,14 +76,26 @@ struct Editor {
 /// A button's handler.
 type Action = fn(&Editor);
 
-pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Wired> {
+pub(super) fn wire(
+    root: &FrameworkElement,
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+) -> Result<Wired> {
     let control = |name: &str| xaml::find::<Control>(root, name);
+    let mut import_choices: Vec<ImportChoice> = import::installed_browsers()
+        .into_iter()
+        .map(ImportChoice::Browser)
+        .collect();
+    import_choices.push(ImportChoice::File);
     let editor = Rc::new(Editor {
         browser: Rc::downgrade(browser),
+        window: Rc::downgrade(window),
         tree: xaml::find(root, "BookmarksTree")?,
         name: xaml::find(root, "BookmarkName")?,
         url: xaml::find(root, "BookmarkUrl")?,
         folder: xaml::find(root, "BookmarkFolder")?,
+        import_from: xaml::find(root, "ImportFrom")?,
+        import_choices,
         status: xaml::find(root, "BookmarkStatus")?,
         edit_controls: vec![
             control("BookmarkName")?,
@@ -85,6 +112,7 @@ pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Wir
         rendering: Cell::new(false),
     });
     editor.render();
+    editor.fill_import_choices();
 
     let e = Rc::downgrade(&editor);
     editor
@@ -113,6 +141,12 @@ pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Wir
             }
         })?;
     }
+    let e = Rc::downgrade(&editor);
+    on_click(&xaml::find::<Button>(root, "ImportRun")?, move || {
+        if let Some(e) = e.upgrade() {
+            e.import();
+        }
+    })?;
     Ok(Wired {
         _alive: vec![editor],
         on_close: None,
@@ -370,6 +404,95 @@ impl Editor {
             return;
         };
         self.change("Deleted.", |b| b.remove(node.id).map(|()| None));
+    }
+
+    fn fill_import_choices(&self) {
+        let Ok(items) = self
+            .import_from
+            .cast::<ItemsControl>()
+            .and_then(|c| c.Items())
+        else {
+            return;
+        };
+        for choice in &self.import_choices {
+            let label = match choice {
+                ImportChoice::Browser(found) => found.name.as_str(),
+                ImportChoice::File => "Bookmarks file (HTML)\u{2026}",
+            };
+            if let Ok(label) = xaml::boxed(label) {
+                let _ = items.Append(&label);
+            }
+        }
+        if let Ok(selector) = self.import_from.cast::<Selector>() {
+            let _ = selector.SetSelectedIndex(0);
+        }
+    }
+
+    fn import(self: &Rc<Self>) {
+        let index = self
+            .import_from
+            .cast::<Selector>()
+            .and_then(|s| s.SelectedIndex())
+            .ok()
+            .and_then(|i| usize::try_from(i).ok());
+        match index.and_then(|i| self.import_choices.get(i)) {
+            Some(ImportChoice::Browser(found)) => {
+                self.import_source(&found.folder_title(), &found.name, &found.source);
+            }
+            Some(ImportChoice::File) => self.import_file(),
+            None => {}
+        }
+    }
+
+    fn import_file(self: &Rc<Self>) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let owner = match window.window_id() {
+            Ok(id) => id,
+            Err(e) => {
+                log::warn!("picker owner: {e}");
+                return;
+            }
+        };
+        let me = self.clone();
+        exec::spawn(async move {
+            match pickers::pick_file(owner, &[".html", ".htm", ".json"]).await {
+                Ok(Some(path)) => {
+                    let name = path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    );
+                    me.import_source(import::FILE_FOLDER_TITLE, &name, &Source::File(path));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = me
+                        .status
+                        .SetText(&format!("Could not open the picker: {e}"));
+                }
+            }
+        });
+    }
+
+    /// Reads `source` and adds it to the bookmarks bar as the folder `folder`.
+    fn import_source(&self, folder: &str, from: &str, source: &Source) {
+        let Some(browser) = self.browser() else {
+            return;
+        };
+        let text = match source.read() {
+            Err(e) => format!("Could not read {from}: {e}"),
+            Ok(items) => match browser.core(|p| p.bookmarks().import_folder(folder, items)) {
+                Ok(0) => format!("No bookmarks found in {from}."),
+                Ok(n) => format!(
+                    "Imported {n} items from {from} into \u{201C}{folder}\u{201D} on the bookmarks bar."
+                ),
+                Err(e) => format!("Not imported: {e}"),
+            },
+        };
+        browser.bookmarks_changed();
+        self.render();
+        let _ = self.status.SetText(&text);
     }
 }
 

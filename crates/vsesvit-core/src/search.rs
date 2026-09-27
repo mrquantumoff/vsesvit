@@ -478,7 +478,7 @@ impl NavTarget {
     }
 }
 
-const NAVIGABLE_SCHEMES: &[&str] = &["http", "https", "file", "about", "data", "view-source", "vsesvit"];
+pub(crate) const NAVIGABLE_SCHEMES: &[&str] = &["http", "https", "file", "about", "data", "view-source", "vsesvit"];
 
 /// Steps 1-3 of [`classify`]: everything that makes the text a URL on its own.
 pub fn classify_url(text: &str) -> Option<NavTarget> {

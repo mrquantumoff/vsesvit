@@ -172,15 +172,15 @@ fn import_builds_a_nested_tree_in_one_write() {
     let (mut p, _dir) = open();
     p.bookmarks().add_url(BookmarkId::OTHER, InsertAt::End, "first", &url("https://f.example/")).unwrap();
     let items = vec![
-        ImportItem::Url { title: "one".into(), url: url("https://1.example/"), added_ms: 5 },
+        ImportItem::Url { title: "one".into(), url: url("https://1.example/"), added_ms: Some(5) },
         ImportItem::Folder {
             title: "dir".into(),
             children: vec![
                 ImportItem::Separator,
-                ImportItem::Url { title: "two".into(), url: url("https://2.example/"), added_ms: 6 },
+                ImportItem::Url { title: "two".into(), url: url("https://2.example/"), added_ms: Some(6) },
             ],
         },
-        ImportItem::Url { title: "three".into(), url: url("https://3.example/"), added_ms: 7 },
+        ImportItem::Url { title: "three".into(), url: url("https://3.example/"), added_ms: Some(7) },
     ];
     assert_eq!(p.bookmarks().import(BookmarkId::OTHER, items).unwrap(), 5);
     assert_eq!(titles(&mut p, BookmarkId::OTHER), ["first", "one", "dir", "three"]);
