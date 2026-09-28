@@ -55,6 +55,7 @@ fn only_bookmarked_pages_and_sites_keep_their_icon() {
     assert_eq!(p.favicons().get(&url("https://elsewhere.example/")).unwrap(), None);
     assert_eq!(p.favicons().get(&url("http://docs.example/a")).unwrap(), None, "another scheme is another site");
 
+    assert!(!p.favicons().record(&url("https://docs.example/a"), b"page-a").unwrap(), "unchanged");
     assert!(p.favicons().record(&url("https://docs.example/a"), b"page-a2").unwrap());
     assert_eq!(p.favicons().get(&url("https://docs.example/a")).unwrap().as_deref(), Some(&b"page-a2"[..]));
 }
@@ -90,7 +91,7 @@ fn a_v1_profile_gains_the_favicon_table() {
     let (p, dir) = open();
     drop(p);
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
-    conn.execute_batch("DROP TABLE favicons; PRAGMA user_version = 1;").unwrap();
+    conn.execute_batch("DROP TABLE favicons; DROP TABLE downloads; PRAGMA user_version = 1;").unwrap();
     drop(conn);
 
     let mut p = Profile::open(&dir.0, OpenOptions::default()).unwrap();
@@ -98,5 +99,5 @@ fn a_v1_profile_gains_the_favicon_table() {
     assert!(p.favicons().record(&url("https://a.example/"), b"a").unwrap());
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 }

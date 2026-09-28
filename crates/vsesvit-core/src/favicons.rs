@@ -36,12 +36,20 @@ fn origin(url: &Url) -> Option<String> {
 
 impl Favicons<'_> {
     /// Keeps `png` as the icon of `page` when the page or its site is bookmarked. Returns
-    /// whether it was kept.
+    /// whether the stored icon changed, which is when bookmarks need repainting.
     pub fn record(&mut self, page: &Url, png: &[u8]) -> Result<bool, Error> {
         let site = origin(page);
         let bookmarked = self.p.bookmarks().is_bookmarked(page)
             || site.as_deref().is_some_and(|o| self.p.bookmarks.tree.has_origin(o));
         if !bookmarked || png.is_empty() || png.len() > MAX_BYTES {
+            return Ok(false);
+        }
+        let stored: Option<Vec<u8>> = self
+            .p
+            .conn
+            .query_row("SELECT png FROM favicons WHERE page_url = ?1", [page.as_str()], |r| r.get(0))
+            .optional()?;
+        if stored.as_deref() == Some(png) {
             return Ok(false);
         }
         let now = self.p.clock.now_ms() as i64;
