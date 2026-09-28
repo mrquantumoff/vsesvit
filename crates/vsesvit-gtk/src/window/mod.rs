@@ -661,7 +661,10 @@ impl BrowserWindow {
                 }
                 self.browser().title_changed(tab);
             }
-            TabChange::Favicon => page.set_icon(tab.web_view().favicon().as_ref()),
+            TabChange::Favicon => {
+                page.set_icon(tab.web_view().favicon().as_ref());
+                self.browser().favicon_changed(tab);
+            }
             TabChange::Loading => {
                 let loading = tab.web_view().is_loading();
                 page.set_loading(loading);

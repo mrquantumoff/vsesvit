@@ -5,6 +5,7 @@
 
 mod address_bar;
 mod app;
+mod bookmark_drag;
 mod bookmarks_bar;
 mod browser;
 mod cli;
@@ -14,6 +15,7 @@ mod downloads;
 mod engine;
 mod error_page;
 mod extensions;
+mod favicons;
 mod find_bar;
 mod location;
 mod omnibox;

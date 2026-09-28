@@ -84,6 +84,8 @@ pub(crate) fn settle(duration: Duration) {
 pub(crate) enum Reply {
     /// A 200 HTML page with this title.
     Page(&'static str),
+    /// A 200 response with this content type and body.
+    Body(&'static str, Vec<u8>),
     /// Accepts the request and never answers, so the navigation stays provisional.
     Hang,
     /// Closes the connection without a response: a network error.
@@ -132,18 +134,20 @@ fn serve(stream: TcpStream, route: &(dyn Fn(&str) -> Reply + Send + Sync)) {
         header.clear();
     }
     let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_owned();
-    let (status, body) = match route(&path) {
-        Reply::Page(title) => ("200 OK", format!("<!doctype html><title>{title}</title><p>{title}")),
-        Reply::NotFound => ("404 Not Found", String::new()),
+    let html = "text/html; charset=utf-8";
+    let (status, content_type, body) = match route(&path) {
+        Reply::Page(title) => ("200 OK", html, format!("<!doctype html><title>{title}</title><p>{title}").into_bytes()),
+        Reply::Body(content_type, body) => ("200 OK", content_type, body),
+        Reply::NotFound => ("404 Not Found", html, Vec::new()),
         Reply::Drop => return,
         Reply::Hang => loop {
             std::thread::park();
         },
     };
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+    let head = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
+         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    let _ = (&stream).write_all(response.as_bytes());
+    let _ = (&stream).write_all(&[head.as_bytes(), &body].concat());
 }

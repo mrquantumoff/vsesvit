@@ -67,7 +67,12 @@ pub(crate) const CSS: &str = "
   font-size: 0.9em;
 }
 .bookmarks-bar { min-height: 28px; padding: 2px 6px; }
-.bookmarks-bar button { padding: 2px 8px; min-height: 24px; }
+.bookmarks-bar button { padding: 2px 6px; min-height: 24px; }
+.bookmarks-bar .drop-before { box-shadow: inset 2px 0 @accent_bg_color; }
+.bookmarks-bar .drop-after { box-shadow: inset -2px 0 @accent_bg_color; }
+.bookmark-row.drop-before { box-shadow: inset 0 2px @accent_bg_color; }
+.bookmark-row.drop-after { box-shadow: inset 0 -2px @accent_bg_color; }
+.drop-into { background-color: alpha(@accent_bg_color, 0.25); border-radius: 6px; }
 .tab-sidebar { background-color: @sidebar_bg_color; }
 .tab-sidebar listview { background: transparent; }
 .tab-sidebar row { padding: 0; }

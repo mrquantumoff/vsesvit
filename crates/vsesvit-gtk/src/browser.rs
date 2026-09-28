@@ -29,7 +29,7 @@ use crate::profile::{self, Core};
 use crate::tab::{Commit, Tab};
 use crate::updates::Updates;
 use crate::window::{BrowserWindow, Focus};
-use crate::{downloads, omnibox, session};
+use crate::{downloads, favicons, omnibox, session};
 
 const CLOSED_TABS_KEPT: usize = 25;
 /// How long after the last tab change the session is written.
@@ -371,7 +371,25 @@ impl Browser {
             Ok(message) => window.toast(adw::Toast::builder().title(message).timeout(2).build()),
             Err(e) => window.toast(adw::Toast::new(&format!("Cannot change the bookmark: {e}"))),
         }
+        // The page's icon arrived before it was bookmarked.
+        self.save_favicon(&tab);
         self.bookmarks_changed();
+    }
+
+    /// A tab shows a new icon: kept when its page or site is bookmarked, and shown on the
+    /// bookmarks when it differs from the one they had.
+    pub(crate) fn favicon_changed(&self, tab: &Tab) {
+        if self.save_favicon(tab) {
+            self.bookmarks_changed();
+        }
+    }
+
+    /// Returns whether the stored icon changed.
+    fn save_favicon(&self, tab: &Tab) -> bool {
+        let (Some(uri), Some(icon)) = (tab.committed_uri(), tab.web_view().favicon()) else {
+            return false;
+        };
+        favicons::record(&mut self.core().borrow_mut(), &uri, &icon)
     }
 
     /// After any bookmark write: every window's bar and star follow the new tree.
@@ -673,6 +691,30 @@ mod tests {
         let title = history_title(&browser, &a);
         window.destroy();
         assert_eq!(title.as_deref(), Some("A"));
+    }
+
+    #[gtk::test]
+    fn bookmarking_a_page_keeps_its_favicon_for_the_bar() {
+        let pixels = glib::Bytes::from_owned([200u8, 40, 40, 255].repeat(16 * 16));
+        let icon = gtk::gdk::MemoryTexture::new(16, 16, gtk::gdk::MemoryFormat::R8g8b8a8, &pixels, 16 * 4);
+        let png = icon.save_to_png_bytes().to_vec();
+        let server = Server::start("127.0.0.3", move |path| match path {
+            "/" => Reply::Body("text/html", b"<!doctype html><title>Iconic</title><link rel=icon href=/icon.png>".to_vec()),
+            "/icon.png" => Reply::Body("image/png", png.clone()),
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let url = server.url("/");
+        let window = BrowserWindow::new(&browser);
+        let tab = window.open_tab(Some(&url), None, Focus::Foreground);
+        wait_until("the page's favicon", || tab.web_view().favicon().is_some());
+        browser.star_clicked(&window);
+        let stored = browser.core().borrow_mut().favicons().get(&Url::parse(&url).unwrap()).unwrap();
+        let shown = window.bookmarks_bar().shows_favicon(&url);
+        browser.star_clicked(&window);
+        window.destroy();
+        assert!(stored.is_some(), "the favicon is kept once the page is bookmarked");
+        assert!(shown, "the bar shows the kept favicon");
     }
 
     #[gtk::test]

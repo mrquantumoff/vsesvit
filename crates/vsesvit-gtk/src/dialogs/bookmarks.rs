@@ -1,19 +1,23 @@
 //! The Bookmarks dialog: the tree (folders expand in place), a flat search, the edits core
-//! supports (new folder, rename, move, delete) and import from another browser or a
-//! bookmarks file. Every edit is one core call followed
+//! supports (new folder, rename, move by menu or by dragging rows, delete) and import from
+//! another browser or a bookmarks file. Every edit is one core call followed
 //! by a rebuild of the tree from the merged records, so the dialog always shows the tree
 //! every device would show.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
+use vsesvit_core::Profile;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
 use vsesvit_core::import::{self, Source};
 
 use super::{LibraryDialog, confirm, prompt_choice, prompt_text};
+use crate::bookmark_drag::{self, Zone};
+use crate::favicons;
 use crate::profile::Core;
 use crate::tab::display_uri;
 use crate::window::{BrowserWindow, Focus};
@@ -33,14 +37,25 @@ struct State {
     result_rows: RefCell<Vec<gtk::Widget>>,
 }
 
+/// What a tree row holds: the node, and its stored favicon, fetched with the folder's
+/// children rather than on every bind.
+struct Entry {
+    node: BookmarkNode,
+    icon: Option<gdk::Texture>,
+}
+
 pub(crate) fn present(window: &BrowserWindow) {
+    build(window).ui.dialog.present(Some(window));
+}
+
+fn build(window: &BrowserWindow) -> Rc<State> {
     let root = gio::ListStore::new::<glib::BoxedAnyObject>();
     let tree = gtk::TreeListModel::new(root.clone(), false, false, {
         let core = Rc::downgrade(window.browser().core());
         move |item| children_model(&core.upgrade()?, item)
     });
     let selection = gtk::SingleSelection::new(Some(tree.clone()));
-    let list = gtk::ListView::new(Some(selection.clone()), Some(row_factory()));
+    let list = gtk::ListView::new(Some(selection.clone()), None::<gtk::ListItemFactory>);
     list.add_css_class("navigation-sidebar");
     let scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -100,6 +115,7 @@ pub(crate) fn present(window: &BrowserWindow) {
         result_rows: RefCell::new(Vec::new()),
     });
     state.rebuild();
+    list.set_factory(Some(&row_factory(Rc::downgrade(&state))));
 
     list.connect_activate(glib::clone!(
         #[strong]
@@ -145,8 +161,7 @@ pub(crate) fn present(window: &BrowserWindow) {
         state,
         move |_| state.spawn(|s| async move { s.import().await })
     ));
-
-    state.ui.dialog.present(Some(window));
+    state
 }
 
 impl State {
@@ -162,22 +177,40 @@ impl State {
         self.window.upgrade().map(|window| window.browser().core().clone())
     }
 
-    /// Rebuilds the tree from core and expands the three roots.
+    /// Rebuilds the tree from core. The first build expands the three roots; later ones
+    /// keep the folders that were open.
     fn rebuild(&self) {
         let Some(core) = self.core() else { return };
+        let first = self.tree.n_items() == 0;
+        let expanded: HashSet<BookmarkId> = (0..self.tree.n_items())
+            .filter_map(|i| self.tree.row(i))
+            .filter(|row| row.is_expanded())
+            .filter_map(|row| row.item().and_then(|item| node_of(&item)))
+            .map(|node| node.id)
+            .collect();
         let roots = core.borrow_mut().bookmarks().children(BookmarkId::ROOT);
         self.root.remove_all();
         for node in roots {
-            self.root.append(&glib::BoxedAnyObject::new(node));
+            self.root.append(&glib::BoxedAnyObject::new(Entry { node, icon: None }));
         }
         let mut i = 0;
         while i < self.tree.n_items() {
-            if let Some(row) = self.tree.row(i)
-                && row.depth() == 0
-            {
-                row.set_expanded(true);
+            if let Some(row) = self.tree.row(i) {
+                let open = row.item().and_then(|item| node_of(&item)).is_some_and(|node| expanded.contains(&node.id));
+                if open || (first && row.depth() == 0) {
+                    row.set_expanded(true);
+                }
             }
             i += 1;
+        }
+    }
+
+    /// A row dropped on `zone` of `target`: one core move, then the tree and the bars.
+    fn drop_on(&self, id: BookmarkId, target: &BookmarkNode, zone: Zone) {
+        let Some(core) = self.core() else { return };
+        match bookmark_drag::apply(&core, id, target, zone) {
+            Ok(false) => {}
+            result => self.report(result.map(drop)),
         }
     }
 
@@ -202,12 +235,16 @@ impl State {
             return;
         }
         let Some(core) = self.core() else { return };
-        let found = core.borrow_mut().bookmarks().search(text, SEARCH_LIMIT);
+        let found = {
+            let mut profile = core.borrow_mut();
+            let found = profile.bookmarks().search(text, SEARCH_LIMIT);
+            with_icons(&mut profile, found)
+        };
         for row in self.result_rows.take() {
             self.results.remove(&row);
         }
         let mut rows = Vec::new();
-        for node in found {
+        for Entry { node, icon } in found {
             let Some(url) = node.url.clone() else { continue };
             let row = adw::ActionRow::builder()
                 .title(&node.title)
@@ -215,7 +252,7 @@ impl State {
                 .activatable(true)
                 .use_markup(false)
                 .build();
-            row.add_prefix(&gtk::Image::from_icon_name("web-browser-symbolic"));
+            row.add_prefix(&favicons::image(icon.as_ref(), "web-browser-symbolic"));
             let window = self.window.clone();
             row.connect_activated(move |_| {
                 if let Some(window) = window.upgrade() {
@@ -409,7 +446,23 @@ fn collect_folders(
 
 fn node_of(item: &glib::Object) -> Option<BookmarkNode> {
     item.downcast_ref::<glib::BoxedAnyObject>()
-        .map(|boxed| boxed.borrow::<BookmarkNode>().clone())
+        .map(|boxed| boxed.borrow::<Entry>().node.clone())
+}
+
+fn icon_of(item: &glib::Object) -> Option<gdk::Texture> {
+    item.downcast_ref::<glib::BoxedAnyObject>()
+        .and_then(|boxed| boxed.borrow::<Entry>().icon.clone())
+}
+
+/// `nodes` with the stored favicons of their URLs.
+fn with_icons(profile: &mut Profile, nodes: Vec<BookmarkNode>) -> Vec<Entry> {
+    nodes
+        .into_iter()
+        .map(|node| {
+            let icon = node.url.as_ref().and_then(|url| favicons::stored(profile, url));
+            Entry { node, icon }
+        })
+        .collect()
 }
 
 /// A folder's children, fetched from core when the row is first expanded.
@@ -418,7 +471,11 @@ fn children_model(core: &Core, item: &glib::Object) -> Option<gio::ListModel> {
     if node.kind != NodeKind::Folder {
         return None;
     }
-    let children = core.borrow_mut().bookmarks().children(node.id);
+    let children = {
+        let mut profile = core.borrow_mut();
+        let children = profile.bookmarks().children(node.id);
+        with_icons(&mut profile, children)
+    };
     let store = gio::ListStore::new::<glib::BoxedAnyObject>();
     for child in children {
         store.append(&glib::BoxedAnyObject::new(child));
@@ -426,9 +483,20 @@ fn children_model(core: &Core, item: &glib::Object) -> Option<gio::ListModel> {
     Some(store.upcast())
 }
 
-fn row_factory() -> gtk::SignalListItemFactory {
+/// The node a list item currently shows.
+fn bound_node(item: &glib::WeakRef<gtk::ListItem>) -> Option<BookmarkNode> {
+    let row = item.upgrade()?.item().and_downcast::<gtk::TreeListRow>()?;
+    node_of(&row.item()?)
+}
+
+/// The roots stay where they are.
+fn draggable(node: &BookmarkNode) -> Option<BookmarkId> {
+    (!node.id.is_root()).then_some(node.id)
+}
+
+fn row_factory(state: Weak<State>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
+    factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
         let icon = gtk::Image::new();
         let title = gtk::Label::builder()
@@ -451,7 +519,20 @@ fn row_factory() -> gtk::SignalListItemFactory {
             .build();
         content.append(&icon);
         content.append(&text);
-        let expander = gtk::TreeExpander::builder().child(&content).build();
+        let expander = gtk::TreeExpander::builder().child(&content).css_classes(["bookmark-row"]).build();
+        let bound = item.downgrade();
+        expander.add_controller(bookmark_drag::drag_source(move || bound_node(&bound).as_ref().and_then(draggable)));
+        let bound = item.downgrade();
+        let state = state.clone();
+        expander.add_controller(bookmark_drag::drop_target(
+            gtk::Orientation::Vertical,
+            move || bound_node(&bound),
+            move |id, target, zone| {
+                if let Some(state) = state.upgrade() {
+                    state.drop_on(id, &target, zone);
+                }
+            },
+        ));
         item.set_child(Some(&expander));
     });
     factory.connect_bind(|_, item| {
@@ -463,7 +544,8 @@ fn row_factory() -> gtk::SignalListItemFactory {
             return;
         };
         expander.set_list_row(Some(&row));
-        let Some(node) = row.item().and_then(|i| node_of(&i)) else { return };
+        let Some(entry) = row.item() else { return };
+        let Some(node) = node_of(&entry) else { return };
         let Some(content) = expander.child().and_downcast::<gtk::Box>() else { return };
         let Some(icon) = content.first_child().and_downcast::<gtk::Image>() else { return };
         let Some(text) = icon.next_sibling().and_downcast::<gtk::Box>() else { return };
@@ -478,7 +560,10 @@ fn row_factory() -> gtk::SignalListItemFactory {
             ),
             NodeKind::Separator => ("view-more-horizontal-symbolic", "—".to_owned(), String::new()),
         };
-        icon.set_icon_name(Some(icon_name));
+        match icon_of(&entry) {
+            Some(texture) => icon.set_paintable(Some(&texture)),
+            None => icon.set_icon_name(Some(icon_name)),
+        }
         title.set_label(&label);
         url.set_label(&subtitle);
         url.set_visible(!subtitle.is_empty());
@@ -500,4 +585,71 @@ fn tool_button(icon: &str, tooltip: &str) -> gtk::Button {
         .icon_name(icon)
         .tooltip_text(tooltip)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use vsesvit_core::Url;
+    use vsesvit_core::bookmarks::BookmarkError;
+
+    use super::*;
+    use crate::test_support::browser;
+
+    fn titles(core: &Core, folder: BookmarkId) -> Vec<String> {
+        core.borrow_mut().bookmarks().children(folder).into_iter().map(|node| node.title).collect()
+    }
+
+    fn is_expanded(state: &State, id: BookmarkId) -> bool {
+        (0..state.tree.n_items())
+            .filter_map(|i| state.tree.row(i))
+            .find(|row| row.item().and_then(|item| node_of(&item)).is_some_and(|node| node.id == id))
+            .is_some_and(|row| row.is_expanded())
+    }
+
+    #[gtk::test]
+    fn dropping_rows_moves_bookmarks_in_core() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let state = build(&window);
+        let core = browser.core().clone();
+        let (folder, a, b, c, inner) = {
+            let mut profile = core.borrow_mut();
+            let mut bookmarks = profile.bookmarks();
+            let url = |s: &str| Url::parse(s).unwrap();
+            let folder = bookmarks.add_folder(BookmarkId::OTHER, InsertAt::End, "Drag test").unwrap();
+            let a = bookmarks.add_url(folder, InsertAt::End, "A", &url("https://a.example/")).unwrap();
+            let b = bookmarks.add_url(folder, InsertAt::End, "B", &url("https://b.example/")).unwrap();
+            let c = bookmarks.add_url(folder, InsertAt::End, "C", &url("https://c.example/")).unwrap();
+            let inner = bookmarks.add_folder(folder, InsertAt::End, "Inner").unwrap();
+            (folder, a, b, c, inner)
+        };
+        state.rebuild();
+        let row = (0..state.tree.n_items())
+            .filter_map(|i| state.tree.row(i))
+            .find(|row| row.item().and_then(|item| node_of(&item)).is_some_and(|node| node.id == folder))
+            .expect("the test folder is in the tree");
+        row.set_expanded(true);
+        let node = |id| core.borrow_mut().bookmarks().get(id).unwrap();
+
+        state.drop_on(c, &node(a), Zone::Before);
+        assert_eq!(titles(&core, folder), ["C", "A", "B", "Inner"]);
+        state.drop_on(c, &node(b), Zone::After);
+        assert_eq!(titles(&core, folder), ["A", "B", "C", "Inner"]);
+        state.drop_on(a, &node(inner), Zone::Into);
+        assert_eq!(titles(&core, folder), ["B", "C", "Inner"]);
+        assert_eq!(titles(&core, inner), ["A"]);
+        assert!(is_expanded(&state, folder), "a drop keeps open folders open");
+
+        state.drop_on(folder, &node(inner), Zone::Into);
+        assert_eq!(node(folder).parent, BookmarkId::OTHER);
+        assert!(matches!(
+            bookmark_drag::apply(&core, folder, &node(inner), Zone::Into),
+            Err(vsesvit_core::Error::Bookmark(BookmarkError::WouldCycle))
+        ));
+        assert_eq!(draggable(&node(BookmarkId::TOOLBAR)), None);
+        assert_eq!(draggable(&node(folder)), Some(folder));
+
+        core.borrow_mut().bookmarks().remove(folder).unwrap();
+        window.destroy();
+    }
 }
