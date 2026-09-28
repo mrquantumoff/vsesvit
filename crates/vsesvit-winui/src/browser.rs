@@ -561,8 +561,8 @@ impl Browser {
         id: BookmarkId,
         parent: BookmarkId,
         before: Option<BookmarkId>,
-    ) {
-        let result = self.core(|p| {
+    ) -> Result<(), vsesvit_core::Error> {
+        self.core(|p| {
             let mut bookmarks = p.bookmarks();
             let at = before
                 .and_then(|before| {
@@ -574,10 +574,7 @@ impl Browser {
                 })
                 .map_or(InsertAt::End, InsertAt::Index);
             bookmarks.move_to(id, parent, at)
-        });
-        if let Err(e) = result {
-            log::warn!("move bookmark: {e}");
-        }
+        })
     }
 
     // ---- omnibox ----

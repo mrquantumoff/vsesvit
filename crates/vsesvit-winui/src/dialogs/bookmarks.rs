@@ -1,6 +1,6 @@
 //! Bookmarks: the tree of folders and bookmarks, with add folder, rename (and edit the URL),
-//! move to another folder or up and down, delete, and import from another browser or a
-//! bookmarks file. Every change goes to core, then the tree, the bookmarks bars and the stars
+//! move to another folder or up and down (or drag in the tree), delete, and import from another
+//! browser or a bookmarks file. Every change goes to core, then the tree, the bookmarks bars and the stars
 //! are rebuilt from core.
 
 use std::cell::{Cell, RefCell};
@@ -21,8 +21,8 @@ use crate::{exec, pickers, xaml};
 pub(super) const MARKUP: &str = r#"
   <Grid Width="760" ColumnSpacing="20">
     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="280"/></Grid.ColumnDefinitions>
-    <TreeView x:Name="BookmarksTree" Height="420" SelectionMode="Single" CanDragItems="False"
-              CanReorderItems="False" AllowDrop="False"/>
+    <TreeView x:Name="BookmarksTree" Height="420" SelectionMode="Single" CanDragItems="True"
+              CanReorderItems="True" AllowDrop="True"/>
     <StackPanel Grid.Column="1" Spacing="10">
       <TextBox x:Name="BookmarkName" Header="Name" IsEnabled="False"/>
       <TextBox x:Name="BookmarkUrl" Header="URL" IsEnabled="False"/>
@@ -71,6 +71,20 @@ struct Editor {
     selected: Cell<Option<BookmarkId>>,
     /// Set while the tree is rebuilt, whose selection events mean nothing then.
     rendering: Cell<bool>,
+    /// The tree node being dragged.
+    dragging: RefCell<Option<TreeViewNode>>,
+}
+
+/// Where a node dropped in the tree goes in core.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DropSpot {
+    /// Into `folder`, before `before` (at the end when `None`).
+    Into {
+        folder: BookmarkId,
+        before: Option<BookmarkId>,
+    },
+    /// Onto a bookmark, which cannot hold others: just after it, in its folder.
+    After(BookmarkId),
 }
 
 /// A button's handler.
@@ -110,6 +124,7 @@ pub(super) fn wire(
         folders: RefCell::new(Vec::new()),
         selected: Cell::new(None),
         rendering: Cell::new(false),
+        dragging: RefCell::new(None),
     });
     editor.render();
     editor.fill_import_choices();
@@ -124,6 +139,21 @@ pub(super) fn wire(
             }
         })?
         .forget();
+    let tree = editor.tree.cast::<ITreeView2>()?;
+    let e = Rc::downgrade(&editor);
+    tree.DragItemsStarting(move |_, args| {
+        if let (Some(e), Some(args)) = (e.upgrade(), args.as_ref()) {
+            e.drag_starting(args);
+        }
+    })?
+    .forget();
+    let e = Rc::downgrade(&editor);
+    tree.DragItemsCompleted(move |_, _| {
+        if let Some(e) = e.upgrade() {
+            e.dropped();
+        }
+    })?
+    .forget();
     let actions: [(&str, Action); 6] = [
         ("BookmarkSave", Editor::save),
         ("BookmarkMove", Editor::move_to_folder),
@@ -404,6 +434,102 @@ impl Editor {
             return;
         };
         self.change("Deleted.", |b| b.remove(node.id).map(|()| None));
+    }
+
+    /// The bookmark a tree node (or its content) shows.
+    fn bookmark_of(&self, item: &impl Interface) -> Option<(TreeViewNode, BookmarkNode)> {
+        self.nodes
+            .borrow()
+            .iter()
+            .find(|(node, _)| {
+                xaml::same_object(node, item)
+                    || node
+                        .Content()
+                        .is_ok_and(|content| xaml::same_object(&content, item))
+            })
+            .cloned()
+    }
+
+    /// Roots stay where they are.
+    fn drag_starting(&self, args: &TreeViewDragItemsStartingEventArgs) {
+        let dragged = args
+            .Items()
+            .and_then(|items| items.GetAt(0))
+            .ok()
+            .and_then(|item| self.bookmark_of(&item));
+        match dragged {
+            Some((node, bookmark)) if !bookmark.id.is_root() => {
+                *self.dragging.borrow_mut() = Some(node);
+            }
+            _ => {
+                let _ = args.SetCancel(true);
+            }
+        }
+    }
+
+    /// Where the dragged node ended up in the tree, as a place in core.
+    fn drop_spot(&self, dragged: &TreeViewNode) -> Option<DropSpot> {
+        let parent = dragged.Parent().ok()?;
+        let (_, target) = self.bookmark_of(&parent)?;
+        if target.kind != NodeKind::Folder {
+            return Some(DropSpot::After(target.id));
+        }
+        let siblings = parent.Children().ok()?;
+        let mut index = 0;
+        if !siblings.IndexOf(dragged, &mut index).ok()? {
+            return None;
+        }
+        let before = siblings
+            .GetAt(index + 1)
+            .ok()
+            .and_then(|next| self.bookmark_of(&next))
+            .map(|(_, b)| b.id);
+        Some(DropSpot::Into {
+            folder: target.id,
+            before,
+        })
+    }
+
+    fn dropped(&self) {
+        let Some(dragged) = self.dragging.borrow_mut().take() else {
+            return;
+        };
+        let (Some((_, moved)), Some(browser)) = (self.bookmark_of(&dragged), self.browser()) else {
+            return;
+        };
+        let result = match self.drop_spot(&dragged) {
+            Some(DropSpot::Into { folder, before }) => {
+                browser.move_bookmark_before(moved.id, folder, before)
+            }
+            Some(DropSpot::After(link)) => {
+                let place = browser.core(|p| {
+                    let bookmarks = p.bookmarks();
+                    let link = bookmarks.get(link)?;
+                    let next = bookmarks
+                        .children(link.parent)
+                        .get(link.index + 1)
+                        .map(|n| n.id)
+                        .filter(|&next| next != moved.id);
+                    Some((link.parent, next))
+                });
+                match place {
+                    Some((folder, before)) => {
+                        browser.move_bookmark_before(moved.id, folder, before)
+                    }
+                    None => Ok(()),
+                }
+            }
+            // Dropped beside the roots: nothing to move; the rebuild puts it back.
+            None => Ok(()),
+        };
+        self.selected.set(Some(moved.id));
+        browser.bookmarks_changed();
+        self.render();
+        let text = match result {
+            Ok(()) => "Moved.".to_owned(),
+            Err(e) => format!("Not moved: {e}"),
+        };
+        let _ = self.status.SetText(&text);
     }
 
     fn fill_import_choices(&self) {

@@ -713,8 +713,10 @@ impl BrowserWindow {
         let Some(browser) = self.browser() else {
             return;
         };
-        if let Some((id, before)) = self.bar.dropped() {
-            browser.move_bookmark_before(id, BookmarkId::TOOLBAR, before);
+        if let Some((id, before)) = self.bar.dropped()
+            && let Err(e) = browser.move_bookmark_before(id, BookmarkId::TOOLBAR, before)
+        {
+            log::warn!("move bookmark: {e}");
         }
         browser.bookmarks_changed();
     }
