@@ -588,6 +588,25 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("ctrl_s_toggles_sidebar", CHECK_TIMEOUT, |last| async move {
+        let bound: Vec<String> = browser.app().actions_for_accel("<Control>s").iter().map(|a| a.to_string()).collect();
+        if bound != ["win.toggle-tab-sidebar"] {
+            return Err(format!("Ctrl+S runs {bound:?}"));
+        }
+        let shown = || window.layout_probe().sidebar.is_some();
+        if !shown() {
+            return Err("the sidebar is hidden before Ctrl+S".to_owned());
+        }
+        gio::prelude::ActionGroupExt::activate_action(window, "toggle-tab-sidebar", None);
+        wait_for(&last, || if shown() { Err("the sidebar is still shown".to_owned()) } else { Ok(()) }).await;
+        glib::timeout_future(Duration::from_millis(500)).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("sidebar-hidden.png")).await.map_err(|e| e.to_string())?;
+        gio::prelude::ActionGroupExt::activate_action(window, "toggle-tab-sidebar", None);
+        wait_for(&last, || if shown() { Ok(()) } else { Err("the sidebar did not come back".to_owned()) }).await;
+        Ok("Ctrl+S is bound to win.toggle-tab-sidebar only; it hid the sidebar (sidebar-hidden.png) and showed it again".to_owned())
+    })
+    .await;
+
     ctx.check("zoom_indicator", CHECK_TIMEOUT, |last| async move {
         let address = window.address_bar();
         let at_100 = address.shown_zoom();

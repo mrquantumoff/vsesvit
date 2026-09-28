@@ -31,6 +31,7 @@ const SECTIONS: &[(&str, &[Item])] = &[
             Item::Action("Reopen closed tab", "win.reopen-closed-tab"),
             Item::Keys("Next tab", "<Control>Tab"),
             Item::Keys("Previous tab", "<Control><Shift>Tab"),
+            Item::Action("Show or hide the tab sidebar", "win.toggle-tab-sidebar"),
             Item::Action("New window", "app.new-window"),
             Item::Action("Quit", "app.quit"),
         ],
@@ -70,3 +71,22 @@ const SECTIONS: &[(&str, &[Item])] = &[
         ],
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_action_with_a_shortcut_is_listed() {
+        let listed: Vec<&str> = SECTIONS
+            .iter()
+            .flat_map(|(_, items)| items.iter())
+            .filter_map(|item| match item {
+                Item::Action(_, action) => Some(*action),
+                Item::Keys(..) => None,
+            })
+            .collect();
+        let missing: Vec<&str> = crate::app::ACCELS.iter().map(|(action, _)| *action).filter(|a| !listed.contains(a)).collect();
+        assert!(missing.is_empty(), "not in the shortcuts dialog: {missing:?}");
+    }
+}

@@ -24,7 +24,7 @@ use crate::profile::ProfileLocation;
 use crate::{dialogs, location};
 
 /// Accelerators for actions; the shortcuts dialog reads them back from the actions.
-const ACCELS: &[(&str, &[&str])] = &[
+pub(crate) const ACCELS: &[(&str, &[&str])] = &[
     ("win.new-tab", &["<Control>t"]),
     ("win.close-tab", &["<Control>w", "<Control>F4"]),
     ("win.reopen-closed-tab", &["<Control><Shift>t"]),
@@ -47,7 +47,7 @@ const ACCELS: &[(&str, &[&str])] = &[
     ("win.zoom-out", &["<Control>minus", "<Control>KP_Subtract"]),
     ("win.zoom-reset", &["<Control>0", "<Control>KP_0"]),
     ("win.fullscreen", &["F11"]),
-    ("win.toggle-tab-sidebar", &["F9"]),
+    ("win.toggle-tab-sidebar", &["<Control>s", "F9"]),
     ("win.show-bookmarks-bar", &["<Control><Shift>b"]),
     ("win.show-bookmarks", &["<Control><Shift>o"]),
     ("win.show-history", &["<Control>h"]),
