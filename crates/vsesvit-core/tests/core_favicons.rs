@@ -1,5 +1,5 @@
 //! Favicons of bookmarked pages and sites: what is kept, the site fallback, pruning at open,
-//! and the upgrade of a v1 profile.
+//! fetching icons of bookmarks never visited, and the upgrade of a v1 profile.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -7,7 +7,8 @@ use std::rc::Rc;
 
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::crdt::TimeSource;
-use vsesvit_core::favicons::MAX_BYTES;
+use vsesvit_core::favicons::{FaviconFetch, Fetched, MAX_BYTES, RETRY_AFTER_MS};
+use vsesvit_core::testkit::FixtureServer;
 use vsesvit_core::{OpenOptions, Profile, Url};
 
 struct TempDir(PathBuf);
@@ -87,11 +88,72 @@ fn icons_of_sites_without_bookmarks_are_dropped_at_open() {
 }
 
 #[test]
+fn missing_lists_one_page_per_site_without_an_icon_bar_first() {
+    let (mut p, _dir) = open();
+    let mut add = |parent, u: &str| p.bookmarks().add_url(parent, InsertAt::End, "t", &url(u)).unwrap();
+    add(BookmarkId::TOOLBAR, "https://a.example/x");
+    add(BookmarkId::TOOLBAR, "https://a.example/y");
+    add(BookmarkId::TOOLBAR, "https://has-icon.example/");
+    add(BookmarkId::TOOLBAR, "file:///C:/notes/a.html");
+    add(BookmarkId::OTHER, "https://other.example/");
+    let folder = p.bookmarks().add_folder(BookmarkId::TOOLBAR, InsertAt::End, "Folder").unwrap();
+    p.bookmarks().add_url(folder, InsertAt::End, "c", &url("https://nested.example/")).unwrap();
+    p.favicons().record(&url("https://has-icon.example/other-page"), b"icon").unwrap();
+
+    let all = ["https://a.example/x", "https://other.example/", "https://nested.example/"].map(url);
+    assert_eq!(p.favicons().missing(10).unwrap(), all);
+    assert_eq!(p.favicons().missing(2).unwrap(), all[..2]);
+    assert_eq!(p.favicons().missing(0).unwrap(), []);
+}
+
+#[test]
+fn failed_sites_are_retried_after_a_week() {
+    let (mut p, _dir, clock) = open_with_clock();
+    for u in ["https://ok.example/", "https://down.example/"] {
+        p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "t", &url(u)).unwrap();
+    }
+    let fetched = vec![
+        Fetched { page: url("https://ok.example/"), png: Some(b"png".to_vec()) },
+        Fetched { page: url("https://down.example/"), png: None },
+        Fetched { page: url("https://unbookmarked.example/"), png: Some(b"png".to_vec()) },
+    ];
+    assert!(p.favicons().commit_fetched(fetched.clone()).unwrap());
+    assert!(!p.favicons().commit_fetched(fetched[..1].to_vec()).unwrap(), "the same icon again");
+    assert_eq!(p.favicons().get(&url("https://ok.example/")).unwrap().as_deref(), Some(&b"png"[..]));
+    assert_eq!(p.favicons().get(&url("https://unbookmarked.example/")).unwrap(), None);
+    assert_eq!(p.favicons().missing(10).unwrap(), []);
+
+    clock.set(clock.get() + RETRY_AFTER_MS as u64 - 1);
+    assert_eq!(p.favicons().missing(10).unwrap(), []);
+    clock.set(clock.get() + 1);
+    assert_eq!(p.favicons().missing(10).unwrap(), [url("https://down.example/")]);
+
+    assert!(!p.favicons().commit_fetched(vec![Fetched { page: url("https://down.example/"), png: None }]).unwrap());
+    assert_eq!(p.favicons().missing(10).unwrap(), [], "failed again: another week");
+}
+
+#[test]
+fn fetches_the_declared_icon_or_else_favicon_ico() {
+    let server = FixtureServer::start().unwrap();
+    let pages = vec![server.url("/icon.html"), server.url("/page2.html"), url("ftp://files.example/")];
+    let fetched = FaviconFetch::new(pages.clone()).run();
+
+    assert_eq!(fetched.iter().map(|f| f.page.clone()).collect::<Vec<_>>(), pages);
+    let png = fetched[0].png.as_deref().expect("icon.html declares /allowed.png");
+    assert!(png.starts_with(b"\x89PNG") && png.len() <= MAX_BYTES);
+    assert_eq!(fetched[1].png, None, "page2.html declares none and there is no /favicon.ico");
+    assert_eq!(fetched[2].png, None, "only http and https");
+    let hits = server.hits();
+    assert!(hits.contains(&"/allowed.png".to_owned()), "{hits:?}");
+    assert!(hits.contains(&"/favicon.ico".to_owned()), "{hits:?}");
+}
+
+#[test]
 fn a_v1_profile_gains_the_favicon_table() {
     let (p, dir) = open();
     drop(p);
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
-    conn.execute_batch("DROP TABLE favicons; DROP TABLE downloads; PRAGMA user_version = 1;").unwrap();
+    conn.execute_batch("DROP TABLE favicons; DROP TABLE favicon_failures; DROP TABLE downloads; PRAGMA user_version = 1;").unwrap();
     drop(conn);
 
     let mut p = Profile::open(&dir.0, OpenOptions::default()).unwrap();
@@ -99,5 +161,5 @@ fn a_v1_profile_gains_the_favicon_table() {
     assert!(p.favicons().record(&url("https://a.example/"), b"a").unwrap());
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }

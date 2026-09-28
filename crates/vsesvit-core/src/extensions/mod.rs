@@ -1113,7 +1113,7 @@ mod store_tests {
 
         let mut t = TempProfile { dir, p: Some(Profile::open(&root, OpenOptions::default()).unwrap()) };
         let version: u32 = t.p().conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, crate::db::SCHEMA_VERSION);
         assert_eq!(schema(&t.p().conn), fresh_schema, "a migrated profile has the fresh schema");
         let kept_record = t.p().write(|tx| ExtensionsTable::load(&tx.sql, cws_record.id.as_str())).unwrap().unwrap();
         assert_eq!(kept_record, cws_record);

@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::crdt::{Clock, DeviceId, Hlc, Seq, Stamp};
 use crate::{Error, OpenError};
 
-pub(crate) const SCHEMA_VERSION: u32 = 4;
+pub(crate) const SCHEMA_VERSION: u32 = 5;
 pub(crate) const SCHEMA_V1: &str = include_str!("schema.sql");
 /// Extension tables, owned by `extensions`. Applied after `SCHEMA_V1` in the same transaction.
 pub(crate) const SCHEMA_V1_EXTENSIONS: &str = include_str!("extensions/schema.sql");
@@ -64,6 +64,12 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), OpenError> {
         let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA_V4_EXTENSIONS)?;
         tx.pragma_update(None, "user_version", 4)?;
+        tx.commit()?;
+    }
+    if found < 5 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(crate::favicons::FAILURES_SCHEMA)?;
+        tx.pragma_update(None, "user_version", 5)?;
         tx.commit()?;
     }
     Ok(())

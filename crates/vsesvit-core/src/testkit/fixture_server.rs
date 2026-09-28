@@ -28,6 +28,12 @@ const SITE: &[(&str, &str, &[u8])] = &[
     site_file!("allowed.png", "image/png"),
     site_file!("vsesvit-blocked/pixel.png", "image/png"),
     site_file!("download.bin", "application/octet-stream"),
+    // A page that declares its icon, for favicon fetching.
+    (
+        "/icon.html",
+        "text/html; charset=utf-8",
+        b"<!doctype html><html><head><title>Icon</title><link rel=\"icon\" href=\"allowed.png\"></head><body></body></html>",
+    ),
 ];
 
 const MAX_REQUEST_HEAD: usize = 16 * 1024;

@@ -24,6 +24,8 @@ p256 = { version = "0.14", features = ["ecdsa"] }
 base64 = "0.23"
 zip = { version = "9.0.0-pre3", default-features = false, features = ["deflate"] }
 ureq = "3.4"
+# Favicons fetched for bookmarks are decoded and scaled to a 32x32 PNG. Only the formats sites serve icons in.
+image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "gif", "webp", "bmp"] }
 
 [features]
 # Test helpers shared with the shells' self-tests: a CRX3 writer and a fixture HTTP server.
