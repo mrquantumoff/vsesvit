@@ -19,6 +19,12 @@ impl BrowserWindow {
         let me = || self.me.clone();
         let ui = &self.ui;
 
+        let w = me();
+        ui.toolbar
+            .cast::<FrameworkElement>()?
+            .LayoutUpdated(move |_, _| with(&w, |w| w.update_drag_regions()))?
+            .forget();
+
         let bar = ui.bookmark_items.cast::<ListViewBase>()?;
         let w = me();
         bar.ItemClick(move |_, args| {

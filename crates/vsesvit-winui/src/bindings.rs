@@ -3341,9 +3341,53 @@ impl windows_core::RuntimeType for IAppWindowTitleBar {
     const SIGNATURE: windows_core::imp::ConstBuffer =
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
+impl IAppWindowTitleBar {
+    pub fn RightInset(&self) -> windows_core::Result<i32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).RightInset)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+}
 #[repr(C)]
 pub struct IAppWindowTitleBar_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+    BackgroundColor: usize,
+    SetBackgroundColor: usize,
+    ButtonBackgroundColor: usize,
+    SetButtonBackgroundColor: usize,
+    ButtonForegroundColor: usize,
+    SetButtonForegroundColor: usize,
+    ButtonHoverBackgroundColor: usize,
+    SetButtonHoverBackgroundColor: usize,
+    ButtonHoverForegroundColor: usize,
+    SetButtonHoverForegroundColor: usize,
+    ButtonInactiveBackgroundColor: usize,
+    SetButtonInactiveBackgroundColor: usize,
+    ButtonInactiveForegroundColor: usize,
+    SetButtonInactiveForegroundColor: usize,
+    ButtonPressedBackgroundColor: usize,
+    SetButtonPressedBackgroundColor: usize,
+    ButtonPressedForegroundColor: usize,
+    SetButtonPressedForegroundColor: usize,
+    ExtendsContentIntoTitleBar: usize,
+    SetExtendsContentIntoTitleBar: usize,
+    ForegroundColor: usize,
+    SetForegroundColor: usize,
+    Height: usize,
+    IconShowOptions: usize,
+    SetIconShowOptions: usize,
+    InactiveBackgroundColor: usize,
+    SetInactiveBackgroundColor: usize,
+    InactiveForegroundColor: usize,
+    SetInactiveForegroundColor: usize,
+    LeftInset: usize,
+    pub RightInset:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i32) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IAppWindowTitleBar3,
@@ -7502,6 +7546,36 @@ impl IFrameworkElement {
             .ok()
         }
     }
+    pub fn LayoutUpdated<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<windows_core::IInspectable>,
+                windows_core::Ref<windows_core::IInspectable>,
+            ) + 'static,
+    {
+        let handler: EventHandler<windows_core::IInspectable> = {
+            let com =
+                windows_core::imp::DelegateBox::<EventHandler<windows_core::IInspectable>, F>::new(
+                    &EventHandlerBox::<windows_core::IInspectable, F>::VTABLE,
+                    handler,
+                );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).LayoutUpdated)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveLayoutUpdated,
+            ))
+        }
+    }
     pub fn FindName(&self, name: &str) -> windows_core::Result<windows_core::IInspectable> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -7587,8 +7661,13 @@ pub struct IFrameworkElement_Vtbl {
     RemoveDataContextChanged: usize,
     SizeChanged: usize,
     RemoveSizeChanged: usize,
-    LayoutUpdated: usize,
-    RemoveLayoutUpdated: usize,
+    pub LayoutUpdated: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveLayoutUpdated:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     Loading: usize,
     RemoveLoading: usize,
     ActualThemeChanged: usize,
@@ -7933,6 +8012,64 @@ pub struct IInfoBar_Vtbl {
     Severity: usize,
     pub SetSeverity:
         unsafe extern "system" fn(*mut core::ffi::c_void, InfoBarSeverity) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IInputNonClientPointerSource,
+    IInputNonClientPointerSource_Vtbl,
+    0x471732b4_3d07_5104_b192_ebacf71e86df
+);
+impl windows_core::RuntimeType for IInputNonClientPointerSource {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IInputNonClientPointerSource {
+    pub fn SetRegionRects(
+        &self,
+        region: NonClientRegionKind,
+        rects: &[RectInt32],
+    ) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetRegionRects)(
+                windows_core::Interface::as_raw(self),
+                region,
+                rects.len().try_into().unwrap(),
+                rects.as_ptr(),
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct IInputNonClientPointerSource_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    DispatcherQueue: usize,
+    ClearAllRegionRects: usize,
+    ClearRegionRects: usize,
+    GetRegionRects: usize,
+    pub SetRegionRects: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        NonClientRegionKind,
+        u32,
+        *const RectInt32,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IInputNonClientPointerSourceStatics,
+    IInputNonClientPointerSourceStatics_Vtbl,
+    0x7d0b775c_1903_5dc7_bd2f_7a4b31f0cff2
+);
+impl windows_core::RuntimeType for IInputNonClientPointerSourceStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IInputNonClientPointerSourceStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub GetForWindowId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        WindowId,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IInputStream,
@@ -9832,6 +9969,15 @@ impl ITextBox {
             .ok()
         }
     }
+    pub fn SetTextAlignment(&self, value: TextAlignment) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetTextAlignment)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
     pub fn SelectAll(&self) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SelectAll)(windows_core::Interface::as_raw(self))
@@ -9863,7 +10009,8 @@ pub struct ITextBox_Vtbl {
     AcceptsReturn: usize,
     SetAcceptsReturn: usize,
     TextAlignment: usize,
-    SetTextAlignment: usize,
+    pub SetTextAlignment:
+        unsafe extern "system" fn(*mut core::ffi::c_void, TextAlignment) -> windows_core::HRESULT,
     TextWrapping: usize,
     SetTextWrapping: usize,
     IsSpellCheckEnabled: usize,
@@ -11521,9 +11668,25 @@ impl windows_core::RuntimeType for IXamlRoot {
     const SIGNATURE: windows_core::imp::ConstBuffer =
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
+impl IXamlRoot {
+    pub fn RasterizationScale(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).RasterizationScale)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+}
 #[repr(C)]
 pub struct IXamlRoot_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+    Content: usize,
+    Size: usize,
+    pub RasterizationScale:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IXamlType,
@@ -11719,6 +11882,58 @@ impl windows_core::RuntimeType for InfoBarSeverity {
         b"enum(Microsoft.UI.Xaml.Controls.InfoBarSeverity;i4)",
     );
 }
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputNonClientPointerSource(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    InputNonClientPointerSource,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl InputNonClientPointerSource {
+    pub fn GetForWindowId(windowid: WindowId) -> windows_core::Result<Self> {
+        Self::IInputNonClientPointerSourceStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetForWindowId)(
+                windows_core::Interface::as_raw(this),
+                windowid,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IInputNonClientPointerSourceStatics<
+        R,
+        F: FnOnce(&IInputNonClientPointerSourceStatics) -> windows_core::Result<R>,
+    >(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<
+            InputNonClientPointerSource,
+            IInputNonClientPointerSourceStatics,
+        > = windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for InputNonClientPointerSource {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IInputNonClientPointerSource>();
+}
+unsafe impl windows_core::Interface for InputNonClientPointerSource {
+    type Vtable = <IInputNonClientPointerSource as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IInputNonClientPointerSource as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for InputNonClientPointerSource {
+    type Target = IInputNonClientPointerSource;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for InputNonClientPointerSource {
+    const NAME: &'static str = "Microsoft.UI.Input.InputNonClientPointerSource";
+}
+unsafe impl Send for InputNonClientPointerSource {}
+unsafe impl Sync for InputNonClientPointerSource {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemClickEventArgs(windows_core::IUnknown);
@@ -12366,6 +12581,29 @@ impl windows_core::RuntimeName for MicaBackdrop {
 }
 unsafe impl Send for MicaBackdrop {}
 unsafe impl Sync for MicaBackdrop {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NonClientRegionKind(pub i32);
+impl NonClientRegionKind {
+    pub const Close: Self = Self(0);
+    pub const Maximize: Self = Self(1);
+    pub const Minimize: Self = Self(2);
+    pub const Icon: Self = Self(3);
+    pub const Caption: Self = Self(4);
+    pub const TopBorder: Self = Self(5);
+    pub const LeftBorder: Self = Self(6);
+    pub const BottomBorder: Self = Self(7);
+    pub const RightBorder: Self = Self(8);
+    pub const Passthrough: Self = Self(9);
+}
+impl windows_core::imp::TypeKind for NonClientRegionKind {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for NonClientRegionKind {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.UI.Input.NonClientRegionKind;i4)",
+    );
+}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OverlappedPresenter(windows_core::IUnknown);
@@ -13358,6 +13596,25 @@ impl windows_core::RuntimeName for TabViewTabCloseRequestedEventArgs {
 }
 unsafe impl Send for TabViewTabCloseRequestedEventArgs {}
 unsafe impl Sync for TabViewTabCloseRequestedEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TextAlignment(pub i32);
+impl TextAlignment {
+    pub const Center: Self = Self(0);
+    pub const Left: Self = Self(1);
+    pub const Start: Self = Self(1);
+    pub const Right: Self = Self(2);
+    pub const End: Self = Self(2);
+    pub const Justify: Self = Self(3);
+    pub const DetectFromContent: Self = Self(4);
+}
+impl windows_core::imp::TypeKind for TextAlignment {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for TextAlignment {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"enum(Microsoft.UI.Xaml.TextAlignment;i4)");
+}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextBlock(windows_core::IUnknown);

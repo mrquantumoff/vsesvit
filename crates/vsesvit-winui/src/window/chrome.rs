@@ -77,7 +77,6 @@ const WINDOW_XAML: &str = r#"
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
-      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <Button x:Name="Back" Style="{StaticResource ToolbarButton}" IsEnabled="False"
             ToolTipService.ToolTip="Back (Alt+Left)" AutomationProperties.Name="Back">
@@ -91,22 +90,55 @@ const WINDOW_XAML: &str = r#"
             ToolTipService.ToolTip="Refresh (Ctrl+R)" AutomationProperties.Name="Refresh">
       <FontIcon x:Name="ReloadGlyph" Glyph="&#xE72C;" FontSize="16"/>
     </Button>
-    <AutoSuggestBox x:Name="Address" Grid.Column="3" Margin="6,0" VerticalAlignment="Center"
-                    PlaceholderText="Search or enter web address" UpdateTextOnSelect="False"
-                    AutomationProperties.Name="Address and search bar"/>
-    <ToggleButton x:Name="Star" Grid.Column="4" Style="{StaticResource ToolbarToggle}"
-                  ToolTipService.ToolTip="Bookmark this page (Ctrl+D)" AutomationProperties.Name="Bookmark this page">
-      <FontIcon x:Name="StarGlyph" Glyph="&#xE734;" FontSize="16"/>
-    </ToggleButton>
-    <StackPanel x:Name="ExtensionActions" Grid.Column="5" Orientation="Horizontal" Spacing="2"/>
-    <Button x:Name="Downloads" Grid.Column="6" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
+    <!-- The address pill, as in Brave: the page's security at its start, the address centered
+         in it (at the start while editing), the star at its end. -->
+    <Grid x:Name="AddressPill" Grid.Column="3" Margin="12,0" Height="32" VerticalAlignment="Center"
+          CornerRadius="8" Background="{ThemeResource ControlFillColorDefaultBrush}"
+          BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" BorderThickness="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <FontIcon x:Name="SiteIcon" Margin="12,0,2,0" FontSize="14" Glyph="&#xE721;"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+      <AutoSuggestBox x:Name="Address" Grid.Column="1" VerticalAlignment="Center"
+                      PlaceholderText="Search or enter web address" UpdateTextOnSelect="False"
+                      AutomationProperties.Name="Address and search bar">
+        <AutoSuggestBox.Resources>
+          <SolidColorBrush x:Key="TextControlBackground" Color="Transparent"/>
+          <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent"/>
+          <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent"/>
+          <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent"/>
+          <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent"/>
+          <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent"/>
+          <SolidColorBrush x:Key="TextControlElevationBorderBrush" Color="Transparent"/>
+          <SolidColorBrush x:Key="TextControlElevationBorderFocusedBrush" Color="Transparent"/>
+        </AutoSuggestBox.Resources>
+        <AutoSuggestBox.TextBoxStyle>
+          <Style TargetType="TextBox" BasedOn="{StaticResource AutoSuggestBoxTextBoxStyle}">
+            <Setter Property="TextAlignment" Value="Center"/>
+          </Style>
+        </AutoSuggestBox.TextBoxStyle>
+      </AutoSuggestBox>
+      <ToggleButton x:Name="Star" Grid.Column="2" Style="{StaticResource ToolbarToggle}" Width="32" Height="26"
+                    Margin="0,0,2,0" CornerRadius="6"
+                    ToolTipService.ToolTip="Bookmark this page (Ctrl+D)" AutomationProperties.Name="Bookmark this page">
+        <FontIcon x:Name="StarGlyph" Glyph="&#xE734;" FontSize="14"/>
+      </ToggleButton>
+      <Border x:Name="AddressFocusRing" Grid.ColumnSpan="3" CornerRadius="8" BorderThickness="2" Margin="-1"
+              BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" IsHitTestVisible="False"
+              Visibility="Collapsed"/>
+    </Grid>
+    <StackPanel x:Name="ExtensionActions" Grid.Column="4" Orientation="Horizontal" Spacing="2"/>
+    <Button x:Name="Downloads" Grid.Column="5" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
             ToolTipService.ToolTip="Downloads (Ctrl+J)" AutomationProperties.Name="Downloads">
       <Grid>
         <FontIcon Glyph="&#xE896;" FontSize="16"/>
         <ProgressRing x:Name="DownloadsBusy" Width="28" Height="28" MinWidth="28" MinHeight="28" IsActive="False"/>
       </Grid>
     </Button>
-    <Button x:Name="More" Grid.Column="7" Margin="0,0,6,0" Style="{StaticResource ToolbarButton}"
+    <Button x:Name="More" Grid.Column="6" Margin="0,0,6,0" Style="{StaticResource ToolbarButton}"
             ToolTipService.ToolTip="Settings and more" AutomationProperties.Name="Settings and more">
       <FontIcon Glyph="&#xE712;" FontSize="16"/>
       <Button.Flyout>
@@ -141,7 +173,7 @@ const WINDOW_XAML: &str = r#"
         </MenuFlyout>
       </Button.Flyout>
     </Button>
-    <Grid x:Name="ToolbarDrag" Grid.Column="8" Width="196" Background="Transparent" Visibility="Collapsed"/>
+    <Grid x:Name="ToolbarDrag" Grid.Column="7" Width="196" Background="Transparent" Visibility="Collapsed"/>
   </Grid>
 
   <Grid x:Name="BookmarksBar" Grid.Row="2" Height="30" Padding="8,0,8,2" Background="Transparent">
@@ -211,12 +243,16 @@ pub(super) struct Chrome {
     pub(super) tab_view: TabView,
     pub(super) drag_region: UIElement,
     pub(super) toolbar: UIElement,
+    pub(super) more: FrameworkElement,
     pub(super) toolbar_drag: UIElement,
     pub(super) back: Control,
     pub(super) forward: Control,
     pub(super) reload: Button,
     pub(super) reload_glyph: FontIcon,
     pub(super) address: AutoSuggestBox,
+    pub(super) address_pill: FrameworkElement,
+    pub(super) address_focus_ring: UIElement,
+    pub(super) site_icon: FontIcon,
     pub(super) star: ToggleButton,
     pub(super) star_glyph: FontIcon,
     pub(super) extension_actions: Panel,
@@ -242,12 +278,16 @@ impl Chrome {
             tab_view: xaml::find(&root, "Tabs")?,
             drag_region: xaml::find(&root, "DragRegion")?,
             toolbar: xaml::find(&root, "Toolbar")?,
+            more: xaml::find(&root, "More")?,
             toolbar_drag: xaml::find(&root, "ToolbarDrag")?,
             back: xaml::find(&root, "Back")?,
             forward: xaml::find(&root, "Forward")?,
             reload: xaml::find(&root, "Reload")?,
             reload_glyph: xaml::find(&root, "ReloadGlyph")?,
             address: xaml::find(&root, "Address")?,
+            address_pill: xaml::find(&root, "AddressPill")?,
+            address_focus_ring: xaml::find(&root, "AddressFocusRing")?,
+            site_icon: xaml::find(&root, "SiteIcon")?,
             star: xaml::find(&root, "Star")?,
             star_glyph: xaml::find(&root, "StarGlyph")?,
             extension_actions: xaml::find(&root, "ExtensionActions")?,

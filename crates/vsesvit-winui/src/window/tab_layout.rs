@@ -52,7 +52,9 @@ impl BrowserWindow {
         self.sync_selection();
     }
 
-    /// Shows the parts of `position`'s layout and makes its drag region the title bar.
+    /// Shows the parts of `position`'s layout and sets what drags the window: with vertical
+    /// tabs, the empty stretches of the toolbar (see `update_drag_regions`); with the top
+    /// strip, the strip's footer.
     pub(super) fn show_layout(&self, position: TabsPosition) -> Result<()> {
         let fullscreen = self.fullscreen.get();
         let vertical = StripKind::of(position) == StripKind::Side;
@@ -78,12 +80,102 @@ impl BrowserWindow {
             let shown = host.is_some_and(|h| xaml::same_object(h, candidate)) && !fullscreen;
             xaml::set_visible(candidate, shown)?;
         }
-        let title_bar = if vertical {
-            &self.ui.toolbar_drag
+        if vertical {
+            // The toolbar is the title bar: its gaps are caption regions, set below.
+            self.window.SetTitleBar(None::<&UIElement>)?;
         } else {
-            &self.ui.drag_region
+            self.window.SetTitleBar(&self.ui.drag_region)?;
+        }
+        self.drag_regions.borrow_mut().clear();
+        self.update_drag_regions();
+        Ok(())
+    }
+
+    /// With vertical tabs the toolbar is the title bar: the space between its controls drags
+    /// the window. Those gaps are the window's caption regions, recomputed whenever the layout
+    /// moves the controls and sent only when they changed. (With the top strip, XAML keeps
+    /// the strip's footer as the title bar.)
+    pub(super) fn update_drag_regions(&self) {
+        if StripKind::of(self.tabs_position.get()) != StripKind::Side {
+            return;
+        }
+        self.fit_caption_spacer();
+        let rects = self.toolbar_gaps();
+        if rects.is_empty() || *self.drag_regions.borrow() == rects {
+            return;
+        }
+        let set = self
+            .window_id()
+            .and_then(InputNonClientPointerSource::GetForWindowId)
+            .and_then(|source| source.SetRegionRects(NonClientRegionKind::Caption, &rects));
+        match set {
+            Ok(()) => *self.drag_regions.borrow_mut() = rects,
+            Err(e) => log::warn!("toolbar drag regions: {e}"),
+        }
+    }
+
+    /// Makes the spacer at the toolbar's end exactly as wide as the window's caption buttons,
+    /// which Windows draws over it, so no empty stretch is left between the menu and them.
+    fn fit_caption_spacer(&self) {
+        let scale = self
+            .xaml_root()
+            .and_then(|root| root.RasterizationScale())
+            .unwrap_or(1.0);
+        let inset = self
+            .app_window()
+            .and_then(|w| w.TitleBar())
+            .and_then(|t| t.RightInset());
+        if let (Ok(inset), Ok(spacer)) = (inset, self.ui.toolbar_drag.cast::<FrameworkElement>()) {
+            let width = (f64::from(inset) / scale).ceil();
+            if width > 0.0 && spacer.ActualWidth().is_ok_and(|w| (w - width).abs() > 0.5) {
+                let _ = spacer.SetWidth(width);
+            }
+        }
+    }
+
+    /// The toolbar's empty stretches, full height, in physical pixels of the window.
+    fn toolbar_gaps(&self) -> Vec<RectInt32> {
+        let scale = self
+            .xaml_root()
+            .and_then(|root| root.RasterizationScale())
+            .unwrap_or(1.0);
+        let ui = &self.ui;
+        let Some(bar) = ui
+            .toolbar
+            .cast::<FrameworkElement>()
+            .ok()
+            .and_then(|t| self.bounds_of(&t))
+        else {
+            return Vec::new();
         };
-        self.window.SetTitleBar(title_bar)
+        let controls = [
+            ui.back.cast::<FrameworkElement>(),
+            ui.forward.cast::<FrameworkElement>(),
+            ui.reload.cast::<FrameworkElement>(),
+            Ok(ui.address_pill.clone()),
+            ui.extension_actions.cast::<FrameworkElement>(),
+            ui.downloads.cast::<FrameworkElement>(),
+            Ok(ui.more.clone()),
+        ];
+        let mut spans: Vec<(f64, f64)> = controls
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(xaml::is_visible)
+            .filter_map(|control| self.bounds_of(&control))
+            .filter(|r| r.width > 0.0)
+            .map(|r| (r.x, r.x + r.width))
+            .collect();
+        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+        gaps(bar.x, bar.x + bar.width, &spans)
+            .into_iter()
+            .map(|(left, right)| RectInt32 {
+                x: (left * scale).ceil() as i32,
+                y: (bar.y * scale).floor() as i32,
+                width: ((right - left) * scale).floor() as i32,
+                height: (bar.height * scale).ceil() as i32,
+            })
+            .filter(|r| r.width > 0)
+            .collect()
     }
 
     pub fn is_pane_collapsed(&self) -> bool {
@@ -139,5 +231,40 @@ impl BrowserWindow {
             width: element.ActualWidth().ok()?,
             height: element.ActualHeight().ok()?,
         })
+    }
+}
+
+/// The stretches of `[start, end)` not covered by `spans` (sorted by start).
+fn gaps(start: f64, end: f64, spans: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let mut at = start;
+    for &(left, right) in spans {
+        if left > at {
+            out.push((at, left.min(end)));
+        }
+        at = at.max(right);
+    }
+    if at < end {
+        out.push((at, end));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gaps;
+
+    #[test]
+    fn gaps_are_what_the_controls_leave() {
+        assert_eq!(
+            gaps(0.0, 100.0, &[(10.0, 20.0), (20.0, 30.0), (50.0, 60.0)]),
+            [(0.0, 10.0), (30.0, 50.0), (60.0, 100.0)]
+        );
+        assert_eq!(gaps(0.0, 100.0, &[(0.0, 100.0)]), []);
+        assert_eq!(gaps(0.0, 100.0, &[]), [(0.0, 100.0)]);
+        assert_eq!(
+            gaps(0.0, 100.0, &[(5.0, 40.0), (30.0, 50.0)]),
+            [(0.0, 5.0), (50.0, 100.0)]
+        );
     }
 }

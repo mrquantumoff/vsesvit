@@ -14,10 +14,10 @@ mod wiring;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 
+use vsesvit_core::address::{readable_url, simplified_url};
 use vsesvit_core::bookmarks::BookmarkId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
-use vsesvit_core::address::{readable_url, simplified_url};
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
@@ -92,6 +92,20 @@ pub(crate) struct WindowPrefs {
 /// The compact address bar's widest.
 const COMPACT_ADDRESS_WIDTH: f64 = 720.0;
 
+/// The site icon's glyph and tooltip for a page: a lock for https, a warning for http, a
+/// search glyph for a blank page and a page glyph for anything else.
+fn site_look(url: &str) -> (&'static str, &'static str) {
+    match url.split_once(':').map(|(scheme, _)| scheme) {
+        Some("https") => ("\u{E72E}", "Connection is secure"),
+        Some("http") => ("\u{E7BA}", "Not secure"),
+        _ if omnibox::display_url(url).is_empty() => ("\u{E721}", "Search or enter web address"),
+        _ => (
+            "\u{E8A5}",
+            "This page is on your device or inside the browser",
+        ),
+    }
+}
+
 pub(crate) struct BrowserWindow {
     browser: Weak<Browser>,
     window: Window,
@@ -107,6 +121,8 @@ pub(crate) struct BrowserWindow {
     /// The tab the toolbar currently shows.
     shown_tab: Cell<Option<TabId>>,
     fullscreen: Cell<bool>,
+    /// The toolbar's drag regions last sent to the window.
+    drag_regions: RefCell<Vec<RectInt32>>,
     /// The address box has the keyboard focus, and so shows the whole URL.
     address_focused: Cell<bool>,
     full_urls: Cell<bool>,
@@ -145,6 +161,7 @@ impl BrowserWindow {
             suggestions: RefCell::new(Vec::new()),
             shown_tab: Cell::new(None),
             fullscreen: Cell::new(false),
+            drag_regions: RefCell::new(Vec::new()),
             address_focused: Cell::new(false),
             full_urls: Cell::new(prefs.full_urls),
             bookmarks_bar_wanted: Cell::new(prefs.bookmarks_bar),
@@ -439,6 +456,7 @@ impl BrowserWindow {
             }
         }
         self.show_star(state.starred);
+        self.show_site(&state.url);
         let title = if state.title.is_empty() || state.url.is_empty() {
             "Vsesvit".to_owned()
         } else {
@@ -464,11 +482,7 @@ impl BrowserWindow {
         } else {
             f64::INFINITY
         };
-        let _ = self
-            .ui
-            .address
-            .cast::<FrameworkElement>()
-            .and_then(|a| a.SetMaxWidth(width));
+        let _ = self.ui.address_pill.SetMaxWidth(width);
     }
 
     pub fn set_full_urls(&self, full: bool) {
@@ -481,12 +495,33 @@ impl BrowserWindow {
     pub(super) fn address_focus_changed(&self, focused: bool) {
         self.address_focused.set(focused);
         self.refresh_chrome();
-        if focused
-            && let Ok(root) = self.ui.address.cast::<DependencyObject>()
-            && let Some(text_box) = xaml::find_descendant::<TextBox>(&root)
-        {
-            let _ = text_box.SelectAll();
+        let _ = xaml::set_visible(&self.ui.address_focus_ring, focused);
+        let text_box = self
+            .ui
+            .address
+            .cast::<DependencyObject>()
+            .ok()
+            .and_then(|root| xaml::find_descendant::<TextBox>(&root));
+        if let Some(text_box) = text_box {
+            let alignment = if focused {
+                TextAlignment::Left
+            } else {
+                TextAlignment::Center
+            };
+            let _ = text_box.SetTextAlignment(alignment);
+            if focused {
+                let _ = text_box.SelectAll();
+            }
         }
+    }
+
+    /// The icon at the start of the address pill: the page's security, or a search glyph for
+    /// the new tab page.
+    fn show_site(&self, url: &str) {
+        let (glyph, tip) = site_look(url);
+        let _ = self.ui.site_icon.SetGlyph(glyph);
+        let _ =
+            xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.site_icon, &tip));
     }
 
     fn show_star(&self, starred: bool) {

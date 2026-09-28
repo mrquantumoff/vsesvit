@@ -34,9 +34,13 @@ Microsoft.UI.Windowing.OverlappedPresenter
 Microsoft.UI.Windowing.IOverlappedPresenter::{get_State, Maximize}
 Microsoft.UI.Windowing.OverlappedPresenterState
 Microsoft.UI.Windowing.AppWindowTitleBar
+Microsoft.UI.Windowing.IAppWindowTitleBar::get_RightInset
 Microsoft.UI.Windowing.IAppWindowTitleBar3::put_PreferredTheme
 Microsoft.UI.Windowing.TitleBarTheme
 Microsoft.UI.WindowId
+Microsoft.UI.Input.InputNonClientPointerSource::GetForWindowId
+Microsoft.UI.Input.IInputNonClientPointerSource::SetRegionRects
+Microsoft.UI.Input.NonClientRegionKind
 Microsoft.UI.Windowing.AppWindowPresenterKind
 Microsoft.UI.Windowing.DisplayArea::GetFromRect
 Microsoft.UI.Windowing.IDisplayArea::get_WorkArea
@@ -56,11 +60,12 @@ Microsoft.UI.Xaml.Input.IPointerRoutedEventArgs::{GetCurrentPoint, put_Handled}
 Microsoft.UI.Input.IPointerPoint::get_Properties
 Microsoft.UI.Input.IPointerPointProperties::get_PointerUpdateKind
 Microsoft.UI.Input.PointerUpdateKind
-Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, put_MaxWidth, get_ActualWidth, get_ActualHeight, put_RequestedTheme}
+Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, put_MaxWidth, LayoutUpdated, get_ActualWidth, get_ActualHeight, put_RequestedTheme}
 Microsoft.UI.Xaml.ElementTheme
 Microsoft.UI.Xaml.Visibility
 Microsoft.UI.Xaml.FocusState
 Microsoft.UI.Xaml.XamlRoot
+Microsoft.UI.Xaml.IXamlRoot::get_RasterizationScale
 Microsoft.UI.Xaml.RoutedEventHandler
 Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode
 Microsoft.UI.Xaml.Media.VisualTreeHelper::{GetChildrenCount, GetChild}
@@ -85,7 +90,8 @@ Microsoft.UI.Xaml.Controls.AutoSuggestionBoxTextChangeReason
 Microsoft.UI.Xaml.Controls.IAutoSuggestBoxQuerySubmittedEventArgs::{get_QueryText, get_ChosenSuggestion}
 Microsoft.UI.Xaml.Controls.IItemsControl::{put_ItemsSource, get_Items}
 Microsoft.UI.Xaml.Controls.ItemCollection
-Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text, put_Text}
+Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text, put_Text, put_TextAlignment}
+Microsoft.UI.Xaml.TextAlignment
 Microsoft.UI.Xaml.Controls.ListViewBase
 Microsoft.UI.Xaml.Controls.IListViewBase::{ItemClick, DragItemsCompleted, ScrollIntoView}
 Microsoft.UI.Xaml.Controls.IScrollViewer::{get_ScrollableWidth, get_HorizontalOffset}
