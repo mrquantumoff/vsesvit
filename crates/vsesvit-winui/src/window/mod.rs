@@ -33,10 +33,10 @@ use crate::shortcuts::Command;
 use crate::strip::{SidePane, TopStrip};
 use crate::tab::{Initial, Tab, TabId};
 use crate::updates::{Action, Banner, Severity};
-use crate::{capture, exec, omnibox, platform, xaml, zoom};
+use crate::{capture, connection, exec, omnibox, platform, xaml, zoom};
 
 use chrome::Chrome;
-use wiring::strip_events;
+use wiring::{click as click_handler, strip_events, with};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Show {
@@ -133,6 +133,8 @@ pub(crate) struct BrowserWindow {
     bar: Rc<Bar>,
     /// The bookmark editor opened last, from the star or the bookmarks bar.
     editor: RefCell<Option<Rc<Editor>>>,
+    /// The security icon's popup opened last.
+    connection: RefCell<Option<Flyout>>,
     dialog_open: Cell<bool>,
     /// What the update bar shows; the user may have closed it since.
     update_banner: RefCell<Option<Banner>>,
@@ -177,6 +179,7 @@ impl BrowserWindow {
             bookmarks_bar_wanted: Cell::new(prefs.bookmarks_bar),
             bar,
             editor: RefCell::new(None),
+            connection: RefCell::new(None),
             dialog_open: Cell::new(false),
             update_banner: RefCell::new(None),
             closed: Cell::new(false),
@@ -578,6 +581,65 @@ impl BrowserWindow {
             .zoom_bubble
             .cast::<FlyoutBase>()?
             .ShowAt(&self.ui.zoom_chip.cast::<FrameworkElement>()?)
+    }
+
+    /// The security icon: a popup on the page's connection and certificate.
+    pub fn show_connection(&self) -> Result<()> {
+        let Some(tab) = self.active_tab() else {
+            return Ok(());
+        };
+        let url = tab.state().url;
+        if omnibox::display_url(&url).is_empty() {
+            return Ok(());
+        }
+        let report = tab
+            .security_report()
+            .and_then(|json| connection::parse_report(&json));
+        let host = vsesvit_core::Url::parse(&url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_default();
+        let content = connection::content(&url, &host, report.as_ref())?;
+        if let (Ok(button), Some(report)) =
+            (xaml::find::<Button>(&content, "ShowCertificate"), report)
+        {
+            let window = self.me.clone();
+            click_handler(&button, move || {
+                with(&window, |w| {
+                    if let Ok(owner) = platform::window_handle(&w.window) {
+                        connection::show_native(owner, report.chain.clone());
+                    }
+                });
+            })?;
+        }
+        let flyout = connection::flyout(&content)?;
+        let options = FlyoutShowOptions::new()?;
+        options.SetShowMode(if self.is_foreground() {
+            FlyoutShowMode::Standard
+        } else {
+            FlyoutShowMode::Transient
+        })?;
+        flyout
+            .cast::<FlyoutBase>()?
+            .ShowAtWithOptions(&self.ui.site_button.cast::<FrameworkElement>()?, &options)?;
+        *self.connection.borrow_mut() = Some(flyout);
+        Ok(())
+    }
+
+    pub fn hide_connection(&self) {
+        if let Some(flyout) = self.connection.borrow().as_ref() {
+            let _ = flyout.cast::<FlyoutBase>().and_then(|f| f.Hide());
+        }
+    }
+
+    /// The security icon's popup while it is open.
+    pub fn connection_popup(&self) -> Option<FrameworkElement> {
+        let flyout = self.connection.borrow().clone()?;
+        let open = flyout
+            .cast::<FlyoutBase>()
+            .and_then(|f| f.IsOpen())
+            .unwrap_or(false);
+        open.then(|| flyout.Content().ok()?.cast().ok()).flatten()
     }
 
     fn show_star(&self, starred: bool) {

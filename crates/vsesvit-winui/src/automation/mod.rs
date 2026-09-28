@@ -19,6 +19,7 @@ use vsesvit_core::testkit::{self, FixtureServer};
 use windows_core::Interface;
 
 mod bookmark_steps;
+mod connection_steps;
 mod dialog_steps;
 
 use crate::bindings::*;
@@ -665,6 +666,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     }));
 
     zoom_steps(&window, &first, out_dir, steps).await?;
+    connection_steps::run(&window, &server, out_dir, steps).await?;
 
     let count = window.show_suggestions("fixture");
     steps.push(json!({

@@ -103,6 +103,9 @@ pub(crate) struct Tab {
     transition: Cell<Option<Transition>>,
     last_active_ms: Cell<i64>,
     favicon_generation: Cell<u64>,
+    /// The engine's last `Security.visibleSecurityStateChanged` report, as JSON: the page's
+    /// TLS connection and certificate chain, which the lock's popup shows.
+    security: RefCell<Option<String>>,
     closed: Cell<bool>,
 }
 
@@ -129,6 +132,7 @@ impl Tab {
             transition: Cell::new(None),
             last_active_ms: Cell::new(now_ms()),
             favicon_generation: Cell::new(0),
+            security: RefCell::new(None),
             closed: Cell::new(false),
         }))
     }
@@ -180,6 +184,11 @@ impl Tab {
         } else {
             url
         }
+    }
+
+    /// The engine's report on the page's connection (`Security.visibleSecurityStateChanged`).
+    pub fn security_report(&self) -> Option<String> {
+        self.security.borrow().clone()
     }
 
     pub fn has_favicon(&self) -> bool {
@@ -258,11 +267,21 @@ impl Tab {
                 },
             ))?
             .forget();
+        core.GetDevToolsProtocolEventReceiver("Security.visibleSecurityStateChanged")?
+            .DevToolsProtocolEventReceived(on(
+                self,
+                |tab, args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs| {
+                    *tab.security.borrow_mut() =
+                        args.ParameterObjectAsJson().ok().map(|j| j.to_string());
+                },
+            ))?
+            .forget();
         // Scripts for new documents need the Page domain on, and a binding reaches the worlds
         // created later only while the Runtime domain is on.
         let calls = [
             ("Page.enable", "{}".to_owned()),
             ("Runtime.enable", "{}".to_owned()),
+            ("Security.enable", "{}".to_owned()),
             (
                 "Runtime.addBinding",
                 json!({ "name": shortcuts::BINDING, "executionContextName": script.world })

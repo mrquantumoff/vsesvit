@@ -56,6 +56,7 @@ mod browser;
 mod capture;
 mod cli;
 mod config;
+mod connection;
 mod dialogs;
 mod downloads;
 mod engine;

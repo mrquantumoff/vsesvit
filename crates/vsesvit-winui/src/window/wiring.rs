@@ -66,6 +66,14 @@ impl BrowserWindow {
         let w = me();
         click(&ui.star, move || with(&w, |w| w.star_clicked()))?;
         let w = me();
+        click(&ui.site_button, move || {
+            with(&w, |w| {
+                if let Err(e) = w.show_connection() {
+                    log::warn!("connection popup: {e}");
+                }
+            });
+        })?;
+        let w = me();
         click(&ui.update_action, move || with(&w, |w| w.update_clicked()))?;
         for (name, step) in [
             ("ZoomIn", zoom::Step::In),
@@ -273,7 +281,7 @@ pub(super) fn with(window: &Weak<BrowserWindow>, f: impl FnOnce(&BrowserWindow))
     }
 }
 
-fn click(button: &impl Interface, handler: impl Fn() + 'static) -> Result<()> {
+pub(super) fn click(button: &impl Interface, handler: impl Fn() + 'static) -> Result<()> {
     button
         .cast::<ButtonBase>()?
         .Click(move |_, _| handler())?

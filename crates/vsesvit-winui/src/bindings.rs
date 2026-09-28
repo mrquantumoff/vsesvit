@@ -2162,6 +2162,70 @@ impl windows_core::RuntimeName for DataWriter {
 unsafe impl Send for DataWriter {}
 unsafe impl Sync for DataWriter {}
 pub type DataWriterStoreOperation = windows_future::IAsyncOperation<u32>;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DateTime {
+    pub universal_time: i64,
+}
+impl windows_core::imp::TypeKind for DateTime {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for DateTime {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"struct(Windows.Foundation.DateTime;i8)");
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DateTimeFormatter(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    DateTimeFormatter,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl DateTimeFormatter {
+    pub fn CreateDateTimeFormatter(formattemplate: &str) -> windows_core::Result<Self> {
+        Self::IDateTimeFormatterFactory(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateDateTimeFormatter)(
+                windows_core::Interface::as_raw(this),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(formattemplate)),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IDateTimeFormatterFactory<
+        R,
+        F: FnOnce(&IDateTimeFormatterFactory) -> windows_core::Result<R>,
+    >(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<
+            DateTimeFormatter,
+            IDateTimeFormatterFactory,
+        > = windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for DateTimeFormatter {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IDateTimeFormatter>();
+}
+unsafe impl windows_core::Interface for DateTimeFormatter {
+    type Vtable = <IDateTimeFormatter as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IDateTimeFormatter as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for DateTimeFormatter {
+    type Target = IDateTimeFormatter;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for DateTimeFormatter {
+    const NAME: &'static str = "Windows.Globalization.DateTimeFormatting.DateTimeFormatter";
+}
+unsafe impl Send for DateTimeFormatter {}
+unsafe impl Sync for DateTimeFormatter {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Deferral(windows_core::IUnknown);
@@ -7332,6 +7396,66 @@ impl windows_core::RuntimeType for IDataWriterFactory {
 pub struct IDataWriterFactory_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
     pub CreateDataWriter: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IDateTimeFormatter,
+    IDateTimeFormatter_Vtbl,
+    0x95eeca10_73e0_4e4b_a183_3d6ad0ba35ec
+);
+impl windows_core::RuntimeType for IDateTimeFormatter {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IDateTimeFormatter {
+    pub fn Format(&self, value: DateTime) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Format)(
+                windows_core::Interface::as_raw(self),
+                value,
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+}
+#[repr(C)]
+pub struct IDateTimeFormatter_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    Languages: usize,
+    GeographicRegion: usize,
+    Calendar: usize,
+    Clock: usize,
+    NumeralSystem: usize,
+    SetNumeralSystem: usize,
+    Patterns: usize,
+    Template: usize,
+    pub Format: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        DateTime,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IDateTimeFormatterFactory,
+    IDateTimeFormatterFactory_Vtbl,
+    0xec8d8a53_1a2e_412d_8815_3b745fb1a2a0
+);
+impl windows_core::RuntimeType for IDateTimeFormatterFactory {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IDateTimeFormatterFactory_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub CreateDateTimeFormatter: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,

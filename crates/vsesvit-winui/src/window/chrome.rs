@@ -107,8 +107,11 @@ const WINDOW_XAML: &str = r#"
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
-      <FontIcon x:Name="SiteIcon" Margin="12,0,2,0" FontSize="14" Glyph="&#xE721;"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+      <Button x:Name="SiteButton" Margin="4,0,0,0" Width="30" Height="26" Padding="0" CornerRadius="6"
+              Background="Transparent" BorderThickness="0" AutomationProperties.Name="View site information">
+        <FontIcon x:Name="SiteIcon" FontSize="14" Glyph="&#xE721;"
+                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+      </Button>
       <AutoSuggestBox x:Name="Address" Grid.Column="1" VerticalAlignment="Center"
                       PlaceholderText="Search or enter web address" UpdateTextOnSelect="False"
                       AutomationProperties.Name="Address and search bar">
@@ -286,6 +289,7 @@ pub(super) struct Chrome {
     pub(super) address: AutoSuggestBox,
     pub(super) address_pill: FrameworkElement,
     pub(super) address_focus_ring: UIElement,
+    pub(super) site_button: Button,
     pub(super) site_icon: FontIcon,
     pub(super) zoom_chip: Button,
     pub(super) zoom_chip_text: TextBlock,
@@ -327,6 +331,7 @@ impl Chrome {
             address: xaml::find(&root, "Address")?,
             address_pill: xaml::find(&root, "AddressPill")?,
             address_focus_ring: xaml::find(&root, "AddressFocusRing")?,
+            site_button: xaml::find(&root, "SiteButton")?,
             site_icon: xaml::find(&root, "SiteIcon")?,
             zoom_chip: xaml::find(&root, "ZoomChip")?,
             zoom_chip_text: xaml::find(&root, "ZoomChipText")?,

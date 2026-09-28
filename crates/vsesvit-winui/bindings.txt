@@ -211,6 +211,11 @@ Microsoft.Web.WebView2.Core.ICoreWebView2DownloadOperation::{get_Uri, get_BytesR
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadState
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadInterruptReason
 
+// ---- dates ----
+Windows.Globalization.DateTimeFormatting.DateTimeFormatter::CreateDateTimeFormatter
+Windows.Globalization.DateTimeFormatting.IDateTimeFormatter::Format
+Windows.Foundation.DateTime
+
 // ---- clipboard ----
 Windows.ApplicationModel.DataTransfer.DataPackage::CreateInstance
 Windows.ApplicationModel.DataTransfer.IDataPackage::SetText

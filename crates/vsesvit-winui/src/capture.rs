@@ -125,8 +125,24 @@ fn frame_bounds(hwnd: HWND) -> RECT {
     rect
 }
 
-/// The visible windows of this process that `owner` owns: its open popups and menus.
-fn popups_of(owner: HWND) -> Vec<HWND> {
+/// A visible top-level window of this process titled `title`, such as a system dialog it
+/// opened.
+pub(crate) fn find_window(title: &str) -> Option<HWND> {
+    process_windows().into_iter().find(|&hwnd| {
+        let mut text = [0u16; 256];
+        let len = unsafe { GetWindowTextW(hwnd, windows_core::PWSTR(text.as_mut_ptr()), 256) };
+        String::from_utf16_lossy(&text[..len.max(0) as usize]) == title
+    })
+}
+
+/// One window on its own, without its owned popups.
+pub(crate) async fn single_window_png(hwnd: HWND) -> Result<Vec<u8>> {
+    let layer = capture_window(hwnd).await?;
+    encode_png(&layer.pixels, layer.width, layer.height).await
+}
+
+/// The visible top-level windows of this process.
+fn process_windows() -> Vec<HWND> {
     unsafe extern "system" fn collect(hwnd: HWND, found: LPARAM) -> windows_core::BOOL {
         let found = unsafe { &mut *(found as *mut Vec<HWND>) };
         found.push(hwnd);
@@ -140,11 +156,16 @@ fn popups_of(owner: HWND) -> Vec<HWND> {
         .filter(|&hwnd| {
             let mut owner_pid = 0;
             unsafe { GetWindowThreadProcessId(hwnd, &mut owner_pid) };
-            owner_pid == pid
-                && hwnd != owner
-                && unsafe { IsWindowVisible(hwnd) }.as_bool()
-                && unsafe { GetAncestor(hwnd, GA_ROOTOWNER as u32) } == owner
+            owner_pid == pid && unsafe { IsWindowVisible(hwnd) }.as_bool()
         })
+        .collect()
+}
+
+/// The visible windows of this process that `owner` owns: its open popups and menus.
+fn popups_of(owner: HWND) -> Vec<HWND> {
+    process_windows()
+        .into_iter()
+        .filter(|&hwnd| hwnd != owner && unsafe { GetAncestor(hwnd, GA_ROOTOWNER as u32) } == owner)
         .collect()
 }
 
