@@ -9,6 +9,8 @@
 //! as the default. That is boundary validation at read time; the stored value is left
 //! alone for the newer build.
 
+use std::path::PathBuf;
+
 use rusqlite::{OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -74,6 +76,11 @@ pub mod keys {
     /// Local: whether an installation checks for and downloads updates is a property of that
     /// installation, not of the user's other devices.
     pub const UPDATES_AUTOMATIC: Pref<bool> = Pref { key: "updates.automatic", scope: Scope::Local, default: || true };
+    /// Local: a folder on this device's disk. `None` = the platform's Downloads folder, which
+    /// only the shell knows.
+    pub const DOWNLOADS_DIR: Pref<Option<PathBuf>> = Pref { key: "downloads.directory", scope: Scope::Local, default: || None };
+    /// Whether each download opens a save dialog instead of going straight to [`DOWNLOADS_DIR`].
+    pub const DOWNLOADS_ASK: Pref<bool> = Pref { key: "downloads.ask", scope: Scope::Synced, default: || false };
 }
 
 /// Sync record: one per key.

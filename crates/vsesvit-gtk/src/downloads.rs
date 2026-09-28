@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+use vsesvit_core::downloads::unique_destination;
 
 use crate::window::BrowserWindow;
 
@@ -114,68 +115,4 @@ fn file_name(path: &str) -> String {
     Path::new(path)
         .file_name()
         .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
-}
-
-/// `dir/name`, or `dir/name (1)`, `dir/name (2)`, ... before the extension, whichever does not
-/// exist yet. The suggested name comes from the server and is reduced to a plain file name.
-fn unique_destination(dir: &Path, suggested: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
-    let name = sanitize(suggested);
-    let candidate = dir.join(&name);
-    if !exists(&candidate) {
-        return candidate;
-    }
-    let (stem, extension) = match name.rfind('.') {
-        Some(dot) if dot > 0 => name.split_at(dot),
-        _ => (name.as_str(), ""),
-    };
-    (1..)
-        .map(|n| dir.join(format!("{stem} ({n}){extension}")))
-        .find(|candidate| !exists(candidate))
-        .expect("an unused name exists")
-}
-
-fn sanitize(suggested: &str) -> String {
-    let base = suggested.rsplit(['/', '\\']).next().unwrap_or_default();
-    let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
-    let cleaned = cleaned.trim().trim_start_matches('.');
-    if cleaned.is_empty() {
-        "download".to_owned()
-    } else {
-        cleaned.to_owned()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_are_reduced_to_a_plain_file_name() {
-        assert_eq!(sanitize("report.pdf"), "report.pdf");
-        assert_eq!(sanitize("../../etc/passwd"), "passwd");
-        assert_eq!(sanitize("C:\\x\\evil.exe"), "evil.exe");
-        assert_eq!(sanitize(".bashrc"), "bashrc");
-        assert_eq!(sanitize("a\nb\u{7}.txt"), "ab.txt");
-        assert_eq!(sanitize(""), "download");
-        assert_eq!(sanitize(".."), "download");
-    }
-
-    #[test]
-    fn existing_files_are_never_overwritten() {
-        let dir = Path::new("/dl");
-        let taken = ["/dl/a.tar.gz", "/dl/a.tar (1).gz", "/dl/notes"];
-        let exists = |p: &Path| taken.iter().any(|t| Path::new(t) == p);
-        assert_eq!(
-            unique_destination(dir, "b.txt", exists),
-            Path::new("/dl/b.txt")
-        );
-        assert_eq!(
-            unique_destination(dir, "a.tar.gz", exists),
-            Path::new("/dl/a.tar (2).gz")
-        );
-        assert_eq!(
-            unique_destination(dir, "notes", exists),
-            Path::new("/dl/notes (1)")
-        );
-    }
 }

@@ -316,7 +316,7 @@ kinds), crash atomicity, indexes for history, and no fsync on the per-navigation
 the last few ms of commits; an app crash loses nothing. Typed tables per kind, not one JSON document table:
 `<field>_at` stamp columns next to each LWW field, `seq`, and `extra` (full DDL in `src/schema.sql`, with CHECKs for
 kind/field agreement, tombstone shape, and who owns `enabled`). Local-only tables (`tab_restore_state`,
-`extension_installs`, `ext_storage_local`) have no stamps, so sync cannot see them.
+`extension_installs`, `ext_storage_local`, `favicons`, `downloads`) have no stamps, so sync cannot see them.
 
 ```
 %LOCALAPPDATA%\Vsesvit\data\profiles\<name>\   |  ~/.local/share/vsesvit/profiles/<name>/
@@ -330,6 +330,20 @@ kind/field agreement, tombstone shape, and who owns `enabled`). Local-only table
 
 At open (idempotent housekeeping): wipe `staging/`, drop install rows whose dir vanished, and delete version dirs that
 no row references.
+
+### Downloads (`downloads.rs`)
+
+`downloads` is LOCAL (schema v3): each row names a file on this device's disk, so there is nothing to sync. A row is
+`{url, path, started_ms, state, received, total}`, and `State` (`InProgress`, `Completed`, `Failed`, `Cancelled`, stored
+as text) is the only lifecycle field. The shell owns the engine download and its live byte counts. Core stores the start
+and the outcome, never per-tick progress, so a download costs two writes. No engine download outlives its process, so
+the shells call `interrupt_stale` once at startup, which turns every leftover `InProgress` row into `Failed`. Running it
+twice changes nothing. File naming (`sanitize`, `unique_destination`) and the row's status text (`status_line`,
+`describe_size`) are pure functions here, so both shells show the same names and the same words.
+
+Two prefs go with it. `downloads.directory` is `Scope::Local` and holds `Option<PathBuf>`: a folder is a path on one
+device, and `None` means the platform's Downloads folder, which only the shell can resolve. `downloads.ask` is
+`Scope::Synced`: whether to pick a folder for every file is a habit of the user, not of the device.
 
 ### Extension install pipeline (`extensions/`)
 

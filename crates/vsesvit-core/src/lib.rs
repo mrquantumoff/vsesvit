@@ -19,6 +19,7 @@
 //! |------------------|----------------------------------------------------------------------|
 //! | [`crdt`]         | clock, stamps, `Lww<T>`, `Lattice`: the only merge primitives         |
 //! | [`bookmarks`]    | records, fractional positions, in-memory tree, `materialize`          |
+//! | [`downloads`]    | the downloads list (LOCAL), file naming, status text                  |
 //! | [`favicons`]     | icons of bookmarked sites (LOCAL, never synced)                       |
 //! | [`history`]      | page records (grow-only visit sets) + deletion directives             |
 //! | [`import`]       | bookmarks from other browsers: HTML export, Chromium, Firefox         |
@@ -37,6 +38,7 @@ use std::path::{Path, PathBuf};
 pub mod bookmarks;
 pub mod crdt;
 mod db;
+pub mod downloads;
 pub mod ext_storage;
 pub mod extensions;
 pub mod favicons;
@@ -214,6 +216,10 @@ impl Profile {
 
     pub fn bookmarks(&mut self) -> bookmarks::Bookmarks<'_> {
         bookmarks::Bookmarks { p: self }
+    }
+
+    pub fn downloads(&mut self) -> downloads::Downloads<'_> {
+        downloads::Downloads { p: self }
     }
 
     pub fn favicons(&mut self) -> favicons::Favicons<'_> {
