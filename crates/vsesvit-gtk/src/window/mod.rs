@@ -1,7 +1,7 @@
-//! A browser window: the header bar with navigation buttons, the address bar, the star and
-//! the extension actions; the tabs as a vertical list in an `AdwOverlaySplitView` sidebar
-//! (left or right) or as an `AdwTabBar` on top; the bookmarks bar, the find bar, and the
-//! tab view holding one web view per tab.
+//! A browser window: the header bar with the navigation buttons at the start, the address
+//! bar in the middle, and the extension actions and the menu at the end; the tabs as a
+//! vertical list in an `AdwOverlaySplitView` sidebar (left or right) or as an `AdwTabBar` on
+//! top; the bookmarks bar, the find bar, and the tab view holding one web view per tab.
 
 mod actions;
 mod ext_actions;
@@ -35,7 +35,7 @@ use tab_list::TabList;
 
 pub(crate) use layout::{LayoutProbe, classify as classify_layout};
 
-/// The compact address bar's widest, star included.
+/// The compact address bar's widest.
 const COMPACT_ADDRESS_WIDTH: i32 = 720;
 
 /// Whether a newly opened tab is selected.
@@ -47,9 +47,12 @@ pub(crate) enum Focus {
 
 struct Ui {
     toolbar: adw::ToolbarView,
-    header: adw::HeaderBar,
+    /// The header's buttons before and after the address bar. The sidebar toggle moves
+    /// between them: after the navigation buttons, or last, next to the window controls.
+    header_start: gtk::Box,
+    header_end: gtk::Box,
     sidebar_toggle: gtk::ToggleButton,
-    /// Holds the address bar and the star; narrow and centered when the bar is compact.
+    /// Holds the address bar; narrow and centered when the bar is compact.
     location: adw::Clamp,
     address: AddressBar,
     reload: gtk::Button,
@@ -195,22 +198,7 @@ impl BrowserWindow {
         let tab_list = TabList::new(&tab_view);
 
         let address = AddressBar::new();
-        let star = gtk::ToggleButton::builder()
-            .icon_name("non-starred-symbolic")
-            .action_name("win.bookmark-page")
-            .tooltip_text("Bookmark This Page")
-            .build();
-        star.connect_active_notify(|star| {
-            star.set_icon_name(if star.is_active() {
-                "starred-symbolic"
-            } else {
-                "non-starred-symbolic"
-            });
-        });
-        let location = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        location.append(&address);
-        location.append(&star);
-        let title = adw::Clamp::builder().hexpand(true).child(&location).build();
+        let title = adw::Clamp::builder().hexpand(true).child(&address).build();
 
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
@@ -229,16 +217,20 @@ impl BrowserWindow {
         let downloads_button = icon_button("folder-download-symbolic", "win.show-downloads", "Downloads");
         downloads_button.set_visible(false);
 
+        let header_start = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        header_start.append(&icon_button("go-previous-symbolic", "win.back", "Back"));
+        header_start.append(&icon_button("go-next-symbolic", "win.forward", "Forward"));
+        header_start.append(&reload);
+        header_start.append(&sidebar_toggle);
+        let header_end = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        header_end.append(&extensions_area);
+        header_end.append(&icon_button("tab-new-symbolic", "win.new-tab", "New Tab"));
+        header_end.append(&downloads_button);
+        header_end.append(&menu_button);
         let header = adw::HeaderBar::new();
-        header.pack_start(&sidebar_toggle);
-        header.pack_start(&icon_button("go-previous-symbolic", "win.back", "Back"));
-        header.pack_start(&icon_button("go-next-symbolic", "win.forward", "Forward"));
-        header.pack_start(&reload);
+        header.pack_start(&header_start);
         header.set_title_widget(Some(&title));
-        header.pack_end(&menu_button);
-        header.pack_end(&downloads_button);
-        header.pack_end(&icon_button("tab-new-symbolic", "win.new-tab", "New Tab"));
-        header.pack_end(&extensions_area);
+        header.pack_end(&header_end);
 
         let update_banner = adw::Banner::builder().action_name("app.update").build();
         let bookmarks_bar = BookmarksBar::new();
@@ -278,7 +270,8 @@ impl BrowserWindow {
 
         Ui {
             toolbar,
-            header,
+            header_start,
+            header_end,
             sidebar_toggle,
             location: title,
             address,
@@ -413,12 +406,14 @@ impl BrowserWindow {
             Layout::Sidebar(pack) => {
                 ui.tab_bar.set_visible(false);
                 ui.split.set_sidebar_position(pack);
-                ui.header.remove(&ui.sidebar_toggle);
-                match pack {
-                    gtk::PackType::Start => ui.header.pack_start(&ui.sidebar_toggle),
-                    gtk::PackType::End => ui.header.pack_end(&ui.sidebar_toggle),
-                    _ => ui.header.pack_start(&ui.sidebar_toggle),
+                let side = match pack {
+                    gtk::PackType::End => &ui.header_end,
+                    _ => &ui.header_start,
+                };
+                if let Some(parent) = ui.sidebar_toggle.parent().and_downcast::<gtk::Box>() {
+                    parent.remove(&ui.sidebar_toggle);
                 }
+                side.append(&ui.sidebar_toggle);
                 ui.sidebar_toggle.set_visible(true);
                 ui.split.set_show_sidebar(!ui.split.is_collapsed());
             }
@@ -495,7 +490,7 @@ impl BrowserWindow {
         self.ui().bookmarks_bar.refresh(self.browser().core());
     }
 
-    /// The star follows the selected tab's committed URL.
+    /// The star in the address bar follows the selected tab's committed URL.
     pub(crate) fn sync_star(&self) {
         let starred = self
             .selected_tab()
@@ -506,6 +501,7 @@ impl BrowserWindow {
         {
             action.set_state(&starred.to_variant());
         }
+        self.ui().address.set_starred(starred);
     }
 
     // Extension actions.
@@ -837,7 +833,7 @@ mod tests {
         window.set_default_size(1600, 900);
         window.present();
         let address = window.address_bar().clone();
-        let header = window.ui().header.clone();
+        let header = address.ancestor(adw::HeaderBar::static_type()).expect("the bar is in the header");
 
         browser.set_compact_address_bar(true);
         wait_until("a compact address bar", || (1..=COMPACT_ADDRESS_WIDTH).contains(&address.width()));
@@ -856,5 +852,40 @@ mod tests {
         assert!(compact <= COMPACT_ADDRESS_WIDTH, "compact bar is {compact} px");
         assert!(compact_centered < 40.0, "compact bar is {compact_centered} px off center");
         assert!(full > COMPACT_ADDRESS_WIDTH, "full bar is {full} px");
+    }
+
+    #[gtk::test]
+    fn navigation_comes_first_and_the_right_sidebar_toggle_last() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.set_default_size(1600, 900);
+        window.present();
+        let ui = window.ui();
+        let span = |widget: &gtk::Widget| {
+            widget
+                .compute_bounds(&window)
+                .map_or((f32::NAN, f32::NAN), |b| (b.x(), b.x() + b.width()))
+        };
+        let (reload, toggle, address) = (
+            ui.reload.clone().upcast::<gtk::Widget>(),
+            ui.sidebar_toggle.clone().upcast::<gtk::Widget>(),
+            ui.address.clone().upcast::<gtk::Widget>(),
+        );
+
+        window.apply_layout(TabsPosition::Left);
+        wait_until("the toggle between reload and the address bar", || {
+            let (toggle, address) = (span(&toggle), span(&address));
+            span(&reload).1 <= toggle.0 && toggle.1 <= address.0
+        });
+
+        window.apply_layout(TabsPosition::Right);
+        wait_until("the toggle after the address bar", || span(&toggle).0 >= span(&address).1);
+        let toggle_is_last = ui.header_end.last_child().as_ref() == Some(&toggle);
+        let reload_before_address = span(&reload).1 <= span(&address).0;
+
+        window.apply_layout(browser.tabs_position());
+        window.destroy();
+        assert!(toggle_is_last, "the right sidebar's toggle sits after the menu");
+        assert!(reload_before_address, "the navigation buttons stay before the address bar");
     }
 }

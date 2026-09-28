@@ -5,6 +5,10 @@
 //!
 //! It emits `edited` for every change the user makes, `submitted` when Enter is pressed without
 //! a suggestion selected, and `cancelled` when Escape gives up editing.
+//!
+//! Inside the entry, the page's security is at the start and the bookmark star at the end;
+//! clicking the star runs `win.bookmark-page`. The text is centered while the entry rests,
+//! and starts at the left while the user is in it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -150,7 +154,14 @@ impl AddressBar {
         entry.set_input_hints(gtk::InputHints::NO_SPELLCHECK);
         entry.set_placeholder_text(Some("Enter address"));
         entry.update_property(&[gtk::accessible::Property::Label("Address")]);
+        entry.connect_icon_release(|entry, position| {
+            if position == gtk::EntryIconPosition::Secondary {
+                let _ = entry.activate_action("win.bookmark-page", None);
+            }
+        });
         self.set_child(Some(entry));
+        self.set_starred(false);
+        self.align_text();
 
         let list = &imp.list;
         list.set_selection_mode(gtk::SelectionMode::Single);
@@ -232,6 +243,7 @@ impl AddressBar {
         }
         imp.popover.popdown();
         self.show_security();
+        self.align_text();
     }
 
     /// Whole URIs even while the entry does not have focus.
@@ -265,6 +277,7 @@ impl AddressBar {
         if !focused {
             imp.popover.popdown();
         }
+        self.align_text();
         if imp.editing.get() {
             return;
         }
@@ -334,6 +347,26 @@ impl AddressBar {
         imp.entry.set_primary_icon_tooltip_text(tooltip);
     }
 
+    /// Whether the shown page is bookmarked, as the star at the entry's end.
+    pub(crate) fn set_starred(&self, starred: bool) {
+        let (icon, tooltip) = if starred {
+            ("starred-symbolic", "Remove Bookmark")
+        } else {
+            ("non-starred-symbolic", "Bookmark This Page")
+        };
+        let entry = &self.imp().entry;
+        entry.set_secondary_icon_name(Some(icon));
+        entry.set_secondary_icon_tooltip_text(Some(tooltip));
+    }
+
+    /// Centered while the entry shows the page's address, at the start while the user is in
+    /// it or has typed something.
+    fn align_text(&self) {
+        let imp = self.imp();
+        let editing = imp.focused.get() || imp.editing.get();
+        EditableExt::set_alignment(&imp.entry, if editing { 0.0 } else { 0.5 });
+    }
+
     /// Replaces the suggestion rows. The popover opens only while the entry has focus.
     pub(crate) fn set_suggestions(&self, items: Vec<Suggestion>) {
         let imp = self.imp();
@@ -393,6 +426,7 @@ impl AddressBar {
         }
         if !imp.editing.replace(true) {
             self.show_security();
+            self.align_text();
         }
         imp.list.unselect_all();
         self.emit_by_name::<()>("edited", &[&text.to_owned()]);
@@ -430,6 +464,7 @@ impl AddressBar {
         imp.editing.set(false);
         imp.popover.popdown();
         self.show_security();
+        self.align_text();
     }
 
     fn key_pressed(&self, key: gdk::Key) -> glib::Propagation {
@@ -496,7 +531,8 @@ fn suggestion_row(item: &Suggestion) -> gtk::ListBoxRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::wait_until;
+    use crate::test_support::{Reply, Server, browser, wait_until};
+    use crate::window::{BrowserWindow, Focus};
 
     #[test]
     fn security_follows_the_scheme() {
@@ -578,5 +614,71 @@ mod tests {
         assert_eq!(full, "https://www.example.com/");
         assert_eq!(typed, "typed", "leaving keeps what the user typed");
         assert_eq!(blank, "");
+    }
+
+    #[gtk::test]
+    fn the_address_is_centered_until_the_user_is_in_the_entry() {
+        let (window, bar, other) = bar_in_window();
+        let entry = bar.imp().entry.clone();
+        bar.show_uri(Some("https://www.example.com/"));
+        let resting = EditableExt::alignment(&entry);
+
+        entry.grab_focus();
+        wait_until("the entry to take the focus", || bar.imp().focused.get());
+        let focused = EditableExt::alignment(&entry);
+
+        other.grab_focus();
+        wait_until("the entry to lose the focus", || !bar.imp().focused.get());
+        let left = EditableExt::alignment(&entry);
+
+        entry.grab_focus();
+        entry.set_text("typed");
+        other.grab_focus();
+        wait_until("the entry to lose the focus", || !bar.imp().focused.get());
+        let typed = EditableExt::alignment(&entry);
+
+        bar.restore(None, Some("https://example.com/"));
+        let restored = EditableExt::alignment(&entry);
+        window.destroy();
+
+        assert_eq!(resting, 0.5);
+        assert_eq!(focused, 0.0);
+        assert_eq!(left, 0.5);
+        assert_eq!(typed, 0.0, "text the user typed starts at the left");
+        assert_eq!(restored, 0.5);
+    }
+
+    #[gtk::test]
+    fn the_star_inside_the_entry_toggles_the_bookmark() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/starred" => Reply::Page("Starred"),
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let url = server.url("/starred");
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        let tab = window.open_tab(Some(&url), None, Focus::Foreground);
+        wait_until("the page to commit", || tab.committed_uri().as_deref() == Some(url.as_str()));
+        let entry = window.address_bar().imp().entry.clone();
+        let state = || {
+            let icon = entry.secondary_icon_name().map(String::from);
+            (browser.is_bookmarked(Some(&url)), icon.unwrap_or_default())
+        };
+        let click = |position: gtk::EntryIconPosition| entry.emit_by_name::<()>("icon-release", &[&position]);
+
+        let before = state();
+        click(gtk::EntryIconPosition::Secondary);
+        let added = state();
+        click(gtk::EntryIconPosition::Primary);
+        let security_clicked = state();
+        click(gtk::EntryIconPosition::Secondary);
+        let removed = state();
+        window.destroy();
+
+        assert_eq!(before, (false, "non-starred-symbolic".to_owned()));
+        assert_eq!(added, (true, "starred-symbolic".to_owned()));
+        assert_eq!(security_clicked, added, "the security icon leaves the bookmark alone");
+        assert_eq!(removed, before);
     }
 }
