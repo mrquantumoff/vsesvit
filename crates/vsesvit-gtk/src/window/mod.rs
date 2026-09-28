@@ -213,13 +213,6 @@ impl BrowserWindow {
         let reload = icon_button("view-refresh-symbolic", "win.reload", "Reload");
         let home = icon_button("go-home-symbolic", "win.home", "Home");
         let extension_actions = ExtensionActions::new();
-        let extensions_area = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        extensions_area.append(extension_actions.widget());
-        extensions_area.append(&icon_button(
-            "application-x-addon-symbolic",
-            "win.show-extensions",
-            "Extensions",
-        ));
         let (menu_button, zoom_level) = menu::main_menu();
         let downloads_button = icon_button("folder-download-symbolic", "win.show-downloads", "Downloads");
         downloads_button.set_visible(false);
@@ -231,7 +224,7 @@ impl BrowserWindow {
         header_start.append(&home);
         header_start.append(&sidebar_toggle);
         let header_end = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        header_end.append(&extensions_area);
+        header_end.append(extension_actions.widget());
         header_end.append(&icon_button("tab-new-symbolic", "win.new-tab", "New Tab"));
         header_end.append(&downloads_button);
         header_end.append(&menu_button);
@@ -537,10 +530,20 @@ impl BrowserWindow {
 
     // Extension actions.
 
+    /// The toolbar shows the pinned actions in the synced order; the Extensions menu all.
     pub(crate) fn refresh_extension_actions(&self) {
         let actions = self.browser().runtime().actions();
+        let available: Vec<String> = actions.iter().map(|a| a.extension.as_str().to_owned()).collect();
+        let pinned: Vec<ExtensionId> = self
+            .browser()
+            .extension_toolbar(&available)
+            .pinned
+            .iter()
+            .filter_map(|id| actions.iter().find(|a| a.extension.as_str() == id).map(|a| a.extension.clone()))
+            .collect();
         self.ui().extension_actions.rebuild(
             &actions,
+            &pinned,
             glib::clone!(
                 #[weak(rename_to = window)]
                 self,
@@ -569,6 +572,19 @@ impl BrowserWindow {
 
     pub(crate) fn close_extension_popup(&self) {
         self.ui().extension_actions.close_popup();
+    }
+
+    /// Opens the context menu of a pinned action's button, as a right-click does.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn open_extension_context_menu(&self, id: &ExtensionId) -> Option<gtk::PopoverMenu> {
+        let button = self.extension_action_button(id)?;
+        Some(ext_actions::unpin_menu(button.upcast_ref(), id, (8.0, 8.0)))
+    }
+
+    /// Clicks the puzzle piece and returns the Extensions menu it opened.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn open_extensions_menu(&self) -> Option<gtk::Popover> {
+        self.ui().extension_actions.click_puzzle()
     }
 
     // Tabs.

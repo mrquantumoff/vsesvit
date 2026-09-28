@@ -119,6 +119,22 @@ pub(super) fn install(window: &BrowserWindow) {
         ActionEntry::builder("show-downloads")
             .activate(|w: &BrowserWindow, _, _| dialogs::downloads::present(w))
             .build(),
+        ActionEntry::builder("extension-pin")
+            .parameter_type(Some(glib::VariantTy::new("(sb)").expect("a valid type")))
+            .activate(|w: &BrowserWindow, _, target| {
+                if let Some((id, pinned)) = target.and_then(glib::Variant::get::<(String, bool)>) {
+                    w.browser().pin_extension(&id, pinned);
+                }
+            })
+            .build(),
+        ActionEntry::builder("extension-move")
+            .parameter_type(Some(glib::VariantTy::new("(su)").expect("a valid type")))
+            .activate(|w: &BrowserWindow, _, target| {
+                if let Some((id, to)) = target.and_then(glib::Variant::get::<(String, u32)>) {
+                    w.browser().move_extension(&id, to as usize);
+                }
+            })
+            .build(),
         ActionEntry::builder("show-extensions")
             .activate(|w: &BrowserWindow, _, _| dialogs::extensions::present(w))
             .build(),

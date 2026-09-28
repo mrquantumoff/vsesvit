@@ -487,6 +487,56 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("extension_toolbar", CHECK_TIMEOUT, |last| async move {
+        let saved_pin = || {
+            let entries = browser.core().borrow_mut().prefs().get(&vsesvit_core::extensions::toolbar::TOOLBAR);
+            entries.into_iter().find(|e| e.id == probe_id.as_str()).map(|e| e.pinned)
+        };
+        let pinned_at_start = window.extension_action_button(probe_id).is_some();
+
+        let context = window.open_extension_context_menu(probe_id).ok_or_else(|| "the probe has no toolbar button".to_owned())?;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[context.clone().upcast()], &ctx.out_dir.join("extensions-context-menu.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        context.popdown();
+
+        let menu = window.open_extensions_menu().ok_or_else(|| "the puzzle piece opened no menu".to_owned())?;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[menu.clone()], &ctx.out_dir.join("extensions-menu.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        let pin = find::<gtk::Button>(menu.upcast_ref(), |b| b.icon_name().as_deref() == Some("view-pin-symbolic"))
+            .ok_or_else(|| "the menu has no pin toggle".to_owned())?;
+        pin.emit_clicked();
+        wait_for(&last, || match (window.extension_action_button(probe_id), saved_pin()) {
+            (None, Some(false)) => Ok(()),
+            (button, saved) => Err(format!("after unpinning: button shown={}, saved pin={saved:?}", button.is_some())),
+        })
+        .await;
+        let open = find::<gtk::Button>(menu.upcast_ref(), |b| b.label().is_none() && b.icon_name().is_none())
+            .ok_or_else(|| "the menu has no row for the probe".to_owned())?;
+        open.emit_clicked();
+        let view = wait_for(&last, || window.extension_popup_view().ok_or_else(|| "no popup from the menu".to_owned())).await;
+        let popup = view.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>().ok_or_else(|| "the popup page is in no popover".to_owned())?;
+        let from_puzzle = popup.parent().is_some_and(|p| p.tooltip_text().as_deref() == Some("Extensions"));
+        glib::timeout_future(Duration::from_millis(800)).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[popup], &ctx.out_dir.join("extensions-unpinned-popup.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        window.close_extension_popup();
+
+        gio::prelude::ActionGroupExt::activate_action(window, "extension-pin", Some(&(probe_id.as_str(), true).to_variant()));
+        wait_for(&last, || match (window.extension_action_button(probe_id), saved_pin()) {
+            (Some(_), Some(true)) => Ok(()),
+            (button, saved) => Err(format!("after pinning again: button shown={}, saved pin={saved:?}", button.is_some())),
+        })
+        .await;
+        let detail = format!("pinned at start={pinned_at_start}; the menu's pin toggle unpinned it (saved in toolbar.extensions); its row opened the popup from the puzzle piece={from_puzzle}; pinned again; extensions-*.png");
+        if pinned_at_start && from_puzzle { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
     ctx.check("omnibox", CHECK_TIMEOUT, |_| async move {
         let typed_url = format!("127.0.0.1:{}/page2.html", ctx.server.port());
         let (search, url, default) = {

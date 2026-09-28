@@ -16,7 +16,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::favicons::FaviconFetch;
-use vsesvit_core::extensions::ExtensionId;
+use vsesvit_core::extensions::{ExtensionId, toolbar};
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, keys};
 use vsesvit_core::sync::Changed;
@@ -477,6 +477,38 @@ impl Browser {
         });
     }
 
+    /// Which of the extension actions `available` (ids in install order) the toolbar shows,
+    /// and in what order, per the synced preference.
+    pub(crate) fn extension_toolbar(&self, available: &[String]) -> toolbar::Layout {
+        let saved = self.core().borrow_mut().prefs().get(&toolbar::TOOLBAR);
+        toolbar::layout(available, &saved)
+    }
+
+    pub(crate) fn pin_extension(&self, id: &str, pinned: bool) {
+        self.change_toolbar(|available, saved| toolbar::set_pinned(available, saved, id, pinned));
+    }
+
+    /// Moves a pinned action to `to` among the pinned ones.
+    pub(crate) fn move_extension(&self, id: &str, to: usize) {
+        self.change_toolbar(|available, saved| toolbar::move_pinned(available, saved, id, to));
+    }
+
+    fn change_toolbar(&self, change: impl FnOnce(&[String], &[toolbar::Entry]) -> Vec<toolbar::Entry>) {
+        let available: Vec<String> = self.runtime().actions().iter().map(|a| a.extension.as_str().to_owned()).collect();
+        let saved = {
+            let mut profile = self.core().borrow_mut();
+            let mut prefs = profile.prefs();
+            let next = change(&available, &prefs.get(&toolbar::TOOLBAR));
+            prefs.set(&toolbar::TOOLBAR, &next)
+        };
+        if let Err(e) = saved {
+            log::warn!("extension toolbar: {e}");
+        }
+        for window in self.windows() {
+            window.refresh_extension_actions();
+        }
+    }
+
     // Omnibox.
 
     /// Every edit in the address bar: core's suggestions (search, typed URL, bookmarks,
@@ -642,6 +674,7 @@ impl Browser {
                 window.set_home_button_visible(home);
                 window.set_compact_address_bar(compact);
                 window.set_full_urls(full_urls);
+                window.refresh_extension_actions();
             }
         }
     }
