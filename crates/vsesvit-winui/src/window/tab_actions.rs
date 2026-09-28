@@ -85,6 +85,9 @@ impl BrowserWindow {
             .filter(|s| active.is_some_and(|a| s.has(a)));
         let tabs = self.tabs.borrow().clone();
         for tab in tabs {
+            if self.in_pip(tab.id) {
+                continue;
+            }
             let column = split.and_then(|s| s.column_of(tab.id));
             let visible = column.is_some() || (split.is_none() && active == Some(tab.id));
             if let Ok(view) = tab.view().cast::<FrameworkElement>() {

@@ -11,6 +11,7 @@ use crate::bindings::*;
 use crate::dialogs::Dialog;
 use crate::exec;
 use crate::shortcuts::{BINDINGS, Command, Mods};
+use crate::player::PlayerEvents;
 use crate::strip::StripEvents;
 use crate::{xaml, zoom};
 
@@ -264,6 +265,16 @@ pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
         });
     });
     let w = on(slot);
+    let pane_resized = Box::new(move |width: f64| {
+        w(&|w| {
+            if let Some(browser) = w.browser() {
+                browser.set_tab_pane_width(width as u32);
+            }
+        });
+    });
+    let w = on(slot);
+    let pane_space_changed = Box::new(move || w(&|w| w.update_pip()));
+    let w = on(slot);
     let menu = Box::new(move |id, menu: &MenuFlyout| w(&|w| w.fill_tab_menu(id, menu)));
     StripEvents {
         selection_changed,
@@ -273,6 +284,30 @@ pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
         toggle_collapsed,
         toggle_muted,
         menu,
+        pane_space_changed,
+        pane_resized,
+    }
+}
+
+pub(super) fn player_events(slot: &WindowSlot) -> PlayerEvents {
+    let on = |slot: &WindowSlot| {
+        let slot = slot.clone();
+        move |f: &dyn Fn(&BrowserWindow)| {
+            if let Some(window) = slot.get().and_then(Weak::upgrade) {
+                f(&window);
+            }
+        }
+    };
+    let w = on(slot);
+    let go_to_tab = Box::new(move || w(&|w| w.player_go_to_tab()));
+    let w = on(slot);
+    let action = Box::new(move |action| w(&|w| w.player_action(action)));
+    let w = on(slot);
+    let toggle_muted = Box::new(move || w(&|w| w.player_toggle_muted()));
+    PlayerEvents {
+        go_to_tab,
+        action,
+        toggle_muted,
     }
 }
 

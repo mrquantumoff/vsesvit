@@ -6,7 +6,7 @@ use windows_core::{Interface, Result};
 use super::BrowserWindow;
 use crate::bindings::*;
 use crate::layout::{Rect, StripKind};
-use crate::strip::TabStrip;
+use crate::strip::{PaneSide, TabStrip};
 use crate::xaml;
 
 impl BrowserWindow {
@@ -76,6 +76,11 @@ impl BrowserWindow {
         if let Some(host) = host {
             host.Children()?.Append(&pane)?;
         }
+        if position == TabsPosition::Right {
+            self.side.set_side(PaneSide::Right);
+        } else {
+            self.side.set_side(PaneSide::Left);
+        }
         for candidate in [&self.ui.left_host, &self.ui.right_host] {
             let shown = host.is_some_and(|h| xaml::same_object(h, candidate)) && !fullscreen;
             xaml::set_visible(candidate, shown)?;
@@ -88,6 +93,7 @@ impl BrowserWindow {
         }
         self.drag_regions.borrow_mut().clear();
         self.update_drag_regions();
+        self.update_pip();
         Ok(())
     }
 
@@ -183,8 +189,14 @@ impl BrowserWindow {
         self.side.is_compact()
     }
 
+    pub fn set_pane_width(&self, width: u32) {
+        self.side.set_width(f64::from(width));
+    }
+
     pub fn set_pane_collapsed(&self, collapsed: bool) {
         self.side.set_compact(collapsed);
+        self.player.set_compact(collapsed);
+        self.update_pip();
     }
 
     /// Window-relative bounds of the vertical pane, the horizontal strip and the active web view

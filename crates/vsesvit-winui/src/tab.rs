@@ -18,6 +18,7 @@ use crate::shortcuts::{self, PageMessage, PageScript};
 use crate::store;
 use crate::tab_header::{Audio, TabLook};
 use crate::window::BrowserWindow;
+use crate::media::{self, MediaAction, Playback};
 use crate::{exec, xaml, zoom};
 
 /// Identifies a tab within this process.
@@ -337,6 +338,10 @@ impl Tab {
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({ "source": store::MAIN_WORLD_SCRIPT }).to_string(),
             ),
+            (
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": media::MAIN_WORLD_SCRIPT }).to_string(),
+            ),
         ];
         for (method, params) in calls {
             core.CallDevToolsProtocolMethodAsync(method, &params)?
@@ -423,6 +428,26 @@ impl Tab {
     pub async fn eval(&self, script: &str) -> Result<String> {
         let core = self.core.get().ok_or_else(windows_core::Error::empty)?;
         Ok(core.ExecuteScriptAsync(script)?.await?.to_string_lossy())
+    }
+
+    /// What the page is playing; `None` before it has a document with the media script.
+    pub async fn playback(&self) -> Option<Playback> {
+        let json = self.eval(media::STATE_SCRIPT).await.ok()?;
+        media::parse_state(&json)
+    }
+
+    pub async fn media_action(&self, action: MediaAction) {
+        if let Err(e) = self.eval(&media::act_script(action)).await {
+            log::debug!("tab {}: media action: {e}", self.id);
+        }
+    }
+
+    /// Shows the playing video over the whole page (`on`), or the page again. Whether a video
+    /// is shown.
+    pub async fn present_pip(&self, on: bool) -> bool {
+        self.eval(&media::pip_script(on))
+            .await
+            .is_ok_and(|result| result == "true")
     }
 
     /// Calls a Chrome DevTools Protocol method on the page; returns the JSON result.

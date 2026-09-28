@@ -66,9 +66,11 @@ mod extensions;
 mod instance;
 mod layout;
 mod logging;
+mod media;
 mod omnibox;
 mod pickers;
 mod platform;
+mod player;
 mod popup;
 #[cfg(feature = "self-test")]
 mod report;

@@ -9192,6 +9192,19 @@ pub struct IInfoBar_Vtbl {
         unsafe extern "system" fn(*mut core::ffi::c_void, InfoBarSeverity) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    IInputCursor,
+    IInputCursor_Vtbl,
+    0x359b15f9_19c2_5714_8432_75176826406b
+);
+impl windows_core::RuntimeType for IInputCursor {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IInputCursor_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
     IInputNonClientPointerSource,
     IInputNonClientPointerSource_Vtbl,
     0x471732b4_3d07_5104_b192_ebacf71e86df
@@ -9266,6 +9279,37 @@ windows_core::imp::interface_hierarchy!(
 #[repr(C)]
 pub struct IInputStream_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    IInputSystemCursor,
+    IInputSystemCursor_Vtbl,
+    0x59f538e7_c500_59ab_8b54_0bc6100fd49e
+);
+impl windows_core::RuntimeType for IInputSystemCursor {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IInputSystemCursor_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    IInputSystemCursorStatics,
+    IInputSystemCursorStatics_Vtbl,
+    0xd3860bb6_698a_5814_aedd_c2fa8bba5a02
+);
+impl windows_core::RuntimeType for IInputSystemCursorStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IInputSystemCursorStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Create: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        InputSystemCursorShape,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IInvokeProvider,
@@ -10271,6 +10315,19 @@ pub struct IPickFolderResult_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    IPointer,
+    IPointer_Vtbl,
+    0x1f9afbf5_11a3_5e68_aa1b_72febfa0ab23
+);
+impl windows_core::RuntimeType for IPointer {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IPointer_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
     IPointerPoint,
     IPointerPoint_Vtbl,
     0x0d430ee6_252c_59a4_b2a2_d44264dc6a40
@@ -10280,6 +10337,16 @@ impl windows_core::RuntimeType for IPointerPoint {
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
 impl IPointerPoint {
+    pub fn Position(&self) -> windows_core::Result<Point> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Position)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
     pub fn Properties(&self) -> windows_core::Result<PointerPointProperties> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -10298,7 +10365,8 @@ pub struct IPointerPoint_Vtbl {
     IsInContact: usize,
     PointerDeviceType: usize,
     PointerId: usize,
-    Position: usize,
+    pub Position:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut Point) -> windows_core::HRESULT,
     pub Properties: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
@@ -10358,6 +10426,16 @@ impl windows_core::RuntimeType for IPointerRoutedEventArgs {
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
 impl IPointerRoutedEventArgs {
+    pub fn Pointer(&self) -> windows_core::Result<Pointer> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Pointer)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
     pub fn SetHandled(&self, value: bool) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SetHandled)(
@@ -10385,7 +10463,10 @@ impl IPointerRoutedEventArgs {
 #[repr(C)]
 pub struct IPointerRoutedEventArgs_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
-    Pointer: usize,
+    pub Pointer: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     KeyModifiers: usize,
     Handled: usize,
     pub SetHandled:
@@ -12456,6 +12537,64 @@ impl IUIElement {
             ))
         }
     }
+    pub fn PointerPressed<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<windows_core::IInspectable>,
+                windows_core::Ref<PointerRoutedEventArgs>,
+            ) + 'static,
+    {
+        let handler: PointerEventHandler = {
+            let com = windows_core::imp::DelegateBox::<PointerEventHandler, F>::new(
+                &PointerEventHandlerBox::<F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).PointerPressed)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemovePointerPressed,
+            ))
+        }
+    }
+    pub fn PointerMoved<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<windows_core::IInspectable>,
+                windows_core::Ref<PointerRoutedEventArgs>,
+            ) + 'static,
+    {
+        let handler: PointerEventHandler = {
+            let com = windows_core::imp::DelegateBox::<PointerEventHandler, F>::new(
+                &PointerEventHandlerBox::<F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).PointerMoved)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemovePointerMoved,
+            ))
+        }
+    }
     pub fn PointerReleased<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
     where
         F: Fn(
@@ -12485,11 +12624,127 @@ impl IUIElement {
             ))
         }
     }
+    pub fn PointerEntered<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<windows_core::IInspectable>,
+                windows_core::Ref<PointerRoutedEventArgs>,
+            ) + 'static,
+    {
+        let handler: PointerEventHandler = {
+            let com = windows_core::imp::DelegateBox::<PointerEventHandler, F>::new(
+                &PointerEventHandlerBox::<F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).PointerEntered)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemovePointerEntered,
+            ))
+        }
+    }
+    pub fn PointerExited<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<windows_core::IInspectable>,
+                windows_core::Ref<PointerRoutedEventArgs>,
+            ) + 'static,
+    {
+        let handler: PointerEventHandler = {
+            let com = windows_core::imp::DelegateBox::<PointerEventHandler, F>::new(
+                &PointerEventHandlerBox::<F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).PointerExited)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemovePointerExited,
+            ))
+        }
+    }
+    pub fn PointerCaptureLost<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<windows_core::IInspectable>,
+                windows_core::Ref<PointerRoutedEventArgs>,
+            ) + 'static,
+    {
+        let handler: PointerEventHandler = {
+            let com = windows_core::imp::DelegateBox::<PointerEventHandler, F>::new(
+                &PointerEventHandlerBox::<F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).PointerCaptureLost)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemovePointerCaptureLost,
+            ))
+        }
+    }
     pub fn Measure(&self, availablesize: Size) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).Measure)(
                 windows_core::Interface::as_raw(self),
                 availablesize,
+            )
+            .ok()
+        }
+    }
+    pub fn CapturePointer<P0>(&self, value: P0) -> windows_core::Result<bool>
+    where
+        P0: windows_core::Param<Pointer>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CapturePointer)(
+                windows_core::Interface::as_raw(self),
+                value.param().abi(),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ReleasePointerCapture<P0>(&self, value: P0) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<Pointer>,
+    {
+        unsafe {
+            (windows_core::Interface::vtable(self).ReleasePointerCapture)(
+                windows_core::Interface::as_raw(self),
+                value.param().abi(),
             )
             .ok()
         }
@@ -12714,10 +12969,20 @@ pub struct IUIElement_Vtbl {
     RemoveDragOver: usize,
     Drop: usize,
     RemoveDrop: usize,
-    PointerPressed: usize,
-    RemovePointerPressed: usize,
-    PointerMoved: usize,
-    RemovePointerMoved: usize,
+    pub PointerPressed: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemovePointerPressed:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    pub PointerMoved: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemovePointerMoved:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     pub PointerReleased: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
@@ -12725,12 +12990,27 @@ pub struct IUIElement_Vtbl {
     ) -> windows_core::HRESULT,
     pub RemovePointerReleased:
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
-    PointerEntered: usize,
-    RemovePointerEntered: usize,
-    PointerExited: usize,
-    RemovePointerExited: usize,
-    PointerCaptureLost: usize,
-    RemovePointerCaptureLost: usize,
+    pub PointerEntered: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemovePointerEntered:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    pub PointerExited: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemovePointerExited:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    pub PointerCaptureLost: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemovePointerCaptureLost:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     PointerCanceled: usize,
     RemovePointerCanceled: usize,
     PointerWheelChanged: usize,
@@ -12779,8 +13059,15 @@ pub struct IUIElement_Vtbl {
     RemoveBringIntoViewRequested: usize,
     pub Measure: unsafe extern "system" fn(*mut core::ffi::c_void, Size) -> windows_core::HRESULT,
     Arrange: usize,
-    CapturePointer: usize,
-    ReleasePointerCapture: usize,
+    pub CapturePointer: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut bool,
+    ) -> windows_core::HRESULT,
+    pub ReleasePointerCapture: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     ReleasePointerCaptures: usize,
     AddHandler: usize,
     RemoveHandler: usize,
@@ -12801,6 +13088,38 @@ pub struct IUIElement_Vtbl {
         *mut core::ffi::c_void,
         FocusState,
         *mut bool,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IUIElementProtected,
+    IUIElementProtected_Vtbl,
+    0x8f69b9e9_1f00_5834_9bf1_a9257bed39f0
+);
+impl windows_core::RuntimeType for IUIElementProtected {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IUIElementProtected {
+    pub fn SetProtectedCursor<P0>(&self, value: P0) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<InputCursor>,
+    {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetProtectedCursor)(
+                windows_core::Interface::as_raw(self),
+                value.param().abi(),
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct IUIElementProtected_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    ProtectedCursor: usize,
+    pub SetProtectedCursor: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
@@ -13707,6 +14026,34 @@ impl windows_core::RuntimeType for InfoBarSeverity {
 }
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputCursor(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    InputCursor,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(InputCursor, IClosable);
+impl windows_core::RuntimeType for InputCursor {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IInputCursor>();
+}
+unsafe impl windows_core::Interface for InputCursor {
+    type Vtable = <IInputCursor as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IInputCursor as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for InputCursor {
+    type Target = IInputCursor;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for InputCursor {
+    const NAME: &'static str = "Microsoft.UI.Input.InputCursor";
+}
+unsafe impl Send for InputCursor {}
+unsafe impl Sync for InputCursor {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputNonClientPointerSource(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     InputNonClientPointerSource,
@@ -13757,6 +14104,88 @@ impl windows_core::RuntimeName for InputNonClientPointerSource {
 }
 unsafe impl Send for InputNonClientPointerSource {}
 unsafe impl Sync for InputNonClientPointerSource {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputSystemCursor(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    InputSystemCursor,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(InputSystemCursor, InputCursor);
+impl InputSystemCursor {
+    pub fn Create(r#type: InputSystemCursorShape) -> windows_core::Result<Self> {
+        Self::IInputSystemCursorStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).Create)(
+                windows_core::Interface::as_raw(this),
+                r#type,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IInputSystemCursorStatics<
+        R,
+        F: FnOnce(&IInputSystemCursorStatics) -> windows_core::Result<R>,
+    >(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<
+            InputSystemCursor,
+            IInputSystemCursorStatics,
+        > = windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for InputSystemCursor {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IInputSystemCursor>();
+}
+unsafe impl windows_core::Interface for InputSystemCursor {
+    type Vtable = <IInputSystemCursor as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IInputSystemCursor as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for InputSystemCursor {
+    type Target = IInputSystemCursor;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for InputSystemCursor {
+    const NAME: &'static str = "Microsoft.UI.Input.InputSystemCursor";
+}
+unsafe impl Send for InputSystemCursor {}
+unsafe impl Sync for InputSystemCursor {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InputSystemCursorShape(pub i32);
+impl InputSystemCursorShape {
+    pub const Arrow: Self = Self(0);
+    pub const Cross: Self = Self(1);
+    pub const Hand: Self = Self(3);
+    pub const Help: Self = Self(4);
+    pub const IBeam: Self = Self(5);
+    pub const SizeAll: Self = Self(6);
+    pub const SizeNortheastSouthwest: Self = Self(7);
+    pub const SizeNorthSouth: Self = Self(8);
+    pub const SizeNorthwestSoutheast: Self = Self(9);
+    pub const SizeWestEast: Self = Self(10);
+    pub const UniversalNo: Self = Self(11);
+    pub const UpArrow: Self = Self(12);
+    pub const Wait: Self = Self(13);
+    pub const Pin: Self = Self(14);
+    pub const Person: Self = Self(15);
+    pub const AppStarting: Self = Self(16);
+}
+impl windows_core::imp::TypeKind for InputSystemCursorShape {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for InputSystemCursorShape {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.UI.Input.InputSystemCursorShape;i4)",
+    );
+}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemClickEventArgs(windows_core::IUnknown);
@@ -14836,6 +15265,33 @@ impl windows_core::RuntimeType for PointInt32 {
     const SIGNATURE: windows_core::imp::ConstBuffer =
         windows_core::imp::ConstBuffer::from_slice(b"struct(Windows.Graphics.PointInt32;i4;i4)");
 }
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pointer(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    Pointer,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for Pointer {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IPointer>();
+}
+unsafe impl windows_core::Interface for Pointer {
+    type Vtable = <IPointer as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IPointer as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for Pointer {
+    type Target = IPointer;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for Pointer {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Input.Pointer";
+}
+unsafe impl Send for Pointer {}
+unsafe impl Sync for Pointer {}
 windows_core::imp::define_interface!(
     PointerEventHandler,
     PointerEventHandler_Vtbl,

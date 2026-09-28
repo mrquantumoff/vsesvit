@@ -29,6 +29,10 @@ pub(crate) struct StripEvents {
     pub toggle_muted: Box<dyn Fn(TabId)>,
     /// The tab's context menu is opening: fill it.
     pub menu: Box<FillMenu>,
+    /// The empty space under the vertical pane's tabs changed.
+    pub pane_space_changed: Box<dyn Fn()>,
+    /// The user dragged the vertical pane to this width.
+    pub pane_resized: Box<dyn Fn(f64)>,
 }
 
 pub(crate) type FillMenu = dyn Fn(TabId, &MenuFlyout);
@@ -245,6 +249,7 @@ const PANE_XAML: &str = r#"
     <RowDefinition Height="Auto"/>
     <RowDefinition Height="Auto"/>
     <RowDefinition Height="*"/>
+    <RowDefinition Height="Auto"/>
   </Grid.RowDefinitions>
   <Button x:Name="PaneToggle" Width="36" Height="32" Padding="0" Background="Transparent" BorderThickness="0"
           ToolTipService.ToolTip="Collapse the tab list (Ctrl+S)" AutomationProperties.Name="Collapse the tab list">
@@ -277,18 +282,40 @@ const PANE_XAML: &str = r#"
       </Style>
     </ListView.ItemContainerStyle>
   </ListView>
+  <Grid x:Name="MediaHost" Grid.Row="3"/>
+  <!-- Drag handles on the pane's edges; the one toward the pages shows. -->
+  <Border x:Name="GripRight" Grid.RowSpan="4" Width="6" Margin="0,-4,-4,-4" HorizontalAlignment="Right"
+          Background="Transparent" AutomationProperties.Name="Resize the tab list"/>
+  <Border x:Name="GripLeft" Grid.RowSpan="4" Width="6" Margin="-4,-4,0,-4" HorizontalAlignment="Left"
+          Background="Transparent" Visibility="Collapsed" AutomationProperties.Name="Resize the tab list"/>
 </Grid>"#;
 
-const PANE_WIDTH: f64 = 240.0;
+/// The widths a dragged pane stays between.
+pub(crate) const PANE_WIDTHS: (f64, f64) = (180.0, 480.0);
 const PANE_COMPACT_WIDTH: f64 = 48.0;
+
+/// Which side of the pages the pane is on, so which edge drags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaneSide {
+    Left,
+    Right,
+}
 
 pub(crate) struct SidePane {
     root: FrameworkElement,
     list: ListView,
     toggle: Button,
     new_tab_text: UIElement,
+    media_host: Panel,
+    grips: [UIElement; 2],
     rows: Rows,
     compact: Cell<bool>,
+    width: Cell<f64>,
+    side: Cell<PaneSide>,
+    /// While dragging: the x of the pane's fixed edge, in window coordinates.
+    drag: Cell<Option<f64>>,
+    /// The empty space under the tabs as last reported.
+    free: Cell<f64>,
     events: Events,
 }
 
@@ -299,9 +326,15 @@ impl SidePane {
             list: xaml::find(&root, "TabList")?,
             toggle: xaml::find(&root, "PaneToggle")?,
             new_tab_text: xaml::find(&root, "PaneNewTabText")?,
+            media_host: xaml::find(&root, "MediaHost")?,
+            grips: [xaml::find(&root, "GripRight")?, xaml::find(&root, "GripLeft")?],
             root,
             rows: Rows::default(),
             compact: Cell::new(false),
+            width: Cell::new(240.0),
+            side: Cell::new(PaneSide::Left),
+            drag: Cell::new(None),
+            free: Cell::new(0.0),
             events: events.clone(),
         });
         let e = events.clone();
@@ -321,7 +354,159 @@ impl SidePane {
             .cast::<ListViewBase>()?
             .DragItemsCompleted(move |_, _| (e.reordered)())?
             .forget();
+        for grip in &this.grips {
+            this.wire_grip(grip)?;
+        }
+        let weak = Rc::downgrade(&this);
+        this.root
+            .LayoutUpdated(move |_, _| {
+                if let Some(this) = weak.upgrade() {
+                    this.measure_free();
+                }
+            })?
+            .forget();
         Ok(this)
+    }
+
+    fn wire_grip(self: &Rc<Self>, grip: &UIElement) -> Result<()> {
+        let cursor = InputSystemCursor::Create(InputSystemCursorShape::SizeWestEast)?;
+        if let Err(e) = grip
+            .cast::<IUIElementProtected>()
+            .and_then(|g| g.SetProtectedCursor(&cursor.cast::<InputCursor>()?))
+        {
+            log::debug!("pane grip cursor: {e}");
+        }
+        let weak = Rc::downgrade(self);
+        let target = grip.clone();
+        grip.PointerPressed(move |_, args| {
+            let (Some(this), Some(args)) = (weak.upgrade(), args.as_ref()) else {
+                return;
+            };
+            if this.compact.get() {
+                return;
+            }
+            let Some(origin) = this.origin_x() else { return };
+            let fixed = match this.side.get() {
+                PaneSide::Left => origin,
+                PaneSide::Right => origin + this.width.get(),
+            };
+            this.drag.set(Some(fixed));
+            let _ = args.Pointer().and_then(|p| target.CapturePointer(&p));
+            let _ = args.SetHandled(true);
+        })?
+        .forget();
+        let weak = Rc::downgrade(self);
+        grip.PointerMoved(move |_, args| {
+            let (Some(this), Some(args)) = (weak.upgrade(), args.as_ref()) else {
+                return;
+            };
+            this.drag_to(args);
+        })?
+        .forget();
+        let weak = Rc::downgrade(self);
+        let target = grip.clone();
+        grip.PointerReleased(move |_, args| {
+            if let (Some(this), Some(args)) = (weak.upgrade(), args.as_ref()) {
+                // Moves just before the release may come only with it.
+                this.drag_to(args);
+                let _ = args.Pointer().and_then(|p| target.ReleasePointerCapture(&p));
+                this.end_drag();
+            }
+        })?
+        .forget();
+        let weak = Rc::downgrade(self);
+        grip.PointerCaptureLost(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                this.end_drag();
+            }
+        })?
+        .forget();
+        Ok(())
+    }
+
+    fn drag_to(&self, args: &PointerRoutedEventArgs) {
+        let Some(fixed) = self.drag.get() else { return };
+        if let Ok(point) = args
+            .GetCurrentPoint(None::<&UIElement>)
+            .and_then(|p| p.Position())
+        {
+            self.set_width((f64::from(point.x) - fixed).abs());
+        }
+    }
+
+    fn end_drag(&self) {
+        if self.drag.take().is_some() {
+            (self.events.pane_resized)(self.width.get());
+        }
+    }
+
+    fn origin_x(&self) -> Option<f64> {
+        let origin = self
+            .root
+            .cast::<UIElement>()
+            .and_then(|e| e.TransformToVisual(None::<&UIElement>))
+            .and_then(|t| t.TransformPoint(Point { x: 0.0, y: 0.0 }))
+            .ok()?;
+        Some(f64::from(origin.x))
+    }
+
+    /// The expanded pane's width, within [`PANE_WIDTHS`].
+    pub fn set_width(&self, width: f64) {
+        let width = width.clamp(PANE_WIDTHS.0, PANE_WIDTHS.1).round();
+        self.width.set(width);
+        if !self.compact.get() {
+            let _ = self.root.SetWidth(width);
+        }
+    }
+
+    pub fn set_side(&self, side: PaneSide) {
+        self.side.set(side);
+        self.show_grip();
+    }
+
+    fn show_grip(&self) {
+        let compact = self.compact.get();
+        let right = self.side.get() == PaneSide::Left;
+        let _ = xaml::set_visible(&self.grips[0], !compact && right);
+        let _ = xaml::set_visible(&self.grips[1], !compact && !right);
+    }
+
+    /// Puts `element` (the player) under the tab list.
+    pub fn set_media(&self, element: &FrameworkElement) -> Result<()> {
+        let children = self.media_host.Children()?;
+        children.Clear()?;
+        children.Append(&element.cast::<UIElement>()?)
+    }
+
+    /// The height the tab list does not use, which the player's picture-in-picture may take.
+    pub fn free_height(&self) -> f64 {
+        self.free.get()
+    }
+
+    fn measure_free(&self) {
+        let Some(viewer) = self
+            .list
+            .cast::<DependencyObject>()
+            .ok()
+            .and_then(|list| xaml::find_descendant::<ScrollViewer>(&list))
+        else {
+            return;
+        };
+        // The items panel stretches to the viewport; the tabs' own height is what the scroll
+        // viewer measured its content at, without a height limit.
+        let content = viewer
+            .cast::<ContentControl>()
+            .and_then(|v| v.Content())
+            .and_then(|c| c.cast::<UIElement>())
+            .and_then(|c| c.DesiredSize());
+        let free = match (viewer.ViewportHeight(), content) {
+            (Ok(viewport), Ok(content)) => viewport - f64::from(content.height),
+            _ => return,
+        };
+        if (free - self.free.get()).abs() > 0.5 {
+            self.free.set(free);
+            (self.events.pane_space_changed)();
+        }
     }
 
     pub fn element(&self) -> &FrameworkElement {
@@ -338,9 +523,10 @@ impl SidePane {
         let width = if compact {
             PANE_COMPACT_WIDTH
         } else {
-            PANE_WIDTH
+            self.width.get()
         };
         let _ = self.root.SetWidth(width);
+        self.show_grip();
         let _ = xaml::set_visible(&self.new_tab_text, !compact);
         let tip = if compact {
             "Expand the tab list (Ctrl+S)"

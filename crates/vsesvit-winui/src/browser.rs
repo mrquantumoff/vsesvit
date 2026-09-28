@@ -48,6 +48,13 @@ const TAB_PANE_COLLAPSED: Pref<bool> = Pref {
     default: || false,
 };
 
+/// The vertical tab list's width when expanded, in view pixels. Per device, like collapsing it.
+const TAB_PANE_WIDTH: Pref<u32> = Pref {
+    key: "tabs.pane_width",
+    scope: Scope::Local,
+    default: || 240,
+};
+
 /// The window material. Per device: only the Windows shell has one.
 const WINDOW_BACKDROP: Pref<Backdrop> = Pref {
     key: "window.backdrop",
@@ -144,6 +151,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
     let prefs = WindowPrefs {
         tabs: profile.prefs().get(&keys::TABS_POSITION),
         pane_collapsed: profile.prefs().get(&TAB_PANE_COLLAPSED),
+        pane_width: profile.prefs().get(&TAB_PANE_WIDTH),
         theme: profile.prefs().get(&keys::THEME),
         bookmarks_bar: profile.prefs().get(&keys::SHOW_BOOKMARKS_BAR),
         home_button: profile.prefs().get(&keys::SHOW_HOME_BUTTON),
@@ -787,6 +795,15 @@ impl Browser {
         self.update_prefs(|p| p.pane_collapsed = collapsed);
         for window in self.windows() {
             window.set_pane_collapsed(collapsed);
+        }
+    }
+
+    /// Saves the width the user dragged a window's tab list to, and gives it to every window.
+    pub fn set_tab_pane_width(&self, width: u32) {
+        self.write_pref(&TAB_PANE_WIDTH, &width);
+        self.update_prefs(|p| p.pane_width = width);
+        for window in self.windows() {
+            window.set_pane_width(width);
         }
     }
 

@@ -8,6 +8,7 @@
 //! call, because XAML raises events such as `SelectionChanged` synchronously from inside them.
 
 mod chrome;
+mod media;
 mod tab_actions;
 mod tab_layout;
 mod tab_menu;
@@ -34,6 +35,7 @@ use crate::layout::StripKind;
 use crate::popup::{self, Activation, ExtensionAction, OpenerTab, Popup};
 use crate::session::{TabPlan, WindowPlan};
 use crate::shortcuts::Command;
+use crate::player::Player;
 use crate::strip::{SidePane, TopStrip};
 use crate::tab::{Initial, Tab, TabId};
 use crate::updates::{Action, Banner, Severity};
@@ -87,6 +89,7 @@ impl Backdrop {
 pub(crate) struct WindowPrefs {
     pub tabs: TabsPosition,
     pub pane_collapsed: bool,
+    pub pane_width: u32,
     pub theme: Theme,
     pub bookmarks_bar: bool,
     /// The Home button next to Reload.
@@ -121,6 +124,8 @@ pub(crate) struct BrowserWindow {
     ui: Chrome,
     top: Rc<TopStrip>,
     side: Rc<SidePane>,
+    player: Player,
+    media: media::MediaState,
     tabs_position: Cell<TabsPosition>,
     tabs: RefCell<Vec<Rc<Tab>>>,
     /// The user typed into the address box since it last showed the page URL.
@@ -175,12 +180,16 @@ impl BrowserWindow {
         let events = Rc::new(strip_events(&slot));
         let top = TopStrip::new(ui.tab_view.clone(), &events)?;
         let side = SidePane::new(&events)?;
+        let player = Player::new(wiring::player_events(&slot))?;
+        side.set_media(player.element())?;
         let this = Rc::new_cyclic(|me: &Weak<BrowserWindow>| Self {
             browser: Rc::downgrade(browser),
             window,
             ui,
             top,
             side,
+            player,
+            media: media::MediaState::default(),
             tabs_position: Cell::new(prefs.tabs),
             tabs: RefCell::new(Vec::new()),
             address_edited: Cell::new(false),
@@ -202,6 +211,7 @@ impl BrowserWindow {
             me: me.clone(),
         });
         let _ = slot.set(this.me.clone());
+        this.side.set_width(f64::from(prefs.pane_width));
         this.side.set_compact(prefs.pane_collapsed);
         this.show_layout(prefs.tabs)?;
         this.apply_theme(prefs.theme);
@@ -398,6 +408,7 @@ impl BrowserWindow {
             }
             strip.remove(tab.id)?;
         }
+        self.media_tab_closing(tab.id);
         let children = self.ui.pages.Children()?;
         let view = tab.view().cast::<UIElement>()?;
         let mut index = 0;
@@ -408,6 +419,7 @@ impl BrowserWindow {
         self.tabs.borrow_mut().retain(|t| t.id != tab.id);
         self.forget_split_of(tab.id);
         self.sync_selection();
+        self.show_media();
         Ok(())
     }
 
@@ -449,6 +461,7 @@ impl BrowserWindow {
     /// Shows the selected tab's web view, hides the rest, and refreshes the toolbar.
     fn sync_selection(&self) {
         let active = self.active_tab();
+        self.update_pip();
         self.place_views(active.as_ref().map(|t| t.id));
         if self.fullscreen.get() && !active.as_ref().is_some_and(|t| t.state().fullscreen) {
             self.set_fullscreen(false);
@@ -475,13 +488,13 @@ impl BrowserWindow {
     /// Called by a tab whenever its state changed.
     pub fn tab_updated(&self, tab: &Tab) {
         self.strip().update(tab.id, &tab.look());
+        if self.media_tab() == Some(tab.id) {
+            self.refresh_media();
+        }
         if self.active_tab().is_some_and(|a| a.id == tab.id) {
             self.refresh_chrome();
         }
     }
-
-    /// A tab started or stopped playing sound, or was muted or unmuted.
-    pub fn tab_audio_changed(&self, _tab: &Tab) {}
 
     pub fn tab_fullscreen_changed(&self, tab: &Tab, fullscreen: bool) {
         if self.active_tab().is_some_and(|a| a.id == tab.id) {
