@@ -1,10 +1,12 @@
 //! The address entry: shows the selected tab's committed URI and load progress, takes typed
-//! input, and offers suggestions in a popover below it.
+//! input, and offers suggestions in a popover below it. Unless full URLs are on, the URI reads
+//! simplified (`example.com` for `https://www.example.com/`) while the entry does not have
+//! focus.
 //!
 //! It emits `edited` for every change the user makes, `submitted` when Enter is pressed without
 //! a suggestion selected, and `cancelled` when Escape gives up editing.
 
-use std::cell::{Cell, OnceCell, RefCell};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -12,6 +14,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib::subclass::Signal;
 use gtk::{gdk, glib};
+use vsesvit_core::search::simplified_url;
 
 use crate::tab::display_uri;
 
@@ -47,6 +50,41 @@ impl Security {
     }
 }
 
+/// The page's URI as the entry shows it when the user is not editing.
+#[derive(Default)]
+struct Shown {
+    /// While the entry has focus, or with full URLs on.
+    full: String,
+    simplified: String,
+}
+
+impl Shown {
+    fn of(uri: Option<&str>) -> Self {
+        let full = uri.map(display_uri).unwrap_or_default();
+        let simplified = uri.map_or_else(String::new, |uri| simplified_display(uri, &full));
+        Shown { full, simplified }
+    }
+}
+
+/// [`simplified_url`] of `uri` applied to `display`, its [`display_uri`], so a decoded host or
+/// path stays decoded: `simplified_url` reparses, which would encode them again.
+fn simplified_display(uri: &str, display: &str) -> String {
+    let simplified = simplified_url(uri);
+    if simplified == uri {
+        return display.to_owned();
+    }
+    let Some(mut rest) = display.strip_prefix("https://") else {
+        return display.to_owned();
+    };
+    if !simplified.starts_with("www.") {
+        rest = rest.strip_prefix("www.").unwrap_or(rest);
+    }
+    if uri.ends_with('/') && !simplified.ends_with('/') {
+        rest = rest.strip_suffix('/').unwrap_or(rest);
+    }
+    rest.to_owned()
+}
+
 mod imp {
     use super::*;
 
@@ -55,11 +93,12 @@ mod imp {
         pub(super) entry: gtk::Entry,
         pub(super) popover: gtk::Popover,
         pub(super) list: gtk::ListBox,
-        pub(super) focus: OnceCell<gtk::EventControllerFocus>,
         pub(super) items: RefCell<Vec<Suggestion>>,
-        /// What the entry shows when the user is not editing it.
-        pub(super) shown: RefCell<String>,
+        pub(super) shown: RefCell<Shown>,
         pub(super) editing: Cell<bool>,
+        /// The entry has the keyboard focus, and so shows the whole URI.
+        pub(super) focused: Cell<bool>,
+        pub(super) full_urls: Cell<bool>,
         pub(super) security: Cell<Security>,
         pub(super) updating: Cell<bool>,
         pub(super) popover_width: Cell<i32>,
@@ -179,32 +218,89 @@ impl AddressBar {
         entry.add_controller(keys);
 
         let focus = gtk::EventControllerFocus::new();
-        focus.connect_leave(glib::clone!(
-            #[weak]
-            popover,
-            move |_| popover.popdown()
+        focus.connect_enter(glib::clone!(
+            #[weak(rename_to = bar)]
+            self,
+            move |_| bar.focus_changed(true)
         ));
-        entry.add_controller(focus.clone());
-        imp.focus.set(focus).expect("setup runs once");
+        focus.connect_leave(glib::clone!(
+            #[weak(rename_to = bar)]
+            self,
+            move |_| bar.focus_changed(false)
+        ));
+        entry.add_controller(focus);
     }
 
     /// Shows `uri` (the selected tab's committed URI) unless the user is editing.
     pub(crate) fn show_uri(&self, uri: Option<&str>) {
         let imp = self.imp();
-        imp.shown.replace(uri.map(display_uri).unwrap_or_default());
+        imp.shown.replace(Shown::of(uri));
         if !imp.editing.get() {
-            self.set_text_quietly(&imp.shown.borrow());
+            self.show_resting();
         }
     }
 
     /// Switches to another tab's state: its unsubmitted text if it had any, else its URI.
     pub(crate) fn restore(&self, typed: Option<String>, uri: Option<&str>) {
         let imp = self.imp();
-        imp.shown.replace(uri.map(display_uri).unwrap_or_default());
+        imp.shown.replace(Shown::of(uri));
         imp.editing.set(typed.is_some());
-        self.set_text_quietly(&typed.unwrap_or_else(|| imp.shown.borrow().clone()));
+        match typed {
+            Some(typed) => self.set_text_quietly(&typed),
+            None => self.show_resting(),
+        }
         imp.popover.popdown();
         self.show_security();
+    }
+
+    /// Whole URIs even while the entry does not have focus.
+    pub(crate) fn set_full_urls(&self, full: bool) {
+        let imp = self.imp();
+        imp.full_urls.set(full);
+        if !imp.editing.get() {
+            self.show_resting();
+        }
+    }
+
+    /// The page's URI, whole or simplified, for when the user is not editing.
+    fn show_resting(&self) {
+        let imp = self.imp();
+        let text = {
+            let shown = imp.shown.borrow();
+            if imp.focused.get() || imp.full_urls.get() {
+                shown.full.clone()
+            } else {
+                shown.simplified.clone()
+            }
+        };
+        self.set_text_quietly(&text);
+    }
+
+    /// Focus in shows the whole URI, selected; focus out goes back to the simplified one.
+    /// Text the user typed stays either way.
+    fn focus_changed(&self, focused: bool) {
+        let imp = self.imp();
+        imp.focused.set(focused);
+        if !focused {
+            imp.popover.popdown();
+        }
+        if imp.editing.get() {
+            return;
+        }
+        self.show_resting();
+        if focused {
+            // After the click that focused the entry has placed the cursor.
+            glib::idle_add_local_once(glib::clone!(
+                #[weak(rename_to = bar)]
+                self,
+                move || {
+                    let imp = bar.imp();
+                    if imp.focused.get() && !imp.editing.get() {
+                        imp.entry.select_region(0, -1);
+                    }
+                }
+            ));
+        }
     }
 
     /// The unsubmitted text, if the user has been editing.
@@ -264,8 +360,7 @@ impl AddressBar {
         for item in &items {
             imp.list.append(&suggestion_row(item));
         }
-        let has_focus = imp.focus.get().is_some_and(|f| f.contains_focus());
-        if items.is_empty() || !has_focus {
+        if items.is_empty() || !imp.focused.get() {
             imp.popover.popdown();
         } else {
             imp.popover.popup();
@@ -339,14 +434,13 @@ impl AddressBar {
             .and_then(|i| self.imp().items.borrow().get(i).cloned());
         let Some(suggestion) = chosen else { return };
         self.finish_editing();
-        self.set_text_quietly(&self.imp().shown.borrow());
+        self.show_resting();
         (suggestion.activate)();
     }
 
     fn cancel(&self) {
-        let imp = self.imp();
         self.finish_editing();
-        self.set_text_quietly(&imp.shown.borrow());
+        self.show_resting();
         self.emit_by_name::<()>("cancelled", &[]);
     }
 
@@ -421,6 +515,7 @@ fn suggestion_row(item: &Suggestion) -> gtk::ListBoxRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::wait_until;
 
     #[test]
     fn security_follows_the_scheme() {
@@ -432,5 +527,75 @@ mod tests {
         assert_eq!(Security::of(Some("file:///tmp/x")), Security::NotApplicable);
         assert_eq!(Security::of(Some("about:blank")), Security::NotApplicable);
         assert_eq!(Security::of(None), Security::NotApplicable);
+    }
+
+    #[test]
+    fn simplifying_keeps_the_decoded_form() {
+        let simplified = |uri: &str, display: &str| simplified_display(uri, display);
+        assert_eq!(
+            simplified("https://www.xn--e1afmkfd.xn--j1amh/", "https://www.пример.укр/"),
+            "пример.укр"
+        );
+        assert_eq!(
+            simplified("https://uk.wikipedia.org/wiki/%D0%9A%D0%B8%D1%97%D0%B2", "https://uk.wikipedia.org/wiki/Київ"),
+            "uk.wikipedia.org/wiki/Київ"
+        );
+        assert_eq!(simplified("https://example.com/a/", "https://example.com/a/"), "example.com/a/");
+        assert_eq!(simplified("https://www.com/", "https://www.com/"), "www.com");
+        assert_eq!(simplified("http://www.example.com/", "http://www.example.com/"), "http://www.example.com/");
+        assert_eq!(simplified("file:///tmp/x", "file:///tmp/x"), "file:///tmp/x");
+    }
+
+    fn bar_in_window() -> (gtk::Window, AddressBar, gtk::Button) {
+        let bar = AddressBar::new();
+        let other = gtk::Button::with_label("Elsewhere");
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.append(&bar);
+        content.append(&other);
+        let window = gtk::Window::builder().child(&content).build();
+        window.present();
+        other.grab_focus();
+        (window, bar, other)
+    }
+
+    fn selected(bar: &AddressBar) -> Option<(i32, i32)> {
+        bar.imp().entry.selection_bounds()
+    }
+
+    #[gtk::test]
+    fn focus_shows_the_whole_url_selected_and_leaving_simplifies_it() {
+        let (window, bar, other) = bar_in_window();
+        let entry = bar.imp().entry.clone();
+        bar.show_uri(Some("https://www.example.com/"));
+        let unfocused = entry.text();
+
+        entry.grab_focus();
+        wait_until("the whole URL, selected", || {
+            entry.text() == "https://www.example.com/" && selected(&bar).is_some()
+        });
+        let focused_selection = selected(&bar);
+
+        other.grab_focus();
+        let after_leaving = entry.text();
+
+        bar.set_full_urls(true);
+        let full = entry.text();
+        bar.set_full_urls(false);
+
+        entry.grab_focus();
+        entry.set_text("typed");
+        other.grab_focus();
+        let typed = entry.text();
+
+        bar.restore(None, Some("about:blank"));
+        let blank = entry.text();
+        window.destroy();
+
+        assert_eq!(unfocused, "example.com");
+        assert_eq!(focused_selection, Some((0, 24)));
+        assert_eq!(after_leaving, "example.com");
+        assert_eq!(full, "https://www.example.com/");
+        assert_eq!(typed, "typed", "leaving keeps what the user typed");
+        assert_eq!(blank, "");
     }
 }

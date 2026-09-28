@@ -35,6 +35,9 @@ use tab_list::TabList;
 
 pub(crate) use layout::{LayoutProbe, classify as classify_layout};
 
+/// The compact address bar's widest, star included.
+const COMPACT_ADDRESS_WIDTH: i32 = 720;
+
 /// Whether a newly opened tab is selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Focus {
@@ -46,6 +49,8 @@ struct Ui {
     toolbar: adw::ToolbarView,
     header: adw::HeaderBar,
     sidebar_toggle: gtk::ToggleButton,
+    /// Holds the address bar and the star; narrow and centered when the bar is compact.
+    location: adw::Clamp,
     address: AddressBar,
     reload: gtk::Button,
     zoom_level: gtk::Button,
@@ -125,6 +130,8 @@ impl BrowserWindow {
         window.connect_signals();
         window.apply_layout(browser.tabs_position());
         window.set_bookmarks_bar_visible(browser.bookmarks_bar_visible());
+        window.set_compact_address_bar(browser.compact_address_bar());
+        window.set_full_urls(browser.full_urls());
         window.refresh_bookmarks_bar();
         window.refresh_extension_actions();
         if browser.downloads().started_this_session() {
@@ -203,12 +210,7 @@ impl BrowserWindow {
         let location = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         location.append(&address);
         location.append(&star);
-        let title = adw::Clamp::builder()
-            .maximum_size(860)
-            .tightening_threshold(600)
-            .hexpand(true)
-            .child(&location)
-            .build();
+        let title = adw::Clamp::builder().hexpand(true).child(&location).build();
 
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
@@ -278,6 +280,7 @@ impl BrowserWindow {
             toolbar,
             header,
             sidebar_toggle,
+            location: title,
             address,
             reload,
             zoom_level,
@@ -472,6 +475,20 @@ impl BrowserWindow {
             action.set_state(&shown.to_variant());
         }
         self.ui().bookmarks_bar.set_revealed(shown);
+    }
+
+    /// A compact bar is at most [`COMPACT_ADDRESS_WIDTH`] wide, centered in the header;
+    /// otherwise it fills the space between the buttons.
+    pub(crate) fn set_compact_address_bar(&self, compact: bool) {
+        let width = if compact { COMPACT_ADDRESS_WIDTH } else { i32::MAX };
+        let clamp = &self.ui().location;
+        // The threshold at the maximum keeps the clamp from easing the width in below it.
+        clamp.set_maximum_size(width);
+        clamp.set_tightening_threshold(width);
+    }
+
+    pub(crate) fn set_full_urls(&self, full: bool) {
+        self.ui().address.set_full_urls(full);
     }
 
     pub(crate) fn refresh_bookmarks_bar(&self) {
@@ -806,4 +823,38 @@ fn icon_button(icon: &str, action: &str, tooltip: &str) -> gtk::Button {
         .action_name(action)
         .tooltip_text(tooltip)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{browser, wait_until};
+
+    #[gtk::test]
+    fn a_compact_address_bar_is_narrow_and_a_full_one_fills_the_header() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.set_default_size(1600, 900);
+        window.present();
+        let address = window.address_bar().clone();
+        let header = window.ui().header.clone();
+
+        browser.set_compact_address_bar(true);
+        wait_until("a compact address bar", || (1..=COMPACT_ADDRESS_WIDTH).contains(&address.width()));
+        let compact = address.width();
+        let compact_centered = {
+            let bounds = address.compute_bounds(&header).expect("the bar is in the header");
+            (bounds.x() + bounds.width() / 2.0 - header.width() as f32 / 2.0).abs()
+        };
+
+        browser.set_compact_address_bar(false);
+        wait_until("a full-width address bar", || address.width() > COMPACT_ADDRESS_WIDTH);
+        let full = address.width();
+
+        browser.set_compact_address_bar(true);
+        window.destroy();
+        assert!(compact <= COMPACT_ADDRESS_WIDTH, "compact bar is {compact} px");
+        assert!(compact_centered < 40.0, "compact bar is {compact_centered} px off center");
+        assert!(full > COMPACT_ADDRESS_WIDTH, "full bar is {full} px");
+    }
 }

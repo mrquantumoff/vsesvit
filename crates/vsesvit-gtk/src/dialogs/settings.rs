@@ -1,6 +1,7 @@
 //! The Settings dialog, bound to core's preferences: startup behaviour and homepage, tab
 //! position (applied to every window at once), default search engine, theme (through
-//! `AdwStyleManager`), the bookmarks bar, and where downloads go.
+//! `AdwStyleManager`), the address bar's width and URLs, the bookmarks bar, and where
+//! downloads go.
 
 use std::rc::Rc;
 
@@ -54,6 +55,8 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
 
     let appearance = adw::PreferencesGroup::builder().title("Appearance").build();
     appearance.add(&theme_row(&browser));
+    appearance.add(&compact_address_bar_row(&browser));
+    appearance.add(&full_urls_row(&browser));
     appearance.add(&bookmarks_bar_row(&browser));
 
     let files = adw::PreferencesGroup::builder().title("Downloads").build();
@@ -242,6 +245,34 @@ fn theme_row(browser: &Browser) -> adw::ComboRow {
                 browser.set_theme(*theme);
             }
         }
+    ));
+    row
+}
+
+fn compact_address_bar_row(browser: &Browser) -> adw::SwitchRow {
+    let row = adw::SwitchRow::builder()
+        .title("Compact Address Bar")
+        .subtitle("A narrow address bar in the middle of the toolbar")
+        .active(browser.compact_address_bar())
+        .build();
+    row.connect_active_notify(glib::clone!(
+        #[strong]
+        browser,
+        move |row| browser.set_compact_address_bar(row.is_active())
+    ));
+    row
+}
+
+fn full_urls_row(browser: &Browser) -> adw::SwitchRow {
+    let row = adw::SwitchRow::builder()
+        .title("Always Show Full URLs")
+        .subtitle("Otherwise https:// and www. show only while editing the address")
+        .active(browser.full_urls())
+        .build();
+    row.connect_active_notify(glib::clone!(
+        #[strong]
+        browser,
+        move |row| browser.set_full_urls(row.is_active())
     ));
     row
 }

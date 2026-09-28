@@ -450,6 +450,34 @@ impl Browser {
         }
     }
 
+    pub(crate) fn compact_address_bar(&self) -> bool {
+        self.core().borrow_mut().prefs().get(&keys::COMPACT_ADDRESS_BAR)
+    }
+
+    pub(crate) fn set_compact_address_bar(&self, compact: bool) {
+        let set = self.core().borrow_mut().prefs().set(&keys::COMPACT_ADDRESS_BAR, &compact);
+        if let Err(e) = set {
+            log::warn!("prefs: {e}");
+        }
+        for window in self.windows() {
+            window.set_compact_address_bar(compact);
+        }
+    }
+
+    pub(crate) fn full_urls(&self) -> bool {
+        self.core().borrow_mut().prefs().get(&keys::SHOW_FULL_URLS)
+    }
+
+    pub(crate) fn set_full_urls(&self, full: bool) {
+        let set = self.core().borrow_mut().prefs().set(&keys::SHOW_FULL_URLS, &full);
+        if let Err(e) = set {
+            log::warn!("prefs: {e}");
+        }
+        for window in self.windows() {
+            window.set_full_urls(full);
+        }
+    }
+
     pub(crate) fn theme(&self) -> Theme {
         self.core().borrow_mut().prefs().get(&keys::THEME)
     }
@@ -516,9 +544,12 @@ impl Browser {
             self.apply_theme();
             let position = self.tabs_position();
             let bar = self.bookmarks_bar_visible();
+            let (compact, full_urls) = (self.compact_address_bar(), self.full_urls());
             for window in self.windows() {
                 window.apply_layout(position);
                 window.set_bookmarks_bar_visible(bar);
+                window.set_compact_address_bar(compact);
+                window.set_full_urls(full_urls);
             }
         }
     }
