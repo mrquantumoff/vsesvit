@@ -134,11 +134,26 @@ const WINDOW_XAML: &str = r#"
   </Grid>
 
   <Grid x:Name="BookmarksBar" Grid.Row="2" Height="30" Padding="8,0,8,2" Background="Transparent">
-    <!-- Scrolls sideways (the mouse wheel too) instead of clipping when the items do not fit. -->
-    <ScrollViewer x:Name="BookmarkScroller" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Hidden"
-                  VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled">
-      <StackPanel x:Name="BookmarkItems" Orientation="Horizontal" Spacing="1" VerticalAlignment="Center"/>
-    </ScrollViewer>
+    <!-- Items drag to reorder, and the bar scrolls sideways (the mouse wheel too) instead of
+         clipping the items that do not fit. -->
+    <ListView x:Name="BookmarkItems" SelectionMode="None" IsItemClickEnabled="True"
+              CanDragItems="True" CanReorderItems="True" AllowDrop="True"
+              ScrollViewer.HorizontalScrollMode="Enabled" ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+              ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled"
+              AutomationProperties.Name="Bookmarks bar">
+      <ListView.ItemsPanel>
+        <ItemsPanelTemplate><ItemsStackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+      </ListView.ItemsPanel>
+      <ListView.ItemContainerStyle>
+        <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+          <Setter Property="MinWidth" Value="0"/>
+          <Setter Property="MinHeight" Value="24"/>
+          <Setter Property="Height" Value="24"/>
+          <Setter Property="Padding" Value="6,0"/>
+          <Setter Property="Margin" Value="0,0,1,0"/>
+        </Style>
+      </ListView.ItemContainerStyle>
+    </ListView>
     <TextBlock x:Name="BookmarksHint" Margin="6,0" VerticalAlignment="Center"
                Style="{StaticResource CaptionTextBlockStyle}"
                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -195,7 +210,7 @@ pub(super) struct Chrome {
     pub(super) star_glyph: FontIcon,
     pub(super) extension_actions: Panel,
     pub(super) bookmarks_bar: UIElement,
-    pub(super) bookmark_items: Panel,
+    pub(super) bookmark_items: ListView,
     pub(super) bookmarks_hint: UIElement,
     pub(super) update_bar: InfoBar,
     pub(super) update_action: Button,

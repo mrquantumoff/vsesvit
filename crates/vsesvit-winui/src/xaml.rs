@@ -26,9 +26,33 @@ const ACRYLIC_MENU: &str = r#"
       </Style>
     </MenuFlyout.MenuFlyoutPresenterStyle>"#;
 
-/// An empty menu with the acrylic backdrop.
+/// An empty menu with the acrylic backdrop, opening below its anchor.
 pub(crate) fn acrylic_menu() -> Result<MenuFlyout> {
-    load("<MenuFlyout {ns}>{acrylic_menu}</MenuFlyout>")
+    load(r#"<MenuFlyout {ns} Placement="BottomEdgeAlignedLeft">{acrylic_menu}</MenuFlyout>"#)
+}
+
+/// Decodes a PNG into an image source.
+pub(crate) async fn png_image(png: &[u8]) -> Result<ImageSource> {
+    let stream = InMemoryRandomAccessStream::new()?.cast::<IRandomAccessStream>()?;
+    let writer = DataWriter::CreateDataWriter(&stream.GetOutputStreamAt(0)?)?;
+    writer.WriteBytes(png)?;
+    writer.StoreAsync()?.await?;
+    let bitmap = BitmapImage::new()?;
+    bitmap
+        .cast::<BitmapSource>()?
+        .SetSourceAsync(&stream)?
+        .await?;
+    bitmap.cast()
+}
+
+/// Every byte of a stream, from its start.
+pub(crate) async fn read_all(stream: &IRandomAccessStream) -> Result<Vec<u8>> {
+    let size = u32::try_from(stream.Size()?).map_err(|_| windows_core::Error::empty())?;
+    let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
+    reader.LoadAsync(size)?.await?;
+    let mut bytes = vec![0; size as usize];
+    reader.ReadBytes(&mut bytes)?;
+    Ok(bytes)
 }
 
 pub(crate) fn find<T: Interface>(scope: &FrameworkElement, name: &str) -> Result<T> {

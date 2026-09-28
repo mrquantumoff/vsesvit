@@ -1676,6 +1676,58 @@ unsafe impl Sync for DataReader {}
 pub type DataReaderLoadOperation = windows_future::IAsyncOperation<u32>;
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataWriter(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    DataWriter,
+    windows_core::IUnknown,
+    windows_core::IInspectable,
+    IDataWriter
+);
+impl DataWriter {
+    pub fn CreateDataWriter<P0>(outputstream: P0) -> windows_core::Result<Self>
+    where
+        P0: windows_core::Param<IOutputStream>,
+    {
+        Self::IDataWriterFactory(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateDataWriter)(
+                windows_core::Interface::as_raw(this),
+                outputstream.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IDataWriterFactory<R, F: FnOnce(&IDataWriterFactory) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<DataWriter, IDataWriterFactory> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for DataWriter {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IDataWriter>();
+}
+unsafe impl windows_core::Interface for DataWriter {
+    type Vtable = <IDataWriter as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IDataWriter as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for DataWriter {
+    type Target = IDataWriter;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for DataWriter {
+    const NAME: &'static str = "Windows.Storage.Streams.DataWriter";
+}
+unsafe impl Send for DataWriter {}
+unsafe impl Sync for DataWriter {}
+pub type DataWriterStoreOperation = windows_future::IAsyncOperation<u32>;
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Deferral(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     Deferral,
@@ -6039,6 +6091,92 @@ pub struct IDataReaderStatics_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    IDataWriter,
+    IDataWriter_Vtbl,
+    0x64b89265_d341_4922_b38a_dd4af8808c4e
+);
+impl windows_core::RuntimeType for IDataWriter {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+windows_core::imp::interface_hierarchy!(
+    IDataWriter,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl IDataWriter {
+    pub fn WriteBytes(&self, value: &[u8]) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).WriteBytes)(
+                windows_core::Interface::as_raw(self),
+                value.len().try_into().unwrap(),
+                value.as_ptr(),
+            )
+            .ok()
+        }
+    }
+    pub fn StoreAsync(&self) -> windows_core::Result<DataWriterStoreOperation> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).StoreAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct IDataWriter_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    UnstoredBufferLength: usize,
+    UnicodeEncoding: usize,
+    SetUnicodeEncoding: usize,
+    ByteOrder: usize,
+    SetByteOrder: usize,
+    WriteByte: usize,
+    pub WriteBytes:
+        unsafe extern "system" fn(*mut core::ffi::c_void, u32, *const u8) -> windows_core::HRESULT,
+    WriteBuffer: usize,
+    WriteBufferRange: usize,
+    WriteBoolean: usize,
+    WriteGuid: usize,
+    WriteInt16: usize,
+    WriteInt32: usize,
+    WriteInt64: usize,
+    WriteUInt16: usize,
+    WriteUInt32: usize,
+    WriteUInt64: usize,
+    WriteSingle: usize,
+    WriteDouble: usize,
+    WriteDateTime: usize,
+    WriteTimeSpan: usize,
+    WriteString: usize,
+    MeasureString: usize,
+    pub StoreAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IDataWriterFactory,
+    IDataWriterFactory_Vtbl,
+    0x338c67c2_8b84_4c2b_9c50_7b8767847a1f
+);
+impl windows_core::RuntimeType for IDataWriterFactory {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IDataWriterFactory_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub CreateDataWriter: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     IDeferral,
     IDeferral_Vtbl,
     0xd6269732_3b7f_46a7_b40b_4fdca2a2c693
@@ -6478,6 +6616,18 @@ impl IFlyoutBase {
             ))
         }
     }
+    pub fn ShowAt<P0>(&self, placementtarget: P0) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<FrameworkElement>,
+    {
+        unsafe {
+            (windows_core::Interface::vtable(self).ShowAt)(
+                windows_core::Interface::as_raw(self),
+                placementtarget.param().abi(),
+            )
+            .ok()
+        }
+    }
     pub fn ShowAtWithOptions<P0, P1>(
         &self,
         placementtarget: P0,
@@ -6542,7 +6692,10 @@ pub struct IFlyoutBase_Vtbl {
     RemoveOpening: usize,
     Closing: usize,
     RemoveClosing: usize,
-    ShowAt: usize,
+    pub ShowAt: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     pub ShowAtWithOptions: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
@@ -7865,6 +8018,24 @@ pub struct IMicaBackdropFactory_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    IOutputStream,
+    IOutputStream_Vtbl,
+    0x905a0fe6_bc53_11df_8c49_001e4fc686da
+);
+impl windows_core::RuntimeType for IOutputStream {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+windows_core::imp::interface_hierarchy!(
+    IOutputStream,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+#[repr(C)]
+pub struct IOutputStream_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
     IOverlappedPresenter,
     IOverlappedPresenter_Vtbl,
     0x21693970_4f4c_5172_9e9d_682a2d174884
@@ -8218,6 +8389,17 @@ impl IRandomAccessStream {
             .and_then(|| windows_core::imp::Type::from_abi(result__))
         }
     }
+    pub fn GetOutputStreamAt(&self, position: u64) -> windows_core::Result<IOutputStream> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetOutputStreamAt)(
+                windows_core::Interface::as_raw(self),
+                position,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
 }
 #[repr(C)]
 pub struct IRandomAccessStream_Vtbl {
@@ -8225,6 +8407,11 @@ pub struct IRandomAccessStream_Vtbl {
     pub Size: unsafe extern "system" fn(*mut core::ffi::c_void, *mut u64) -> windows_core::HRESULT,
     SetSize: usize,
     pub GetInputStreamAt: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        u64,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GetOutputStreamAt: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         u64,
         *mut *mut core::ffi::c_void,
@@ -8318,6 +8505,80 @@ impl windows_core::RuntimeType for IRoutedEventArgs {
 #[repr(C)]
 pub struct IRoutedEventArgs_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    IScrollViewer,
+    IScrollViewer_Vtbl,
+    0x1dc28c2e_996c_5394_89c3_4dc656b4ad46
+);
+impl windows_core::RuntimeType for IScrollViewer {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IScrollViewer {
+    pub fn HorizontalOffset(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).HorizontalOffset)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ScrollableWidth(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ScrollableWidth)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+}
+#[repr(C)]
+pub struct IScrollViewer_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    HorizontalScrollBarVisibility: usize,
+    SetHorizontalScrollBarVisibility: usize,
+    VerticalScrollBarVisibility: usize,
+    SetVerticalScrollBarVisibility: usize,
+    IsHorizontalRailEnabled: usize,
+    SetIsHorizontalRailEnabled: usize,
+    IsVerticalRailEnabled: usize,
+    SetIsVerticalRailEnabled: usize,
+    IsHorizontalScrollChainingEnabled: usize,
+    SetIsHorizontalScrollChainingEnabled: usize,
+    IsVerticalScrollChainingEnabled: usize,
+    SetIsVerticalScrollChainingEnabled: usize,
+    IsZoomChainingEnabled: usize,
+    SetIsZoomChainingEnabled: usize,
+    IsScrollInertiaEnabled: usize,
+    SetIsScrollInertiaEnabled: usize,
+    IsZoomInertiaEnabled: usize,
+    SetIsZoomInertiaEnabled: usize,
+    HorizontalScrollMode: usize,
+    SetHorizontalScrollMode: usize,
+    VerticalScrollMode: usize,
+    SetVerticalScrollMode: usize,
+    ZoomMode: usize,
+    SetZoomMode: usize,
+    HorizontalSnapPointsAlignment: usize,
+    SetHorizontalSnapPointsAlignment: usize,
+    VerticalSnapPointsAlignment: usize,
+    SetVerticalSnapPointsAlignment: usize,
+    HorizontalSnapPointsType: usize,
+    SetHorizontalSnapPointsType: usize,
+    VerticalSnapPointsType: usize,
+    SetVerticalSnapPointsType: usize,
+    ZoomSnapPointsType: usize,
+    SetZoomSnapPointsType: usize,
+    pub HorizontalOffset:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    ViewportWidth: usize,
+    pub ScrollableWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ISelectionChangedEventArgs,
@@ -9259,6 +9520,72 @@ impl windows_core::RuntimeType for ITreeView2 {
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
 impl ITreeView2 {
+    pub fn DragItemsStarting<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<TreeView>, windows_core::Ref<TreeViewDragItemsStartingEventArgs>)
+            + 'static,
+    {
+        let handler: TypedEventHandler<TreeView, TreeViewDragItemsStartingEventArgs> = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<TreeView, TreeViewDragItemsStartingEventArgs>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<TreeView, TreeViewDragItemsStartingEventArgs, F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).DragItemsStarting)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveDragItemsStarting,
+            ))
+        }
+    }
+    pub fn DragItemsCompleted<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<TreeView>, windows_core::Ref<TreeViewDragItemsCompletedEventArgs>)
+            + 'static,
+    {
+        let handler: TypedEventHandler<TreeView, TreeViewDragItemsCompletedEventArgs> = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<TreeView, TreeViewDragItemsCompletedEventArgs>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<TreeView, TreeViewDragItemsCompletedEventArgs, F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).DragItemsCompleted)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveDragItemsCompleted,
+            ))
+        }
+    }
     pub fn SelectedNode(&self) -> windows_core::Result<TreeViewNode> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -9305,10 +9632,20 @@ pub struct ITreeView2_Vtbl {
     SetItemContainerTransitions: usize,
     ItemsSource: usize,
     SetItemsSource: usize,
-    DragItemsStarting: usize,
-    RemoveDragItemsStarting: usize,
-    DragItemsCompleted: usize,
-    RemoveDragItemsCompleted: usize,
+    pub DragItemsStarting: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveDragItemsStarting:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    pub DragItemsCompleted: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveDragItemsCompleted:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     pub SelectedNode: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
@@ -9372,6 +9709,62 @@ pub struct ITreeView3_Vtbl {
     ) -> windows_core::HRESULT,
     pub RemoveSelectionChanged:
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ITreeViewDragItemsCompletedEventArgs,
+    ITreeViewDragItemsCompletedEventArgs_Vtbl,
+    0xe5b8547e_f839_55db_9c26_2a95f57a60dc
+);
+impl windows_core::RuntimeType for ITreeViewDragItemsCompletedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct ITreeViewDragItemsCompletedEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    ITreeViewDragItemsStartingEventArgs,
+    ITreeViewDragItemsStartingEventArgs_Vtbl,
+    0x1b6c4ffc_cd32_5e06_b782_df9f077546c7
+);
+impl windows_core::RuntimeType for ITreeViewDragItemsStartingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ITreeViewDragItemsStartingEventArgs {
+    pub fn SetCancel(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetCancel)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn Items(
+        &self,
+    ) -> windows_core::Result<windows_collections::IVector<windows_core::IInspectable>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Items)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct ITreeViewDragItemsStartingEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    Cancel: usize,
+    pub SetCancel: unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    Data: usize,
+    pub Items: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ITreeViewNode,
@@ -12567,6 +12960,62 @@ impl windows_core::RuntimeName for TreeView {
 }
 unsafe impl Send for TreeView {}
 unsafe impl Sync for TreeView {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeViewDragItemsCompletedEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    TreeViewDragItemsCompletedEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for TreeViewDragItemsCompletedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ITreeViewDragItemsCompletedEventArgs>();
+}
+unsafe impl windows_core::Interface for TreeViewDragItemsCompletedEventArgs {
+    type Vtable = <ITreeViewDragItemsCompletedEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ITreeViewDragItemsCompletedEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for TreeViewDragItemsCompletedEventArgs {
+    type Target = ITreeViewDragItemsCompletedEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for TreeViewDragItemsCompletedEventArgs {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Controls.TreeViewDragItemsCompletedEventArgs";
+}
+unsafe impl Send for TreeViewDragItemsCompletedEventArgs {}
+unsafe impl Sync for TreeViewDragItemsCompletedEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeViewDragItemsStartingEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    TreeViewDragItemsStartingEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for TreeViewDragItemsStartingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ITreeViewDragItemsStartingEventArgs>();
+}
+unsafe impl windows_core::Interface for TreeViewDragItemsStartingEventArgs {
+    type Vtable = <ITreeViewDragItemsStartingEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ITreeViewDragItemsStartingEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for TreeViewDragItemsStartingEventArgs {
+    type Target = ITreeViewDragItemsStartingEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for TreeViewDragItemsStartingEventArgs {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Controls.TreeViewDragItemsStartingEventArgs";
+}
+unsafe impl Send for TreeViewDragItemsStartingEventArgs {}
+unsafe impl Sync for TreeViewDragItemsStartingEventArgs {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeViewNode(windows_core::IUnknown);

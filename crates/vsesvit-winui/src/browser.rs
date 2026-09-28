@@ -525,12 +525,59 @@ impl Browser {
         }
     }
 
-    /// The bookmarks bar's contents, in display order.
+    /// The bookmarks bar's contents, in display order, with the saved favicons of the links on
+    /// the bar itself.
     pub fn bookmarks_bar_items(&self) -> Vec<BarItem> {
         self.core(|p| {
-            let bookmarks = p.bookmarks();
-            bookmarks_bar::items_from(BookmarkId::TOOLBAR, &|folder| bookmarks.children(folder))
+            let mut items = {
+                let bookmarks = p.bookmarks();
+                bookmarks_bar::items_from(BookmarkId::TOOLBAR, &|folder| bookmarks.children(folder))
+            };
+            for item in &mut items {
+                if let BarItem::Link { url, icon, .. } = item
+                    && let Ok(url) = Url::parse(url)
+                {
+                    *icon = p.favicons().get(&url).ok().flatten();
+                }
+            }
+            items
         })
+    }
+
+    /// Keeps a page's favicon when the page or its site is bookmarked, and shows it.
+    pub fn record_favicon(&self, url: &str, png: &[u8]) {
+        let Ok(url) = Url::parse(url) else { return };
+        match self.core(|p| p.favicons().record(&url, png)) {
+            Ok(true) => self.bookmarks_changed(),
+            Ok(false) => {}
+            Err(e) => log::warn!("favicon of {url}: {e}"),
+        }
+    }
+
+    /// Moves a bookmark into `parent`, just before `before` (a child of `parent`), or to the
+    /// end when `before` is `None`.
+    pub fn move_bookmark_before(
+        &self,
+        id: BookmarkId,
+        parent: BookmarkId,
+        before: Option<BookmarkId>,
+    ) {
+        let result = self.core(|p| {
+            let mut bookmarks = p.bookmarks();
+            let at = before
+                .and_then(|before| {
+                    bookmarks
+                        .children(parent)
+                        .iter()
+                        .filter(|n| n.id != id)
+                        .position(|n| n.id == before)
+                })
+                .map_or(InsertAt::End, InsertAt::Index);
+            bookmarks.move_to(id, parent, at)
+        });
+        if let Err(e) = result {
+            log::warn!("move bookmark: {e}");
+        }
     }
 
     // ---- omnibox ----

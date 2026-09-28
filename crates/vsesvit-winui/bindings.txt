@@ -88,6 +88,7 @@ Microsoft.UI.Xaml.Controls.ItemCollection
 Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text, put_Text}
 Microsoft.UI.Xaml.Controls.ListViewBase
 Microsoft.UI.Xaml.Controls.IListViewBase::{ItemClick, DragItemsCompleted, ScrollIntoView}
+Microsoft.UI.Xaml.Controls.IScrollViewer::{get_ScrollableWidth, get_HorizontalOffset}
 Microsoft.UI.Xaml.Controls.ListViewItem::CreateInstance
 Microsoft.UI.Xaml.Controls.IItemClickEventArgs::get_ClickedItem
 Microsoft.UI.Xaml.Controls.DragItemsCompletedEventArgs
@@ -97,7 +98,10 @@ Microsoft.UI.Xaml.Controls.ContentControl
 Microsoft.UI.Xaml.Controls.IContentControl::{get_Content, put_Content}
 Microsoft.UI.Xaml.Controls.TreeView
 Microsoft.UI.Xaml.Controls.ITreeView::get_RootNodes
-Microsoft.UI.Xaml.Controls.ITreeView2::{get_SelectedNode, put_SelectedNode}
+Microsoft.UI.Xaml.Controls.ITreeView2::{get_SelectedNode, put_SelectedNode, DragItemsStarting, DragItemsCompleted}
+Microsoft.UI.Xaml.Controls.TreeViewDragItemsStartingEventArgs
+Microsoft.UI.Xaml.Controls.ITreeViewDragItemsStartingEventArgs::{get_Items, put_Cancel}
+Microsoft.UI.Xaml.Controls.TreeViewDragItemsCompletedEventArgs
 Microsoft.UI.Xaml.Controls.ITreeView3::SelectionChanged
 Microsoft.UI.Xaml.Controls.TreeViewSelectionChangedEventArgs
 Microsoft.UI.Xaml.Controls.TreeViewNode::CreateInstance
@@ -122,7 +126,7 @@ Microsoft.UI.Xaml.Controls.IToggleSwitch::{get_IsOn, put_IsOn, Toggled}
 Microsoft.UI.Xaml.Controls.IInfoBar::{put_IsOpen, put_Title, put_Message, put_Severity}
 Microsoft.UI.Xaml.Controls.InfoBarSeverity
 Microsoft.UI.Xaml.Controls.IFlyout::get_Content
-Microsoft.UI.Xaml.Controls.Primitives.IFlyoutBase::{ShowAtWithOptions, Hide, Closed}
+Microsoft.UI.Xaml.Controls.Primitives.IFlyoutBase::{ShowAt, ShowAtWithOptions, Hide, Closed}
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions::CreateInstance
 Microsoft.UI.Xaml.Controls.Primitives.IFlyoutShowOptions::put_ShowMode
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowMode
@@ -195,7 +199,9 @@ Microsoft.Windows.Storage.Pickers.IPickFolderResult::get_Path
 
 // ---- streams, imaging, window capture ----
 Windows.Storage.Streams.InMemoryRandomAccessStream::CreateInstance
-Windows.Storage.Streams.IRandomAccessStream::{get_Size, GetInputStreamAt}
+Windows.Storage.Streams.IRandomAccessStream::{get_Size, GetInputStreamAt, GetOutputStreamAt}
+Windows.Storage.Streams.DataWriter::CreateDataWriter
+Windows.Storage.Streams.IDataWriter::{WriteBytes, StoreAsync}
 Windows.Storage.Streams.DataReader::{CreateDataReader, FromBuffer}
 Windows.Storage.Streams.IDataReader::{LoadAsync, ReadBytes, get_UnconsumedBufferLength}
 Windows.Storage.Streams.Buffer::Create

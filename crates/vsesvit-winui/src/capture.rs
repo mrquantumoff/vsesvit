@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
-use crate::exec;
+use crate::{exec, xaml};
 
 pub(crate) async fn web_png(core: &CoreWebView2) -> Result<Vec<u8>> {
     let stream = InMemoryRandomAccessStream::new()?;
@@ -19,7 +19,7 @@ pub(crate) async fn web_png(core: &CoreWebView2) -> Result<Vec<u8>> {
         &stream.cast::<IRandomAccessStream>()?,
     )?
     .await?;
-    read_all(&stream.cast()?).await
+    xaml::read_all(&stream.cast()?).await
 }
 
 /// A window capture: PNG bytes plus what the self-test needs to know about the pixels.
@@ -126,16 +126,7 @@ async fn encode_png(bitmap: &SoftwareBitmap) -> Result<Vec<u8>> {
         .cast::<IBitmapEncoderWithSoftwareBitmap>()?
         .SetSoftwareBitmap(bitmap)?;
     encoder.FlushAsync()?.await?;
-    read_all(&stream.cast()?).await
-}
-
-async fn read_all(stream: &IRandomAccessStream) -> Result<Vec<u8>> {
-    let size = u32::try_from(stream.Size()?).map_err(|_| windows_core::Error::empty())?;
-    let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
-    reader.LoadAsync(size)?.await?;
-    let mut bytes = vec![0; size as usize];
-    reader.ReadBytes(&mut bytes)?;
-    Ok(bytes)
+    xaml::read_all(&stream.cast()?).await
 }
 
 /// Whether every pixel of a BGRA buffer is the same colour, which is what a window that did

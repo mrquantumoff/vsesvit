@@ -14,7 +14,7 @@ use windows_core::{IInspectable, Interface, Ref, Result};
 
 use crate::bindings::*;
 use crate::browser::CommitKind;
-use crate::exec;
+use crate::{exec, xaml};
 use crate::shortcuts::{self, PageMessage, PageScript};
 use crate::tab_header::TabLook;
 use crate::window::BrowserWindow;
@@ -75,6 +75,8 @@ pub(crate) struct Tab {
     core: OnceCell<CoreWebView2>,
     state: RefCell<TabState>,
     favicon: RefCell<Option<ImageSource>>,
+    /// The favicon as the page gave it (PNG), which bookmarks keep.
+    favicon_png: RefCell<Option<Vec<u8>>>,
     background_link: RefCell<Option<(String, Instant)>>,
     /// The URI of the last main-frame navigation request; WebView2 reports an empty `Source`
     /// for some documents (data: URLs), and then this is what was committed.
@@ -104,6 +106,7 @@ impl Tab {
                 ..TabState::default()
             }),
             favicon: RefCell::new(None),
+            favicon_png: RefCell::new(None),
             background_link: RefCell::new(None),
             requested: RefCell::new(String::new()),
             transition: Cell::new(None),
@@ -164,6 +167,10 @@ impl Tab {
 
     pub fn has_favicon(&self) -> bool {
         self.favicon.borrow().is_some()
+    }
+
+    pub fn favicon_png(&self) -> Option<Vec<u8>> {
+        self.favicon_png.borrow().clone()
     }
 
     pub fn is_ready(&self) -> bool {
@@ -528,7 +535,7 @@ impl Tab {
         let Some(core) = self.core.get().cloned() else {
             return;
         };
-        let image = async {
+        let icon = async {
             let core15 = core.cast::<ICoreWebView2_15>()?;
             if core15.FaviconUri()?.is_empty() {
                 return Ok(None);
@@ -536,22 +543,25 @@ impl Tab {
             let stream = core15
                 .GetFaviconAsync(CoreWebView2FaviconImageFormat::Png)?
                 .await?;
-            let bitmap = BitmapImage::new()?;
-            bitmap
-                .cast::<BitmapSource>()?
-                .SetSourceAsync(&stream)?
-                .await?;
-            Ok::<_, windows_core::Error>(Some(bitmap.cast::<ImageSource>()?))
+            let png = xaml::read_all(&stream).await?;
+            let image = xaml::png_image(&png).await?;
+            Ok::<_, windows_core::Error>(Some((image, png)))
         }
         .await;
         if self.favicon_generation.get() != generation || self.closed.get() {
             return;
         }
-        let image = image.unwrap_or_else(|e| {
-            log::debug!("tab {}: favicon: {e}", self.id);
-            None
-        });
+        let (image, png) = icon
+            .unwrap_or_else(|e| {
+                log::debug!("tab {}: favicon: {e}", self.id);
+                None
+            })
+            .unzip();
         *self.favicon.borrow_mut() = image;
+        if let (Some(png), Some(browser)) = (&png, self.window().and_then(|w| w.browser())) {
+            browser.record_favicon(&self.state().url, png);
+        }
+        *self.favicon_png.borrow_mut() = png;
         self.notify();
     }
 

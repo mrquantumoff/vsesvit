@@ -19,6 +19,18 @@ impl BrowserWindow {
         let me = || self.me.clone();
         let ui = &self.ui;
 
+        let bar = ui.bookmark_items.cast::<ListViewBase>()?;
+        let w = me();
+        bar.ItemClick(move |_, args| {
+            if let Some(item) = args.as_ref().and_then(|a| a.ClickedItem().ok()) {
+                with(&w, |w| w.bar_item_clicked(&item));
+            }
+        })?
+        .forget();
+        let w = me();
+        bar.DragItemsCompleted(move |_, _| with(&w, BrowserWindow::bar_item_dropped))?
+            .forget();
+
         let w = me();
         click(&ui.back, move || with(&w, |w| w.run(Command::Back)))?;
         let w = me();

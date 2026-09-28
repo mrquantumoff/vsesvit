@@ -14,12 +14,13 @@ mod wiring;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 
+use vsesvit_core::bookmarks::BookmarkId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
-use crate::bookmarks_bar::{self, BarItem, Disposition, OpenLink};
+use crate::bookmarks_bar::{Bar, BarItem, Disposition, OpenLink};
 use crate::browser::{Browser, ClosedTab};
 use crate::dialogs::{self, Dialog};
 use crate::layout::StripKind;
@@ -98,7 +99,7 @@ pub(crate) struct BrowserWindow {
     shown_tab: Cell<Option<TabId>>,
     fullscreen: Cell<bool>,
     bookmarks_bar_wanted: Cell<bool>,
-    bar_items: RefCell<Vec<BarItem>>,
+    bar: Bar,
     dialog_open: Cell<bool>,
     /// What the update bar shows; the user may have closed it since.
     update_banner: RefCell<Option<Banner>>,
@@ -115,6 +116,7 @@ impl BrowserWindow {
         window.SetExtendsContentIntoTitleBar(true)?;
         let window2 = window.cast::<IWindow2>()?;
 
+        let bar = Bar::new(ui.bookmark_items.clone());
         let slot = Rc::new(OnceCell::new());
         let events = Rc::new(strip_events(&slot));
         let top = TopStrip::new(ui.tab_view.clone(), &events)?;
@@ -132,7 +134,7 @@ impl BrowserWindow {
             shown_tab: Cell::new(None),
             fullscreen: Cell::new(false),
             bookmarks_bar_wanted: Cell::new(prefs.bookmarks_bar),
-            bar_items: RefCell::new(Vec::new()),
+            bar,
             dialog_open: Cell::new(false),
             update_banner: RefCell::new(None),
             closed: Cell::new(false),
@@ -595,6 +597,9 @@ impl BrowserWindow {
             return;
         }
         browser.toggle_bookmark(&state.url, &state.title);
+        if let Some(png) = tab.favicon_png() {
+            browser.record_favicon(&state.url, &png);
+        }
     }
 
     /// Enter in the address box.
@@ -675,38 +680,43 @@ impl BrowserWindow {
         xaml::is_visible(&self.ui.bookmarks_bar)
     }
 
-    /// Replaces the bookmarks bar's buttons.
-    pub fn set_bookmarks_bar(&self, items: &[BarItem]) {
-        let Ok(children) = self.ui.bookmark_items.Children() else {
-            return;
-        };
-        let _ = children.Clear();
+    fn open_link_handler(&self) -> OpenLink {
         let window = self.me.clone();
-        let open: OpenLink =
-            Rc::new(move |url, disposition| with(&window, |w| w.open_link(url, disposition)));
-        for item in items {
-            match bookmarks_bar::button(item, &open) {
-                Ok(button) => {
-                    let _ = children.Append(&button);
-                }
-                Err(e) => log::warn!("bookmarks bar item: {e}"),
-            }
-        }
+        Rc::new(move |url, disposition| with(&window, |w| w.open_link(url, disposition)))
+    }
+
+    /// Replaces the bookmarks bar's items.
+    pub fn set_bookmarks_bar(&self, items: &[BarItem]) {
+        self.bar.set(items, &self.open_link_handler());
         let _ = xaml::set_visible(&self.ui.bookmarks_hint, items.is_empty());
-        *self.bar_items.borrow_mut() = items.to_vec();
     }
 
     pub fn bookmarks_bar_items(&self) -> Vec<BarItem> {
-        self.bar_items.borrow().clone()
+        self.bar.items()
     }
 
-    /// The number of buttons the bookmarks bar shows.
+    pub fn bookmarks_bar_list(&self) -> ListView {
+        self.bar.list().clone()
+    }
+
+    /// The number of items the bookmarks bar shows.
     pub fn bookmarks_bar_buttons(&self) -> u32 {
-        self.ui
-            .bookmark_items
-            .Children()
-            .and_then(|c| c.Size())
-            .unwrap_or(0)
+        self.bar.len()
+    }
+
+    pub(super) fn bar_item_clicked(&self, clicked: &IInspectable) {
+        self.bar.clicked(clicked, &self.open_link_handler());
+    }
+
+    /// A bar item was dragged to a new place: move its bookmark there in core.
+    pub(crate) fn bar_item_dropped(&self) {
+        let Some(browser) = self.browser() else {
+            return;
+        };
+        if let Some((id, before)) = self.bar.dropped() {
+            browser.move_bookmark_before(id, BookmarkId::TOOLBAR, before);
+        }
+        browser.bookmarks_changed();
     }
 
     pub fn open_link(&self, url: &str, disposition: Disposition) {

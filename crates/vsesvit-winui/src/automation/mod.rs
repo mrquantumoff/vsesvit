@@ -11,20 +11,24 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::extensions::{ExtensionId, InstallSource};
 use vsesvit_core::prefs::{TabsPosition, Theme};
 use vsesvit_core::testkit::{self, FixtureServer};
+use windows_core::Interface;
 
 mod dialog_steps;
 
+use crate::bindings::*;
+use crate::bookmarks_bar::BarItem;
 use crate::browser::Browser;
 use crate::layout;
 use crate::popup::Activation;
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
-use crate::{app, capture, engine, exec};
+use crate::{app, capture, engine, exec, xaml};
 
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const STEP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -32,6 +36,105 @@ const SECOND_TAB: &str = "data:text/html,<title>Second tab</title>\
     <link rel=\"icon\" href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>\
     <circle cx='8' cy='8' r='7' fill='crimson'/></svg>\">\
     <body style='font:24px sans-serif'><h1>Second tab</h1></body>";
+
+/// The bookmarks bar: a bookmarked page keeps its favicon, a drag reorders the bookmarks in
+/// core, and a bar with more items than fit scrolls.
+async fn bar_steps(
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    second: &Rc<Tab>,
+    out_dir: &Path,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let page = second.state().url;
+    browser.toggle_bookmark(&page, "Second tab");
+    if let Some(png) = second.favicon_png() {
+        browser.record_favicon(&page, &png);
+    }
+    let saved = Url::parse(&page)
+        .ok()
+        .and_then(|url| browser.core(|p| p.favicons().get(&url).ok().flatten()));
+    let shown = || {
+        window
+            .bookmarks_bar_items()
+            .iter()
+            .any(|item| matches!(item, BarItem::Link { url, icon: Some(_), .. } if *url == page))
+    };
+    exec::sleep(Duration::from_millis(500)).await;
+    shoot(window, out_dir, "08b-bookmark-favicon", steps, |_| {
+        json!({
+            "saved_bytes": saved.as_ref().map(Vec::len),
+            "in_bar": shown(),
+            "ok": saved.is_some() && shown(),
+        })
+    })
+    .await;
+
+    // The drag itself is the list's own; what it leaves behind is a new item order.
+    let list = window.bookmarks_bar_list();
+    let entries = list
+        .cast::<ItemsControl>()
+        .and_then(|c| c.Items())
+        .map_err(|e| e.to_string())?;
+    let last = entries.Size().map_err(|e| e.to_string())? - 1;
+    let dragged = window.bookmarks_bar_items().last().map(BarItem::id);
+    let entry = entries.GetAt(last).map_err(|e| e.to_string())?;
+    entries.RemoveAt(last).map_err(|e| e.to_string())?;
+    entries.InsertAt(0, &entry).map_err(|e| e.to_string())?;
+    window.bar_item_dropped();
+    let first_now = browser.core(|p| {
+        p.bookmarks()
+            .children(BookmarkId::TOOLBAR)
+            .first()
+            .map(|n| n.id)
+    });
+    steps.push(json!({
+        "name": "08c-bar-drag-reorders",
+        "dragged": format!("{dragged:?}"),
+        "first_in_core": format!("{first_now:?}"),
+        "ok": dragged.is_some() && first_now == dragged && window.bookmarks_bar_items().first().map(BarItem::id) == dragged,
+    }));
+    browser.toggle_bookmark(&page, "Second tab");
+
+    let extra: Vec<BookmarkId> = browser.core(|p| {
+        let mut bookmarks = p.bookmarks();
+        (0..40)
+            .filter_map(|i| {
+                let url = Url::parse(&format!("https://site{i}.example/")).ok()?;
+                bookmarks
+                    .add_url(
+                        BookmarkId::TOOLBAR,
+                        InsertAt::End,
+                        &format!("Bookmark number {i}"),
+                        &url,
+                    )
+                    .ok()
+            })
+            .collect()
+    });
+    browser.bookmarks_changed();
+    exec::sleep(Duration::from_millis(500)).await;
+    let scrollable =
+        xaml::find_descendant::<IScrollViewer>(&list.cast().map_err(|e| e.to_string())?)
+            .and_then(|s| s.ScrollableWidth().ok())
+            .unwrap_or(0.0);
+    shoot(window, out_dir, "08d-bar-overflow-scrolls", steps, |w| {
+        json!({
+            "items": w.bookmarks_bar_buttons(),
+            "scrollable_width": scrollable,
+            "ok": w.bookmarks_bar_buttons() >= 42 && scrollable > 0.0,
+        })
+    })
+    .await;
+    browser.core(|p| {
+        let mut bookmarks = p.bookmarks();
+        for id in extra {
+            let _ = bookmarks.remove(id);
+        }
+    });
+    browser.bookmarks_changed();
+    Ok(())
+}
 
 /// Starts from a fresh profile when the run uses the one inside `out_dir`.
 pub(crate) fn prepare(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()> {
@@ -266,6 +369,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
         })
     })
     .await;
+    bar_steps(browser, &window, &second, out_dir, steps).await?;
 
     // The tab layouts, set through the preference as the Settings dialog does.
     for (position, name) in [
