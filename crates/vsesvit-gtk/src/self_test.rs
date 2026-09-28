@@ -390,7 +390,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         // selection that comes with focusing the Name field.
         let name = find::<gtk::Entry>(bubble.upcast_ref(), |_| true).ok_or_else(|| "the bubble has no Name field".to_owned())?;
         let selected = name.selection_bounds().is_some_and(|(start, end)| start == 0 && end == i32::from(name.text_length()));
-        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[bubble.clone()], &ctx.out_dir.join("star-bubble.png"))
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&bubble), &ctx.out_dir.join("star-bubble.png"))
             .await
             .map_err(|e| e.to_string())?;
         name.set_text("Renamed fixture");
@@ -503,7 +503,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
 
         let menu = window.open_extensions_menu().ok_or_else(|| "the puzzle piece opened no menu".to_owned())?;
         glib::timeout_future(POPOVER_SETTLE).await;
-        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[menu.clone()], &ctx.out_dir.join("extensions-menu.png"))
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&menu), &ctx.out_dir.join("extensions-menu.png"))
             .await
             .map_err(|e| e.to_string())?;
         let pin = find::<gtk::Button>(menu.upcast_ref(), |b| b.icon_name().as_deref() == Some("view-pin-symbolic"))
@@ -724,7 +724,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let overflow = wait_for(&last, || popover_of(bar.chevron().upcast_ref()).ok_or_else(|| "the chevron opened no menu".to_owned())).await;
         let overflow_rows = count::<gtk::Button>(overflow.upcast_ref(), |b| b.has_css_class("bookmark-menu-row"));
         glib::timeout_future(POPOVER_SETTLE).await;
-        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[overflow.clone()], &ctx.out_dir.join("bookmarks-overflow-menu.png"))
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&overflow), &ctx.out_dir.join("bookmarks-overflow-menu.png"))
             .await
             .map_err(|e| e.to_string())?;
         overflow.popdown();
@@ -810,7 +810,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         address.click_zoom();
         let bubble = address.bubble().ok_or_else(|| "clicking the zoom level opened no bubble".to_owned())?;
         glib::timeout_future(POPOVER_SETTLE).await;
-        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[bubble.clone()], &ctx.out_dir.join("zoom.png"))
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&bubble), &ctx.out_dir.join("zoom.png"))
             .await
             .map_err(|e| format!("{e}; bubble mapped={} realized={} surface={:?}", bubble.is_mapped(), bubble.is_realized(), bubble.surface()))?;
         gio::prelude::ActionGroupExt::activate_action(window, "zoom-reset", None);
@@ -833,7 +833,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             address.click_security();
             let bubble = address.bubble().ok_or_else(|| "the security icon opened no popover".to_owned())?;
             glib::timeout_future(POPOVER_SETTLE).await;
-            crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[bubble.clone()], &ctx.out_dir.join(file))
+            crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&bubble), &ctx.out_dir.join(file))
                 .await
                 .map_err(|e| e.to_string())?;
             Ok::<_, String>(bubble)

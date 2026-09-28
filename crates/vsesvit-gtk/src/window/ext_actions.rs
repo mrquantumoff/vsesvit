@@ -30,10 +30,19 @@ pub(crate) struct ExtensionActions {
     buttons: RefCell<Vec<Action>>,
     /// Every action, in install order, and whether it is pinned: what the menu lists.
     listed: RefCell<Vec<(ActionInfo, bool)>>,
-    on_click: RefCell<Option<Rc<dyn Fn(&ExtensionId)>>>,
-    /// The Extensions menu while it is open, and the box of its rows.
-    menu: RefCell<Option<(gtk::Popover, gtk::Box)>>,
+    on_click: RefCell<Option<OnClick>>,
+    menu: RefCell<Option<OpenMenu>>,
     popup: RefCell<Option<Popup>>,
+}
+
+/// What clicking an action does, given by the window.
+type OnClick = Rc<dyn Fn(&ExtensionId)>;
+
+/// The Extensions menu while it is open.
+#[derive(Clone)]
+struct OpenMenu {
+    popover: gtk::Popover,
+    rows: gtk::Box,
 }
 
 /// What a pinned button carries while it is dragged.
@@ -113,7 +122,7 @@ impl ExtensionActions {
     /// icon changes; a popup closes only when its extension goes away. `on_click` receives
     /// the extension whose action was clicked.
     pub(crate) fn rebuild(self: &Rc<Self>, actions: &[ActionInfo], pinned: &[ExtensionId], on_click: impl Fn(&ExtensionId) + 'static) {
-        let on_click: Rc<dyn Fn(&ExtensionId)> = Rc::new(on_click);
+        let on_click: OnClick = Rc::new(on_click);
         self.on_click.replace(Some(on_click));
         let is_loaded = |id: &ExtensionId| actions.iter().any(|a| a.extension == *id);
         if self.popup.borrow().as_ref().is_some_and(|p| !is_loaded(&p.extension)) {
@@ -230,13 +239,13 @@ impl ExtensionActions {
                 actions.menu.take();
             }
         });
-        self.menu.replace(Some((menu.clone(), rows)));
+        self.menu.replace(Some(OpenMenu { popover: menu.clone(), rows }));
         self.refill_menu();
         crate::popup(&menu, &self.puzzle);
     }
 
     fn refill_menu(self: &Rc<Self>) {
-        let Some((menu, rows)) = self.menu.borrow().clone() else { return };
+        let Some(OpenMenu { popover: menu, rows }) = self.menu.borrow().clone() else { return };
         while let Some(row) = rows.first_child() {
             rows.remove(&row);
         }
@@ -279,7 +288,7 @@ impl ExtensionActions {
     #[cfg(feature = "self-test")]
     pub(crate) fn click_puzzle(&self) -> Option<gtk::Popover> {
         self.puzzle.emit_clicked();
-        self.menu.borrow().as_ref().map(|(menu, _)| menu.clone())
+        self.menu.borrow().as_ref().map(|open| open.popover.clone())
     }
 
     pub(crate) fn button_for(&self, id: &ExtensionId) -> Option<gtk::Button> {
@@ -450,7 +459,7 @@ mod tests {
         window.set_child(Some(actions.widget()));
         WidgetExt::realize(&window);
         let id = ExtensionId::parse(&"a".repeat(32)).expect("a valid id");
-        actions.rebuild(&[action(&id, "")], &[id.clone()], |_| {});
+        actions.rebuild(&[action(&id, "")], std::slice::from_ref(&id), |_| {});
         let view = webkit::WebView::new();
         let weak = view.downgrade();
         actions.show_popup(&id, view);
@@ -498,7 +507,7 @@ mod tests {
     fn a_badge_update_leaves_the_open_popup_alone() {
         let open = open_popup();
         let button = open.actions.button_for(&open.id);
-        open.actions.rebuild(&[action(&open.id, "3")], &[open.id.clone()], |_| {});
+        open.actions.rebuild(&[action(&open.id, "3")], std::slice::from_ref(&open.id), |_| {});
         assert!(open.actions.popup_view().is_some(), "the popup was closed");
         assert_eq!(open.actions.button_for(&open.id), button, "the button was replaced");
     }
