@@ -1,13 +1,16 @@
-//! The Settings dialog, bound to core's preferences: startup behaviour and homepage, tab
-//! position (applied to every window at once), default search engine, theme (through
-//! `AdwStyleManager`), the address bar's width and URLs, the bookmarks bar, and where
-//! downloads go.
+//! The Settings dialog, bound to core's preferences, in the same four pages as on
+//! Windows: General (startup, downloads, scrolling and the GPU, updates, the profile
+//! folder), Appearance (theme, tabs, bars and buttons), Search (the engine, the address
+//! bar and what it suggests) and Privacy (pop-ups, browsing data). Every change applies at
+//! once, in every window.
+//!
+//! WebKitGTK keeps no passwords and fills no forms, so `autofill.*` has no rows here.
 
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use vsesvit_core::prefs::{Startup, TabsPosition, Theme, keys};
+use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, keys};
 use vsesvit_core::search::SearchEngine;
 
 use super::confirm;
@@ -34,49 +37,153 @@ const THEMES: [(Theme, &str); 3] = [
 ];
 
 pub(crate) fn present(window: &BrowserWindow) {
-    let dialog = adw::PreferencesDialog::builder().title("Settings").build();
+    // Wide enough that the four page names in the header are not cut short.
+    let dialog = adw::PreferencesDialog::builder()
+        .title("Settings")
+        .content_width(720)
+        .build();
     dialog.add(&general_page(window));
+    dialog.add(&appearance_page(window.browser()));
+    dialog.add(&search_page(window.browser()));
     dialog.add(&privacy_page(window));
     dialog.present(Some(window));
 }
 
-fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
-    let browser = window.browser().clone();
-
-    let startup = adw::PreferencesGroup::builder().title("Startup").build();
-    startup.add(&startup_row(&browser));
-    startup.add(&homepage_row(&browser));
-
-    let tabs = adw::PreferencesGroup::builder().title("Tabs").build();
-    tabs.add(&tabs_position_row(&browser));
-
-    let search = adw::PreferencesGroup::builder().title("Search").build();
-    search.add(&search_engine_row(&browser));
-
-    let appearance = adw::PreferencesGroup::builder().title("Appearance").build();
-    appearance.add(&theme_row(&browser));
-    appearance.add(&compact_address_bar_row(&browser));
-    appearance.add(&full_urls_row(&browser));
-    appearance.add(&bookmarks_bar_row(&browser));
-
-    let files = adw::PreferencesGroup::builder().title("Downloads").build();
-    files.add(&download_folder_row(window));
-    files.add(&download_ask_row(&browser));
-
+/// `name` is what `AdwPreferencesDialog:visible-page-name` selects it by.
+fn page(name: &str, title: &str, icon: &str, groups: &[adw::PreferencesGroup]) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::builder()
-        .title("General")
-        .icon_name("preferences-system-symbolic")
+        .name(name)
+        .title(title)
+        .icon_name(icon)
         .build();
-    for group in [&startup, &tabs, &search, &appearance, &files] {
+    for group in groups {
         page.add(group);
-    }
-    if let Some(updates) = updates_group(&browser) {
-        page.add(&updates);
     }
     page
 }
 
+/// An empty `title` for a group about the page's own subject, which the page already names.
+fn group(title: &str) -> adw::PreferencesGroup {
+    adw::PreferencesGroup::builder().title(title).build()
+}
+
+fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
+    let browser = window.browser();
+
+    let startup = group("Startup");
+    startup.add(&startup_row(browser));
+    startup.add(&homepage_row(browser));
+
+    let downloads = group("Downloads");
+    downloads.add(&download_folder_row(window));
+    downloads.add(&pref_switch_row(
+        browser,
+        "Ask Where to Save Each File",
+        None,
+        &keys::DOWNLOADS_ASK,
+        Browser::set_switch,
+    ));
+
+    let system = group("System");
+    system.add(&pref_switch_row(
+        browser,
+        "Smooth Scrolling",
+        None,
+        &keys::SMOOTH_SCROLLING,
+        Browser::set_engine_switch,
+    ));
+    system.add(&pref_switch_row(
+        browser,
+        "Hardware Acceleration",
+        Some("Use the graphics card to draw pages when available"),
+        &keys::HARDWARE_ACCELERATION,
+        Browser::set_engine_switch,
+    ));
+    // Only for a copy that updates itself; a package from a distribution or Flatpak has no switch.
+    if browser.updates().is_some() {
+        system.add(&pref_switch_row(
+            browser,
+            "Automatic Updates",
+            Some("Download new versions of Vsesvit in the background"),
+            &keys::UPDATES_AUTOMATIC,
+            |b, _, on| b.set_updates_automatic(on),
+        ));
+    }
+    system.add(&profile_folder_row(browser));
+
+    page("general", "General", "preferences-system-symbolic", &[startup, downloads, system])
+}
+
+fn appearance_page(browser: &Browser) -> adw::PreferencesPage {
+    let appearance = group("");
+    appearance.add(&theme_row(browser));
+    appearance.add(&tabs_position_row(browser));
+    appearance.add(&pref_switch_row(
+        browser,
+        "Show Bookmarks Bar",
+        None,
+        &keys::SHOW_BOOKMARKS_BAR,
+        |b, _, on| b.set_bookmarks_bar_visible(on),
+    ));
+    appearance.add(&pref_switch_row(
+        browser,
+        "Show Home Button",
+        Some("Next to Reload, opens the homepage"),
+        &keys::SHOW_HOME_BUTTON,
+        |b, _, on| b.set_home_button_visible(on),
+    ));
+    page("appearance", "Appearance", "applications-graphics-symbolic", &[appearance])
+}
+
+fn search_page(browser: &Browser) -> adw::PreferencesPage {
+    let engine = group("");
+    engine.add(&search_engine_row(browser));
+
+    let address_bar = group("Address Bar");
+    address_bar.add(&pref_switch_row(
+        browser,
+        "Compact Address Bar",
+        Some("A narrow address bar in the middle of the toolbar"),
+        &keys::COMPACT_ADDRESS_BAR,
+        |b, _, on| b.set_compact_address_bar(on),
+    ));
+    address_bar.add(&pref_switch_row(
+        browser,
+        "Always Show Full URLs",
+        Some("Otherwise https:// and www. show only while editing the address"),
+        &keys::SHOW_FULL_URLS,
+        |b, _, on| b.set_full_urls(on),
+    ));
+
+    let suggestions = group("Suggestions");
+    suggestions.add(&pref_switch_row(
+        browser,
+        "Browsing History",
+        None,
+        &keys::SUGGEST_HISTORY,
+        Browser::set_switch,
+    ));
+    suggestions.add(&pref_switch_row(
+        browser,
+        "Bookmarks",
+        None,
+        &keys::SUGGEST_BOOKMARKS,
+        Browser::set_switch,
+    ));
+
+    page("search", "Search", "system-search-symbolic", &[engine, address_bar, suggestions])
+}
+
 fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
+    let popups = group("Pop-ups");
+    popups.add(&pref_switch_row(
+        window.browser(),
+        "Block Pop-ups",
+        Some("Sites can still open windows when you click"),
+        &keys::BLOCK_POPUPS,
+        Browser::set_engine_switch,
+    ));
+
     let clear = adw::ButtonRow::builder()
         .title("Clear Browsing Data…")
         .start_icon_name("user-trash-symbolic")
@@ -123,12 +230,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
         .description("History, cookies and cached files")
         .build();
     data.add(&clear);
-    let page = adw::PreferencesPage::builder()
-        .title("Privacy")
-        .icon_name("security-high-symbolic")
-        .build();
-    page.add(&data);
-    page
+    page("privacy", "Privacy", "security-high-symbolic", &[popups, data])
 }
 
 fn startup_row(browser: &Browser) -> adw::ComboRow {
@@ -249,43 +351,24 @@ fn theme_row(browser: &Browser) -> adw::ComboRow {
     row
 }
 
-fn compact_address_bar_row(browser: &Browser) -> adw::SwitchRow {
+/// A switch for an on/off preference. `set` writes it and applies it: the change shows at
+/// once in every window.
+fn pref_switch_row(
+    browser: &Browser,
+    title: &str,
+    subtitle: Option<&str>,
+    pref: &'static Pref<bool>,
+    set: fn(&Browser, &Pref<bool>, bool),
+) -> adw::SwitchRow {
     let row = adw::SwitchRow::builder()
-        .title("Compact Address Bar")
-        .subtitle("A narrow address bar in the middle of the toolbar")
-        .active(browser.compact_address_bar())
+        .title(title)
+        .subtitle(subtitle.unwrap_or_default())
+        .active(browser.switch(pref))
         .build();
     row.connect_active_notify(glib::clone!(
         #[strong]
         browser,
-        move |row| browser.set_compact_address_bar(row.is_active())
-    ));
-    row
-}
-
-fn full_urls_row(browser: &Browser) -> adw::SwitchRow {
-    let row = adw::SwitchRow::builder()
-        .title("Always Show Full URLs")
-        .subtitle("Otherwise https:// and www. show only while editing the address")
-        .active(browser.full_urls())
-        .build();
-    row.connect_active_notify(glib::clone!(
-        #[strong]
-        browser,
-        move |row| browser.set_full_urls(row.is_active())
-    ));
-    row
-}
-
-fn bookmarks_bar_row(browser: &Browser) -> adw::SwitchRow {
-    let row = adw::SwitchRow::builder()
-        .title("Show Bookmarks Bar")
-        .active(browser.bookmarks_bar_visible())
-        .build();
-    row.connect_active_notify(glib::clone!(
-        #[strong]
-        browser,
-        move |row| browser.set_bookmarks_bar_visible(row.is_active())
+        move |row| set(&browser, pref, row.is_active())
     ));
     row
 }
@@ -357,40 +440,13 @@ fn download_folder_row(window: &BrowserWindow) -> adw::ActionRow {
     row
 }
 
-fn download_ask_row(browser: &Browser) -> adw::SwitchRow {
-    let row = adw::SwitchRow::builder()
-        .title("Ask Where to Save Each File")
-        .active(browser.core().borrow_mut().prefs().get(&keys::DOWNLOADS_ASK))
-        .build();
-    row.connect_active_notify(glib::clone!(
-        #[strong]
-        browser,
-        move |row| {
-            let set = browser.core().borrow_mut().prefs().set(&keys::DOWNLOADS_ASK, &row.is_active());
-            if let Err(e) = set {
-                log::warn!("prefs: {e}");
-            }
-        }
-    ));
-    row
-}
-
-/// Only for a copy that updates itself; a package from a distribution or Flatpak has no switch.
-fn updates_group(browser: &Browser) -> Option<adw::PreferencesGroup> {
-    browser.updates()?;
-    let row = adw::SwitchRow::builder()
-        .title("Automatic Updates")
-        .subtitle("Download new versions of Vsesvit in the background")
-        .active(browser.updates_automatic())
-        .build();
-    row.connect_active_notify(glib::clone!(
-        #[strong]
-        browser,
-        move |row| browser.set_updates_automatic(row.is_active())
-    ));
-    let group = adw::PreferencesGroup::builder().title("Updates").build();
-    group.add(&row);
-    Some(group)
+fn profile_folder_row(browser: &Browser) -> adw::ActionRow {
+    let root = browser.core().borrow().paths().root.display().to_string();
+    adw::ActionRow::builder()
+        .title("Profile Folder")
+        .subtitle(&root)
+        .subtitle_selectable(true)
+        .build()
 }
 
 fn index_of<T: PartialEq, const N: usize>(options: &[(T, &str); N], value: &T) -> u32 {

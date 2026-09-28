@@ -17,7 +17,7 @@ use gtk::glib;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
-use vsesvit_core::prefs::{Startup, TabsPosition, Theme, keys};
+use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, keys};
 use vsesvit_core::sync::Changed;
 use vsesvit_core::{Profile, Url};
 use vsesvit_webext::{Runtime, TabHost, TabId, TabInfo};
@@ -69,8 +69,7 @@ impl Browser {
     /// view exists, because every tab's view is built with the runtime's content manager.
     pub(crate) fn new(app: &adw::Application, profile: Profile) -> Self {
         let core: Core = Rc::new(RefCell::new(profile));
-        let paths = core.borrow().paths().clone();
-        let engine = Engine::new(&paths);
+        let engine = Engine::new(&mut core.borrow_mut());
         let downloads = Downloads::new(app, core.clone(), engine.session(), profile::downloads_dir());
         let updates_automatic = core.borrow_mut().prefs().get(&keys::UPDATES_AUTOMATIC);
         let inner = Rc::new_cyclic(|weak: &Weak<Inner>| {
@@ -436,46 +435,67 @@ impl Browser {
         }
     }
 
-    pub(crate) fn bookmarks_bar_visible(&self) -> bool {
-        self.core().borrow_mut().prefs().get(&keys::SHOW_BOOKMARKS_BAR)
+    pub(crate) fn switch(&self, pref: &Pref<bool>) -> bool {
+        self.core().borrow_mut().prefs().get(pref)
     }
 
-    pub(crate) fn set_bookmarks_bar_visible(&self, shown: bool) {
-        let set = self.core().borrow_mut().prefs().set(&keys::SHOW_BOOKMARKS_BAR, &shown);
+    /// Writes an on/off preference. The `set_*` methods that call it also apply it.
+    pub(crate) fn set_switch(&self, pref: &Pref<bool>, on: bool) {
+        let set = self.core().borrow_mut().prefs().set(pref, &on);
         if let Err(e) = set {
             log::warn!("prefs: {e}");
         }
+    }
+
+    pub(crate) fn bookmarks_bar_visible(&self) -> bool {
+        self.switch(&keys::SHOW_BOOKMARKS_BAR)
+    }
+
+    pub(crate) fn set_bookmarks_bar_visible(&self, shown: bool) {
+        self.set_switch(&keys::SHOW_BOOKMARKS_BAR, shown);
         for window in self.windows() {
             window.set_bookmarks_bar_visible(shown);
         }
     }
 
+    pub(crate) fn home_button_visible(&self) -> bool {
+        self.switch(&keys::SHOW_HOME_BUTTON)
+    }
+
+    pub(crate) fn set_home_button_visible(&self, shown: bool) {
+        self.set_switch(&keys::SHOW_HOME_BUTTON, shown);
+        for window in self.windows() {
+            window.set_home_button_visible(shown);
+        }
+    }
+
     pub(crate) fn compact_address_bar(&self) -> bool {
-        self.core().borrow_mut().prefs().get(&keys::COMPACT_ADDRESS_BAR)
+        self.switch(&keys::COMPACT_ADDRESS_BAR)
     }
 
     pub(crate) fn set_compact_address_bar(&self, compact: bool) {
-        let set = self.core().borrow_mut().prefs().set(&keys::COMPACT_ADDRESS_BAR, &compact);
-        if let Err(e) = set {
-            log::warn!("prefs: {e}");
-        }
+        self.set_switch(&keys::COMPACT_ADDRESS_BAR, compact);
         for window in self.windows() {
             window.set_compact_address_bar(compact);
         }
     }
 
     pub(crate) fn full_urls(&self) -> bool {
-        self.core().borrow_mut().prefs().get(&keys::SHOW_FULL_URLS)
+        self.switch(&keys::SHOW_FULL_URLS)
     }
 
     pub(crate) fn set_full_urls(&self, full: bool) {
-        let set = self.core().borrow_mut().prefs().set(&keys::SHOW_FULL_URLS, &full);
-        if let Err(e) = set {
-            log::warn!("prefs: {e}");
-        }
+        self.set_switch(&keys::SHOW_FULL_URLS, full);
         for window in self.windows() {
             window.set_full_urls(full);
         }
+    }
+
+    /// Pop-ups, smooth scrolling and hardware acceleration: the engine's one settings
+    /// object applies them to every view.
+    pub(crate) fn set_engine_switch(&self, pref: &Pref<bool>, on: bool) {
+        self.set_switch(pref, on);
+        self.engine().apply_prefs(&mut self.core().borrow_mut());
     }
 
     pub(crate) fn theme(&self) -> Theme {
@@ -499,24 +519,16 @@ impl Browser {
         adw::StyleManager::default().set_color_scheme(scheme);
     }
 
-    /// `updates.automatic`, a local preference: whether this installation checks for and
-    /// downloads updates on its own.
-    pub(crate) fn updates_automatic(&self) -> bool {
-        self.core().borrow_mut().prefs().get(&keys::UPDATES_AUTOMATIC)
-    }
-
-    /// The Settings switch: writes the preference and starts or stops the checks.
+    /// The Settings switch for `updates.automatic`, a local preference: writes it and
+    /// starts or stops this installation's checks.
     pub(crate) fn set_updates_automatic(&self, automatic: bool) {
-        let set = self.core().borrow_mut().prefs().set(&keys::UPDATES_AUTOMATIC, &automatic);
-        if let Err(e) = set {
-            log::warn!("prefs: {e}");
-        }
+        self.set_switch(&keys::UPDATES_AUTOMATIC, automatic);
         if let Some(updates) = &self.0.updates {
             updates.set_automatic(automatic);
         }
     }
 
-    /// The homepage preference as a URL. `about:home`, the default, means a blank tab.
+    /// The homepage preference as a URL. `about:home`, the default, means the new tab page.
     pub(crate) fn homepage(&self) -> Option<Url> {
         let text = self.core().borrow_mut().prefs().get(&keys::HOMEPAGE);
         let text = text.trim();
@@ -542,12 +554,14 @@ impl Browser {
         }
         if !changed.prefs.is_empty() {
             self.apply_theme();
+            self.engine().apply_prefs(&mut self.core().borrow_mut());
             let position = self.tabs_position();
-            let bar = self.bookmarks_bar_visible();
+            let (bar, home) = (self.bookmarks_bar_visible(), self.home_button_visible());
             let (compact, full_urls) = (self.compact_address_bar(), self.full_urls());
             for window in self.windows() {
                 window.apply_layout(position);
                 window.set_bookmarks_bar_visible(bar);
+                window.set_home_button_visible(home);
                 window.set_compact_address_bar(compact);
                 window.set_full_urls(full_urls);
             }
@@ -746,6 +760,30 @@ mod tests {
         window.destroy();
         assert!(stored.is_some(), "the favicon is kept once the page is bookmarked");
         assert!(shown, "the bar shows the kept favicon");
+    }
+
+    #[gtk::test]
+    fn engine_switches_reach_the_shared_settings_at_once() {
+        let browser = browser();
+        let settings = browser.engine().settings().clone();
+        let state = || {
+            (
+                settings.is_javascript_can_open_windows_automatically(),
+                settings.enables_smooth_scrolling(),
+                settings.hardware_acceleration_policy(),
+            )
+        };
+        let defaults = state();
+        for pref in [&keys::BLOCK_POPUPS, &keys::SMOOTH_SCROLLING, &keys::HARDWARE_ACCELERATION] {
+            browser.set_engine_switch(pref, false);
+        }
+        let off = state();
+        for pref in [&keys::BLOCK_POPUPS, &keys::SMOOTH_SCROLLING, &keys::HARDWARE_ACCELERATION] {
+            browser.set_engine_switch(pref, true);
+        }
+        assert_eq!(defaults, (false, true, webkit::HardwareAccelerationPolicy::Always));
+        assert_eq!(off, (true, false, webkit::HardwareAccelerationPolicy::Never));
+        assert_eq!(state(), defaults);
     }
 
     #[gtk::test]

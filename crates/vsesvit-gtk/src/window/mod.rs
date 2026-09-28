@@ -56,6 +56,8 @@ struct Ui {
     location: adw::Clamp,
     address: AddressBar,
     reload: gtk::Button,
+    /// Shown only with the `toolbar.home_button` preference.
+    home: gtk::Button,
     zoom_level: gtk::Button,
     /// Hidden until a download starts.
     downloads_button: gtk::Button,
@@ -133,6 +135,7 @@ impl BrowserWindow {
         window.connect_signals();
         window.apply_layout(browser.tabs_position());
         window.set_bookmarks_bar_visible(browser.bookmarks_bar_visible());
+        window.set_home_button_visible(browser.home_button_visible());
         window.set_compact_address_bar(browser.compact_address_bar());
         window.set_full_urls(browser.full_urls());
         window.refresh_bookmarks_bar();
@@ -205,6 +208,7 @@ impl BrowserWindow {
             .tooltip_text("Show Tabs")
             .build();
         let reload = icon_button("view-refresh-symbolic", "win.reload", "Reload");
+        let home = icon_button("go-home-symbolic", "win.home", "Home");
         let extension_actions = ExtensionActions::new();
         let extensions_area = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         extensions_area.append(extension_actions.widget());
@@ -221,6 +225,7 @@ impl BrowserWindow {
         header_start.append(&icon_button("go-previous-symbolic", "win.back", "Back"));
         header_start.append(&icon_button("go-next-symbolic", "win.forward", "Forward"));
         header_start.append(&reload);
+        header_start.append(&home);
         header_start.append(&sidebar_toggle);
         let header_end = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header_end.append(&extensions_area);
@@ -276,6 +281,7 @@ impl BrowserWindow {
             location: title,
             address,
             reload,
+            home,
             zoom_level,
             downloads_button,
             tab_view,
@@ -472,6 +478,15 @@ impl BrowserWindow {
         self.ui().bookmarks_bar.set_revealed(shown);
     }
 
+    pub(crate) fn set_home_button_visible(&self, shown: bool) {
+        self.ui().home.set_visible(shown);
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn home_button(&self) -> &gtk::Button {
+        &self.ui().home
+    }
+
     /// A compact bar is at most [`COMPACT_ADDRESS_WIDTH`] wide, centered in the header;
     /// otherwise it fills the space between the buttons.
     pub(crate) fn set_compact_address_bar(&self, compact: bool) {
@@ -576,9 +591,29 @@ impl BrowserWindow {
     /// has no base URI, so it is at `about:blank` and the tab still reads as blank.
     pub(crate) fn new_tab(&self) {
         let tab = self.open_tab(None, None, Focus::Foreground);
+        self.load_new_tab_page(&tab);
+    }
+
+    fn load_new_tab_page(&self, tab: &Tab) {
         match new_tab::page(&mut self.browser().core().borrow_mut()) {
             Ok(html) => tab.web_view().load_html(&html, None),
             Err(e) => log::warn!("new tab page: {e}"),
+        }
+    }
+
+    /// The home button: the homepage in the selected tab, or the new tab page there when
+    /// the homepage is `about:home`. Like Chrome, the visit counts as a bookmark's.
+    pub(crate) fn go_home(&self) {
+        match self.browser().homepage() {
+            Some(url) => self.navigate_with(url.as_str(), Transition::Bookmark),
+            None => {
+                let tab = match self.selected_tab() {
+                    Some(tab) => tab,
+                    None => self.open_tab(None, None, Focus::Foreground),
+                };
+                self.load_new_tab_page(&tab);
+                self.ui().address.focus_for_typing();
+            }
         }
     }
 
@@ -824,7 +859,43 @@ fn icon_button(icon: &str, action: &str, tooltip: &str) -> gtk::Button {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{browser, wait_until};
+    use crate::test_support::{Reply, Server, browser, wait_until};
+    use vsesvit_core::prefs::keys;
+
+    #[gtk::test]
+    fn the_home_button_follows_the_setting_and_opens_the_homepage_in_the_selected_tab() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/home" => Reply::Page("Home"),
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let (window, other) = (BrowserWindow::new(&browser), BrowserWindow::new(&browser));
+        window.present();
+        other.present();
+        let hidden = !window.ui().home.is_visible();
+        browser.set_home_button_visible(true);
+        let shown = window.ui().home.is_visible() && other.ui().home.is_visible();
+
+        let url = server.url("/home");
+        browser.core().borrow_mut().prefs().set(&keys::HOMEPAGE, &url).unwrap();
+        let tab = window.open_tab(None, None, Focus::Foreground);
+        gio::prelude::ActionGroupExt::activate_action(&window, "home", None);
+        wait_until("the homepage", || tab.committed_uri().as_deref() == Some(url.as_str()));
+
+        browser.core().borrow_mut().prefs().reset(&keys::HOMEPAGE).unwrap();
+        gio::prelude::ActionGroupExt::activate_action(&window, "home", None);
+        wait_until("the new tab page", || tab.committed_uri().as_deref() == Some("about:blank"));
+        let tabs = window.tabs().len();
+
+        browser.set_home_button_visible(false);
+        let hidden_again = !window.ui().home.is_visible() && !other.ui().home.is_visible();
+        window.destroy();
+        other.destroy();
+        assert!(hidden, "a fresh profile has no home button");
+        assert!(shown, "the setting shows the button in every window");
+        assert_eq!(tabs, 1, "home opens in the selected tab");
+        assert!(hidden_again);
+    }
 
     #[gtk::test]
     fn a_compact_address_bar_is_narrow_and_a_full_one_fills_the_header() {

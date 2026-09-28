@@ -46,6 +46,9 @@ pub(super) fn install(window: &BrowserWindow) {
             tab.web_view().reload_bypass_cache();
         }),
         on_tab("stop", |tab| tab.web_view().stop_loading()),
+        ActionEntry::builder("home")
+            .activate(|w: &BrowserWindow, _, _| w.go_home())
+            .build(),
         on_tab("back", |tab| tab.web_view().go_back()),
         on_tab("forward", |tab| tab.web_view().go_forward()),
         ActionEntry::builder("bookmark-page")

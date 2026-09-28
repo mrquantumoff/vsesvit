@@ -530,6 +530,61 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("settings", CHECK_TIMEOUT, |last| async move {
+        let settings = browser.engine().settings();
+        let engine = (
+            settings.is_javascript_can_open_windows_automatically(),
+            settings.enables_smooth_scrolling(),
+            settings.hardware_acceleration_policy(),
+        );
+        if engine != (false, true, webkit::HardwareAccelerationPolicy::Always) {
+            return Err(format!("a fresh profile's engine has (pop-ups, smooth, GPU) = {engine:?}"));
+        }
+        browser.core().borrow_mut().prefs().set(&keys::HOMEPAGE, &page2_url.to_string()).map_err(|e| e.to_string())?;
+        browser.set_home_button_visible(true);
+        let home = window.home_button();
+        wait_for(&last, || if home.is_mapped() { Ok(()) } else { Err("the home button is not shown".to_owned()) }).await;
+        glib::timeout_future(Duration::from_millis(300)).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("home-button.png")).await.map_err(|e| e.to_string())?;
+        home.emit_clicked();
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        wait_for(&last, || match tab.committed_uri() {
+            Some(uri) if uri == page2_url.as_str() => Ok(()),
+            uri => Err(format!("after Home the tab is at {uri:?}")),
+        })
+        .await;
+
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        let mut shots = Vec::new();
+        for name in ["general", "appearance", "search", "privacy"] {
+            dialog.set_visible_page_name(name);
+            if dialog.visible_page_name().as_deref() != Some(name) {
+                dialog.close();
+                return Err(format!("Settings has no {name:?} page"));
+            }
+            glib::timeout_future(Duration::from_millis(500)).await;
+            let file = format!("settings-{name}.png");
+            let shot = crate::screenshot::save_png(window, &ctx.out_dir.join(&file)).await;
+            if let Err(e) = shot {
+                dialog.close();
+                return Err(format!("{file}: {e}"));
+            }
+            shots.push(file);
+        }
+        dialog.close();
+        browser.set_home_button_visible(false);
+        browser.core().borrow_mut().prefs().reset(&keys::HOMEPAGE).map_err(|e| e.to_string())?;
+        Ok(format!(
+            "engine (pop-ups, smooth, GPU) = {engine:?}; Home opened {page2_url}; home-button.png and {} written",
+            shots.join(", ")
+        ))
+    })
+    .await;
+
     ctx.check("screenshot", CHECK_TIMEOUT, |_| async move {
         let path = ctx.out_dir.join("window.png");
         crate::screenshot::save_png(window, &path).await.map_err(|e| e.to_string())?;
