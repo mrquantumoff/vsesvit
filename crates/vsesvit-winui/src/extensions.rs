@@ -328,10 +328,8 @@ impl Browser {
         if *self.extensions.actions.borrow() == actions {
             return;
         }
-        *self.extensions.actions.borrow_mut() = actions.clone();
-        for window in self.windows() {
-            window.set_extension_actions(&actions);
-        }
+        *self.extensions.actions.borrow_mut() = actions;
+        self.show_extension_actions();
     }
 }
 

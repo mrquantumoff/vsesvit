@@ -46,6 +46,8 @@ pub(crate) enum Activation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExtensionAction {
+    /// The extension's id in core (`ExtensionId`), which the toolbar preference keys by.
+    pub id: String,
     /// The id WebView2 knows the extension by, which is its `chrome-extension://` host.
     pub extension_id: String,
     pub title: String,
@@ -70,6 +72,7 @@ impl ExtensionAction {
             .or_else(|| best_icon(&manifest.icons))
             .map(|icon| icon.resolve(&ext.dir));
         Some(Self {
+            id: ext.id.as_str().to_owned(),
             extension_id: engine_id,
             title,
             popup: action
@@ -117,25 +120,6 @@ pub(crate) fn icon_markup(icon: Option<&Path>, size: u32) -> String {
         ),
         None => format!(r#"<FontIcon Glyph="&#xEA86;" FontSize="{size}"/>"#),
     }
-}
-
-/// The toolbar button of `action`; a click calls `on_click` with the button to anchor to.
-pub(crate) fn action_button(
-    action: &ExtensionAction,
-    on_click: impl Fn(&FrameworkElement) + 'static,
-) -> Result<Button> {
-    let content = icon_markup(action.icon.as_deref(), 16);
-    let title = xaml::escape(&action.title);
-    let button: Button = xaml::load(&format!(
-        r#"<Button {{ns}} Background="Transparent" BorderThickness="0" Padding="0" Width="36" Height="32"
-                   ToolTipService.ToolTip="{title}" AutomationProperties.Name="{title}">{content}</Button>"#
-    ))?;
-    let anchor = button.cast::<FrameworkElement>()?;
-    button
-        .cast::<ButtonBase>()?
-        .Click(move |_, _| on_click(&anchor))?
-        .forget();
-    Ok(button)
 }
 
 const FLYOUT_XAML: &str = r#"
@@ -337,10 +321,7 @@ mod tests {
             parse_size(r#"{"popupSize":[600,430]}"#),
             Some((600.0, 430.0))
         );
-        assert_eq!(
-            parse_size(r#"{"popupSize":[1,9000]}"#),
-            Some((25.0, 600.0))
-        );
+        assert_eq!(parse_size(r#"{"popupSize":[1,9000]}"#), Some((25.0, 600.0)));
         assert_eq!(parse_size(r#"{"popupSize":[1]}"#), None);
         assert_eq!(parse_size(r#"{"popupSize":["a",1]}"#), None);
         assert_eq!(parse_size("not json"), None);

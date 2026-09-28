@@ -12,6 +12,7 @@ use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
+use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, keys};
@@ -305,7 +306,7 @@ impl Browser {
         let window = BrowserWindow::create(&browser, show, self.prefs.get())?;
         self.windows.borrow_mut().push(window.clone());
         window.set_bookmarks_bar(&self.bookmarks_bar_items());
-        window.set_extension_actions(&self.extension_actions());
+        window.set_extension_actions(&self.extension_actions(), &self.extension_toolbar());
         window.show_update(self.updates.banner().as_ref());
         window.show_downloads(self.downloads_indicator());
         window.open_planned(plan)?;
@@ -933,6 +934,46 @@ impl Browser {
 
     pub fn extension_actions(&self) -> Vec<ExtensionAction> {
         self.extensions.actions()
+    }
+
+    /// Which actions the toolbar shows, and in what order (the synced `toolbar` preference).
+    pub fn extension_toolbar(&self) -> Layout {
+        let available = self.toolbar_ids();
+        let saved = self.core(|p| p.prefs().get(&toolbar::TOOLBAR));
+        toolbar::layout(&available, &saved)
+    }
+
+    fn toolbar_ids(&self) -> Vec<String> {
+        self.extension_actions().into_iter().map(|a| a.id).collect()
+    }
+
+    pub fn set_extension_pinned(&self, id: &str, pinned: bool) {
+        let available = self.toolbar_ids();
+        let saved = self.core(|p| p.prefs().get(&toolbar::TOOLBAR));
+        self.write_pref(
+            &toolbar::TOOLBAR,
+            &toolbar::set_pinned(&available, &saved, id, pinned),
+        );
+        self.show_extension_actions();
+    }
+
+    /// Moves the pinned action `id` to place `to` among the pinned ones.
+    pub fn move_extension(&self, id: &str, to: usize) {
+        let available = self.toolbar_ids();
+        let saved = self.core(|p| p.prefs().get(&toolbar::TOOLBAR));
+        self.write_pref(
+            &toolbar::TOOLBAR,
+            &toolbar::move_pinned(&available, &saved, id, to),
+        );
+        self.show_extension_actions();
+    }
+
+    /// Shows the extension actions in every window's toolbar.
+    pub fn show_extension_actions(&self) {
+        let (actions, layout) = (self.extension_actions(), self.extension_toolbar());
+        for window in self.windows() {
+            window.set_extension_actions(&actions, &layout);
+        }
     }
 
     /// The WebView2 profile, reached through any tab's engine view.

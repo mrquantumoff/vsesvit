@@ -8298,6 +8298,19 @@ impl windows_core::RuntimeType for IFontIcon {
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
 impl IFontIcon {
+    pub fn Glyph(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Glyph)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
     pub fn SetGlyph(&self, value: &str) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SetGlyph)(
@@ -8311,7 +8324,10 @@ impl IFontIcon {
 #[repr(C)]
 pub struct IFontIcon_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
-    Glyph: usize,
+    pub Glyph: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     pub SetGlyph: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,

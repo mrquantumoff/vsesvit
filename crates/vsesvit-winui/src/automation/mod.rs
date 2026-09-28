@@ -21,6 +21,7 @@ use windows_core::Interface;
 mod bookmark_steps;
 mod connection_steps;
 mod dialog_steps;
+mod toolbar_steps;
 
 use crate::bindings::*;
 use crate::bookmarks_bar::BarItem;
@@ -718,6 +719,10 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
         Err(e) => {
             steps.push(json!({ "name": "18-extension-popup", "error": e.to_string(), "ok": false }))
         }
+    }
+
+    if let Err(e) = toolbar_steps::run(browser, &window, out_dir, steps).await {
+        steps.push(json!({ "name": "18b-extension-toolbar", "error": e, "ok": false }));
     }
 
     // A second launch on this profile hands its URL to this process and exits.

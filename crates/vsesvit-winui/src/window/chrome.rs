@@ -166,7 +166,22 @@ const WINDOW_XAML: &str = r#"
               BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" IsHitTestVisible="False"
               Visibility="Collapsed"/>
     </Grid>
-    <StackPanel x:Name="ExtensionActions" Grid.Column="4" Orientation="Horizontal" Spacing="2"/>
+    <!-- The pinned extension actions, which drag to reorder, and the Extensions menu. -->
+    <StackPanel x:Name="ExtensionActions" Grid.Column="4" Orientation="Horizontal" Spacing="2">
+      <ListView x:Name="PinnedExtensions" SelectionMode="None" IsItemClickEnabled="True"
+                CanDragItems="True" CanReorderItems="True" AllowDrop="True" VerticalAlignment="Center"
+                ScrollViewer.HorizontalScrollMode="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                AutomationProperties.Name="Pinned extensions">
+        <ListView.ItemsPanel>
+          <ItemsPanelTemplate><ItemsStackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+        </ListView.ItemsPanel>
+      </ListView>
+      <Button x:Name="ExtensionsMenu" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
+              ToolTipService.ToolTip="Extensions" AutomationProperties.Name="Extensions">
+        <FontIcon Glyph="&#xEA86;" FontSize="16"/>
+      </Button>
+    </StackPanel>
     <Button x:Name="Downloads" Grid.Column="5" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
             ToolTipService.ToolTip="Downloads (Ctrl+J)" AutomationProperties.Name="Downloads">
       <Grid>
@@ -298,6 +313,8 @@ pub(super) struct Chrome {
     pub(super) star: ToggleButton,
     pub(super) star_glyph: FontIcon,
     pub(super) extension_actions: Panel,
+    pub(super) pinned_extensions: ListView,
+    pub(super) extensions_menu: Button,
     pub(super) downloads: Button,
     pub(super) downloads_busy: ProgressRing,
     pub(super) bookmarks_bar: FrameworkElement,
@@ -340,6 +357,8 @@ impl Chrome {
             star: xaml::find(&root, "Star")?,
             star_glyph: xaml::find(&root, "StarGlyph")?,
             extension_actions: xaml::find(&root, "ExtensionActions")?,
+            pinned_extensions: xaml::find(&root, "PinnedExtensions")?,
+            extensions_menu: xaml::find(&root, "ExtensionsMenu")?,
             downloads: xaml::find(&root, "Downloads")?,
             downloads_busy: xaml::find(&root, "DownloadsBusy")?,
             bookmarks_bar: xaml::find(&root, "BookmarksBar")?,

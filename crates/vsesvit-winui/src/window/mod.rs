@@ -16,6 +16,7 @@ use std::rc::{Rc, Weak};
 
 use vsesvit_core::address::{readable_url, simplified_url};
 use vsesvit_core::bookmarks::BookmarkId;
+use vsesvit_core::extensions::toolbar::Layout;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
 use windows_core::{IInspectable, Interface, Result};
@@ -26,6 +27,7 @@ use crate::bookmarks_bar::{Bar, BarCommand, BarHost, BarItem, Disposition};
 use crate::browser::{Browser, ClosedTab};
 use crate::dialogs::{self, Dialog};
 use crate::downloads::Indicator;
+use crate::extension_toolbar as toolbar;
 use crate::layout::StripKind;
 use crate::popup::{self, Activation, ExtensionAction, OpenerTab, Popup};
 use crate::session::{TabPlan, WindowPlan};
@@ -131,6 +133,7 @@ pub(crate) struct BrowserWindow {
     full_urls: Cell<bool>,
     bookmarks_bar_wanted: Cell<bool>,
     bar: Rc<Bar>,
+    toolbar: Rc<toolbar::Toolbar>,
     /// The bookmark editor opened last, from the star or the bookmarks bar.
     editor: RefCell<Option<Rc<Editor>>>,
     /// The security icon's popup opened last.
@@ -158,6 +161,11 @@ impl BrowserWindow {
             ui.bookmarks_overflow.clone(),
             bar_host(&slot),
         )?;
+        let toolbar = toolbar::Toolbar::new(
+            ui.pinned_extensions.clone(),
+            ui.extensions_menu.clone(),
+            toolbar_host(&slot),
+        )?;
         let events = Rc::new(strip_events(&slot));
         let top = TopStrip::new(ui.tab_view.clone(), &events)?;
         let side = SidePane::new(&events)?;
@@ -178,6 +186,7 @@ impl BrowserWindow {
             full_urls: Cell::new(prefs.full_urls),
             bookmarks_bar_wanted: Cell::new(prefs.bookmarks_bar),
             bar,
+            toolbar,
             editor: RefCell::new(None),
             connection: RefCell::new(None),
             dialog_open: Cell::new(false),
@@ -1161,46 +1170,49 @@ impl BrowserWindow {
         }
     }
 
-    /// Replaces the extension action buttons in the toolbar.
-    pub fn set_extension_actions(&self, actions: &[ExtensionAction]) {
-        let Ok(children) = self.ui.extension_actions.Children() else {
+    /// Shows the pinned extension actions in the toolbar, in `layout`'s order.
+    pub fn set_extension_actions(&self, actions: &[ExtensionAction], layout: &Layout) {
+        self.toolbar.set(actions, layout);
+    }
+
+    /// Opens the popup of the extension action for `engine_id`, as a click would: under its
+    /// pinned button, or under the Extensions button.
+    pub fn open_extension_popup(&self, engine_id: &str, activation: Activation) -> Result<Popup> {
+        let browser = self.browser().ok_or_else(windows_core::Error::empty)?;
+        let action = browser
+            .extension_actions()
+            .into_iter()
+            .find(|a| a.extension_id == engine_id)
+            .ok_or_else(|| windows_core::Error::new(E_FAIL, "no action for that extension"))?;
+        let anchor = self
+            .toolbar
+            .anchor_of(engine_id)
+            .ok_or_else(windows_core::Error::empty)?;
+        self.show_popup(&anchor, &action, activation)
+    }
+
+    /// Runs a command of the extension toolbar or its menus.
+    pub(crate) fn toolbar_command(&self, command: toolbar::Command) {
+        let Some(browser) = self.browser() else {
             return;
         };
-        let _ = children.Clear();
-        for action in actions {
-            let me = self.me.clone();
-            let clicked = action.clone();
-            let on_click = move |anchor: &FrameworkElement| {
-                let Some(window) = me.upgrade() else { return };
-                if let Err(e) = window.show_popup(anchor, &clicked, Activation::Focus) {
-                    log::error!("popup of {}: {e}", clicked.extension_id);
+        match command {
+            toolbar::Command::Open { id, anchor } => {
+                let action = browser.extension_actions().into_iter().find(|a| a.id == id);
+                if let Some(action) = action
+                    && let Err(e) = self.show_popup(&anchor, &action, Activation::Focus)
+                {
+                    log::error!("popup of {id}: {e}");
                 }
-            };
-            match popup::action_button(action, on_click) {
-                Ok(button) => {
-                    let _ = button.cast::<UIElement>().and_then(|b| children.Append(&b));
-                }
-                Err(e) => log::warn!("extension action {}: {e}", action.extension_id),
             }
+            toolbar::Command::Pin(id, pinned) => browser.set_extension_pinned(&id, pinned),
+            toolbar::Command::Move(id, to) => browser.move_extension(&id, to),
+            toolbar::Command::Manage => self.show_dialog(Dialog::Extensions),
         }
     }
 
-    /// Opens the popup of the extension action for `engine_id`, as a click would.
-    pub fn open_extension_popup(&self, engine_id: &str, activation: Activation) -> Result<Popup> {
-        let browser = self.browser().ok_or_else(windows_core::Error::empty)?;
-        let actions = browser.extension_actions();
-        let index = actions
-            .iter()
-            .position(|a| a.extension_id == engine_id)
-            .ok_or_else(|| {
-                windows_core::Error::new(E_FAIL, "no action button for that extension")
-            })?;
-        let button = self
-            .ui
-            .extension_actions
-            .Children()?
-            .GetAt(u32::try_from(index).unwrap_or(u32::MAX))?;
-        self.show_popup(&button.cast()?, &actions[index], activation)
+    pub fn extension_toolbar(&self) -> &toolbar::Toolbar {
+        &self.toolbar
     }
 
     fn show_popup(
@@ -1373,6 +1385,19 @@ fn bar_host(slot: &wiring::WindowSlot) -> BarHost {
         exec::spawn(async move {
             if let Some(window) = window.and_then(|w| w.upgrade()) {
                 window.bar_command(command);
+            }
+        });
+    })
+}
+
+/// The extension toolbar's commands, like the bookmarks bar's (see `bar_host`).
+fn toolbar_host(slot: &wiring::WindowSlot) -> toolbar::Host {
+    let slot = slot.clone();
+    Rc::new(move |command| {
+        let window = slot.get().cloned();
+        exec::spawn(async move {
+            if let Some(window) = window.and_then(|w| w.upgrade()) {
+                window.toolbar_command(command);
             }
         });
     })

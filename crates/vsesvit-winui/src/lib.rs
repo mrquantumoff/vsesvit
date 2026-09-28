@@ -61,6 +61,7 @@ mod dialogs;
 mod downloads;
 mod engine;
 mod exec;
+mod extension_toolbar;
 mod extensions;
 mod instance;
 mod layout;
