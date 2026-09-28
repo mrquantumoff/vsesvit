@@ -6,6 +6,8 @@
 mod address_bar;
 mod app;
 mod bookmark_drag;
+mod bookmark_editor;
+mod bookmark_menu;
 mod bookmarks_bar;
 mod browser;
 mod cli;
@@ -44,10 +46,30 @@ thread_local! {
     static SCRIPTED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Opens a menu or bubble. An autohide popover takes a Wayland popup grab, which the
-/// compositor refuses without a real input event, so under the self-test's scripted clicks
-/// popovers open without autohide and stay up to be checked and captured.
-pub(crate) fn popup(popover: &impl IsA<gtk::Popover>) {
+/// Opens a menu or bubble from `anchor`, which holds it until it closes or the anchor
+/// leaves the window (a rebuilt bar, a closed window), whichever comes first.
+///
+/// An autohide popover takes a Wayland popup grab, which the compositor refuses without a
+/// real input event, so under the self-test's scripted clicks popovers open without
+/// autohide and stay up to be checked and captured.
+pub(crate) fn popup(popover: &impl IsA<gtk::Popover>, anchor: &impl IsA<gtk::Widget>) {
+    let popover = popover.upcast_ref::<gtk::Popover>();
+    popover.set_parent(anchor);
+    let release = |popover: &gtk::Popover| {
+        if popover.parent().is_some() {
+            popover.unparent();
+        }
+    };
+    anchor.connect_unrealize(glib::clone!(
+        #[weak]
+        popover,
+        move |_| release(&popover)
+    ));
+    // Unparenting from inside `closed` confuses GTK's popover teardown.
+    popover.connect_closed(move |popover| {
+        let popover = popover.clone();
+        glib::idle_add_local_once(move || release(&popover));
+    });
     if SCRIPTED.get() {
         popover.set_autohide(false);
     }

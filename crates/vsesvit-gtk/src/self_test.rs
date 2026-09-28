@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
+use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
 use vsesvit_core::prefs::{TabsPosition, keys};
@@ -358,6 +359,40 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("star_bubble", CHECK_TIMEOUT, |last| async move {
+        let address = window.address_bar();
+        let bubble = address.bubble().ok_or_else(|| "the star opened no bubble".to_owned())?;
+        let heading = heading_of(&bubble);
+        if heading.as_deref() != Some("Bookmark added") {
+            return Err(format!("the bubble is titled {heading:?}"));
+        }
+        glib::timeout_future(POPOVER_SETTLE).await;
+        // Scripted popovers take no keyboard focus (see `crate::popup`), so this checks the
+        // selection that comes with focusing the Name field.
+        let name = find::<gtk::Entry>(bubble.upcast_ref(), |_| true).ok_or_else(|| "the bubble has no Name field".to_owned())?;
+        let selected = name.selection_bounds().is_some_and(|(start, end)| start == 0 && end == i32::from(name.text_length()));
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[bubble.clone()], &ctx.out_dir.join("star-bubble.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        name.set_text("Renamed fixture");
+        button_labelled(bubble.upcast_ref(), "_Done").ok_or_else(|| "no Done button".to_owned())?.emit_clicked();
+        wait_for(&last, || {
+            let titles: Vec<String> = browser.core().borrow_mut().bookmarks().find_by_url(index_url).into_iter().map(|n| n.title).collect();
+            if titles == ["Renamed fixture"] { Ok(()) } else { Err(format!("the bookmark is titled {titles:?}")) }
+        })
+        .await;
+        gio::prelude::ActionGroupExt::activate_action(window, "bookmark-page", None);
+        let again = address.bubble().as_ref().and_then(heading_of);
+        if let Some(bubble) = address.bubble() {
+            bubble.popdown();
+        }
+        match (selected, again.as_deref()) {
+            (true, Some("Edit bookmark")) => Ok("\"Bookmark added\" with the name selected (star-bubble.png); Done saved the new name; the star then opens \"Edit bookmark\"".to_owned()),
+            _ => Err(format!("name selected={selected}, second click opened {again:?}")),
+        }
+    })
+    .await;
+
     ctx.check("tabs", CHECK_TIMEOUT, |last| async move {
         let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
         let second = window.open_tab(Some(page2_url.as_str()), None, Focus::Foreground);
@@ -588,6 +623,93 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("bookmarks_bar_menus", CHECK_TIMEOUT, |last| async move {
+        let folder = {
+            let mut profile = browser.core().borrow_mut();
+            let icon = gdk::MemoryTexture::new(16, 16, gdk::MemoryFormat::R8g8b8a8, &glib::Bytes::from_owned([220u8, 60, 40, 255].repeat(256)), 64);
+            profile.favicons().record(index_url, &icon.save_to_png_bytes()).map_err(|e| e.to_string())?;
+            let mut bookmarks = profile.bookmarks();
+            let folder = bookmarks.add_folder(BookmarkId::TOOLBAR, InsertAt::Index(0), "Fixture folder").map_err(|e| e.to_string())?;
+            bookmarks.add_url(folder, InsertAt::End, "Fixture index", index_url).map_err(|e| e.to_string())?;
+            bookmarks.add_url(folder, InsertAt::End, "A page whose title is far too long to fit in any menu without being cut short", page2_url).map_err(|e| e.to_string())?;
+            let inner = bookmarks.add_folder(folder, InsertAt::End, "Inner folder").map_err(|e| e.to_string())?;
+            bookmarks.add_url(inner, InsertAt::End, "Inner page", page2_url).map_err(|e| e.to_string())?;
+            for i in 0..16 {
+                let url = vsesvit_core::Url::parse(&format!("https://site{i}.example/")).map_err(|e| e.to_string())?;
+                bookmarks.add_url(BookmarkId::TOOLBAR, InsertAt::End, &format!("Example site {i}"), &url).map_err(|e| e.to_string())?;
+            }
+            folder
+        };
+        browser.bookmarks_changed();
+        window.set_default_size(900, 700);
+        let bar = window.bookmarks_bar();
+        let (shown, hidden) = wait_for(&last, || match bar.overflow() {
+            (shown, hidden) if hidden > 0 && bar.chevron().is_mapped() => Ok((shown, hidden)),
+            (shown, hidden) => Err(format!("window {} px wide, {shown} items shown, {hidden} in the chevron menu", window.width())),
+        })
+        .await;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("bookmarks-overflow.png")).await.map_err(|e| e.to_string())?;
+
+        bar.chevron().emit_clicked();
+        let overflow = wait_for(&last, || popover_of(bar.chevron().upcast_ref()).ok_or_else(|| "the chevron opened no menu".to_owned())).await;
+        let overflow_rows = count::<gtk::Button>(overflow.upcast_ref(), |b| b.has_css_class("bookmark-menu-row"));
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[overflow.clone()], &ctx.out_dir.join("bookmarks-overflow-menu.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        overflow.popdown();
+
+        let (item, folder_button) = bar.item(0).ok_or_else(|| "the bar has no first item".to_owned())?;
+        if item.node.id != folder {
+            return Err(format!("the first item is {:?}", item.node.title));
+        }
+        folder_button.downcast_ref::<gtk::Button>().ok_or_else(|| "the folder is not a button".to_owned())?.emit_clicked();
+        let menu = wait_for(&last, || popover_of(&folder_button).ok_or_else(|| "the folder opened no menu".to_owned())).await;
+        let favicons = count::<gtk::Image>(menu.upcast_ref(), |i| i.storage_type() == gtk::ImageType::Paintable);
+        let inner = button_labelled_in_row(menu.upcast_ref(), "Inner folder").ok_or_else(|| "no Inner folder row".to_owned())?;
+        inner.emit_clicked();
+        let submenu = wait_for(&last, || popover_of(inner.upcast_ref()).ok_or_else(|| "the inner folder opened no menu".to_owned())).await;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[menu.clone(), submenu.clone()], &ctx.out_dir.join("bookmarks-folder-menu.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        let long = button_labelled_in_row(menu.upcast_ref(), "A page whose title is far too long to fit in any menu without being cut short")
+            .and_then(|row| find::<gtk::Label>(row.upcast_ref(), |_| true))
+            .is_some_and(|label| label.layout().is_ellipsized());
+        menu.popdown();
+
+        let (link, link_button) = bar.item(1).ok_or_else(|| "the bar has no second item".to_owned())?;
+        let context = crate::bookmark_menu::open_context_menu(&link_button, &crate::bookmark_menu::Target::Node(link.clone()), None);
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[context.clone().upcast()], &ctx.out_dir.join("bookmarks-context-menu.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        WidgetExt::activate_action(&context, "bookmark.edit", None).map_err(|e| e.to_string())?;
+        let dialog = wait_for(&last, || window.visible_dialog().ok_or_else(|| "Edit… opened no dialog".to_owned())).await;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("bookmarks-edit-dialog.png")).await.map_err(|e| e.to_string())?;
+        let url_field = find::<gtk::Entry>(dialog.upcast_ref(), |e| e.text().starts_with("https://") || e.text().starts_with("http://")).map(|e| e.text().to_string());
+        dialog.close();
+
+        {
+            let mut profile = browser.core().borrow_mut();
+            let mut bookmarks = profile.bookmarks();
+            let added: Vec<BookmarkId> = bookmarks.children(BookmarkId::TOOLBAR).into_iter().filter(|n| n.id == folder || n.title.starts_with("Example site")).map(|n| n.id).collect();
+            for id in added {
+                bookmarks.remove(id).map_err(|e| e.to_string())?;
+            }
+        }
+        browser.bookmarks_changed();
+        window.set_default_size(1280, 820);
+        let detail = format!(
+            "at {} px {shown} items shown and {hidden} in the » menu ({overflow_rows} rows); folder menu has {favicons} favicons, a submenu, long title ellipsized={long}; Edit… showed URL {url_field:?}; screenshots bookmarks-*.png",
+            window.width()
+        );
+        if overflow_rows == hidden && favicons > 0 && long && url_field.as_deref() == link.node.url.as_ref().map(|u| u.as_str()) { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
     ctx.check("ctrl_s_toggles_sidebar", CHECK_TIMEOUT, |last| async move {
         let bound: Vec<String> = browser.app().actions_for_accel("<Control>s").iter().map(|a| a.to_string()).collect();
         if bound != ["win.toggle-tab-sidebar"] {
@@ -672,6 +794,58 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         })
         .await;
     }
+}
+
+/// The first widget of type `W` under `root` (itself included) that `matches`.
+fn find<W: IsA<gtk::Widget>>(root: &gtk::Widget, matches: impl Fn(&W) -> bool + Copy) -> Option<W> {
+    if let Some(widget) = root.downcast_ref::<W>()
+        && matches(widget)
+    {
+        return Some(widget.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find(&widget, matches) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn count<W: IsA<gtk::Widget>>(root: &gtk::Widget, matches: impl Fn(&W) -> bool + Copy) -> usize {
+    let mut n = usize::from(root.downcast_ref::<W>().is_some_and(matches));
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        n += count(&widget, matches);
+        child = widget.next_sibling();
+    }
+    n
+}
+
+fn button_labelled(root: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+    find::<gtk::Button>(root, |b| b.label().as_deref() == Some(label))
+}
+
+/// A bookmark menu row showing `text`.
+fn button_labelled_in_row(root: &gtk::Widget, text: &str) -> Option<gtk::Button> {
+    find::<gtk::Button>(root, |b| b.has_css_class("bookmark-menu-row") && find::<gtk::Label>(b.upcast_ref(), |l| l.label() == text).is_some())
+}
+
+/// The popover `widget` holds, if one is open.
+fn popover_of(widget: &gtk::Widget) -> Option<gtk::Popover> {
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        if let Some(popover) = c.downcast_ref::<gtk::Popover>().filter(|p| p.is_visible()) {
+            return Some(popover.clone());
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+fn heading_of(bubble: &gtk::Popover) -> Option<String> {
+    find::<gtk::Label>(bubble.upcast_ref(), |l| l.has_css_class("heading")).map(|l| l.label().into())
 }
 
 /// How many different pixel values the image has, stopping at `cap`.

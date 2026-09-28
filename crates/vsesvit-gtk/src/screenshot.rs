@@ -10,6 +10,9 @@ use std::rc::Rc;
 
 use gtk::{gdk, gio, glib, graphene, prelude::*};
 
+/// How many more frames a capture waits for when a frame left nothing drawn.
+const FRAME_TRIES: usize = 10;
+
 #[derive(Debug)]
 pub enum CaptureError {
     /// The widget is not in a realized window or has no size yet.
@@ -87,9 +90,23 @@ pub async fn capture_next_frame(
     .await
 }
 
-/// [`capture_next_frame`] written to `path` as PNG.
+/// [`capture_next_frame`], waiting up to [`FRAME_TRIES`] more frames while a widget that
+/// is still settling (a popover sizing itself, an animation) invalidates itself right after
+/// each frame.
+async fn capture_settled(widget: &impl IsA<gtk::Widget>) -> Result<gdk::Texture, CaptureError> {
+    let mut texture = capture_next_frame(widget).await;
+    for _ in 0..FRAME_TRIES {
+        match texture {
+            Err(CaptureError::NothingDrawn) => texture = capture_next_frame(widget).await,
+            _ => break,
+        }
+    }
+    texture
+}
+
+/// [`capture_settled`] written to `path` as PNG.
 pub async fn save_png(widget: &impl IsA<gtk::Widget>, path: &Path) -> Result<(), CaptureError> {
-    capture_next_frame(widget)
+    capture_settled(widget)
         .await?
         .save_to_png(path)
         .map_err(CaptureError::Save)
@@ -99,7 +116,7 @@ pub async fn save_png(widget: &impl IsA<gtk::Widget>, path: &Path) -> Result<(),
 /// `path` as PNG. Popovers are surfaces of their own, which a capture of the window leaves
 /// out. The image grows to take in popovers that reach past the window.
 pub async fn save_png_with_popovers(window: &gtk::Window, popovers: &[gtk::Popover], path: &Path) -> Result<(), CaptureError> {
-    let base = capture_next_frame(window).await?;
+    let base = capture_settled(window).await?;
     let window_origin = origin(window.upcast_ref()).ok_or(CaptureError::NotRealized)?;
     let scale = window.scale_factor() as f32;
     let mut layers = vec![(base, (0.0, 0.0))];
@@ -108,7 +125,7 @@ pub async fn save_png_with_popovers(window: &gtk::Window, popovers: &[gtk::Popov
             return Err(CaptureError::NotRealized);
         }
         let at = origin(popover.upcast_ref()).ok_or(CaptureError::NotRealized)?;
-        let texture = capture_next_frame(popover).await?;
+        let texture = capture_settled(popover).await?;
         layers.push((texture, ((at.0 - window_origin.0) as f32 * scale, (at.1 - window_origin.1) as f32 * scale)));
     }
     let bounds = layers.iter().fold(graphene::Rect::zero(), |bounds, (texture, (x, y))| {

@@ -343,8 +343,8 @@ impl Browser {
         self.core().borrow_mut().bookmarks().is_bookmarked(&url)
     }
 
-    /// The star button or Ctrl+D: bookmarks the page into the bookmarks bar, or removes
-    /// every bookmark of its URL.
+    /// The star button or Ctrl+D: bookmarks the page into the bookmarks bar and opens the
+    /// "Bookmark added" bubble, or opens the "Edit bookmark" bubble on its bookmark.
     pub(crate) fn star_clicked(&self, window: &BrowserWindow) {
         let Some(tab) = window.selected_tab() else { return };
         let Some(url) = tab.committed_uri().and_then(|u| Url::parse(&u).ok()) else {
@@ -354,25 +354,27 @@ impl Browser {
         let result = {
             let mut p = self.core().borrow_mut();
             let mut bookmarks = p.bookmarks();
-            let existing = bookmarks.find_by_url(&url);
-            if existing.is_empty() {
-                bookmarks
+            match bookmarks.find_by_url(&url).into_iter().next() {
+                Some(node) => Ok((Some(node), false)),
+                None => bookmarks
                     .add_url(BookmarkId::TOOLBAR, InsertAt::End, &title, &url)
-                    .map(|_| "Bookmark added to the bookmarks bar")
-            } else {
-                existing
-                    .iter()
-                    .try_for_each(|node| bookmarks.remove(node.id))
-                    .map(|()| "Bookmark removed")
+                    .map(|id| (bookmarks.get(id), true)),
             }
         };
-        match result {
-            Ok(message) => window.toast(adw::Toast::builder().title(message).timeout(2).build()),
-            Err(e) => window.toast(adw::Toast::new(&format!("Cannot change the bookmark: {e}"))),
+        let (node, added) = match result {
+            Ok((Some(node), added)) => (node, added),
+            Ok((None, _)) => return,
+            Err(e) => {
+                window.toast(adw::Toast::new(&format!("Cannot bookmark the page: {e}")));
+                return;
+            }
+        };
+        if added {
+            // The page's icon arrived before it was bookmarked.
+            self.save_favicon(&tab);
+            self.bookmarks_changed();
         }
-        // The page's icon arrived before it was bookmarked.
-        self.save_favicon(&tab);
-        self.bookmarks_changed();
+        window.show_bookmark_bubble(node, added);
     }
 
     /// A tab shows a new icon: kept when its page or site is bookmarked, and shown on the
@@ -756,7 +758,13 @@ mod tests {
         browser.star_clicked(&window);
         let stored = browser.core().borrow_mut().favicons().get(&Url::parse(&url).unwrap()).unwrap();
         let shown = window.bookmarks_bar().shows_favicon(&url);
-        browser.star_clicked(&window);
+        {
+            let mut profile = browser.core().borrow_mut();
+            let mut bookmarks = profile.bookmarks();
+            for node in bookmarks.find_by_url(&Url::parse(&url).unwrap()) {
+                bookmarks.remove(node.id).unwrap();
+            }
+        }
         window.destroy();
         assert!(stored.is_some(), "the favicon is kept once the page is bookmarked");
         assert!(shown, "the bar shows the kept favicon");

@@ -15,13 +15,15 @@ use std::rc::Rc;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
+use vsesvit_core::bookmarks::BookmarkNode;
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::new_tab;
 use vsesvit_core::prefs::TabsPosition;
 use webkit::prelude::*;
 
-use crate::address_bar::AddressBar;
+use crate::address_bar::{AddressBar, Anchor};
+use crate::bookmark_editor;
 use crate::bookmarks_bar::BookmarksBar;
 use crate::browser::{Browser, ClosedTab};
 use crate::find_bar::FindBar;
@@ -517,6 +519,12 @@ impl BrowserWindow {
             action.set_state(&starred.to_variant());
         }
         self.ui().address.set_starred(starred);
+    }
+
+    /// The star's bubble on `node`: "Bookmark added" when the star just added it.
+    pub(crate) fn show_bookmark_bubble(&self, node: BookmarkNode, added: bool) {
+        let bubble = bookmark_editor::bubble(self, node, added);
+        self.ui().address.show_popover(&bubble, Anchor::Star);
     }
 
     // Extension actions.

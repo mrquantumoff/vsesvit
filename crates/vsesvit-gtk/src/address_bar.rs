@@ -140,9 +140,7 @@ mod imp {
 
         fn dispose(&self) {
             self.popover.unparent();
-            if let Some(bubble) = self.bubble.take() {
-                bubble.unparent();
-            }
+            self.bubble.take();
         }
     }
 
@@ -398,7 +396,7 @@ impl AddressBar {
     /// Whether the shown page is bookmarked, as the star at the entry's end.
     pub(crate) fn set_starred(&self, starred: bool) {
         let (icon, tooltip) = if starred {
-            ("starred-symbolic", "Remove Bookmark")
+            ("starred-symbolic", "Edit Bookmark")
         } else {
             ("non-starred-symbolic", "Bookmark This Page")
         };
@@ -447,14 +445,12 @@ impl AddressBar {
         self.show_popover(&popover, Anchor::Zoom);
     }
 
-    /// Opens `popover` pointing at `anchor`, closing any other bubble. It is dropped when
-    /// it closes.
+    /// Opens `popover` pointing at `anchor`, closing any other bubble.
     pub(crate) fn show_popover(&self, popover: &gtk::Popover, anchor: Anchor) {
         let imp = self.imp();
         if let Some(previous) = imp.bubble.take() {
             previous.popdown();
         }
-        popover.set_parent(self);
         popover.set_pointing_to(Some(&self.anchor_rect(anchor)));
         popover.set_position(gtk::PositionType::Bottom);
         popover.connect_closed(glib::clone!(
@@ -465,17 +461,10 @@ impl AddressBar {
                 if imp.bubble.borrow().as_ref() == Some(popover) {
                     imp.bubble.take();
                 }
-                // Unparenting from inside `closed` confuses GTK's popover teardown.
-                let popover = popover.clone();
-                glib::idle_add_local_once(move || {
-                    if popover.parent().is_some() {
-                        popover.unparent();
-                    }
-                });
             }
         ));
         imp.bubble.replace(Some(popover.clone()));
-        crate::popup(popover);
+        crate::popup(popover, self);
     }
 
     /// The zoom level shown before the star, once it is laid out, if the page is zoomed.
@@ -813,8 +802,44 @@ mod tests {
         assert_eq!(restored, 0.5);
     }
 
+    /// The button labelled `label` in `widget`'s tree.
+    fn button_in(widget: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+        if let Some(button) = widget.downcast_ref::<gtk::Button>()
+            && button.label().as_deref() == Some(label)
+        {
+            return Some(button.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            if let Some(found) = button_in(&c, label) {
+                return Some(found);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+
+    fn heading_of(bubble: &gtk::Popover) -> Option<String> {
+        fn find(widget: &gtk::Widget) -> Option<String> {
+            if let Some(label) = widget.downcast_ref::<gtk::Label>()
+                && label.has_css_class("heading")
+            {
+                return Some(label.label().into());
+            }
+            let mut child = widget.first_child();
+            while let Some(c) = child {
+                if let Some(found) = find(&c) {
+                    return Some(found);
+                }
+                child = c.next_sibling();
+            }
+            None
+        }
+        find(bubble.upcast_ref())
+    }
+
     #[gtk::test]
-    fn the_star_inside_the_entry_toggles_the_bookmark() {
+    fn the_star_bookmarks_the_page_and_opens_its_bubble() {
         let server = Server::start("127.0.0.1", |path| match path {
             "/starred" => Reply::Page("Starred"),
             _ => Reply::NotFound,
@@ -825,7 +850,8 @@ mod tests {
         window.present();
         let tab = window.open_tab(Some(&url), None, Focus::Foreground);
         wait_until("the page to commit", || tab.committed_uri().as_deref() == Some(url.as_str()));
-        let entry = window.address_bar().imp().entry.clone();
+        let bar = window.address_bar().clone();
+        let entry = bar.imp().entry.clone();
         let state = || {
             let icon = entry.secondary_icon_name().map(String::from);
             (browser.is_bookmarked(Some(&url)), icon.unwrap_or_default())
@@ -834,16 +860,18 @@ mod tests {
 
         let before = state();
         click(gtk::EntryIconPosition::Secondary);
-        let added = state();
-        click(gtk::EntryIconPosition::Primary);
-        let security_clicked = state();
+        let added = (state(), bar.bubble().as_ref().and_then(heading_of));
         click(gtk::EntryIconPosition::Secondary);
+        let bubble = bar.bubble().expect("the star opens a bubble");
+        let again = (state(), heading_of(&bubble));
+        button_in(bubble.upcast_ref(), "_Remove").expect("a Remove button").emit_clicked();
         let removed = state();
         window.destroy();
 
+        let starred = (true, "starred-symbolic".to_owned());
         assert_eq!(before, (false, "non-starred-symbolic".to_owned()));
-        assert_eq!(added, (true, "starred-symbolic".to_owned()));
-        assert_eq!(security_clicked, added, "the security icon leaves the bookmark alone");
+        assert_eq!(added, (starred.clone(), Some("Bookmark added".to_owned())));
+        assert_eq!(again, (starred, Some("Edit bookmark".to_owned())), "a second click edits rather than removes");
         assert_eq!(removed, before);
     }
 }

@@ -1,8 +1,8 @@
 //! The Bookmarks dialog: the tree (folders expand in place), a flat search, the edits core
-//! supports (new folder, rename, move by menu or by dragging rows, delete) and import from
-//! another browser or a bookmarks file. Every edit is one core call followed
-//! by a rebuild of the tree from the merged records, so the dialog always shows the tree
-//! every device would show.
+//! supports (new folder, edit name, URL and folder, move by menu or by dragging rows,
+//! delete) and import from another browser or a bookmarks file. Every edit is one core
+//! call followed by a rebuild of the tree from the merged records, so the dialog always
+//! shows the tree every device would show.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -17,6 +17,7 @@ use vsesvit_core::import::{self, Source};
 
 use super::{LibraryDialog, confirm, prompt_choice, prompt_text};
 use crate::bookmark_drag::{self, Zone};
+use crate::bookmark_editor::{self, Subject};
 use crate::favicons;
 use crate::profile::Core;
 use crate::tab::display_uri;
@@ -87,7 +88,7 @@ fn build(window: &BrowserWindow) -> Rc<State> {
     stack.add_named(&no_results, Some("empty"));
 
     let new_folder = tool_button("folder-new-symbolic", "New Folder");
-    let rename = tool_button("document-edit-symbolic", "Rename");
+    let edit = tool_button("document-edit-symbolic", "Edit…");
     let move_to = tool_button("go-jump-symbolic", "Move To…");
     let delete = tool_button("user-trash-symbolic", "Delete");
     let import = tool_button("document-open-symbolic", "Import Bookmarks…");
@@ -98,7 +99,7 @@ fn build(window: &BrowserWindow) -> Rc<State> {
             import.upcast_ref(),
             delete.upcast_ref(),
             move_to.upcast_ref(),
-            rename.upcast_ref(),
+            edit.upcast_ref(),
             new_folder.upcast_ref(),
         ],
     );
@@ -141,10 +142,10 @@ fn build(window: &BrowserWindow) -> Rc<State> {
         state,
         move |_| state.spawn(|s| async move { s.new_folder().await })
     ));
-    rename.connect_clicked(glib::clone!(
+    edit.connect_clicked(glib::clone!(
         #[strong]
         state,
-        move |_| state.spawn(|s| async move { s.rename().await })
+        move |_| state.spawn(|s| async move { s.edit().await })
     ));
     move_to.connect_clicked(glib::clone!(
         #[strong]
@@ -362,17 +363,18 @@ impl State {
         self.report(result);
     }
 
-    async fn rename(&self) {
+    /// A bookmark's name, URL and folder, or a folder's name and parent, in the editor the
+    /// bookmarks bar uses.
+    async fn edit(&self) {
         let Some(node) = self.selected().filter(|n| !n.id.is_root() && n.kind != NodeKind::Separator) else {
-            self.ui.toast("Select a bookmark or folder to rename");
-            return;
-        };
-        let Some(title) = prompt_text(&self.ui.dialog, "Rename", &node.title, "_Rename").await else {
+            self.ui.toast("Select a bookmark or folder to edit");
             return;
         };
         let Some(core) = self.core() else { return };
-        let result = core.borrow_mut().bookmarks().rename(node.id, &title);
-        self.report(result);
+        match bookmark_editor::edit(&self.ui.dialog, &core, Subject::Existing(node)).await {
+            Ok(false) => {}
+            result => self.report(result.map(drop)),
+        }
     }
 
     async fn move_selected(&self) {
