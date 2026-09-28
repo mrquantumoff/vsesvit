@@ -73,6 +73,7 @@ mod report;
 mod selftest;
 mod session;
 mod shortcuts;
+mod store;
 mod strip;
 mod tab;
 mod tab_header;

@@ -16,6 +16,7 @@ use crate::bindings::*;
 use crate::browser::CommitKind;
 use crate::{exec, xaml};
 use crate::shortcuts::{self, PageMessage, PageScript};
+use crate::store;
 use crate::tab_header::TabLook;
 use crate::window::BrowserWindow;
 
@@ -228,7 +229,7 @@ impl Tab {
     }
 
     /// Runs the shortcut script in its isolated world of every new document (see `shortcuts`)
-    /// and listens to its binding.
+    /// and listens to its binding; runs the store script in the main world (see `store`).
     async fn inject(self: &Rc<Self>, core: &CoreWebView2, script: &PageScript) -> Result<()> {
         core.GetDevToolsProtocolEventReceiver("Runtime.bindingCalled")?
             .DevToolsProtocolEventReceived(on(
@@ -251,6 +252,10 @@ impl Tab {
             (
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({ "source": script.source, "worldName": script.world }).to_string(),
+            ),
+            (
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": store::MAIN_WORLD_SCRIPT }).to_string(),
             ),
         ];
         for (method, params) in calls {
@@ -616,6 +621,9 @@ impl Tab {
             Some(PageMessage::Key(command)) => exec::spawn(async move { window.run(command) }),
             Some(PageMessage::BackgroundLink(url)) => {
                 *self.background_link.borrow_mut() = Some((url, Instant::now()));
+            }
+            Some(PageMessage::Store(request)) => {
+                exec::spawn(store::answer(window, self.id, request));
             }
             None => {}
         }

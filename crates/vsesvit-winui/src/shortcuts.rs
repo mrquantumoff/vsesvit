@@ -15,6 +15,7 @@
 
 use serde_json::Value;
 
+use crate::store::{self, StoreRequest};
 use Command as C;
 use InPage::{Native, Overridable, Reserved};
 
@@ -145,6 +146,8 @@ pub(crate) enum PageMessage {
     /// The user Ctrl+clicked or middle-clicked a link; the new-window request that follows
     /// should open a background tab.
     BackgroundLink(String),
+    /// An extension store page asked to install, remove or list extensions (see `store`).
+    Store(StoreRequest),
 }
 
 /// The binding the script reports through (`Runtime.bindingCalled` events carry its name).
@@ -190,6 +193,11 @@ fn parse_page_message(message: &str) -> Option<PageMessage> {
         "link" => Some(PageMessage::BackgroundLink(
             value.get("url")?.as_str()?.to_owned(),
         )),
+        "store" => store::parse_request(
+            value.get("host")?.as_str()?,
+            value.get("detail")?.as_str()?,
+        )
+        .map(PageMessage::Store),
         _ => None,
     }
 }
@@ -224,6 +232,9 @@ fn page_script() -> String {
   }};
   addEventListener("click", (e) => {{ if (e.isTrusted && (e.ctrlKey || e.metaKey) && !e.shiftKey) link(e); }}, true);
   addEventListener("auxclick", (e) => {{ if (e.isTrusted && e.button === 1 && !e.shiftKey) link(e); }}, true);
+  document.addEventListener("vsesvit-store", (e) => {{
+    if (typeof e.detail === "string") report(JSON.stringify({{ t: "store", host: location.hostname, detail: e.detail }}));
+  }});
 }})();"#,
         binding = BINDING,
         reserved = keys(Reserved),
@@ -300,6 +311,17 @@ mod tests {
             parse_binding_call(&called(BINDING, link)),
             Some(PageMessage::BackgroundLink("https://a.test/x".into()))
         );
+    }
+
+    #[test]
+    fn store_requests_carry_the_senders_host() {
+        let request = r#"{"t":"store","host":"chromewebstore.google.com","detail":"{\"seq\":1,\"op\":\"list\"}"}"#;
+        assert!(matches!(
+            parse_binding_call(&called(BINDING, request)),
+            Some(PageMessage::Store(_))
+        ));
+        let elsewhere = request.replace("chromewebstore.google.com", "example.com");
+        assert_eq!(parse_binding_call(&called(BINDING, &elsewhere)), None);
     }
 
     #[test]

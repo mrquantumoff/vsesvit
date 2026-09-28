@@ -170,6 +170,32 @@ pub(crate) fn preview(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Previe
     })
 }
 
+/// Asks the user to confirm `action` over `window`; true if they chose it.
+pub(crate) async fn confirm(
+    window: &Rc<BrowserWindow>,
+    title: &str,
+    text: &str,
+    action: &str,
+) -> Result<bool> {
+    let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
+    let dialog: ContentDialog = xaml::load(&format!(
+        r#"<ContentDialog {{ns}} Title="{}" PrimaryButtonText="{}" CloseButtonText="Cancel"
+             DefaultButton="Primary" Style="{{StaticResource DefaultContentDialogStyle}}">
+  <TextBlock TextWrapping="Wrap" Text="{}"/>
+</ContentDialog>"#,
+        xaml::escape(title),
+        xaml::escape(action),
+        xaml::escape(text)
+    ))?;
+    dialog
+        .cast::<UIElement>()?
+        .SetXamlRoot(&window.xaml_root()?)?;
+    dialog
+        .cast::<FrameworkElement>()?
+        .SetRequestedTheme(element_theme(browser.theme()))?;
+    Ok(dialog.ShowAsync()?.await? == ContentDialogResult::Primary)
+}
+
 /// Wires a button's click.
 pub(crate) fn on_click(button: &impl Interface, handler: impl Fn() + 'static) -> Result<()> {
     button
