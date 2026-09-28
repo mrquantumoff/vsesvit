@@ -6885,6 +6885,15 @@ impl IFrameworkElement {
             .ok()
         }
     }
+    pub fn SetMaxWidth(&self, value: f64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetMaxWidth)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
     pub fn Name(&self) -> windows_core::Result<String> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -6940,7 +6949,8 @@ pub struct IFrameworkElement_Vtbl {
     MinWidth: usize,
     SetMinWidth: usize,
     MaxWidth: usize,
-    SetMaxWidth: usize,
+    pub SetMaxWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
     MinHeight: usize,
     SetMinHeight: usize,
     MaxHeight: usize,
@@ -9989,6 +9999,33 @@ impl IUIElement {
             ))
         }
     }
+    pub fn LostFocus<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<windows_core::IInspectable>, windows_core::Ref<RoutedEventArgs>)
+            + 'static,
+    {
+        let handler: RoutedEventHandler = {
+            let com = windows_core::imp::DelegateBox::<RoutedEventHandler, F>::new(
+                &RoutedEventHandlerBox::<F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).LostFocus)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveLostFocus,
+            ))
+        }
+    }
     pub fn PointerReleased<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
     where
         F: Fn(
@@ -10205,8 +10242,13 @@ pub struct IUIElement_Vtbl {
     ) -> windows_core::HRESULT,
     pub RemoveGotFocus:
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
-    LostFocus: usize,
-    RemoveLostFocus: usize,
+    pub LostFocus: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveLostFocus:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     DragStarting: usize,
     RemoveDragStarting: usize,
     DropCompleted: usize,

@@ -17,6 +17,7 @@ use std::rc::{Rc, Weak};
 use vsesvit_core::bookmarks::BookmarkId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
+use vsesvit_core::search::simplified_url;
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
@@ -81,7 +82,14 @@ pub(crate) struct WindowPrefs {
     pub theme: Theme,
     pub bookmarks_bar: bool,
     pub backdrop: Backdrop,
+    /// A narrow address bar centered in the toolbar.
+    pub compact_address: bool,
+    /// Whole URLs in the address bar, instead of simplified ones while it is not focused.
+    pub full_urls: bool,
 }
+
+/// The compact address bar's widest.
+const COMPACT_ADDRESS_WIDTH: f64 = 720.0;
 
 pub(crate) struct BrowserWindow {
     browser: Weak<Browser>,
@@ -98,6 +106,9 @@ pub(crate) struct BrowserWindow {
     /// The tab the toolbar currently shows.
     shown_tab: Cell<Option<TabId>>,
     fullscreen: Cell<bool>,
+    /// The address box has the keyboard focus, and so shows the whole URL.
+    address_focused: Cell<bool>,
+    full_urls: Cell<bool>,
     bookmarks_bar_wanted: Cell<bool>,
     bar: Bar,
     dialog_open: Cell<bool>,
@@ -133,6 +144,8 @@ impl BrowserWindow {
             suggestions: RefCell::new(Vec::new()),
             shown_tab: Cell::new(None),
             fullscreen: Cell::new(false),
+            address_focused: Cell::new(false),
+            full_urls: Cell::new(prefs.full_urls),
             bookmarks_bar_wanted: Cell::new(prefs.bookmarks_bar),
             bar,
             dialog_open: Cell::new(false),
@@ -145,6 +158,7 @@ impl BrowserWindow {
         this.show_layout(prefs.tabs)?;
         this.apply_theme(prefs.theme);
         this.apply_backdrop(prefs.backdrop);
+        this.set_compact_address(prefs.compact_address);
         this.set_bookmarks_bar_visible(prefs.bookmarks_bar);
         this.wire()?;
         this.install_accelerators()?;
@@ -418,9 +432,9 @@ impl BrowserWindow {
         let _ = self.ui.reload_glyph.SetGlyph(glyph);
         let _ = xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.reload, &tip));
         if !self.address_edited.get() {
-            let shown = omnibox::display_url(&state.url);
+            let shown = self.address_shown(&state.url);
             if self.ui.address.Text().is_ok_and(|t| t != shown) {
-                let _ = self.ui.address.SetText(shown);
+                let _ = self.ui.address.SetText(&shown);
             }
         }
         self.show_star(state.starred);
@@ -430,6 +444,48 @@ impl BrowserWindow {
             format!("{} - Vsesvit", state.title)
         };
         let _ = self.window.SetTitle(&title);
+    }
+
+    /// The whole URL while the user works in the address box or asked for full URLs;
+    /// otherwise the simplified one.
+    fn address_shown(&self, url: &str) -> String {
+        let url = omnibox::display_url(url);
+        if self.address_focused.get() || self.full_urls.get() {
+            url.to_owned()
+        } else {
+            simplified_url(url)
+        }
+    }
+
+    pub fn set_compact_address(&self, compact: bool) {
+        let width = if compact {
+            COMPACT_ADDRESS_WIDTH
+        } else {
+            f64::INFINITY
+        };
+        let _ = self
+            .ui
+            .address
+            .cast::<FrameworkElement>()
+            .and_then(|a| a.SetMaxWidth(width));
+    }
+
+    pub fn set_full_urls(&self, full: bool) {
+        self.full_urls.set(full);
+        self.refresh_chrome();
+    }
+
+    /// Clicking into the address box shows the whole URL, selected; leaving it shows the
+    /// simplified one again, unless the user typed something.
+    pub(super) fn address_focus_changed(&self, focused: bool) {
+        self.address_focused.set(focused);
+        self.refresh_chrome();
+        if focused
+            && let Ok(root) = self.ui.address.cast::<DependencyObject>()
+            && let Some(text_box) = xaml::find_descendant::<TextBox>(&root)
+        {
+            let _ = text_box.SelectAll();
+        }
     }
 
     fn show_star(&self, starred: bool) {
@@ -448,6 +504,14 @@ impl BrowserWindow {
             tab.set_starred(!url.is_empty() && is_bookmarked(&url));
         }
         self.refresh_chrome();
+    }
+
+    pub fn address_width(&self) -> f64 {
+        self.ui
+            .address
+            .cast::<FrameworkElement>()
+            .and_then(|a| a.ActualWidth())
+            .unwrap_or(0.0)
     }
 
     pub fn address_text(&self) -> String {

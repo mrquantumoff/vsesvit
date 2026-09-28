@@ -21,6 +21,13 @@ pub(super) const MARKUP: &str = r#"
     <TextBox x:Name="Homepage" Header="Home page" PlaceholderText="https://"/>
     <ComboBox x:Name="Theme" Header="Theme" MinWidth="320"/>
     <ToggleSwitch x:Name="ShowBookmarksBar" Header="Show the bookmarks bar"/>
+    <ToggleSwitch x:Name="CompactAddress" Header="Compact address bar, centered in the toolbar"/>
+    <StackPanel Spacing="4">
+      <ToggleSwitch x:Name="FullUrls" Header="Always show full URLs"/>
+      <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                 Text="When off, the address bar leaves out https://, www. and a trailing slash until you click into it."/>
+    </StackPanel>
     <StackPanel Spacing="4">
       <ToggleSwitch x:Name="Transparent" Header="Transparent window"/>
       <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
@@ -124,6 +131,30 @@ pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Wir
         }
     })?
     .forget();
+
+    let compact: ToggleSwitch = xaml::find(root, "CompactAddress")?;
+    compact.SetIsOn(browser.compact_address())?;
+    let w = weak.clone();
+    let source = compact.clone();
+    compact
+        .Toggled(move |_, _| {
+            if let (Some(b), Ok(on)) = (w.upgrade(), source.IsOn()) {
+                b.set_compact_address(on);
+            }
+        })?
+        .forget();
+
+    let full_urls: ToggleSwitch = xaml::find(root, "FullUrls")?;
+    full_urls.SetIsOn(browser.full_urls())?;
+    let w = weak.clone();
+    let source = full_urls.clone();
+    full_urls
+        .Toggled(move |_, _| {
+            if let (Some(b), Ok(on)) = (w.upgrade(), source.IsOn()) {
+                b.set_full_urls(on);
+            }
+        })?
+        .forget();
 
     let transparent: ToggleSwitch = xaml::find(root, "Transparent")?;
     transparent.SetIsOn(browser.backdrop() == Backdrop::Acrylic)?;

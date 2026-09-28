@@ -48,7 +48,7 @@ Windows.Graphics.RectInt32
 // ---- XAML tree ----
 Microsoft.UI.Xaml.Markup.XamlReader::Load
 Microsoft.UI.Xaml.DependencyObject
-Microsoft.UI.Xaml.IUIElement::{get_Visibility, put_Visibility, get_KeyboardAccelerators, put_KeyboardAcceleratorPlacementMode, Focus, get_XamlRoot, put_XamlRoot, GotFocus, PointerReleased, TransformToVisual, UpdateLayout}
+Microsoft.UI.Xaml.IUIElement::{get_Visibility, put_Visibility, get_KeyboardAccelerators, put_KeyboardAcceleratorPlacementMode, Focus, get_XamlRoot, put_XamlRoot, GotFocus, LostFocus, PointerReleased, TransformToVisual, UpdateLayout}
 Microsoft.UI.Xaml.Media.GeneralTransform
 Microsoft.UI.Xaml.Media.IGeneralTransform::TransformPoint
 Windows.Foundation.Point
@@ -56,7 +56,7 @@ Microsoft.UI.Xaml.Input.IPointerRoutedEventArgs::{GetCurrentPoint, put_Handled}
 Microsoft.UI.Input.IPointerPoint::get_Properties
 Microsoft.UI.Input.IPointerPointProperties::get_PointerUpdateKind
 Microsoft.UI.Input.PointerUpdateKind
-Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, get_ActualWidth, get_ActualHeight, put_RequestedTheme}
+Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, put_MaxWidth, get_ActualWidth, get_ActualHeight, put_RequestedTheme}
 Microsoft.UI.Xaml.ElementTheme
 Microsoft.UI.Xaml.Visibility
 Microsoft.UI.Xaml.FocusState

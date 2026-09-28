@@ -81,6 +81,22 @@ pub(super) async fn settings(
     let back = wait_layout(window, TabsPosition::Left).await;
     steps.push(json!({ "name": "14b-settings-back-to-left", "layout": format!("{back:?}"), "ok": back == Some(TabsPosition::Left) }));
 
+    let compact: ToggleSwitch = preview.find("CompactAddress")?;
+    let full_urls: ToggleSwitch = preview.find("FullUrls")?;
+    let defaults = (compact.IsOn()?, full_urls.IsOn()?);
+    let narrow = window.address_width();
+    compact.SetIsOn(false)?;
+    exec::sleep(Duration::from_millis(300)).await;
+    let wide = window.address_width();
+    compact.SetIsOn(true)?;
+    exec::sleep(Duration::from_millis(300)).await;
+    steps.push(json!({
+        "name": "14d-settings-address-bar",
+        "compact_and_full_urls": defaults,
+        "widths": [narrow, wide],
+        "ok": defaults == (true, false) && narrow > 0.0 && narrow <= 720.5 && wide > narrow,
+    }));
+
     let transparent: ToggleSwitch = preview.find("Transparent")?;
     let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
     let before = browser.backdrop();

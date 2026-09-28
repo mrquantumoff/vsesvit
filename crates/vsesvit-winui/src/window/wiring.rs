@@ -84,14 +84,12 @@ impl BrowserWindow {
         let w = me();
         ui.address
             .cast::<UIElement>()?
-            .GotFocus(move |_, _| {
-                let Some(w) = w.upgrade() else { return };
-                if let Ok(root) = w.ui.address.cast::<DependencyObject>()
-                    && let Some(text_box) = xaml::find_descendant::<TextBox>(&root)
-                {
-                    let _ = text_box.SelectAll();
-                }
-            })?
+            .GotFocus(move |_, _| with(&w, |w| w.address_focus_changed(true)))?
+            .forget();
+        let w = me();
+        ui.address
+            .cast::<UIElement>()?
+            .LostFocus(move |_, _| with(&w, |w| w.address_focus_changed(false)))?
             .forget();
 
         let menu = [

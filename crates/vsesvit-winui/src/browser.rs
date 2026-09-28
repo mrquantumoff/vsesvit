@@ -126,6 +126,8 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         theme: profile.prefs().get(&keys::THEME),
         bookmarks_bar: profile.prefs().get(&keys::SHOW_BOOKMARKS_BAR),
         backdrop: profile.prefs().get(&WINDOW_BACKDROP),
+        compact_address: profile.prefs().get(&keys::COMPACT_ADDRESS_BAR),
+        full_urls: profile.prefs().get(&keys::SHOW_FULL_URLS),
     };
     let updates = if config.mode.is_interactive() {
         Updates::detect()
@@ -656,6 +658,30 @@ impl Browser {
 
     pub fn backdrop(&self) -> Backdrop {
         self.prefs.get().backdrop
+    }
+
+    pub fn compact_address(&self) -> bool {
+        self.prefs.get().compact_address
+    }
+
+    pub fn set_compact_address(&self, compact: bool) {
+        self.write_pref(&keys::COMPACT_ADDRESS_BAR, &compact);
+        self.update_prefs(|p| p.compact_address = compact);
+        for window in self.windows() {
+            window.set_compact_address(compact);
+        }
+    }
+
+    pub fn full_urls(&self) -> bool {
+        self.prefs.get().full_urls
+    }
+
+    pub fn set_full_urls(&self, full: bool) {
+        self.write_pref(&keys::SHOW_FULL_URLS, &full);
+        self.update_prefs(|p| p.full_urls = full);
+        for window in self.windows() {
+            window.set_full_urls(full);
+        }
     }
 
     pub fn set_backdrop(&self, backdrop: Backdrop) {
