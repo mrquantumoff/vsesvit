@@ -381,3 +381,48 @@ pub(super) async fn context_menus(
     steps.push(json!({ "name": "08t-context-delete-link", "ok": gone.is_some() }));
     Ok(())
 }
+
+/// A bookmark of a page never visited gets its icon from the network, and the bar shows it.
+/// A real site, so without a network the step is skipped.
+pub(super) async fn preload_favicons(
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    const SITE: &str = "https://www.wikipedia.org/";
+    let url = Url::parse(SITE).map_err(|e| e.to_string())?;
+    let id = browser.core(|p| {
+        p.bookmarks()
+            .add_url(BookmarkId::TOOLBAR, InsertAt::Index(0), "Wikipedia", &url)
+            .map_err(|e| e.to_string())
+    })?;
+    browser.bookmarks_changed();
+    let before = browser
+        .core(|p| p.favicons().get(&url).ok().flatten())
+        .is_some();
+    browser.preload_favicons();
+    exec::wait_for(Duration::from_secs(60), POLL, || {
+        (!browser.preloading_favicons()).then_some(())
+    })
+    .await;
+    settle().await;
+    let stored = browser.core(|p| p.favicons().get(&url).ok().flatten());
+    let shown = window
+        .bookmarks_bar_items()
+        .iter()
+        .any(|item| matches!(item, BarItem::Link { id: i, icon: Some(_), .. } if *i == id));
+    let online = std::net::ToSocketAddrs::to_socket_addrs("www.wikipedia.org:443").is_ok();
+    shoot(window, out_dir, "08u-preloaded-favicon", steps, |_| {
+        json!({
+            "icon_before": before,
+            "stored_bytes": stored.as_ref().map(Vec::len),
+            "on_the_bar": shown,
+            "online": online,
+            "ok": !before && (stored.is_some() && shown || !online),
+        })
+    })
+    .await;
+    browser.remove_bookmark(id);
+    Ok(())
+}

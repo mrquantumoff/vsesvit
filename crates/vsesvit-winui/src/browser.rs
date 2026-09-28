@@ -12,6 +12,7 @@ use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
+use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, keys};
 use vsesvit_core::session::SessionSnapshot;
@@ -35,6 +36,8 @@ const CLOSED_TABS_KEPT: usize = 25;
 /// Tab changes are saved to the session this long after the last one.
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 const SUGGESTIONS: usize = 8;
+/// Bookmarked pages whose icons one preload round fetches.
+const FAVICON_BATCH: usize = 24;
 
 /// Whether the vertical tab list is collapsed to favicons. Per device: it depends on the
 /// screen, so it does not sync.
@@ -57,6 +60,15 @@ pub(crate) enum CommitKind {
     NewDocument,
     /// History API or fragment navigation within the current document.
     SameDocument,
+}
+
+/// Where fetching the icons of bookmarked pages is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Preload {
+    Idle,
+    Running,
+    /// Bookmarks changed during a run: look for pages without an icon once more at its end.
+    Requested,
 }
 
 pub(crate) struct ClosedTab {
@@ -84,6 +96,9 @@ pub(crate) struct Browser {
     pub(crate) extensions: ExtensionHost,
     pub(crate) downloads: Downloads,
     session_save_pending: Cell<bool>,
+    favicon_preload: Cell<Preload>,
+    /// Called whenever fetched icons were stored, while their owners keep them.
+    favicon_listeners: RefCell<Vec<Weak<dyn Fn()>>>,
     /// Set once the last window's session has been saved on close; later saves would only
     /// record an empty session over it.
     session_final: Cell<bool>,
@@ -153,6 +168,8 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         extensions: ExtensionHost::default(),
         downloads,
         session_save_pending: Cell::new(false),
+        favicon_preload: Cell::new(Preload::Idle),
+        favicon_listeners: RefCell::new(Vec::new()),
         session_final: Cell::new(false),
         profile_open_ms,
         updates,
@@ -174,6 +191,9 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         browser.open_window(window, show)?;
     }
     exec::spawn(browser.clone().start_extensions());
+    if browser.config.mode.is_interactive() {
+        browser.preload_favicons();
+    }
     match &browser.config.mode {
         Mode::Browse => {}
         #[cfg(feature = "self-test")]
@@ -586,8 +606,12 @@ impl Browser {
         self.bookmarks_changed();
     }
 
-    /// Refreshes everything that shows bookmarks: the bars and each tab's star.
+    /// Refreshes everything that shows bookmarks: the bars and each tab's star. New bookmarks
+    /// get their icons fetched; scripted runs start that themselves.
     pub fn bookmarks_changed(&self) {
+        if self.config.mode.is_interactive() {
+            self.preload_favicons();
+        }
         let items = self.bookmarks_bar_items();
         for window in self.windows() {
             window.set_bookmarks_bar(&items);
@@ -618,6 +642,73 @@ impl Browser {
             Ok(true) => self.bookmarks_changed(),
             Ok(false) => {}
             Err(e) => log::warn!("favicon of {url}: {e}"),
+        }
+    }
+
+    /// Fetches the icons of bookmarked pages that have none, on a worker thread, a batch at a
+    /// time until core has no page left to try, and shows what arrived.
+    pub fn preload_favicons(&self) {
+        match self.favicon_preload.get() {
+            Preload::Idle => {}
+            Preload::Running | Preload::Requested => {
+                self.favicon_preload.set(Preload::Requested);
+                return;
+            }
+        }
+        self.favicon_preload.set(Preload::Running);
+        let me = self.me.clone();
+        exec::spawn(async move {
+            while let Some(browser) = me.upgrade() {
+                let pages = browser
+                    .core(|p| p.favicons().missing(FAVICON_BATCH))
+                    .unwrap_or_else(|e| {
+                        log::warn!("pages without an icon: {e}");
+                        Vec::new()
+                    });
+                if pages.is_empty() {
+                    if browser.favicon_preload.replace(Preload::Running) == Preload::Requested {
+                        continue;
+                    }
+                    browser.favicon_preload.set(Preload::Idle);
+                    break;
+                }
+                log::info!("fetching the icons of {} bookmarked page(s)", pages.len());
+                drop(browser);
+                let fetched = exec::background(move || FaviconFetch::new(pages).run()).await;
+                let Some(browser) = me.upgrade() else { break };
+                match browser.core(|p| p.favicons().commit_fetched(fetched)) {
+                    Ok(true) => browser.favicons_arrived(),
+                    Ok(false) => {}
+                    Err(e) => log::warn!("storing fetched icons: {e}"),
+                }
+            }
+        });
+    }
+
+    /// Whether icons are being fetched.
+    pub fn preloading_favicons(&self) -> bool {
+        self.favicon_preload.get() != Preload::Idle
+    }
+
+    /// Calls `listener` after fetched icons were stored, while the caller keeps it.
+    pub fn on_favicons_arrived(&self, listener: &Rc<dyn Fn()>) {
+        self.favicon_listeners
+            .borrow_mut()
+            .push(Rc::downgrade(listener));
+    }
+
+    fn favicons_arrived(&self) {
+        let items = self.bookmarks_bar_items();
+        for window in self.windows() {
+            window.set_bookmarks_bar(&items);
+        }
+        let live: Vec<Rc<dyn Fn()>> = {
+            let mut listeners = self.favicon_listeners.borrow_mut();
+            listeners.retain(|l| l.strong_count() > 0);
+            listeners.iter().filter_map(Weak::upgrade).collect()
+        };
+        for listener in live {
+            listener();
         }
     }
 

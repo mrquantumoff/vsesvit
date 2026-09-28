@@ -1,7 +1,7 @@
 //! Bookmarks: the tree of folders and bookmarks, with add folder, rename (and edit the URL),
 //! move to another folder or up and down (or drag in the tree), delete, and import from another
 //! browser or a bookmarks file. Every change goes to core, then the tree, the bookmarks bars and the stars
-//! are rebuilt from core.
+//! are rebuilt from core, as they are when the icons of bookmarked pages arrive.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -182,8 +182,15 @@ pub(super) fn wire(
             e.import();
         }
     })?;
+    let e = Rc::downgrade(&editor);
+    let repaint: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(e) = e.upgrade() {
+            e.render();
+        }
+    });
+    browser.on_favicons_arrived(&repaint);
     Ok(Wired {
-        _alive: vec![editor],
+        _alive: vec![editor, Rc::new(repaint)],
         on_close: None,
     })
 }

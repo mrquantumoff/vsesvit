@@ -609,6 +609,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
         .map_err(|e| e.to_string())?;
     bookmark_steps::star_bubble(browser, &window, &star_page, out_dir, steps).await?;
     bookmark_steps::context_menus(browser, &window, out_dir, steps).await?;
+    bookmark_steps::preload_favicons(browser, &window, out_dir, steps).await?;
 
     // The tab layouts, set through the preference as the Settings dialog does.
     for (position, name) in [
