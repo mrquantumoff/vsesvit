@@ -27,6 +27,7 @@ pub mod screenshot;
 #[cfg(feature = "self-test")]
 mod self_test;
 mod session;
+mod site_info;
 mod tab;
 #[cfg(test)]
 mod test_support;

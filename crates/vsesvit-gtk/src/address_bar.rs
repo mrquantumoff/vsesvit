@@ -47,9 +47,11 @@ pub(crate) struct Suggestion {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Security {
-    /// `about:`, `file:` and blank pages.
+    /// Blank pages and error pages.
     #[default]
     NotApplicable,
+    /// `file:`, `about:` and other pages that come from no site.
+    Internal,
     /// HTTPS; pages with certificate errors are never shown, so every HTTPS page qualifies.
     Secure,
     Insecure,
@@ -63,6 +65,7 @@ impl Security {
         {
             Some("https") => Security::Secure,
             Some("http") => Security::Insecure,
+            Some(_) if uri != Some("about:blank") => Security::Internal,
             _ => Security::NotApplicable,
         }
     }
@@ -180,9 +183,11 @@ impl AddressBar {
         entry.set_placeholder_text(Some("Enter address"));
         entry.update_property(&[gtk::accessible::Property::Label("Address")]);
         entry.connect_icon_release(|entry, position| {
-            if position == gtk::EntryIconPosition::Secondary {
-                let _ = entry.activate_action("win.bookmark-page", None);
-            }
+            let action = match position {
+                gtk::EntryIconPosition::Primary => "win.show-site-info",
+                _ => "win.bookmark-page",
+            };
+            let _ = entry.activate_action(action, None);
         });
         let zoom = &imp.zoom;
         zoom.add_css_class("flat");
@@ -383,6 +388,7 @@ impl AddressBar {
         };
         let (icon, tooltip) = match shown {
             Security::NotApplicable => (None, None),
+            Security::Internal => (Some("dialog-information-symbolic"), Some("View site information")),
             Security::Secure => (Some("channel-secure-symbolic"), Some("Secure connection")),
             Security::Insecure => (
                 Some("channel-insecure-symbolic"),
@@ -472,6 +478,12 @@ impl AddressBar {
     pub(crate) fn shown_zoom(&self) -> Option<String> {
         let zoom = &self.imp().zoom;
         (zoom.is_mapped() && zoom.width() > 0).then(|| zoom.label().unwrap_or_default().into())
+    }
+
+    /// Clicks the security icon, as the user would.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn click_security(&self) {
+        self.imp().entry.emit_by_name::<()>("icon-release", &[&gtk::EntryIconPosition::Primary]);
     }
 
     /// Clicks the zoom level, as the user would.
@@ -695,7 +707,8 @@ mod tests {
             Security::of(Some("http://example.com/")),
             Security::Insecure
         );
-        assert_eq!(Security::of(Some("file:///tmp/x")), Security::NotApplicable);
+        assert_eq!(Security::of(Some("file:///tmp/x")), Security::Internal);
+        assert_eq!(Security::of(Some("about:version")), Security::Internal);
         assert_eq!(Security::of(Some("about:blank")), Security::NotApplicable);
         assert_eq!(Security::of(None), Security::NotApplicable);
     }

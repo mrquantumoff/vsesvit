@@ -758,6 +758,48 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("connection_info", if ctx.network { NETWORK_TIMEOUT } else { CHECK_TIMEOUT }, |last| async move {
+        let address = window.address_bar();
+        let open = |file: &'static str| async move {
+            address.click_security();
+            let bubble = address.bubble().ok_or_else(|| "the security icon opened no popover".to_owned())?;
+            glib::timeout_future(POPOVER_SETTLE).await;
+            crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[bubble.clone()], &ctx.out_dir.join(file))
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>(bubble)
+        };
+        let http = open("connection-http.png").await?;
+        let http_heading = heading_of(&http);
+        let http_certificate = find::<gtk::Label>(http.upcast_ref(), |l| l.label() == "Certificate").is_some();
+        http.popdown();
+        if http_heading.as_deref() != Some("Connection is not secure") || http_certificate {
+            return Err(format!("on HTTP the popover says {http_heading:?}, certificate section shown={http_certificate}"));
+        }
+        if !ctx.network {
+            return Ok("HTTP: \"Connection is not secure\", no certificate (connection-http.png); HTTPS needs --network".to_owned());
+        }
+        let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let tab = window.open_tab(Some("https://example.com/"), None, Focus::Foreground);
+        wait_for(&last, || match tab.committed_uri() {
+            Some(uri) if uri.starts_with("https://example.com") && !tab.web_view().is_loading() => Ok(()),
+            uri => Err(format!("example.com is at {uri:?}")),
+        })
+        .await;
+        let https = open("connection-https.png").await?;
+        let heading = heading_of(&https);
+        let fingerprint = find::<gtk::Label>(https.upcast_ref(), |l| l.label().len() == 95 && l.label().chars().filter(|&c| c == ':').count() == 31)
+            .map(|l| l.label().to_string());
+        let names = find::<gtk::Expander>(https.upcast_ref(), |_| true).map(|e| e.label().unwrap_or_default().to_string());
+        let chain = find::<gtk::Label>(https.upcast_ref(), |l| l.label() == "Certificate chain").is_some();
+        https.popdown();
+        window.select_tab(&first);
+        window.close_tab(&tab);
+        let detail = format!("HTTP: {http_heading:?}; example.com: {heading:?}, SHA-256 {fingerprint:?}, {names:?}, chain shown={chain} (connection-http.png, connection-https.png)");
+        if heading.as_deref() == Some("Connection is secure") && fingerprint.is_some() && names.is_some() && chain { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
     ctx.check("screenshot", CHECK_TIMEOUT, |_| async move {
         let path = ctx.out_dir.join("window.png");
         crate::screenshot::save_png(window, &path).await.map_err(|e| e.to_string())?;

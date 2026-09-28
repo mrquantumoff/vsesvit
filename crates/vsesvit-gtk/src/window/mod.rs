@@ -28,6 +28,7 @@ use crate::bookmarks_bar::BookmarksBar;
 use crate::browser::{Browser, ClosedTab};
 use crate::find_bar::FindBar;
 use crate::session;
+use crate::site_info;
 use crate::tab::{Tab, TabChange};
 use crate::updates::Banner;
 use crate::zoom;
@@ -525,6 +526,13 @@ impl BrowserWindow {
     pub(crate) fn show_bookmark_bubble(&self, node: BookmarkNode, added: bool) {
         let bubble = bookmark_editor::bubble(self, node, added);
         self.ui().address.show_popover(&bubble, Anchor::Star);
+    }
+
+    /// The connection popover of the selected tab's page, on the security icon.
+    pub(crate) fn show_site_info(&self) {
+        let Some(tab) = self.selected_tab() else { return };
+        let popover = site_info::popover(&site_info::Connection::of(&tab));
+        self.ui().address.show_popover(&popover, Anchor::Security);
     }
 
     // Extension actions.

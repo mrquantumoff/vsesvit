@@ -55,6 +55,9 @@ pub(super) fn install(window: &BrowserWindow) {
             .state(false.to_variant())
             .activate(|w: &BrowserWindow, _, _| w.browser().star_clicked(w))
             .build(),
+        ActionEntry::builder("show-site-info")
+            .activate(|w: &BrowserWindow, _, _| w.show_site_info())
+            .build(),
         ActionEntry::builder("open-bookmark")
             .parameter_type(Some(glib::VariantTy::STRING))
             .activate(|w: &BrowserWindow, _, target| {
