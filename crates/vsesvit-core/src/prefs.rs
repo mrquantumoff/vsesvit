@@ -72,6 +72,11 @@ pub mod keys {
     pub const STARTUP: Pref<Startup> = Pref { key: "startup", scope: Scope::Synced, default: || Startup::RestoreSession };
     pub const TABS_POSITION: Pref<TabsPosition> = Pref { key: "tabs.position", scope: Scope::Synced, default: || TabsPosition::Left };
     pub const SHOW_BOOKMARKS_BAR: Pref<bool> = Pref { key: "bookmarks_bar.visible", scope: Scope::Synced, default: || true };
+    /// A narrow address bar, centered in the toolbar, instead of one that fills it.
+    pub const COMPACT_ADDRESS_BAR: Pref<bool> = Pref { key: "address_bar.compact", scope: Scope::Synced, default: || true };
+    /// Show whole URLs in the address bar; off, it shows [`crate::search::simplified_url`]
+    /// until the user clicks into it.
+    pub const SHOW_FULL_URLS: Pref<bool> = Pref { key: "address_bar.full_urls", scope: Scope::Synced, default: || false };
     pub const DEVICE_NAME: Pref<String> = Pref { key: "device.name", scope: Scope::Local, default: || String::new() };
     /// Local: whether an installation checks for and downloads updates is a property of that
     /// installation, not of the user's other devices.

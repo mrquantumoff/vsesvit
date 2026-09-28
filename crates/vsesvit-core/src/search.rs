@@ -480,6 +480,32 @@ impl NavTarget {
 
 pub(crate) const NAVIGABLE_SCHEMES: &[&str] = &["http", "https", "file", "about", "data", "view-source", "vsesvit"];
 
+/// What the address bar shows for a page while the user is not editing it, unless full URLs
+/// are on: an `https` URL without its scheme, a leading `www.` or a lone trailing `/`
+/// (`https://www.example.com/` reads `example.com`), as Brave and Chrome show it. `http://`
+/// stays, so an insecure page never reads like a secure one; other schemes show in full.
+pub fn simplified_url(url: &str) -> String {
+    let Ok(parsed) = Url::parse(url) else {
+        return url.to_owned();
+    };
+    let Some(host) = parsed.host_str() else {
+        return url.to_owned();
+    };
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return url.to_owned();
+    }
+    let rest = &parsed.as_str()["https://".len()..];
+    let rest = match host.strip_prefix("www.") {
+        Some(bare) if bare.contains('.') => &rest["www.".len()..],
+        _ => rest,
+    };
+    let bare_root = parsed.path() == "/" && parsed.query().is_none() && parsed.fragment().is_none();
+    match rest.strip_suffix('/') {
+        Some(trimmed) if bare_root => trimmed.to_owned(),
+        _ => rest.to_owned(),
+    }
+}
+
 /// Steps 1-3 of [`classify`]: everything that makes the text a URL on its own.
 pub fn classify_url(text: &str) -> Option<NavTarget> {
     let text = text.trim();
