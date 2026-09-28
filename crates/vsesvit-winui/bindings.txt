@@ -179,6 +179,11 @@ Microsoft.Web.WebView2.Core.CoreWebView2CapturePreviewImageFormat
 Microsoft.Web.WebView2.Core.ICoreWebView2Profile7::AddBrowserExtensionAsync
 Microsoft.Web.WebView2.Core.CoreWebView2Profile_Manual3::GetBrowserExtensionsAsync
 Microsoft.Web.WebView2.Core.ICoreWebView2BrowserExtension::{get_Id, get_Name, get_IsEnabled, RemoveAsync, EnableAsync}
+Microsoft.Web.WebView2.Core.ICoreWebView2_4::DownloadStarting
+Microsoft.Web.WebView2.Core.ICoreWebView2DownloadStartingEventArgs::{get_DownloadOperation, get_ResultFilePath, put_ResultFilePath, put_Cancel, put_Handled, GetDeferral}
+Microsoft.Web.WebView2.Core.ICoreWebView2DownloadOperation::{get_Uri, get_BytesReceived, get_TotalBytesToReceive, get_State, get_InterruptReason, BytesReceivedChanged, StateChanged, Cancel}
+Microsoft.Web.WebView2.Core.CoreWebView2DownloadState
+Microsoft.Web.WebView2.Core.CoreWebView2DownloadInterruptReason
 
 // ---- app lifecycle (single instance) and pickers ----
 Microsoft.Windows.AppLifecycle.AppInstance::{GetCurrent, FindOrRegisterForKey}
@@ -196,6 +201,9 @@ Microsoft.Windows.Storage.Pickers.IFolderPickerFactory::CreateInstance
 Microsoft.Windows.Storage.Pickers.IFolderPicker::PickSingleFolderAsync
 Microsoft.Windows.Storage.Pickers.PickFolderResult
 Microsoft.Windows.Storage.Pickers.IPickFolderResult::get_Path
+Microsoft.Windows.Storage.Pickers.FileSavePicker
+Microsoft.Windows.Storage.Pickers.IFileSavePickerFactory::CreateInstance
+Microsoft.Windows.Storage.Pickers.IFileSavePicker::{put_SuggestedFileName, put_SuggestedFolder, PickSaveFileAsync}
 
 // ---- streams, imaging, window capture ----
 Windows.Storage.Streams.InMemoryRandomAccessStream::CreateInstance
@@ -254,6 +262,9 @@ Windows.Win32.MB_ICONERROR
 Windows.Win32.IDYES
 Windows.Win32.ShellExecuteW
 Windows.Win32.SW_SHOWNORMAL
+Windows.Win32.SHGetKnownFolderPath
+Windows.Win32.KF_FLAG_DEFAULT
+Windows.Win32.CoTaskMemFree
 Windows.Win32.LoadLibraryExW
 Windows.Win32.GetProcAddress
 Windows.Win32.LOAD_LIBRARY_SEARCH_APPLICATION_DIR

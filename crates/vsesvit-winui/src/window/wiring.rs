@@ -47,6 +47,10 @@ impl BrowserWindow {
         click(&ui.star, move || with(&w, |w| w.star_clicked()))?;
         let w = me();
         click(&ui.update_action, move || with(&w, |w| w.update_clicked()))?;
+        let w = me();
+        click(&ui.downloads, move || {
+            with(&w, |w| w.show_dialog(Dialog::Downloads));
+        })?;
 
         let w = me();
         ui.address
@@ -97,6 +101,7 @@ impl BrowserWindow {
             ("MenuNewWindow", MenuAction::Run(Command::NewWindow)),
             ("MenuBookmarks", MenuAction::Show(Dialog::Bookmarks)),
             ("MenuHistory", MenuAction::Show(Dialog::History)),
+            ("MenuDownloads", MenuAction::Show(Dialog::Downloads)),
             ("MenuExtensions", MenuAction::Show(Dialog::Extensions)),
             ("MenuSettings", MenuAction::Show(Dialog::Settings)),
             ("MenuAbout", MenuAction::Show(Dialog::About)),

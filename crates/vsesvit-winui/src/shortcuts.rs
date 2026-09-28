@@ -38,6 +38,7 @@ pub(crate) enum Command {
     ToggleBookmarksBar,
     ShowBookmarks,
     ShowHistory,
+    ShowDownloads,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -84,6 +85,7 @@ mod vk {
     pub const D: u16 = 0x44;
     pub const F: u16 = 0x46;
     pub const H: u16 = 0x48;
+    pub const J: u16 = 0x4A;
     pub const L: u16 = 0x4C;
     pub const N: u16 = 0x4E;
     pub const O: u16 = 0x4F;
@@ -119,6 +121,7 @@ pub(crate) const BINDINGS: &[Binding] = &[
     bind(vk::B, Mods::CTRL_SHIFT, C::ToggleBookmarksBar, Overridable),
     bind(vk::O, Mods::CTRL_SHIFT, C::ShowBookmarks, Overridable),
     bind(vk::H, Mods::CTRL, C::ShowHistory, Overridable),
+    bind(vk::J, Mods::CTRL, C::ShowDownloads, Overridable),
     bind(vk::KEY_0 + 1, Mods::CTRL, C::SelectTab(0), Overridable),
     bind(vk::KEY_0 + 2, Mods::CTRL, C::SelectTab(1), Overridable),
     bind(vk::KEY_0 + 3, Mods::CTRL, C::SelectTab(2), Overridable),

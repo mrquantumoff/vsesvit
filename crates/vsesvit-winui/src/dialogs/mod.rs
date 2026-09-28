@@ -1,4 +1,5 @@
-//! The Bookmarks, History, Extensions, Settings and About dialogs, all on vsesvit-core data.
+//! The Bookmarks, History, Downloads, Extensions, Settings and About dialogs, all on
+//! vsesvit-core data.
 //!
 //! Each dialog is a `ContentDialog` built from markup, filled and wired by its module. Scripted
 //! runs never show the modal dialog (showing it moves keyboard focus); `preview` puts the same
@@ -6,6 +7,7 @@
 
 mod about;
 mod bookmarks;
+mod downloads;
 mod extensions;
 mod history;
 mod settings;
@@ -23,6 +25,7 @@ use crate::xaml;
 pub(crate) enum Dialog {
     Bookmarks,
     History,
+    Downloads,
     Extensions,
     Settings,
     About,
@@ -33,6 +36,7 @@ impl Dialog {
         match self {
             Self::Bookmarks => "Bookmarks",
             Self::History => "History",
+            Self::Downloads => "Downloads",
             Self::Extensions => "Extensions",
             Self::Settings => "Settings",
             Self::About => "About Vsesvit",
@@ -43,6 +47,7 @@ impl Dialog {
         match self {
             Self::Bookmarks => bookmarks::MARKUP,
             Self::History => history::MARKUP,
+            Self::Downloads => downloads::MARKUP,
             Self::Extensions => extensions::MARKUP,
             Self::Settings => settings::MARKUP,
             Self::About => about::MARKUP,
@@ -109,8 +114,9 @@ pub(crate) fn build(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Built> {
     let wired = match kind {
         Dialog::Bookmarks => bookmarks::wire(&root, &browser, window)?,
         Dialog::History => history::wire(&root, &browser, window)?,
+        Dialog::Downloads => downloads::wire(&root, &browser)?,
         Dialog::Extensions => extensions::wire(&root, &browser, window)?,
-        Dialog::Settings => settings::wire(&root, &browser)?,
+        Dialog::Settings => settings::wire(&root, &browser, window)?,
         Dialog::About => about::fill(&root, &browser)?,
     };
     Ok(Built {

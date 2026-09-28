@@ -18,7 +18,8 @@
 //! | `tab`, `tab_header` | one tab's `WebView2` and state; its row in a tab list             |
 //! | `bookmarks_bar`   | bookmarks bar buttons and folder menus                              |
 //! | `popup`           | extension action buttons and their popup flyout                     |
-//! | `dialogs`         | Bookmarks / History / Extensions / Settings / About                 |
+//! | `dialogs`         | Bookmarks / History / Downloads / Extensions / Settings / About     |
+//! | `downloads`       | where downloads go, their live progress, core's downloads list      |
 //! | `pickers`         | file and folder pickers                                             |
 //! | `shortcuts`       | keyboard bindings, shared by XAML accelerators and the page script  |
 //! | `omnibox`         | address-box details around core's omnibox                          |
@@ -55,6 +56,7 @@ mod capture;
 mod cli;
 mod config;
 mod dialogs;
+mod downloads;
 mod engine;
 mod exec;
 mod extensions;

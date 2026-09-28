@@ -1,25 +1,15 @@
 //! File and folder pickers (Windows App SDK `Microsoft.Windows.Storage.Pickers`), which work for
 //! unpackaged apps given the owner window's id.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use windows_core::{HSTRING, Interface, Result};
+use windows_core::{HSTRING, Result};
 
 use crate::bindings::*;
 
 /// A file with one of `extensions` (`".crx"`), or `None` when the user cancels.
 pub(crate) async fn pick_file(owner: WindowId, extensions: &[&str]) -> Result<Option<PathBuf>> {
-    let factory = windows_core::factory::<FileOpenPicker, IFileOpenPickerFactory>()?;
-    let picker: FileOpenPicker = unsafe {
-        let mut picker = std::ptr::null_mut();
-        (Interface::vtable(&factory).CreateInstance)(
-            Interface::as_raw(&factory),
-            owner,
-            &mut picker,
-        )
-        .ok()?;
-        FileOpenPicker::from_raw(picker)
-    };
+    let picker = FileOpenPicker::CreateInstance(owner)?;
     let filter = picker.FileTypeFilter()?;
     for extension in extensions {
         filter.Append(&HSTRING::from(*extension))?;
@@ -29,18 +19,21 @@ pub(crate) async fn pick_file(owner: WindowId, extensions: &[&str]) -> Result<Op
 
 /// A folder, or `None` when the user cancels.
 pub(crate) async fn pick_folder(owner: WindowId) -> Result<Option<PathBuf>> {
-    let factory = windows_core::factory::<FolderPicker, IFolderPickerFactory>()?;
-    let picker: FolderPicker = unsafe {
-        let mut picker = std::ptr::null_mut();
-        (Interface::vtable(&factory).CreateInstance)(
-            Interface::as_raw(&factory),
-            owner,
-            &mut picker,
-        )
-        .ok()?;
-        FolderPicker::from_raw(picker)
-    };
+    let picker = FolderPicker::CreateInstance(owner)?;
     chosen(picker.PickSingleFolderAsync()?.await.map(|r| r.Path()))
+}
+
+/// Where to save a file: the save dialog opens in `folder` with `name` filled in. `None` when
+/// the user cancels.
+pub(crate) async fn pick_save_file(
+    owner: WindowId,
+    folder: &Path,
+    name: &str,
+) -> Result<Option<PathBuf>> {
+    let picker = FileSavePicker::CreateInstance(owner)?;
+    picker.SetSuggestedFolder(&folder.to_string_lossy())?;
+    picker.SetSuggestedFileName(name)?;
+    chosen(picker.PickSaveFileAsync()?.await.map(|r| r.Path()))
 }
 
 /// A cancelled picker completes with no result object.

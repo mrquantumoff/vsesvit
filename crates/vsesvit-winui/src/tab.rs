@@ -461,6 +461,18 @@ impl Tab {
             }
         }))?
         .forget();
+        core.cast::<ICoreWebView2_4>()?
+            .DownloadStarting(on(
+                self,
+                |tab, args: &CoreWebView2DownloadStartingEventArgs| {
+                    if let Some(window) = tab.window()
+                        && let Some(browser) = window.browser()
+                    {
+                        browser.download_starting(&window, args);
+                    }
+                },
+            ))?
+            .forget();
         core.ProcessFailed(on(
             self,
             |tab, args: &CoreWebView2ProcessFailedEventArgs| {

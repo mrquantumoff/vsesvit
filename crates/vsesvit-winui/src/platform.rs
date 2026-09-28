@@ -1,8 +1,12 @@
 //! Process setup that has to happen before XAML starts, and the few Win32 calls the shell needs.
 
+use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::os::windows::ffi::OsStringExt;
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
 
-use windows_core::{HRESULT, IUnknown, Interface, PCWSTR, PWSTR, w};
+use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, w};
 
 use crate::bindings::*;
 
@@ -123,7 +127,7 @@ pub(crate) fn report_startup_failure(error: &StartupError) {
                 arch_name()
             );
             if message_box(&text, MB_YESNO | MB_ICONERROR) == IDYES {
-                open_in_shell(RUNTIME_DOWNLOAD);
+                open_in_shell(RUNTIME_DOWNLOAD.as_ref());
             }
         }
         other => {
@@ -156,17 +160,50 @@ pub(crate) fn message_box(text: &str, style: i32) -> i32 {
     }
 }
 
-fn open_in_shell(url: &str) {
-    let url = windows_core::HSTRING::from(url);
+/// Opens a URL, file or folder with its default program.
+pub(crate) fn open_in_shell(target: &OsStr) {
+    let target = HSTRING::from(target);
     unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
             w!("open"),
-            PCWSTR(url.as_ptr()),
+            PCWSTR(target.as_ptr()),
             PCWSTR::null(),
             PCWSTR::null(),
             SW_SHOWNORMAL,
         );
+    }
+}
+
+/// Opens File Explorer on the folder that holds `file`, with `file` selected.
+pub(crate) fn show_in_folder(file: &Path) {
+    // Explorer reads its own command line: the path is quoted inside the one argument.
+    let mut select = OsString::from("/select,\"");
+    select.push(file);
+    select.push("\"");
+    if let Err(e) = std::process::Command::new("explorer.exe")
+        .raw_arg(select)
+        .spawn()
+    {
+        log::warn!("show {} in its folder: {e}", file.display());
+    }
+}
+
+/// The user's Downloads folder, wherever they moved it.
+pub(crate) fn downloads_folder() -> windows_core::Result<PathBuf> {
+    const FOLDERID_DOWNLOADS: GUID = GUID::from_u128(0x374de290_123f_4565_9164_39c4925e467b);
+    unsafe {
+        let mut path = PWSTR::null();
+        let found = SHGetKnownFolderPath(
+            &FOLDERID_DOWNLOADS,
+            KF_FLAG_DEFAULT,
+            std::ptr::null_mut(),
+            &mut path,
+        )
+        .ok()
+        .map(|()| PathBuf::from(OsString::from_wide(path.as_wide())));
+        CoTaskMemFree(path.0.cast());
+        found
     }
 }
 

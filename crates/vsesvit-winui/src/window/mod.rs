@@ -24,6 +24,7 @@ use crate::bindings::*;
 use crate::bookmarks_bar::{Bar, BarItem, Disposition, OpenLink};
 use crate::browser::{Browser, ClosedTab};
 use crate::dialogs::{self, Dialog};
+use crate::downloads::Indicator;
 use crate::layout::StripKind;
 use crate::popup::{self, Activation, ExtensionAction, OpenerTab, Popup};
 use crate::session::{TabPlan, WindowPlan};
@@ -600,6 +601,7 @@ impl BrowserWindow {
             }
             Command::ShowBookmarks => self.show_dialog(Dialog::Bookmarks),
             Command::ShowHistory => self.show_dialog(Dialog::History),
+            Command::ShowDownloads => self.show_dialog(Dialog::Downloads),
         }
     }
 
@@ -826,6 +828,19 @@ impl BrowserWindow {
         if news {
             let _ = bar.SetIsOpen(true);
         }
+    }
+
+    /// The toolbar's downloads button: shown once a download started, busy while one runs.
+    pub fn show_downloads(&self, indicator: Indicator) {
+        let _ = xaml::set_visible(&self.ui.downloads, indicator != Indicator::Hidden);
+        let _ = self
+            .ui
+            .downloads_busy
+            .SetIsActive(indicator == Indicator::Busy);
+    }
+
+    pub fn downloads_button_shown(&self) -> bool {
+        xaml::is_visible(&self.ui.downloads)
     }
 
     fn update_clicked(&self) {

@@ -7,11 +7,11 @@ use vsesvit_core::prefs::{Startup, TabsPosition, Theme, keys};
 use vsesvit_core::search::{SearchEngineId, classify_url};
 use windows_core::{Interface, Result};
 
-use super::Wired;
+use super::{Wired, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::window::Backdrop;
-use crate::xaml;
+use crate::window::{Backdrop, BrowserWindow};
+use crate::{exec, pickers, xaml};
 
 pub(super) const MARKUP: &str = r#"
   <StackPanel Width="480" Spacing="16">
@@ -33,6 +33,19 @@ pub(super) const MARKUP: &str = r#"
       <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                  Text="Shows a blur of the windows behind Vsesvit (acrylic). When off, the window is tinted by your desktop background (Mica), like other Windows 11 apps."/>
+    </StackPanel>
+    <StackPanel Spacing="8">
+      <TextBlock Text="Downloads" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+      <StackPanel Spacing="4">
+        <TextBlock Text="Download folder"/>
+        <TextBlock x:Name="DownloadFolder" TextWrapping="Wrap" IsTextSelectionEnabled="True"
+                   Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+          <Button x:Name="DownloadFolderChange" Content="Change…"/>
+          <Button x:Name="DownloadFolderReset" Content="Use the default"/>
+        </StackPanel>
+      </StackPanel>
+      <ToggleSwitch x:Name="DownloadsAsk" Header="Ask where to save each file"/>
     </StackPanel>
     <StackPanel Spacing="4">
       <ToggleSwitch x:Name="UpdatesAutomatic" Header="Download and install updates automatically"/>
@@ -62,8 +75,13 @@ const THEMES: [(Theme, &str); 3] = [
     (Theme::Dark, "Dark"),
 ];
 
-pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Wired> {
+pub(super) fn wire(
+    root: &FrameworkElement,
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+) -> Result<Wired> {
     let weak = Rc::downgrade(browser);
+    wire_downloads(root, browser, window)?;
 
     let tabs: ComboBox = xaml::find(root, "TabsPosition")?;
     let w = weak.clone();
@@ -214,6 +232,86 @@ pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Wir
             }
         })),
     })
+}
+
+/// The download folder's path and the button that goes back to the default.
+struct DownloadFolder {
+    path: TextBlock,
+    reset: UIElement,
+}
+
+impl DownloadFolder {
+    fn show(&self, browser: &Browser) {
+        let _ = self.path.SetText(&browser.download_dir().to_string_lossy());
+        let _ = xaml::set_visible(&self.reset, browser.custom_download_dir().is_some());
+    }
+}
+
+/// The Downloads group: the folder with Change and Reset, and whether to ask each time.
+fn wire_downloads(
+    root: &FrameworkElement,
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+) -> Result<()> {
+    let folder = Rc::new(DownloadFolder {
+        path: xaml::find(root, "DownloadFolder")?,
+        reset: xaml::find(root, "DownloadFolderReset")?,
+    });
+    folder.show(browser);
+
+    let (b, w, f) = (
+        Rc::downgrade(browser),
+        Rc::downgrade(window),
+        folder.clone(),
+    );
+    on_click(
+        &xaml::find::<Button>(root, "DownloadFolderChange")?,
+        move || {
+            let Some(window) = w.upgrade() else { return };
+            let owner = match window.window_id() {
+                Ok(owner) => owner,
+                Err(e) => {
+                    log::warn!("picker owner: {e}");
+                    return;
+                }
+            };
+            let (b, f) = (b.clone(), f.clone());
+            exec::spawn(async move {
+                let picked = pickers::pick_folder(owner).await;
+                let Some(b) = b.upgrade() else { return };
+                match picked {
+                    Ok(Some(dir)) => {
+                        b.set_download_dir(Some(&dir));
+                        f.show(&b);
+                    }
+                    Ok(None) => {}
+                    Err(e) => log::warn!("download folder picker: {e}"),
+                }
+            });
+        },
+    )?;
+    let (b, f) = (Rc::downgrade(browser), folder);
+    on_click(
+        &xaml::find::<Button>(root, "DownloadFolderReset")?,
+        move || {
+            if let Some(b) = b.upgrade() {
+                b.set_download_dir(None);
+                f.show(&b);
+            }
+        },
+    )?;
+
+    let ask: ToggleSwitch = xaml::find(root, "DownloadsAsk")?;
+    ask.SetIsOn(browser.core(|p| p.prefs().get(&keys::DOWNLOADS_ASK)))?;
+    let b = Rc::downgrade(browser);
+    let source = ask.clone();
+    ask.Toggled(move |_, _| {
+        if let (Some(b), Ok(on)) = (b.upgrade(), source.IsOn()) {
+            b.write_pref(&keys::DOWNLOADS_ASK, &on);
+        }
+    })?
+    .forget();
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]

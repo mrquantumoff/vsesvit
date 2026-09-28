@@ -2,6 +2,7 @@ windows_core::link!("api-ms-win-appmodel-runtime-l1-1-5.dll" "system" fn AddPack
 windows_core::link!("user32.dll" "system" fn AllowSetForegroundWindow(dwprocessid : u32) -> windows_core::BOOL);
 windows_core::link!("kernel32.dll" "system" fn AttachConsole(dwprocessid : u32) -> windows_core::BOOL);
 windows_core::link!("ole32.dll" "system" fn CoInitializeEx(pvreserved : *const core::ffi::c_void, dwcoinit : u32) -> windows_core::HRESULT);
+windows_core::link!("ole32.dll" "system" fn CoTaskMemFree(pv : *mut core::ffi::c_void));
 windows_core::link!("shell32.dll" "system" fn CommandLineToArgvW(lpcmdline : windows_core::PCWSTR, pnumargs : *mut i32) -> *mut windows_core::PWSTR);
 windows_core::link!("d3d11.dll" "system" fn CreateDirect3D11DeviceFromDXGIDevice(dxgidevice : *mut core::ffi::c_void, graphicsdevice : *mut *mut core::ffi::c_void) -> windows_core::HRESULT);
 windows_core::link!("d3d11.dll" "system" fn D3D11CreateDevice(padapter : *mut core::ffi::c_void, drivertype : D3D_DRIVER_TYPE, software : HMODULE, flags : u32, pfeaturelevels : *const D3D_FEATURE_LEVEL, featurelevels : u32, sdkversion : u32, ppdevice : *mut *mut core::ffi::c_void, pfeaturelevel : *mut D3D_FEATURE_LEVEL, ppimmediatecontext : *mut *mut core::ffi::c_void) -> windows_core::HRESULT);
@@ -14,6 +15,7 @@ windows_core::link!("kernel32.dll" "system" fn HeapFree(hheap : HANDLE, dwflags 
 windows_core::link!("kernel32.dll" "system" fn LoadLibraryExW(lplibfilename : windows_core::PCWSTR, hfile : HANDLE, dwflags : u32) -> HMODULE);
 windows_core::link!("kernel32.dll" "system" fn LocalFree(hmem : HLOCAL) -> HLOCAL);
 windows_core::link!("user32.dll" "system" fn MessageBoxW(hwnd : HWND, lptext : windows_core::PCWSTR, lpcaption : windows_core::PCWSTR, utype : u32) -> i32);
+windows_core::link!("shell32.dll" "system" fn SHGetKnownFolderPath(rfid : *const KNOWNFOLDERID, dwflags : u32, htoken : HANDLE, ppszpath : *mut windows_core::PWSTR) -> windows_core::HRESULT);
 windows_core::link!("user32.dll" "system" fn SetProcessDpiAwarenessContext(value : DPI_AWARENESS_CONTEXT) -> windows_core::BOOL);
 windows_core::link!("shell32.dll" "system" fn ShellExecuteW(hwnd : HWND, lpoperation : windows_core::PCWSTR, lpfile : windows_core::PCWSTR, lpparameters : windows_core::PCWSTR, lpdirectory : windows_core::PCWSTR, nshowcmd : i32) -> HINSTANCE);
 windows_core::link!("api-ms-win-appmodel-runtime-l1-1-5.dll" "system" fn TryCreatePackageDependency(user : PSID, packagefamilyname : windows_core::PCWSTR, minversion : PACKAGE_VERSION, packagedependencyprocessorarchitectures : PackageDependencyProcessorArchitectures, lifetimekind : PackageDependencyLifetimeKind, lifetimeartifact : windows_core::PCWSTR, options : CreatePackageDependencyOptions, packagedependencyid : *mut windows_core::PWSTR) -> windows_core::HRESULT);
@@ -1077,6 +1079,121 @@ impl windows_core::RuntimeName for CoreWebView2DevToolsProtocolEventReceiver {
 }
 unsafe impl Send for CoreWebView2DevToolsProtocolEventReceiver {}
 unsafe impl Sync for CoreWebView2DevToolsProtocolEventReceiver {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2DownloadInterruptReason(pub i32);
+impl CoreWebView2DownloadInterruptReason {
+    pub const None: Self = Self(0);
+    pub const FileFailed: Self = Self(1);
+    pub const FileAccessDenied: Self = Self(2);
+    pub const FileNoSpace: Self = Self(3);
+    pub const FileNameTooLong: Self = Self(4);
+    pub const FileTooLarge: Self = Self(5);
+    pub const FileMalicious: Self = Self(6);
+    pub const FileTransientError: Self = Self(7);
+    pub const FileBlockedByPolicy: Self = Self(8);
+    pub const FileSecurityCheckFailed: Self = Self(9);
+    pub const FileTooShort: Self = Self(10);
+    pub const FileHashMismatch: Self = Self(11);
+    pub const NetworkFailed: Self = Self(12);
+    pub const NetworkTimeout: Self = Self(13);
+    pub const NetworkDisconnected: Self = Self(14);
+    pub const NetworkServerDown: Self = Self(15);
+    pub const NetworkInvalidRequest: Self = Self(16);
+    pub const ServerFailed: Self = Self(17);
+    pub const ServerNoRange: Self = Self(18);
+    pub const ServerBadContent: Self = Self(19);
+    pub const ServerUnauthorized: Self = Self(20);
+    pub const ServerCertificateProblem: Self = Self(21);
+    pub const ServerForbidden: Self = Self(22);
+    pub const ServerUnexpectedResponse: Self = Self(23);
+    pub const ServerContentLengthMismatch: Self = Self(24);
+    pub const ServerCrossOriginRedirect: Self = Self(25);
+    pub const UserCanceled: Self = Self(26);
+    pub const UserShutdown: Self = Self(27);
+    pub const UserPaused: Self = Self(28);
+    pub const DownloadProcessCrashed: Self = Self(29);
+}
+impl windows_core::imp::TypeKind for CoreWebView2DownloadInterruptReason {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2DownloadInterruptReason {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2DownloadInterruptReason;i4)",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2DownloadOperation(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2DownloadOperation,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2DownloadOperation {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2DownloadOperation>();
+}
+unsafe impl windows_core::Interface for CoreWebView2DownloadOperation {
+    type Vtable = <ICoreWebView2DownloadOperation as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2DownloadOperation as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2DownloadOperation {
+    type Target = ICoreWebView2DownloadOperation;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2DownloadOperation {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2DownloadOperation";
+}
+unsafe impl Send for CoreWebView2DownloadOperation {}
+unsafe impl Sync for CoreWebView2DownloadOperation {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2DownloadStartingEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2DownloadStartingEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2DownloadStartingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2DownloadStartingEventArgs>();
+}
+unsafe impl windows_core::Interface for CoreWebView2DownloadStartingEventArgs {
+    type Vtable = <ICoreWebView2DownloadStartingEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2DownloadStartingEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2DownloadStartingEventArgs {
+    type Target = ICoreWebView2DownloadStartingEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2DownloadStartingEventArgs {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2DownloadStartingEventArgs";
+}
+unsafe impl Send for CoreWebView2DownloadStartingEventArgs {}
+unsafe impl Sync for CoreWebView2DownloadStartingEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2DownloadState(pub i32);
+impl CoreWebView2DownloadState {
+    pub const InProgress: Self = Self(0);
+    pub const Interrupted: Self = Self(1);
+    pub const Completed: Self = Self(2);
+}
+impl windows_core::imp::TypeKind for CoreWebView2DownloadState {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2DownloadState {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2DownloadState;i4)",
+    );
+}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWebView2Environment(windows_core::IUnknown);
@@ -2380,6 +2497,53 @@ impl windows_core::RuntimeName for FileOpenPicker {
 }
 unsafe impl Send for FileOpenPicker {}
 unsafe impl Sync for FileOpenPicker {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileSavePicker(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    FileSavePicker,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl FileSavePicker {
+    pub fn CreateInstance(windowid: WindowId) -> windows_core::Result<Self> {
+        Self::IFileSavePickerFactory(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateInstance)(
+                windows_core::Interface::as_raw(this),
+                windowid,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IFileSavePickerFactory<R, F: FnOnce(&IFileSavePickerFactory) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<FileSavePicker, IFileSavePickerFactory> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for FileSavePicker {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IFileSavePicker>();
+}
+unsafe impl windows_core::Interface for FileSavePicker {
+    type Vtable = <IFileSavePicker as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IFileSavePicker as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for FileSavePicker {
+    type Target = IFileSavePicker;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for FileSavePicker {
+    const NAME: &'static str = "Microsoft.Windows.Storage.Pickers.FileSavePicker";
+}
+unsafe impl Send for FileSavePicker {}
+unsafe impl Sync for FileSavePicker {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Flyout(windows_core::IUnknown);
@@ -5001,6 +5165,291 @@ pub struct ICoreWebView2DevToolsProtocolEventReceiver_Vtbl {
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2DownloadOperation,
+    ICoreWebView2DownloadOperation_Vtbl,
+    0xafe73e6b_e760_5a06_9bf6_1e743c13cd2d
+);
+impl windows_core::RuntimeType for ICoreWebView2DownloadOperation {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2DownloadOperation {
+    pub fn Uri(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Uri)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn TotalBytesToReceive(&self) -> windows_core::Result<i64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).TotalBytesToReceive)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn BytesReceived(&self) -> windows_core::Result<i64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).BytesReceived)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn State(&self) -> windows_core::Result<CoreWebView2DownloadState> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).State)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn InterruptReason(&self) -> windows_core::Result<CoreWebView2DownloadInterruptReason> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).InterruptReason)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn BytesReceivedChanged<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2DownloadOperation>,
+                windows_core::Ref<windows_core::IInspectable>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2DownloadOperation, windows_core::IInspectable> = {
+            let com =
+                windows_core::imp::DelegateBox::<
+                    TypedEventHandler<CoreWebView2DownloadOperation, windows_core::IInspectable>,
+                    F,
+                >::new(
+                    &TypedEventHandlerBox::<
+                        CoreWebView2DownloadOperation,
+                        windows_core::IInspectable,
+                        F,
+                    >::VTABLE,
+                    handler,
+                );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).BytesReceivedChanged)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveBytesReceivedChanged,
+            ))
+        }
+    }
+    pub fn StateChanged<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2DownloadOperation>,
+                windows_core::Ref<windows_core::IInspectable>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2DownloadOperation, windows_core::IInspectable> = {
+            let com =
+                windows_core::imp::DelegateBox::<
+                    TypedEventHandler<CoreWebView2DownloadOperation, windows_core::IInspectable>,
+                    F,
+                >::new(
+                    &TypedEventHandlerBox::<
+                        CoreWebView2DownloadOperation,
+                        windows_core::IInspectable,
+                        F,
+                    >::VTABLE,
+                    handler,
+                );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).StateChanged)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveStateChanged,
+            ))
+        }
+    }
+    pub fn Cancel(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Cancel)(windows_core::Interface::as_raw(self))
+                .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2DownloadOperation_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Uri: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    ContentDisposition: usize,
+    MimeType: usize,
+    pub TotalBytesToReceive:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i64) -> windows_core::HRESULT,
+    pub BytesReceived:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i64) -> windows_core::HRESULT,
+    EstimatedEndTime: usize,
+    ResultFilePath: usize,
+    pub State: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut CoreWebView2DownloadState,
+    ) -> windows_core::HRESULT,
+    pub InterruptReason: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut CoreWebView2DownloadInterruptReason,
+    ) -> windows_core::HRESULT,
+    CanResume: usize,
+    pub BytesReceivedChanged: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveBytesReceivedChanged:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    EstimatedEndTimeChanged: usize,
+    RemoveEstimatedEndTimeChanged: usize,
+    pub StateChanged: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveStateChanged:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    pub Cancel: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2DownloadStartingEventArgs,
+    ICoreWebView2DownloadStartingEventArgs_Vtbl,
+    0x45d982ba_9256_5b35_b023_26a438599110
+);
+impl windows_core::RuntimeType for ICoreWebView2DownloadStartingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2DownloadStartingEventArgs {
+    pub fn DownloadOperation(&self) -> windows_core::Result<CoreWebView2DownloadOperation> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).DownloadOperation)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn SetCancel(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetCancel)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn ResultFilePath(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ResultFilePath)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn SetResultFilePath(&self, value: &str) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetResultFilePath)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(value)),
+            )
+            .ok()
+        }
+    }
+    pub fn SetHandled(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetHandled)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn GetDeferral(&self) -> windows_core::Result<Deferral> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetDeferral)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2DownloadStartingEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub DownloadOperation: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    Cancel: usize,
+    pub SetCancel: unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    pub ResultFilePath: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub SetResultFilePath: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    Handled: usize,
+    pub SetHandled:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    pub GetDeferral: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2Environment,
     ICoreWebView2Environment_Vtbl,
     0xd8cc7831_b783_556b_b9ce_899c1e95d585
@@ -5725,6 +6174,59 @@ pub struct ICoreWebView2_28_Vtbl {
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2_4,
+    ICoreWebView2_4_Vtbl,
+    0x4ac595ce_1502_5775_b2c8_22c11a369c25
+);
+impl windows_core::RuntimeType for ICoreWebView2_4 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2_4 {
+    pub fn DownloadStarting<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2>,
+                windows_core::Ref<CoreWebView2DownloadStartingEventArgs>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2, CoreWebView2DownloadStartingEventArgs> = {
+            let com = windows_core::imp::DelegateBox::< TypedEventHandler < CoreWebView2 , CoreWebView2DownloadStartingEventArgs > , F >::new (& TypedEventHandlerBox::< CoreWebView2 , CoreWebView2DownloadStartingEventArgs , F >::VTABLE , handler) ;
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).DownloadStarting)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveDownloadStarting,
+            ))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2_4_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    FrameCreated: usize,
+    RemoveFrameCreated: usize,
+    pub DownloadStarting: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveDownloadStarting:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ID3D11Device,
@@ -6540,6 +7042,90 @@ impl windows_core::RuntimeType for IFileOpenPickerFactory {
 }
 #[repr(C)]
 pub struct IFileOpenPickerFactory_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub CreateInstance: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        WindowId,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IFileSavePicker,
+    IFileSavePicker_Vtbl,
+    0x79f1f4df_741b_59b2_aa06_fe9ac817b7dd
+);
+impl windows_core::RuntimeType for IFileSavePicker {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IFileSavePicker {
+    pub fn SetSuggestedFileName(&self, value: &str) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetSuggestedFileName)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(value)),
+            )
+            .ok()
+        }
+    }
+    pub fn SetSuggestedFolder(&self, value: &str) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetSuggestedFolder)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(value)),
+            )
+            .ok()
+        }
+    }
+    pub fn PickSaveFileAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<PickFileResult>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PickSaveFileAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct IFileSavePicker_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    SuggestedStartLocation: usize,
+    SetSuggestedStartLocation: usize,
+    CommitButtonText: usize,
+    SetCommitButtonText: usize,
+    FileTypeChoices: usize,
+    DefaultFileExtension: usize,
+    SetDefaultFileExtension: usize,
+    SuggestedFileName: usize,
+    pub SetSuggestedFileName: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    SuggestedFolder: usize,
+    pub SetSuggestedFolder: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub PickSaveFileAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IFileSavePickerFactory,
+    IFileSavePickerFactory_Vtbl,
+    0x2e256696_30b6_5a05_a8f5_c752db6dd268
+);
+impl windows_core::RuntimeType for IFileSavePickerFactory {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IFileSavePickerFactory_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
     pub CreateInstance: unsafe extern "system" fn(
         *mut core::ffi::c_void,
@@ -11279,6 +11865,9 @@ impl windows_core::RuntimeName for ItemsControl {
 }
 unsafe impl Send for ItemsControl {}
 unsafe impl Sync for ItemsControl {}
+pub const KF_FLAG_DEFAULT: KNOWN_FOLDER_FLAG = 0;
+pub type KNOWNFOLDERID = windows_core::GUID;
+pub type KNOWN_FOLDER_FLAG = u32;
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeyboardAccelerator(windows_core::IUnknown);

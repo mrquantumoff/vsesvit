@@ -19,6 +19,7 @@ use vsesvit_core::{Profile, Url};
 
 use crate::bookmarks_bar::{self, BarItem};
 use crate::config::{Config, Mode};
+use crate::downloads::Downloads;
 use crate::engine::Engine;
 use crate::extensions::ExtensionHost;
 use crate::popup::ExtensionAction;
@@ -79,6 +80,7 @@ pub(crate) struct Browser {
     next_tab_id: Cell<u64>,
     prefs: Cell<WindowPrefs>,
     pub(crate) extensions: ExtensionHost,
+    pub(crate) downloads: Downloads,
     session_save_pending: Cell<bool>,
     /// Set once the last window's session has been saved on close; later saves would only
     /// record an empty session over it.
@@ -129,6 +131,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         compact_address: profile.prefs().get(&keys::COMPACT_ADDRESS_BAR),
         full_urls: profile.prefs().get(&keys::SHOW_FULL_URLS),
     };
+    let downloads = Downloads::new(&mut profile);
     let updates = if config.mode.is_interactive() {
         Updates::detect()
     } else {
@@ -144,6 +147,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         next_tab_id: Cell::new(1),
         prefs: Cell::new(prefs),
         extensions: ExtensionHost::default(),
+        downloads,
         session_save_pending: Cell::new(false),
         session_final: Cell::new(false),
         profile_open_ms,
@@ -279,6 +283,7 @@ impl Browser {
         window.set_bookmarks_bar(&self.bookmarks_bar_items());
         window.set_extension_actions(&self.extension_actions());
         window.show_update(self.updates.banner().as_ref());
+        window.show_downloads(self.downloads_indicator());
         window.open_planned(plan)?;
         Ok(window)
     }

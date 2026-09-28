@@ -77,6 +77,7 @@ const WINDOW_XAML: &str = r#"
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <Button x:Name="Back" Style="{StaticResource ToolbarButton}" IsEnabled="False"
             ToolTipService.ToolTip="Back (Alt+Left)" AutomationProperties.Name="Back">
@@ -98,7 +99,14 @@ const WINDOW_XAML: &str = r#"
       <FontIcon x:Name="StarGlyph" Glyph="&#xE734;" FontSize="16"/>
     </ToggleButton>
     <StackPanel x:Name="ExtensionActions" Grid.Column="5" Orientation="Horizontal" Spacing="2"/>
-    <Button x:Name="More" Grid.Column="6" Margin="0,0,6,0" Style="{StaticResource ToolbarButton}"
+    <Button x:Name="Downloads" Grid.Column="6" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
+            ToolTipService.ToolTip="Downloads (Ctrl+J)" AutomationProperties.Name="Downloads">
+      <Grid>
+        <FontIcon Glyph="&#xE896;" FontSize="16"/>
+        <ProgressRing x:Name="DownloadsBusy" Width="28" Height="28" MinWidth="28" MinHeight="28" IsActive="False"/>
+      </Grid>
+    </Button>
+    <Button x:Name="More" Grid.Column="7" Margin="0,0,6,0" Style="{StaticResource ToolbarButton}"
             ToolTipService.ToolTip="Settings and more" AutomationProperties.Name="Settings and more">
       <FontIcon Glyph="&#xE712;" FontSize="16"/>
       <Button.Flyout>
@@ -117,6 +125,9 @@ const WINDOW_XAML: &str = r#"
           <MenuFlyoutItem x:Name="MenuHistory" Text="History" KeyboardAcceleratorTextOverride="Ctrl+H">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE81C;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
+          <MenuFlyoutItem x:Name="MenuDownloads" Text="Downloads" KeyboardAcceleratorTextOverride="Ctrl+J">
+            <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE896;"/></MenuFlyoutItem.Icon>
+          </MenuFlyoutItem>
           <MenuFlyoutItem x:Name="MenuExtensions" Text="Extensions">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xEA86;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
@@ -130,7 +141,7 @@ const WINDOW_XAML: &str = r#"
         </MenuFlyout>
       </Button.Flyout>
     </Button>
-    <Grid x:Name="ToolbarDrag" Grid.Column="7" Width="196" Background="Transparent" Visibility="Collapsed"/>
+    <Grid x:Name="ToolbarDrag" Grid.Column="8" Width="196" Background="Transparent" Visibility="Collapsed"/>
   </Grid>
 
   <Grid x:Name="BookmarksBar" Grid.Row="2" Height="30" Padding="8,0,8,2" Background="Transparent">
@@ -209,6 +220,8 @@ pub(super) struct Chrome {
     pub(super) star: ToggleButton,
     pub(super) star_glyph: FontIcon,
     pub(super) extension_actions: Panel,
+    pub(super) downloads: Button,
+    pub(super) downloads_busy: ProgressRing,
     pub(super) bookmarks_bar: UIElement,
     pub(super) bookmark_items: ListView,
     pub(super) bookmarks_hint: UIElement,
@@ -238,6 +251,8 @@ impl Chrome {
             star: xaml::find(&root, "Star")?,
             star_glyph: xaml::find(&root, "StarGlyph")?,
             extension_actions: xaml::find(&root, "ExtensionActions")?,
+            downloads: xaml::find(&root, "Downloads")?,
+            downloads_busy: xaml::find(&root, "DownloadsBusy")?,
             bookmarks_bar: xaml::find(&root, "BookmarksBar")?,
             bookmark_items: xaml::find(&root, "BookmarkItems")?,
             bookmarks_hint: xaml::find(&root, "BookmarksHint")?,
