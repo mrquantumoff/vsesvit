@@ -377,6 +377,12 @@ Microsoft.UI.Xaml.Controls.ComboBox
 Microsoft.UI.Xaml.Controls.ProgressBar
 Microsoft.UI.Xaml.Controls.Grid
 Microsoft.UI.Xaml.Controls.Grid::{SetColumn, SetColumnSpan}
+Microsoft.UI.Xaml.Controls.IGrid::get_ColumnDefinitions
+Microsoft.UI.Xaml.Controls.ColumnDefinitionCollection
+Microsoft.UI.Xaml.Controls.ColumnDefinition
+Microsoft.UI.Xaml.Controls.IColumnDefinition::put_Width
+Microsoft.UI.Xaml.GridLength
+Microsoft.UI.Xaml.GridUnitType
 Microsoft.UI.Xaml.Controls.MenuFlyoutItem
 Microsoft.UI.Xaml.Controls.Flyout
 Microsoft.UI.Xaml.Controls.ContentDialog

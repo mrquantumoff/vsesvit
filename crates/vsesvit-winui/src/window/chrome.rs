@@ -283,8 +283,11 @@ const WINDOW_XAML: &str = r#"
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="*"/>
       </Grid.ColumnDefinitions>
-      <Border x:Name="SplitDivider" Grid.Column="1" Width="4" Visibility="Collapsed"
-              Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+      <!-- Drags to share the width between the two pages. -->
+      <Border x:Name="SplitDivider" Grid.Column="1" Width="8" Visibility="Collapsed" Background="Transparent"
+              AutomationProperties.Name="Resize the split view">
+        <Border Width="2" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+      </Border>
     </Grid>
     <Grid x:Name="RightHost" Grid.Column="2" Visibility="Collapsed"
           BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="1,1,0,0"/>

@@ -930,6 +930,66 @@ impl windows_core::RuntimeName for Clipboard {
 }
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnDefinition(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    ColumnDefinition,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(ColumnDefinition, DependencyObject);
+impl windows_core::RuntimeType for ColumnDefinition {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IColumnDefinition>();
+}
+unsafe impl windows_core::Interface for ColumnDefinition {
+    type Vtable = <IColumnDefinition as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IColumnDefinition as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for ColumnDefinition {
+    type Target = IColumnDefinition;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for ColumnDefinition {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Controls.ColumnDefinition";
+}
+unsafe impl Send for ColumnDefinition {}
+unsafe impl Sync for ColumnDefinition {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnDefinitionCollection(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    ColumnDefinitionCollection,
+    windows_core::IUnknown,
+    windows_core::IInspectable,
+    windows_collections::IVector<ColumnDefinition>
+);
+impl windows_core::RuntimeType for ColumnDefinitionCollection {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::for_class::<
+        Self,
+        windows_collections::IVector<ColumnDefinition>,
+    >();
+}
+unsafe impl windows_core::Interface for ColumnDefinitionCollection {
+    type Vtable =
+        <windows_collections::IVector<ColumnDefinition> as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <windows_collections::IVector<ColumnDefinition> as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for ColumnDefinitionCollection {
+    type Target = windows_collections::IVector<ColumnDefinition>;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for ColumnDefinitionCollection {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Controls.ColumnDefinitionCollection";
+}
+unsafe impl Send for ColumnDefinitionCollection {}
+unsafe impl Sync for ColumnDefinitionCollection {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComboBox(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     ComboBox,
@@ -3435,6 +3495,35 @@ impl windows_core::RuntimeName for Grid {
 }
 unsafe impl Send for Grid {}
 unsafe impl Sync for Grid {}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GridLength {
+    pub value: f64,
+    pub grid_unit_type: GridUnitType,
+}
+impl windows_core::imp::TypeKind for GridLength {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for GridLength {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"struct(Microsoft.UI.Xaml.GridLength;f8;enum(Microsoft.UI.Xaml.GridUnitType;i4))",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GridUnitType(pub i32);
+impl GridUnitType {
+    pub const Auto: Self = Self(0);
+    pub const Pixel: Self = Self(1);
+    pub const Star: Self = Self(2);
+}
+impl windows_core::imp::TypeKind for GridUnitType {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for GridUnitType {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::from_slice(b"enum(Microsoft.UI.Xaml.GridUnitType;i4)");
+}
 pub type HANDLE = *mut core::ffi::c_void;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -4653,6 +4742,33 @@ impl IClosable {
 pub struct IClosable_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
     pub Close: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IColumnDefinition,
+    IColumnDefinition_Vtbl,
+    0x454cea14_87ec_5890_bb62_f1d82a94758e
+);
+impl windows_core::RuntimeType for IColumnDefinition {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IColumnDefinition {
+    pub fn SetWidth(&self, value: GridLength) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetWidth)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct IColumnDefinition_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    Width: usize,
+    pub SetWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, GridLength) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IComboBox,
@@ -8986,9 +9102,26 @@ impl windows_core::RuntimeType for IGrid {
     const SIGNATURE: windows_core::imp::ConstBuffer =
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
+impl IGrid {
+    pub fn ColumnDefinitions(&self) -> windows_core::Result<ColumnDefinitionCollection> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ColumnDefinitions)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
 #[repr(C)]
 pub struct IGrid_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+    RowDefinitions: usize,
+    pub ColumnDefinitions: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IGridStatics,

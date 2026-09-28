@@ -66,6 +66,7 @@ impl BrowserWindow {
         click(&ui.home, move || with(&w, |w| w.go_home()))?;
         let w = me();
         click(&ui.star, move || with(&w, |w| w.star_clicked()))?;
+        self.wire_split_divider()?;
         let w = me();
         click(&ui.copy_link, move || with(&w, |w| w.run(Command::CopyCleanLink)))?;
         let w = me();

@@ -458,75 +458,38 @@ impl SidePane {
     }
 
     fn wire_grip(self: &Rc<Self>, grip: &UIElement) -> Result<()> {
-        let cursor = InputSystemCursor::Create(InputSystemCursorShape::SizeWestEast)?;
-        if let Err(e) = grip
-            .cast::<IUIElementProtected>()
-            .and_then(|g| g.SetProtectedCursor(&cursor.cast::<InputCursor>()?))
-        {
-            log::debug!("pane grip cursor: {e}");
-        }
         let weak = Rc::downgrade(self);
-        let target = grip.clone();
-        grip.PointerPressed(move |_, args| {
-            let (Some(this), Some(args)) = (weak.upgrade(), args.as_ref()) else {
-                return;
+        let start = move || {
+            let Some(this) = weak.upgrade().filter(|this| !this.compact.get()) else {
+                return false;
             };
-            if this.compact.get() {
-                return;
-            }
-            let Some(origin) = this.origin_x() else { return };
+            let Some(origin) = this.origin_x() else {
+                return false;
+            };
             let fixed = match this.side.get() {
                 PaneSide::Left => origin,
                 PaneSide::Right => origin + this.width.get(),
             };
             this.drag.set(Some(fixed));
-            let _ = args.Pointer().and_then(|p| target.CapturePointer(&p));
-            let _ = args.SetHandled(true);
-        })?
-        .forget();
+            true
+        };
         let weak = Rc::downgrade(self);
-        grip.PointerMoved(move |_, args| {
-            let (Some(this), Some(args)) = (weak.upgrade(), args.as_ref()) else {
-                return;
-            };
-            this.drag_to(args);
-        })?
-        .forget();
-        let weak = Rc::downgrade(self);
-        let target = grip.clone();
-        grip.PointerReleased(move |_, args| {
-            if let (Some(this), Some(args)) = (weak.upgrade(), args.as_ref()) {
-                // Moves just before the release may come only with it.
-                this.drag_to(args);
-                let _ = args.Pointer().and_then(|p| target.ReleasePointerCapture(&p));
-                this.end_drag();
+        let moved = move |x: f64| {
+            if let Some(this) = weak.upgrade()
+                && let Some(fixed) = this.drag.get()
+            {
+                this.set_width((x - fixed).abs());
             }
-        })?
-        .forget();
+        };
         let weak = Rc::downgrade(self);
-        grip.PointerCaptureLost(move |_, _| {
-            if let Some(this) = weak.upgrade() {
-                this.end_drag();
+        let ended = move || {
+            if let Some(this) = weak.upgrade()
+                && this.drag.take().is_some()
+            {
+                (this.events.pane_resized)(this.width.get());
             }
-        })?
-        .forget();
-        Ok(())
-    }
-
-    fn drag_to(&self, args: &PointerRoutedEventArgs) {
-        let Some(fixed) = self.drag.get() else { return };
-        if let Ok(point) = args
-            .GetCurrentPoint(None::<&UIElement>)
-            .and_then(|p| p.Position())
-        {
-            self.set_width((f64::from(point.x) - fixed).abs());
-        }
-    }
-
-    fn end_drag(&self) {
-        if self.drag.take().is_some() {
-            (self.events.pane_resized)(self.width.get());
-        }
+        };
+        xaml::drag_handle(grip, start, moved, ended)
     }
 
     fn origin_x(&self) -> Option<f64> {

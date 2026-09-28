@@ -1,5 +1,8 @@
 //! Small helpers over the minimal XAML bindings.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use windows_core::{IInspectable, IUnknown, Interface, Result};
 use windows_reference::IReference;
 
@@ -69,6 +72,72 @@ pub(crate) fn show_favicon(root: &FrameworkElement, png: Vec<u8>) -> Result<()> 
             Err(e) => log::debug!("favicon: {e}"),
         }
     });
+    Ok(())
+}
+
+/// Makes `handle` something to drag sideways, with the resize cursor. A press starts a drag
+/// when `start` agrees; `moved` then gets the pointer's x in the window's view pixels, the last
+/// time at the release (moves just before it may come only with it), and `ended` runs once.
+pub(crate) fn drag_handle(
+    handle: &UIElement,
+    start: impl Fn() -> bool + 'static,
+    moved: impl Fn(f64) + 'static,
+    ended: impl Fn() + 'static,
+) -> Result<()> {
+    let cursor = InputSystemCursor::Create(InputSystemCursorShape::SizeWestEast)?;
+    if let Err(e) = handle
+        .cast::<IUIElementProtected>()
+        .and_then(|h| h.SetProtectedCursor(&cursor.cast::<InputCursor>()?))
+    {
+        log::debug!("drag handle cursor: {e}");
+    }
+    let dragging = Rc::new(Cell::new(false));
+    let moved = Rc::new(moved);
+    let ended = Rc::new(ended);
+    let x = |args: &PointerRoutedEventArgs| {
+        args.GetCurrentPoint(None::<&UIElement>)
+            .and_then(|p| p.Position())
+            .map(|p| f64::from(p.x))
+    };
+    let (target, drag) = (handle.clone(), dragging.clone());
+    handle
+        .PointerPressed(move |_, args| {
+            let Some(args) = args.as_ref() else { return };
+            if start() {
+                drag.set(true);
+                let _ = args.Pointer().and_then(|p| target.CapturePointer(&p));
+                let _ = args.SetHandled(true);
+            }
+        })?
+        .forget();
+    let (drag, on_move) = (dragging.clone(), moved.clone());
+    handle
+        .PointerMoved(move |_, args| {
+            if let (true, Some(Ok(x))) = (drag.get(), args.as_ref().map(x)) {
+                on_move(x);
+            }
+        })?
+        .forget();
+    let (target, drag, on_end) = (handle.clone(), dragging.clone(), ended.clone());
+    handle
+        .PointerReleased(move |_, args| {
+            let Some(args) = args.as_ref() else { return };
+            if drag.replace(false) {
+                if let Ok(x) = x(args) {
+                    moved(x);
+                }
+                let _ = args.Pointer().and_then(|p| target.ReleasePointerCapture(&p));
+                on_end();
+            }
+        })?
+        .forget();
+    handle
+        .PointerCaptureLost(move |_, _| {
+            if dragging.replace(false) {
+                ended();
+            }
+        })?
+        .forget();
     Ok(())
 }
 

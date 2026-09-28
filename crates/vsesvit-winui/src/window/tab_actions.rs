@@ -35,6 +35,9 @@ impl Split {
     }
 }
 
+/// The narrowest share of the split view a page can be dragged to.
+const MIN_SPLIT_SHARE: f64 = 0.15;
+
 /// How long the copy button shows its check mark.
 const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1200);
 
@@ -50,6 +53,7 @@ impl BrowserWindow {
                         left: active.id,
                         right: id,
                     }));
+                    self.set_split_share(0.5);
                     self.sync_selection();
                 }
             }
@@ -60,6 +64,7 @@ impl BrowserWindow {
                             left: id,
                             right: new.id,
                         }));
+                        self.set_split_share(0.5);
                         self.sync_selection();
                         self.focus_address();
                     }
@@ -99,6 +104,54 @@ impl BrowserWindow {
             }
         }
         let _ = xaml::set_visible(&self.ui.split_divider, split.is_some());
+    }
+
+    /// Dragging the split view's divider shares the page grid's width between the two pages.
+    pub(super) fn wire_split_divider(&self) -> Result<()> {
+        let me = self.me.clone();
+        let shown = move || me.upgrade().is_some_and(|w| xaml::is_visible(&w.ui.split_divider));
+        let me = self.me.clone();
+        let moved = move |x: f64| {
+            if let Some(w) = me.upgrade() {
+                w.drag_split_to(x);
+            }
+        };
+        xaml::drag_handle(&self.ui.split_divider, shown, moved, || {})
+    }
+
+    fn drag_split_to(&self, x: f64) {
+        let Some(pages) = self
+            .ui
+            .pages
+            .cast::<FrameworkElement>()
+            .ok()
+            .and_then(|p| self.bounds_of(&p))
+            .filter(|p| p.width > 0.0)
+        else {
+            return;
+        };
+        let share = ((x - pages.x) / pages.width).clamp(MIN_SPLIT_SHARE, 1.0 - MIN_SPLIT_SHARE);
+        self.set_split_share(share);
+    }
+
+    /// The left page's share of the split view's width.
+    fn set_split_share(&self, share: f64) {
+        let star = |value| GridLength {
+            value,
+            grid_unit_type: GridUnitType::Star,
+        };
+        let set = self
+            .ui
+            .pages
+            .cast::<Grid>()
+            .and_then(|grid| grid.ColumnDefinitions())
+            .and_then(|columns| {
+                columns.GetAt(0)?.SetWidth(star(share))?;
+                columns.GetAt(2)?.SetWidth(star(1.0 - share))
+            });
+        if let Err(e) = set {
+            log::warn!("split view width: {e}");
+        }
     }
 
     /// A click into one page of the split view selects its tab, so the toolbar follows it.
