@@ -10,9 +10,9 @@ use crate::tab::TabId;
 /// What a tab's menu does to its tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabAction {
-    /// Shows the tab beside the selected one.
-    SplitWithActive,
-    /// Shows the (selected) tab beside a new tab.
+    /// Shows the tab beside another open tab.
+    SplitWith(TabId),
+    /// Shows the tab beside a new tab.
     SplitWithNewTab,
     CloseSplit,
     Pin(bool),
@@ -25,7 +25,6 @@ pub(crate) enum TabAction {
 /// What the menu depends on.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct TabFacts {
-    pub active: bool,
     pub in_split: bool,
     pub pinned: bool,
     pub muted: bool,
@@ -33,23 +32,30 @@ pub(super) struct TabFacts {
     pub has_link: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Another open tab, as the "Split view with" submenu lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SplitTarget {
+    pub tab: TabId,
+    pub title: String,
+    pub favicon: Option<ImageSource>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Entry {
     /// Label, Segoe Fluent glyph, action.
     Action(&'static str, &'static str, TabAction),
+    /// The "Split view with" submenu: a new tab, then the other open tabs.
+    SplitWith(Vec<SplitTarget>),
     Separator,
 }
 
-pub(super) fn entries(facts: TabFacts) -> Vec<Entry> {
+/// A tab's menu; `others` are the window's other tabs, in tab list order.
+pub(super) fn entries(facts: TabFacts, others: Vec<SplitTarget>) -> Vec<Entry> {
     use Entry::{Action, Separator};
-    let split = match (facts.in_split, facts.active) {
-        (true, _) => Action("Close split view", "\u{E89F}", TabAction::CloseSplit),
-        (false, true) => Action("Split view with new tab", "\u{E8A0}", TabAction::SplitWithNewTab),
-        (false, false) => Action(
-            "Split view with current tab",
-            "\u{E8A0}",
-            TabAction::SplitWithActive,
-        ),
+    let split = if facts.in_split {
+        Action("Close split view", "\u{E89F}", TabAction::CloseSplit)
+    } else {
+        Entry::SplitWith(others)
     };
     let pin = if facts.pinned {
         Action("Unpin tab", "\u{E77A}", TabAction::Pin(false))
@@ -75,13 +81,25 @@ impl BrowserWindow {
         let Some(tab) = self.tab(id) else { return };
         let state = tab.state();
         let facts = TabFacts {
-            active: self.active_tab().is_some_and(|a| a.id == id),
             in_split: self.split.get().is_some_and(|s| s.has(id)),
             pinned: tab.is_pinned(),
             muted: state.muted,
             has_link: has_link(&state.url),
         };
-        if let Err(e) = self.fill_menu(menu, id, &entries(facts)) {
+        let others = self
+            .tabs_in_order()
+            .into_iter()
+            .filter(|t| t.id != id)
+            .map(|t| {
+                let look = t.look();
+                SplitTarget {
+                    tab: t.id,
+                    title: look.title,
+                    favicon: look.favicon,
+                }
+            })
+            .collect();
+        if let Err(e) = self.fill_menu(menu, id, &entries(facts, others)) {
             log::warn!("tab menu: {e}");
         }
     }
@@ -90,30 +108,75 @@ impl BrowserWindow {
         let items = menu.Items()?;
         items.Clear()?;
         for entry in entries {
-            let Entry::Action(label, glyph, action) = *entry else {
-                items.Append(&MenuFlyoutSeparator::new()?.cast::<MenuFlyoutItemBase>()?)?;
-                continue;
-            };
-            let item = MenuFlyoutItem::new()?;
-            item.SetText(label)?;
-            let icon = FontIcon::new()?;
-            icon.SetGlyph(glyph)?;
-            item.SetIcon(&icon.cast::<IconElement>()?)?;
-            let me = self.me.clone();
-            // After the menu has closed: an action may remove the row the menu belongs to.
-            item.Click(move |_, _| {
-                let me = me.clone();
-                exec::spawn(async move {
-                    if let Some(window) = me.upgrade() {
-                        window.tab_action(id, action);
+            let element: MenuFlyoutItemBase = match entry {
+                Entry::Action(label, glyph, action) => {
+                    self.menu_item(id, label, &glyph_icon(glyph)?, *action)?.cast()?
+                }
+                Entry::SplitWith(others) => {
+                    let submenu = MenuFlyoutSubItem::new()?;
+                    submenu.SetText("Split view with")?;
+                    submenu.SetIcon(&glyph_icon("\u{E8A0}")?)?;
+                    let children = submenu.Items()?;
+                    let new_tab = glyph_icon("\u{E710}")?;
+                    children.Append(
+                        &self
+                            .menu_item(id, "New tab", &new_tab, TabAction::SplitWithNewTab)?
+                            .cast::<MenuFlyoutItemBase>()?,
+                    )?;
+                    if !others.is_empty() {
+                        children.Append(&MenuFlyoutSeparator::new()?.cast::<MenuFlyoutItemBase>()?)?;
                     }
-                });
-            })?
-            .forget();
-            items.Append(&item.cast::<MenuFlyoutItemBase>()?)?;
+                    for other in others {
+                        let icon = match &other.favicon {
+                            Some(favicon) => {
+                                let image = ImageIcon::new()?;
+                                image.SetSource(favicon)?;
+                                image.cast()?
+                            }
+                            None => glyph_icon("\u{E774}")?,
+                        };
+                        let action = TabAction::SplitWith(other.tab);
+                        let item = self.menu_item(id, &other.title, &icon, action)?;
+                        children.Append(&item.cast::<MenuFlyoutItemBase>()?)?;
+                    }
+                    submenu.cast()?
+                }
+                Entry::Separator => MenuFlyoutSeparator::new()?.cast()?,
+            };
+            items.Append(&element)?;
         }
         Ok(())
     }
+
+    fn menu_item(
+        &self,
+        id: TabId,
+        label: &str,
+        icon: &IconElement,
+        action: TabAction,
+    ) -> Result<MenuFlyoutItem> {
+        let item = MenuFlyoutItem::new()?;
+        item.SetText(label)?;
+        item.SetIcon(icon)?;
+        let me = self.me.clone();
+        // After the menu has closed: an action may remove the row the menu belongs to.
+        item.Click(move |_, _| {
+            let me = me.clone();
+            exec::spawn(async move {
+                if let Some(window) = me.upgrade() {
+                    window.tab_action(id, action);
+                }
+            });
+        })?
+        .forget();
+        Ok(item)
+    }
+}
+
+fn glyph_icon(glyph: &str) -> Result<IconElement> {
+    let icon = FontIcon::new()?;
+    icon.SetGlyph(glyph)?;
+    icon.cast()
 }
 
 /// Whether `url` is a page's address (not a blank tab or the new tab page).
@@ -125,24 +188,39 @@ pub(super) fn has_link(url: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn other(tab: TabId) -> SplitTarget {
+        SplitTarget {
+            tab,
+            title: format!("Tab {tab}"),
+            favicon: None,
+        }
+    }
+
     fn actions(facts: TabFacts) -> Vec<TabAction> {
-        entries(facts)
+        entries(facts, vec![])
             .into_iter()
             .filter_map(|e| match e {
                 Entry::Action(_, _, action) => Some(action),
-                Entry::Separator => None,
+                _ => None,
             })
             .collect()
     }
 
     #[test]
-    fn split_depends_on_the_tab() {
-        let other = TabFacts::default();
-        assert_eq!(actions(other)[0], TabAction::SplitWithActive);
-        let active = TabFacts { active: true, ..other };
-        assert_eq!(actions(active)[0], TabAction::SplitWithNewTab);
-        let split = TabFacts { in_split: true, active: true, ..other };
-        assert_eq!(actions(split)[0], TabAction::CloseSplit);
+    fn split_lists_the_other_tabs_unless_the_tab_is_split() {
+        let others = vec![other(2), other(3)];
+        assert_eq!(
+            entries(TabFacts::default(), others.clone())[0],
+            Entry::SplitWith(others.clone())
+        );
+        let split = TabFacts {
+            in_split: true,
+            ..TabFacts::default()
+        };
+        assert_eq!(
+            entries(split, others)[0],
+            Entry::Action("Close split view", "\u{E89F}", TabAction::CloseSplit)
+        );
     }
 
     #[test]
@@ -171,7 +249,7 @@ mod tests {
     #[test]
     fn close_comes_last() {
         assert_eq!(
-            entries(TabFacts::default()).last(),
+            entries(TabFacts::default(), vec![]).last(),
             Some(&Entry::Action("Close tab", "\u{E711}", TabAction::Close))
         );
     }

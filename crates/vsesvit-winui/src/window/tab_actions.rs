@@ -3,7 +3,9 @@
 //!
 //! Split view shows two tabs side by side in the page grid's outer columns. It stays while
 //! either of them is selected; selecting another tab shows that one alone until one of the pair
-//! is selected again. Pinned tabs lead the tab list, in the order they were pinned.
+//! is selected again. Dragging the divider shares the width; letting it go with a page squeezed
+//! under [`MIN_SPLIT_SHARE`] ends the split and keeps the other page. Pinned tabs lead the tab
+//! list, in the order they were pinned.
 
 use windows_core::{Interface, Result};
 
@@ -14,15 +16,36 @@ use crate::tab::{Initial, Tab, TabId};
 use crate::{exec, platform, xaml};
 
 /// Two tabs shown side by side.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Split {
     pub left: TabId,
     pub right: TabId,
+    /// The left page's share of the width.
+    pub share: f64,
 }
 
 impl Split {
     pub fn has(self, id: TabId) -> bool {
         self.left == id || self.right == id
+    }
+
+    fn new(left: TabId, right: TabId) -> Self {
+        Self {
+            left,
+            right,
+            share: 0.5,
+        }
+    }
+
+    /// What letting the divider go does: the tab left alone if a page is squeezed out.
+    fn kept_after_drag(self) -> Option<TabId> {
+        if self.share < MIN_SPLIT_SHARE {
+            Some(self.right)
+        } else if self.share > 1.0 - MIN_SPLIT_SHARE {
+            Some(self.left)
+        } else {
+            None
+        }
     }
 
     /// The page grid column of a tab of the pair.
@@ -35,8 +58,10 @@ impl Split {
     }
 }
 
-/// The narrowest share of the split view a page can be dragged to.
+/// A page left narrower than this share when the divider is let go leaves the split view.
 const MIN_SPLIT_SHARE: f64 = 0.15;
+/// How far the divider drags: past [`MIN_SPLIT_SHARE`], so the page can be squeezed out.
+const DRAG_SHARES: (f64, f64) = (0.05, 0.95);
 
 /// How long the copy button shows its check mark.
 const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1200);
@@ -45,26 +70,16 @@ impl BrowserWindow {
     pub(crate) fn tab_action(&self, id: TabId, action: TabAction) {
         let Some(tab) = self.tab(id) else { return };
         match action {
-            TabAction::SplitWithActive => {
-                if let Some(active) = self.active_tab()
-                    && active.id != id
-                {
-                    self.split.set(Some(Split {
-                        left: active.id,
-                        right: id,
-                    }));
-                    self.set_split_share(0.5);
-                    self.sync_selection();
+            TabAction::SplitWith(other) => {
+                if other != id && self.tab(other).is_some() {
+                    self.show_split(Split::new(id, other));
                 }
             }
             TabAction::SplitWithNewTab => {
-                match self.open_tab(Initial::Blank, Placement::After(id), true, None) {
+                match self.open_tab(Initial::Blank, Placement::After(id), false, None) {
                     Ok(new) => {
-                        self.split.set(Some(Split {
-                            left: id,
-                            right: new.id,
-                        }));
-                        self.set_split_share(0.5);
+                        self.show_split(Split::new(id, new.id));
+                        let _ = self.strip().select(new.id);
                         self.sync_selection();
                         self.focus_address();
                     }
@@ -106,6 +121,14 @@ impl BrowserWindow {
         let _ = xaml::set_visible(&self.ui.split_divider, split.is_some());
     }
 
+    /// Shows `split`, with its left tab selected; it replaces any split view there was.
+    fn show_split(&self, split: Split) {
+        self.split.set(Some(split));
+        self.set_split_share(split.share);
+        let _ = self.strip().select(split.left);
+        self.sync_selection();
+    }
+
     /// Dragging the split view's divider shares the page grid's width between the two pages.
     pub(super) fn wire_split_divider(&self) -> Result<()> {
         let me = self.me.clone();
@@ -116,7 +139,13 @@ impl BrowserWindow {
                 w.drag_split_to(x);
             }
         };
-        xaml::drag_handle(&self.ui.split_divider, shown, moved, || {})
+        let me = self.me.clone();
+        let ended = move || {
+            if let Some(w) = me.upgrade() {
+                w.split_drag_ended();
+            }
+        };
+        xaml::drag_handle(&self.ui.split_divider, shown, moved, ended)
     }
 
     fn drag_split_to(&self, x: f64) {
@@ -130,8 +159,25 @@ impl BrowserWindow {
         else {
             return;
         };
-        let share = ((x - pages.x) / pages.width).clamp(MIN_SPLIT_SHARE, 1.0 - MIN_SPLIT_SHARE);
+        self.split_dragged((x - pages.x) / pages.width);
+    }
+
+    /// The divider dragged to give the left page `share` of the width.
+    pub(crate) fn split_dragged(&self, share: f64) {
+        let Some(split) = self.split.get() else { return };
+        let share = share.clamp(DRAG_SHARES.0, DRAG_SHARES.1);
+        self.split.set(Some(Split { share, ..split }));
         self.set_split_share(share);
+    }
+
+    /// The divider let go: a page squeezed out leaves the other one alone.
+    pub(crate) fn split_drag_ended(&self) {
+        let Some(kept) = self.split.get().and_then(Split::kept_after_drag) else {
+            return;
+        };
+        self.split.set(None);
+        let _ = self.strip().select(kept);
+        self.sync_selection();
     }
 
     /// The left page's share of the split view's width.
@@ -252,5 +298,20 @@ impl BrowserWindow {
             exec::sleep(COPIED_FOR).await;
             let _ = glyph.SetGlyph("\u{E8C8}");
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Split;
+
+    #[test]
+    fn letting_go_with_a_page_squeezed_out_keeps_the_other() {
+        let at = |share| Split { share, ..Split::new(1, 2) }.kept_after_drag();
+        assert_eq!(at(0.1), Some(2));
+        assert_eq!(at(0.9), Some(1));
+        assert_eq!(at(0.15), None);
+        assert_eq!(at(0.5), None);
+        assert_eq!(at(0.85), None);
     }
 }

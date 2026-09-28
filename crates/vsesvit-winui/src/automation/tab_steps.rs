@@ -69,15 +69,26 @@ fn width_if_shown(tab: &Tab) -> Option<f64> {
         .flatten()
 }
 
+/// The menu's labels, a submenu's as `label > child, child`.
 fn menu_labels(window: &BrowserWindow, tab: &Tab) -> Result<Vec<String>, String> {
     let menu = MenuFlyout::new().map_err(|e| e.to_string())?;
     window.fill_tab_menu(tab.id, &menu);
     let items = menu.Items().map_err(|e| e.to_string())?;
+    let label = |item: &MenuFlyoutItemBase| -> Option<String> {
+        if let Ok(item) = item.cast::<MenuFlyoutItem>() {
+            return item.Text().ok().map(|t| t.to_string());
+        }
+        let submenu = item.cast::<MenuFlyoutSubItem>().ok()?;
+        let children = submenu.Items().ok()?;
+        let children: Vec<String> = (0..children.Size().unwrap_or(0))
+            .filter_map(|i| children.GetAt(i).ok()?.cast::<MenuFlyoutItem>().ok()?.Text().ok())
+            .map(|t| t.to_string())
+            .collect();
+        Some(format!("{} > {}", submenu.Text().ok()?, children.join(", ")))
+    };
     Ok((0..items.Size().unwrap_or(0))
         .filter_map(|i| items.GetAt(i).ok())
-        .filter_map(|item| item.cast::<MenuFlyoutItem>().ok())
-        .filter_map(|item| item.Text().ok())
-        .map(|text| text.to_string())
+        .filter_map(|item| label(&item))
         .collect())
 }
 
@@ -110,10 +121,17 @@ pub(super) async fn run(
     .await;
 
     let labels = menu_labels(window, &media)?;
+    let others: Vec<String> = window
+        .tabs_in_order()
+        .iter()
+        .filter(|t| t.id != media.id)
+        .map(|t| t.state().title)
+        .collect();
+    let split_with = format!("Split view with > New tab, {}", others.join(", "));
     steps.push(json!({
         "name": "31-tab-menu",
         "labels": labels,
-        "ok": labels == ["Split view with current tab", "Pin tab", "Unmute tab", "Copy link", "Close tab"],
+        "ok": labels == [split_with.as_str(), "Pin tab", "Unmute tab", "Copy link", "Close tab"],
     }));
 
     window.tab_action(media.id, TabAction::Pin(true));
@@ -159,8 +177,7 @@ pub(super) async fn run(
         "ok": !media.is_pinned() && unpinned.first() == Some(&media.id),
     }));
 
-    select(window, &first);
-    window.tab_action(media.id, TabAction::SplitWithActive);
+    window.tab_action(first.id, TabAction::SplitWith(media.id));
     exec::sleep(Duration::from_millis(500)).await;
     let halves = (width_if_shown(&first), width_if_shown(&media));
     shoot(window, out_dir, "34-split-view", steps, |w| {
@@ -199,6 +216,28 @@ pub(super) async fn run(
         "split_returns": back,
         "split_closes": closed,
         "ok": alone && back && closed,
+    }));
+
+    // The divider shares the width; let go with the left page squeezed out, the right one
+    // stays alone.
+    window.tab_action(first.id, TabAction::SplitWith(media.id));
+    window.split_dragged(0.3);
+    window.split_drag_ended();
+    exec::sleep(Duration::from_millis(300)).await;
+    let shared = width_if_shown(&first)
+        .zip(width_if_shown(&media))
+        .is_some_and(|(left, right)| left < right * 0.6);
+    window.split_dragged(0.08);
+    window.split_drag_ended();
+    exec::sleep(Duration::from_millis(300)).await;
+    let squeezed_out = width_if_shown(&first).is_none()
+        && width_if_shown(&media).is_some_and(|w| w > 300.0)
+        && window.active_tab().is_some_and(|t| t.id == media.id);
+    steps.push(json!({
+        "name": "35b-divider-shares-and-squeezes-out",
+        "shared": shared,
+        "squeezed_out": squeezed_out,
+        "ok": shared && squeezed_out,
     }));
 
     let tracked = server.url("/page2.html?a=1&utm_source=smoke&fbclid=x");
