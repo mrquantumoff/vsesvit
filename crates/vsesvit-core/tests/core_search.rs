@@ -109,24 +109,3 @@ fn custom_engines_and_removal() {
     assert_eq!(p.omnibox().resolve("example.com").unwrap().unwrap().url().as_str(), "https://example.com/");
     assert!(p.omnibox().resolve("just words").unwrap().is_none());
 }
-
-#[test]
-fn simplified_urls_drop_https_www_and_a_bare_slash() {
-    use vsesvit_core::search::simplified_url;
-    for (url, shown) in [
-        ("https://www.example.com/", "example.com"),
-        ("https://example.com/", "example.com"),
-        ("https://example.com/a/b?q=1#top", "example.com/a/b?q=1#top"),
-        ("https://www.example.com/?q=1", "example.com/?q=1"),
-        ("https://www.com/", "www.com"),
-        ("https://sub.www.example.com/", "sub.www.example.com"),
-        ("https://example.com:8443/", "example.com:8443"),
-        ("https://user@example.com/", "https://user@example.com/"),
-        ("http://example.com/", "http://example.com/"),
-        ("file:///C:/notes/a.html", "file:///C:/notes/a.html"),
-        ("about:blank", "about:blank"),
-        ("not a url", "not a url"),
-    ] {
-        assert_eq!(simplified_url(url), shown, "{url}");
-    }
-}

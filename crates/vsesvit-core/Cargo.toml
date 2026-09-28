@@ -12,6 +12,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { version = "1.26", features = ["v4", "serde"] }
 url = { workspace = true }
+# Punycode hosts shown decoded in the address bar; already in the tree through `url`.
+idna = "1.1"
 thiserror = { workspace = true }
 directories = "6"
 # Extension pipeline. No protobuf crate: the CRX3 header needs ~60 lines of varint reading (extensions/crx.rs).

@@ -17,6 +17,7 @@
 //!
 //! | module           | owns                                                                 |
 //! |------------------|----------------------------------------------------------------------|
+//! | [`address`]      | URLs as the address bar writes them: decoded, simplified              |
 //! | [`crdt`]         | clock, stamps, `Lww<T>`, `Lattice`: the only merge primitives         |
 //! | [`bookmarks`]    | records, fractional positions, in-memory tree, `materialize`          |
 //! | [`downloads`]    | the downloads list (LOCAL), file naming, status text                  |
@@ -35,6 +36,7 @@
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
+pub mod address;
 pub mod bookmarks;
 pub mod crdt;
 mod db;

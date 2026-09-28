@@ -2606,6 +2606,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "directories",
+ "idna",
  "p256",
  "proptest",
  "rsa",

@@ -14,7 +14,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib::subclass::Signal;
 use gtk::{gdk, glib};
-use vsesvit_core::search::simplified_url;
+use vsesvit_core::address::simplified_url;
 
 use crate::tab::display_uri;
 
@@ -61,28 +61,9 @@ struct Shown {
 impl Shown {
     fn of(uri: Option<&str>) -> Self {
         let full = uri.map(display_uri).unwrap_or_default();
-        let simplified = uri.map_or_else(String::new, |uri| simplified_display(uri, &full));
+        let simplified = simplified_url(&full);
         Shown { full, simplified }
     }
-}
-
-/// [`simplified_url`] of `uri` applied to `display`, its [`display_uri`], so a decoded host or
-/// path stays decoded: `simplified_url` reparses, which would encode them again.
-fn simplified_display(uri: &str, display: &str) -> String {
-    let simplified = simplified_url(uri);
-    if simplified == uri {
-        return display.to_owned();
-    }
-    let Some(mut rest) = display.strip_prefix("https://") else {
-        return display.to_owned();
-    };
-    if !simplified.starts_with("www.") {
-        rest = rest.strip_prefix("www.").unwrap_or(rest);
-    }
-    if uri.ends_with('/') && !simplified.ends_with('/') {
-        rest = rest.strip_suffix('/').unwrap_or(rest);
-    }
-    rest.to_owned()
 }
 
 mod imp {
@@ -531,7 +512,7 @@ mod tests {
 
     #[test]
     fn simplifying_keeps_the_decoded_form() {
-        let simplified = |uri: &str, display: &str| simplified_display(uri, display);
+        let simplified = |_uri: &str, display: &str| simplified_url(display);
         assert_eq!(
             simplified("https://www.xn--e1afmkfd.xn--j1amh/", "https://www.пример.укр/"),
             "пример.укр"

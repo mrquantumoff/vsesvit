@@ -17,7 +17,7 @@ use std::rc::{Rc, Weak};
 use vsesvit_core::bookmarks::BookmarkId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
-use vsesvit_core::search::simplified_url;
+use vsesvit_core::address::{readable_url, simplified_url};
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
@@ -447,14 +447,14 @@ impl BrowserWindow {
         let _ = self.window.SetTitle(&title);
     }
 
-    /// The whole URL while the user works in the address box or asked for full URLs;
-    /// otherwise the simplified one.
+    /// The URL in readable form: whole while the user works in the address box or asked for
+    /// full URLs, otherwise simplified.
     fn address_shown(&self, url: &str) -> String {
-        let url = omnibox::display_url(url);
+        let url = readable_url(omnibox::display_url(url));
         if self.address_focused.get() || self.full_urls.get() {
-            url.to_owned()
+            url
         } else {
-            simplified_url(url)
+            simplified_url(&url)
         }
     }
 
