@@ -61,3 +61,7 @@ crates/vsesvit-gtk     Linux shell (GTK4 + libadwaita + WebKitGTK)
 crates/vsesvit-webext  WebExtensions runtime for WebKitGTK
 docs/                  plan, design documents, research notes, design arena record
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

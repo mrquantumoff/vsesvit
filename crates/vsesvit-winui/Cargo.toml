@@ -4,6 +4,7 @@ description = "Windows shell of the Vsesvit browser: WinUI 3 (Windows App SDK) +
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [features]
 default = ["self-test"]

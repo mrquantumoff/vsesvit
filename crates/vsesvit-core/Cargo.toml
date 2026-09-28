@@ -3,6 +3,7 @@ name = "vsesvit-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Platform-agnostic core of the Vsesvit browser: profile store, sync-ready data model, omnibox, extension install pipeline"
 
 [dependencies]

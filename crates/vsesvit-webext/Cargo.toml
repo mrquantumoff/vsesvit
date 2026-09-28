@@ -4,6 +4,7 @@ description = "WebExtensions runtime for WebKitGTK (Linux): content scripts, bac
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 # The manifest model is shared with the platform-neutral support report (`support`),

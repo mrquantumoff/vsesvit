@@ -4,6 +4,7 @@ description = "Linux shell of the Vsesvit browser: GTK4 + libadwaita + WebKitGTK
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [features]
 # `vsesvit --self-test` needs core's testkit (a fixture HTTP server and the CRX3 writer

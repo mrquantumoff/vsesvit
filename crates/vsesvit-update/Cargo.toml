@@ -3,6 +3,7 @@ name = "vsesvit-update"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Vsesvit's self-updater: the client side of the Tauri updater protocol, blocking, for a worker thread"
 
 [dependencies]
