@@ -641,13 +641,17 @@ impl Omnibox<'_> {
 
     /// Access pattern 2: every keystroke. Bookmarks come from memory, history from one
     /// indexed query (`History::search`). Deduplicated by url and ranked: url prefix
-    /// match, then bookmark, then frecency. Remote search-engine suggestions are a
-    /// network call and belong to the shell (it has the `suggest_url`).
+    /// match, then bookmark, then frecency. Bookmarks and history are left out when the
+    /// user turned them off ([`keys::SUGGEST_BOOKMARKS`], [`keys::SUGGEST_HISTORY`]). Remote
+    /// search-engine suggestions are a network call and belong to the shell (it has the
+    /// `suggest_url`).
     pub fn suggest(&mut self, text: &str, limit: usize) -> Result<Vec<Suggestion>, Error> {
         let text = text.trim();
         if text.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
+        let with_bookmarks = self.p.prefs().get(&keys::SUGGEST_BOOKMARKS);
+        let with_history = self.p.prefs().get(&keys::SUGGEST_HISTORY);
         let engines = self.p.search_engines().list()?;
         let mut out = Vec::new();
         match self.resolve(text)? {
@@ -664,7 +668,8 @@ impl Omnibox<'_> {
         let typed_key = url_key(&text.to_lowercase());
         let mut candidates: Vec<(u8, u8, usize, Suggestion)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for node in self.p.bookmarks().search(text, limit) {
+        let bookmarks = if with_bookmarks { self.p.bookmarks().search(text, limit) } else { Vec::new() };
+        for node in bookmarks {
             let Some(url) = node.url else { continue };
             if seen.insert(url.clone()) {
                 let prefix = u8::from(!url_key(url.as_str()).starts_with(&typed_key));
@@ -672,7 +677,8 @@ impl Omnibox<'_> {
                 candidates.push((prefix, 0, n, Suggestion { source: SuggestionSource::Bookmark, title: node.title, target: NavTarget::Url(url) }));
             }
         }
-        for entry in self.p.history().search(text, limit)? {
+        let history = if with_history { self.p.history().search(text, limit)? } else { Vec::new() };
+        for entry in history {
             if seen.insert(entry.url.clone()) {
                 let prefix = u8::from(!url_key(entry.url.as_str()).starts_with(&typed_key));
                 let n = candidates.len();

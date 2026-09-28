@@ -77,6 +77,21 @@ pub mod keys {
     /// Show whole URLs in the address bar; off, it shows [`crate::address::simplified_url`]
     /// until the user clicks into it.
     pub const SHOW_FULL_URLS: Pref<bool> = Pref { key: "address_bar.full_urls", scope: Scope::Synced, default: || false };
+    /// A Home button in the toolbar, next to Reload, that opens [`HOMEPAGE`].
+    pub const SHOW_HOME_BUTTON: Pref<bool> = Pref { key: "toolbar.home_button", scope: Scope::Synced, default: || false };
+    /// Whether the address bar suggests pages from history ([`crate::search::Omnibox::suggest`]).
+    pub const SUGGEST_HISTORY: Pref<bool> = Pref { key: "address_bar.suggest.history", scope: Scope::Synced, default: || true };
+    /// Whether the address bar suggests bookmarks.
+    pub const SUGGEST_BOOKMARKS: Pref<bool> = Pref { key: "address_bar.suggest.bookmarks", scope: Scope::Synced, default: || true };
+    /// Refuse windows a page opens without a user gesture.
+    pub const BLOCK_POPUPS: Pref<bool> = Pref { key: "content.block_popups", scope: Scope::Synced, default: || true };
+    /// Offer to save passwords typed into sign-in forms, where the engine has a password store.
+    pub const SAVE_PASSWORDS: Pref<bool> = Pref { key: "autofill.passwords", scope: Scope::Synced, default: || true };
+    /// Save and fill form entries such as addresses, where the engine supports it.
+    pub const AUTOFILL_FORMS: Pref<bool> = Pref { key: "autofill.forms", scope: Scope::Synced, default: || true };
+    pub const SMOOTH_SCROLLING: Pref<bool> = Pref { key: "scrolling.smooth", scope: Scope::Synced, default: || true };
+    /// Local: whether the GPU works well is a property of this device.
+    pub const HARDWARE_ACCELERATION: Pref<bool> = Pref { key: "system.hardware_acceleration", scope: Scope::Local, default: || true };
     pub const DEVICE_NAME: Pref<String> = Pref { key: "device.name", scope: Scope::Local, default: || String::new() };
     /// Local: whether an installation checks for and downloads updates is a property of that
     /// installation, not of the user's other devices.

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::crdt::{DeviceId, TimeSource};
 use vsesvit_core::history::Transition;
+use vsesvit_core::prefs::keys;
 use vsesvit_core::search::{classify, classify_url, NavTarget, SearchEngine, SearchEngineId, SuggestionSource, UrlTemplate};
 use vsesvit_core::{OpenOptions, Profile, Url};
 
@@ -194,4 +195,22 @@ fn suggest_ranks_prefix_then_bookmarks_then_history() {
 
     assert_eq!(p.omnibox().suggest("rust", 1).unwrap().len(), 1);
     assert!(p.omnibox().suggest("  ", 8).unwrap().is_empty());
+}
+
+#[test]
+fn suggest_leaves_out_the_sources_turned_off() {
+    let (mut p, _dir) = open();
+    let marked = Url::parse("https://rust.example/marked").unwrap();
+    let visited = Url::parse("https://rust.example/visited").unwrap();
+    p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "rust marked", &marked).unwrap();
+    p.history().record_visit(&visited, Transition::Typed).unwrap();
+    let sources = |p: &mut Profile| -> Vec<SuggestionSource> {
+        p.omnibox().suggest("rust", 8).unwrap().into_iter().map(|s| s.source).collect()
+    };
+
+    assert_eq!(sources(&mut p), [SuggestionSource::Search, SuggestionSource::Bookmark, SuggestionSource::History]);
+    p.prefs().set(&keys::SUGGEST_BOOKMARKS, &false).unwrap();
+    assert_eq!(sources(&mut p), [SuggestionSource::Search, SuggestionSource::History]);
+    p.prefs().set(&keys::SUGGEST_HISTORY, &false).unwrap();
+    assert_eq!(sources(&mut p), [SuggestionSource::Search]);
 }
