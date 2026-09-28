@@ -68,7 +68,7 @@ Microsoft.UI.Input.InputSystemCursorShape
 Microsoft.UI.Input.InputCursor
 Microsoft.UI.Input.IPointerPointProperties::get_PointerUpdateKind
 Microsoft.UI.Input.PointerUpdateKind
-Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, put_MaxWidth, LayoutUpdated, get_ActualWidth, get_ActualHeight, put_RequestedTheme, SizeChanged}
+Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, put_MaxWidth, put_MinWidth, LayoutUpdated, get_ActualWidth, get_ActualHeight, put_RequestedTheme, SizeChanged}
 Microsoft.UI.Xaml.SizeChangedEventHandler
 Microsoft.UI.Xaml.SizeChangedEventArgs
 Microsoft.UI.Xaml.ElementTheme

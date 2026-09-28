@@ -10,10 +10,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use vsesvit_core::prefs::TabsPosition;
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
 
-use super::{STEP_TIMEOUT, devtools, press, shoot, wait_loaded};
+use super::{STEP_TIMEOUT, devtools, press, shoot, wait_layout, wait_loaded};
 use crate::bindings::*;
 use crate::media::MediaAction;
 use crate::shortcuts::Command;
@@ -125,7 +126,32 @@ pub(super) async fn run(
         })
     })
     .await;
+    let browser = window.browser().ok_or("no browser")?;
+    browser.set_tabs_position(TabsPosition::Top);
+    wait_layout(window, TabsPosition::Top).await;
+    exec::sleep(Duration::from_millis(300)).await;
+    shoot(window, out_dir, "32b-pinned-tab-on-top", steps, |w| {
+        let widths = w.top_tab_widths();
+        let icon_only = widths
+            .iter()
+            .all(|(id, width)| if *id == media.id { *width < 60.0 } else { *width >= 100.0 });
+        json!({
+            "widths": format!("{widths:?}"),
+            "ok": icon_only && widths.first().is_some_and(|(id, _)| *id == media.id),
+        })
+    })
+    .await;
     window.tab_action(media.id, TabAction::Pin(false));
+    exec::sleep(Duration::from_millis(300)).await;
+    let widths = window.top_tab_widths();
+    browser.set_tabs_position(TabsPosition::Left);
+    wait_layout(window, TabsPosition::Left).await;
+    let equal = widths.windows(2).all(|pair| (pair[0].1 - pair[1].1).abs() < 1.0);
+    steps.push(json!({
+        "name": "32c-unpinned-tab-on-top",
+        "widths": format!("{widths:?}"),
+        "ok": equal && widths.first().is_some_and(|(_, width)| *width >= 100.0),
+    }));
     let unpinned = order(window);
     steps.push(json!({
         "name": "33-unpinned-tab",

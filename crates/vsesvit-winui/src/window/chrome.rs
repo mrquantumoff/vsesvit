@@ -56,7 +56,7 @@ const WINDOW_XAML: &str = r#"
     <RowDefinition Height="*"/>
   </Grid.RowDefinitions>
 
-  <TabView x:Name="Tabs" TabWidthMode="Equal" IsAddTabButtonVisible="True" Visibility="Collapsed"
+  <TabView x:Name="Tabs" TabWidthMode="SizeToContent" IsAddTabButtonVisible="True" Visibility="Collapsed"
            CanReorderTabs="True" CanDragTabs="True" AllowDropTabs="True" VerticalAlignment="Bottom">
     <TabView.TabStripHeader>
       <Grid Width="8"/>

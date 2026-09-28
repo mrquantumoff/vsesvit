@@ -8568,6 +8568,15 @@ impl IFrameworkElement {
             .ok()
         }
     }
+    pub fn SetMinWidth(&self, value: f64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetMinWidth)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
     pub fn SetMaxWidth(&self, value: f64) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SetMaxWidth)(
@@ -8689,7 +8698,8 @@ pub struct IFrameworkElement_Vtbl {
     Height: usize,
     pub SetHeight: unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
     MinWidth: usize,
-    SetMinWidth: usize,
+    pub SetMinWidth:
+        unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
     MaxWidth: usize,
     pub SetMaxWidth:
         unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,

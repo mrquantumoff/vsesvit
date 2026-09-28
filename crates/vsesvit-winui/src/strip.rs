@@ -57,6 +57,7 @@ struct Row {
     tab: TabId,
     item: IInspectable,
     header: TabHeader,
+    pinned: Cell<bool>,
 }
 
 /// A list's rows, mapped to and from its XAML items by COM identity.
@@ -83,6 +84,21 @@ impl Rows {
     fn update(&self, tab: TabId, look: &TabLook) {
         if let Some(row) = self.0.borrow().iter().find(|r| r.tab == tab) {
             row.header.apply(look);
+            row.pinned.set(look.pinned);
+        }
+    }
+
+    fn is_pinned(&self, tab: TabId) -> Option<bool> {
+        self.0
+            .borrow()
+            .iter()
+            .find(|r| r.tab == tab)
+            .map(|r| r.pinned.get())
+    }
+
+    fn with_header(&self, tab: TabId, f: impl FnOnce(&TabHeader)) {
+        if let Some(row) = self.0.borrow().iter().find(|r| r.tab == tab) {
+            f(&row.header);
         }
     }
 
@@ -178,9 +194,71 @@ impl TopStrip {
         this.view
             .SelectionChanged(move |_, _| (e.selection_changed)(StripKind::Top))?
             .forget();
+        let weak = Rc::downgrade(&this);
+        this.view
+            .cast::<FrameworkElement>()?
+            .SizeChanged(move |_, _| {
+                if let Some(this) = weak.upgrade() {
+                    this.fit_widths();
+                }
+            })?
+            .forget();
         Ok(this)
     }
+
+    /// Pinned tabs show their icon only, as in Chrome; the others share the rest of the strip
+    /// equally, within the widths `TabView` gives its tabs. (`TabView`'s own equal widths
+    /// would make pinned tabs as wide as the rest.)
+    fn fit_widths(&self) {
+        let rows = self.rows.0.borrow();
+        let pinned = rows.iter().filter(|r| r.pinned.get()).count();
+        let others = rows.len() - pinned;
+        let strip = self
+            .view
+            .cast::<FrameworkElement>()
+            .and_then(|v| v.ActualWidth())
+            .unwrap_or(0.0)
+            - STRIP_CHROME;
+        let shared = if others == 0 {
+            0.0
+        } else {
+            ((strip - pinned as f64 * PINNED_TAB_WIDTH) / others as f64)
+                .clamp(TAB_WIDTHS.0, TAB_WIDTHS.1)
+                .floor()
+        };
+        for row in rows.iter() {
+            let width = if row.pinned.get() {
+                PINNED_TAB_WIDTH
+            } else {
+                shared
+            };
+            if let Ok(item) = row.item.cast::<FrameworkElement>() {
+                let _ = item.SetMinWidth(width);
+                let _ = item.SetMaxWidth(width);
+                let _ = item.SetWidth(width);
+            }
+        }
+    }
+
+    /// Widths of the tabs in display order, for scripted runs.
+    pub fn widths(&self) -> Vec<(TabId, f64)> {
+        self.order()
+            .into_iter()
+            .filter_map(|tab| {
+                let item = self.rows.item_of(tab)?.cast::<FrameworkElement>().ok()?;
+                Some((tab, item.ActualWidth().ok()?))
+            })
+            .collect()
+    }
 }
+
+/// A pinned tab in the horizontal strip: its icon and the tab's padding.
+const PINNED_TAB_WIDTH: f64 = 44.0;
+/// `TabView`'s narrowest and widest tabs.
+const TAB_WIDTHS: (f64, f64) = (100.0, 240.0);
+/// The strip's width that is not tabs: its header, the new tab button and the footer that drags
+/// the window.
+const STRIP_CHROME: f64 = 8.0 + 40.0 + 188.0;
 
 impl TabStrip for TopStrip {
     fn insert(&self, index: u32, tab: TabId, look: &TabLook) -> Result<()> {
@@ -189,17 +267,23 @@ impl TabStrip for TopStrip {
         let item = TabViewItem::new()?;
         item.SetHeader(header.root())?;
         item.SetIsClosable(!look.pinned)?;
+        header.set_compact(look.pinned);
         wire_header(&self.events, tab, &header, &item.cast()?)?;
         let row = Row {
             tab,
             item: item.cast()?,
             header,
+            pinned: Cell::new(look.pinned),
         };
-        self.rows.insert(&self.view.TabItems()?, index, row)
+        self.rows.insert(&self.view.TabItems()?, index, row)?;
+        self.fit_widths();
+        Ok(())
     }
 
     fn remove(&self, tab: TabId) -> Result<()> {
-        self.rows.remove(&self.view.TabItems()?, tab)
+        self.rows.remove(&self.view.TabItems()?, tab)?;
+        self.fit_widths();
+        Ok(())
     }
 
     fn select(&self, tab: TabId) -> Result<()> {
@@ -230,9 +314,14 @@ impl TabStrip for TopStrip {
     }
 
     fn update(&self, tab: TabId, look: &TabLook) {
+        let was_pinned = self.rows.is_pinned(tab);
         self.rows.update(tab, look);
         if let Some(item) = self.rows.item_of(tab).and_then(|i| i.cast::<TabViewItem>().ok()) {
             let _ = item.SetIsClosable(!look.pinned);
+        }
+        if was_pinned != Some(look.pinned) {
+            self.rows.with_header(tab, |header| header.set_compact(look.pinned));
+            self.fit_widths();
         }
     }
 
@@ -585,6 +674,7 @@ impl TabStrip for SidePane {
             tab,
             item: header.root().cast()?,
             header,
+            pinned: Cell::new(look.pinned),
         };
         self.rows.insert(&self.items()?, index, row)
     }

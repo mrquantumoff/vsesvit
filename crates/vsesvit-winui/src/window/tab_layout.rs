@@ -7,6 +7,7 @@ use super::BrowserWindow;
 use crate::bindings::*;
 use crate::layout::{Rect, StripKind};
 use crate::strip::{PaneSide, TabStrip};
+use crate::tab::TabId;
 use crate::xaml;
 
 impl BrowserWindow {
@@ -187,6 +188,11 @@ impl BrowserWindow {
 
     pub fn is_pane_collapsed(&self) -> bool {
         self.side.is_compact()
+    }
+
+    /// The horizontal strip's tab widths in display order, for scripted runs.
+    pub fn top_tab_widths(&self) -> Vec<(TabId, f64)> {
+        self.top.widths()
     }
 
     pub fn set_pane_width(&self, width: u32) {
