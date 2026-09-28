@@ -82,7 +82,7 @@ Microsoft.UI.Xaml.Controls.ToolTipService::SetToolTip
 // ---- controls ----
 Microsoft.UI.Xaml.Controls.ITabView::{get_TabItems, get_SelectedItem, put_SelectedItem, get_SelectedIndex, put_SelectedIndex, AddTabButtonClick, TabCloseRequested, SelectionChanged}
 Microsoft.UI.Xaml.Controls.TabViewItem::CreateInstance
-Microsoft.UI.Xaml.Controls.ITabViewItem::put_Header
+Microsoft.UI.Xaml.Controls.ITabViewItem::{put_Header, put_IsClosable}
 Microsoft.UI.Xaml.Controls.ITabViewTabCloseRequestedEventArgs::get_Tab
 Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs
 Microsoft.UI.Xaml.Controls.IControl::{get_IsEnabled, put_IsEnabled}
@@ -102,7 +102,7 @@ Microsoft.UI.Xaml.Controls.TextChangedEventArgs
 Microsoft.UI.Xaml.TextAlignment
 Microsoft.UI.Xaml.Controls.ListViewBase
 Microsoft.UI.Xaml.Controls.IListViewBase::{ItemClick, DragItemsCompleted, ScrollIntoView}
-Microsoft.UI.Xaml.Controls.IScrollViewer::{get_ScrollableWidth, get_HorizontalOffset, get_ScrollableHeight, get_VerticalOffset, ChangeViewWithOptionalAnimation}
+Microsoft.UI.Xaml.Controls.IScrollViewer::{get_ScrollableWidth, get_HorizontalOffset, get_ScrollableHeight, get_VerticalOffset, get_ExtentHeight, get_ViewportHeight, ChangeViewWithOptionalAnimation}
 Microsoft.UI.Xaml.Controls.ListViewItem::CreateInstance
 Microsoft.UI.Xaml.Controls.IItemClickEventArgs::get_ClickedItem
 Microsoft.UI.Xaml.Controls.DragItemsCompletedEventArgs
@@ -206,6 +206,7 @@ Microsoft.Web.WebView2.Core.ICoreWebView2Profile7::AddBrowserExtensionAsync
 Microsoft.Web.WebView2.Core.CoreWebView2Profile_Manual3::GetBrowserExtensionsAsync
 Microsoft.Web.WebView2.Core.ICoreWebView2BrowserExtension::{get_Id, get_Name, get_IsEnabled, RemoveAsync, EnableAsync}
 Microsoft.Web.WebView2.Core.ICoreWebView2_4::DownloadStarting
+Microsoft.Web.WebView2.Core.ICoreWebView2_8::{get_IsMuted, put_IsMuted, get_IsDocumentPlayingAudio, IsMutedChanged, IsDocumentPlayingAudioChanged}
 Microsoft.Web.WebView2.Core.ICoreWebView2DownloadStartingEventArgs::{get_DownloadOperation, get_ResultFilePath, put_ResultFilePath, put_Cancel, put_Handled, GetDeferral}
 Microsoft.Web.WebView2.Core.ICoreWebView2DownloadOperation::{get_Uri, get_BytesReceived, get_TotalBytesToReceive, get_State, get_InterruptReason, BytesReceivedChanged, StateChanged, Cancel}
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadState
@@ -366,9 +367,11 @@ Microsoft.UI.Xaml.Controls.ProgressRing
 Microsoft.UI.Xaml.Controls.ToggleSwitch
 Microsoft.UI.Xaml.Controls.InfoBar
 Microsoft.UI.Xaml.Controls.ListView
+Microsoft.UI.Xaml.Controls.ScrollViewer
 Microsoft.UI.Xaml.Controls.ComboBox
 Microsoft.UI.Xaml.Controls.ProgressBar
 Microsoft.UI.Xaml.Controls.Grid
+Microsoft.UI.Xaml.Controls.Grid::{SetColumn, SetColumnSpan}
 Microsoft.UI.Xaml.Controls.MenuFlyoutItem
 Microsoft.UI.Xaml.Controls.Flyout
 Microsoft.UI.Xaml.Controls.ContentDialog

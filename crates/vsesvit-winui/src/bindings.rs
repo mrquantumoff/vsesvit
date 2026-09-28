@@ -3381,6 +3381,41 @@ unsafe impl Sync for GraphicsCaptureSession {}
 pub struct Grid(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(Grid, windows_core::IUnknown, windows_core::IInspectable);
 windows_core::imp::required_hierarchy!(Grid, Panel, FrameworkElement, UIElement, DependencyObject);
+impl Grid {
+    pub fn SetColumn<P0>(element: P0, value: i32) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<FrameworkElement>,
+    {
+        Self::IGridStatics(|this| unsafe {
+            (windows_core::Interface::vtable(this).SetColumn)(
+                windows_core::Interface::as_raw(this),
+                element.param().abi(),
+                value,
+            )
+            .ok()
+        })
+    }
+    pub fn SetColumnSpan<P0>(element: P0, value: i32) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<FrameworkElement>,
+    {
+        Self::IGridStatics(|this| unsafe {
+            (windows_core::Interface::vtable(this).SetColumnSpan)(
+                windows_core::Interface::as_raw(this),
+                element.param().abi(),
+                value,
+            )
+            .ok()
+        })
+    }
+    fn IGridStatics<R, F: FnOnce(&IGridStatics) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<Grid, IGridStatics> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
 impl windows_core::RuntimeType for Grid {
     const SIGNATURE: windows_core::imp::ConstBuffer =
         windows_core::imp::ConstBuffer::for_class::<Self, IGrid>();
@@ -6861,6 +6896,133 @@ pub struct ICoreWebView2_4_Vtbl {
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2_8,
+    ICoreWebView2_8_Vtbl,
+    0xaa2503c0_8d1c_5a3d_b898_f55f7595268a
+);
+impl windows_core::RuntimeType for ICoreWebView2_8 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2_8 {
+    pub fn IsMuted(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsMuted)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetIsMuted(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetIsMuted)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn IsDocumentPlayingAudio(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsDocumentPlayingAudio)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn IsMutedChanged<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<CoreWebView2>, windows_core::Ref<windows_core::IInspectable>)
+            + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2, windows_core::IInspectable> = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<CoreWebView2, windows_core::IInspectable>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<CoreWebView2, windows_core::IInspectable, F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).IsMutedChanged)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveIsMutedChanged,
+            ))
+        }
+    }
+    pub fn IsDocumentPlayingAudioChanged<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<CoreWebView2>, windows_core::Ref<windows_core::IInspectable>)
+            + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2, windows_core::IInspectable> = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<CoreWebView2, windows_core::IInspectable>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<CoreWebView2, windows_core::IInspectable, F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).IsDocumentPlayingAudioChanged)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveIsDocumentPlayingAudioChanged,
+            ))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2_8_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub IsMuted:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    pub SetIsMuted:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    pub IsDocumentPlayingAudio:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    pub IsMutedChanged: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveIsMutedChanged:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    pub IsDocumentPlayingAudioChanged: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveIsDocumentPlayingAudioChanged:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICryptographicBufferStatics,
     ICryptographicBufferStatics_Vtbl,
     0x320b7e22_3cb0_4cdf_8663_1d28910065eb
@@ -8819,6 +8981,46 @@ pub struct IGrid_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
+    IGridStatics,
+    IGridStatics_Vtbl,
+    0xef9cf81d_a431_50f4_abf5_3023fe447704
+);
+impl windows_core::RuntimeType for IGridStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IGridStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    BackgroundSizingProperty: usize,
+    BorderBrushProperty: usize,
+    BorderThicknessProperty: usize,
+    CornerRadiusProperty: usize,
+    PaddingProperty: usize,
+    RowSpacingProperty: usize,
+    ColumnSpacingProperty: usize,
+    RowProperty: usize,
+    GetRow: usize,
+    SetRow: usize,
+    ColumnProperty: usize,
+    GetColumn: usize,
+    pub SetColumn: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        i32,
+    ) -> windows_core::HRESULT,
+    RowSpanProperty: usize,
+    GetRowSpan: usize,
+    SetRowSpan: usize,
+    ColumnSpanProperty: usize,
+    GetColumnSpan: usize,
+    pub SetColumnSpan: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        i32,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     IIconElement,
     IIconElement_Vtbl,
     0x18f69350_279e_50ea_8d23_138e717ed939
@@ -10442,10 +10644,30 @@ impl IScrollViewer {
             .map(|| result__)
         }
     }
+    pub fn ViewportHeight(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ViewportHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
     pub fn ScrollableHeight(&self) -> windows_core::Result<f64> {
         unsafe {
             let mut result__ = core::mem::zeroed();
             (windows_core::Interface::vtable(self).ScrollableHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ExtentHeight(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ExtentHeight)(
                 windows_core::Interface::as_raw(self),
                 &mut result__,
             )
@@ -10524,11 +10746,13 @@ pub struct IScrollViewer_Vtbl {
     ExtentWidth: usize,
     pub VerticalOffset:
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
-    ViewportHeight: usize,
+    pub ViewportHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
     pub ScrollableHeight:
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
     ComputedVerticalScrollBarVisibility: usize,
-    ExtentHeight: usize,
+    pub ExtentHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
     MinZoomFactor: usize,
     SetMinZoomFactor: usize,
     MaxZoomFactor: usize,
@@ -11093,6 +11317,15 @@ impl ITabViewItem {
             .ok()
         }
     }
+    pub fn SetIsClosable(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetIsClosable)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
 }
 #[repr(C)]
 pub struct ITabViewItem_Vtbl {
@@ -11102,6 +11335,13 @@ pub struct ITabViewItem_Vtbl {
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+    HeaderTemplate: usize,
+    SetHeaderTemplate: usize,
+    IconSource: usize,
+    SetIconSource: usize,
+    IsClosable: usize,
+    pub SetIsClosable:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ITabViewItemFactory,
@@ -14990,6 +15230,41 @@ pub const SM_CYSMICON: i32 = 50;
 pub const STATEREPOSITORY_E_DEPENDENCY_NOT_RESOLVED: windows_core::HRESULT =
     windows_core::HRESULT(0x80670016_u32 as _);
 pub const SW_SHOWNORMAL: i32 = 1;
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScrollViewer(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    ScrollViewer,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(
+    ScrollViewer,
+    ContentControl,
+    Control,
+    FrameworkElement,
+    UIElement,
+    DependencyObject
+);
+impl windows_core::RuntimeType for ScrollViewer {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IScrollViewer>();
+}
+unsafe impl windows_core::Interface for ScrollViewer {
+    type Vtable = <IScrollViewer as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IScrollViewer as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for ScrollViewer {
+    type Target = IScrollViewer;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for ScrollViewer {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Controls.ScrollViewer";
+}
+unsafe impl Send for ScrollViewer {}
+unsafe impl Sync for ScrollViewer {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectionChangedEventArgs(windows_core::IUnknown);

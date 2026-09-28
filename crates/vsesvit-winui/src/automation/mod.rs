@@ -21,6 +21,7 @@ use windows_core::Interface;
 mod bookmark_steps;
 mod connection_steps;
 mod dialog_steps;
+mod tab_steps;
 mod toolbar_steps;
 
 use crate::bindings::*;
@@ -669,6 +670,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
 
     zoom_steps(&window, &first, out_dir, steps).await?;
     connection_steps::run(&window, &server, out_dir, steps).await?;
+    tab_steps::run(&window, &server, out_dir, steps).await?;
 
     let count = window.show_suggestions("fixture");
     steps.push(json!({
@@ -1057,7 +1059,7 @@ async fn wait_title(tab: &Rc<Tab>, title: &str) -> Result<(), String> {
 
 /// A key press with DevTools modifiers (1 Alt, 2 Ctrl, 4 Meta, 8 Shift). The press may close
 /// the tab, and then its DevTools calls never answer, hence the bound.
-async fn press(tab: &Tab, vk: u16, modifiers: u8) -> Result<(), String> {
+pub(super) async fn press(tab: &Tab, vk: u16, modifiers: u8) -> Result<(), String> {
     let key = |kind| json!({ "type": kind, "modifiers": modifiers, "windowsVirtualKeyCode": vk });
     devtools(tab, "Input.dispatchKeyEvent", &key("rawKeyDown")).await?;
     // The key down may have closed the tab; a failed key up then means nothing.
@@ -1075,7 +1077,7 @@ async fn ctrl_click(tab: &Tab, x: f64, y: f64) -> Result<(), String> {
     Ok(())
 }
 
-async fn devtools(tab: &Tab, method: &str, params: &Value) -> Result<(), String> {
+pub(super) async fn devtools(tab: &Tab, method: &str, params: &Value) -> Result<(), String> {
     match exec::timeout(
         Duration::from_secs(2),
         tab.devtools(method, &params.to_string()),

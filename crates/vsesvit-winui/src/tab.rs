@@ -16,7 +16,7 @@ use crate::bindings::*;
 use crate::browser::CommitKind;
 use crate::shortcuts::{self, PageMessage, PageScript};
 use crate::store;
-use crate::tab_header::TabLook;
+use crate::tab_header::{Audio, TabLook};
 use crate::window::BrowserWindow;
 use crate::{exec, xaml, zoom};
 
@@ -81,6 +81,9 @@ pub(crate) struct TabState {
     pub starred: bool,
     pub fullscreen: bool,
     pub zoom: zoom::Level,
+    /// The engine reports the page audible (it holds this a moment after the sound stops).
+    pub audible: bool,
+    pub muted: bool,
 }
 
 pub(crate) struct Tab {
@@ -106,6 +109,8 @@ pub(crate) struct Tab {
     /// The engine's last `Security.visibleSecurityStateChanged` report, as JSON: the page's
     /// TLS connection and certificate chain, which the lock's popup shows.
     security: RefCell<Option<String>>,
+    /// Pinned tabs lead the tab list.
+    pinned: Cell<bool>,
     closed: Cell<bool>,
 }
 
@@ -133,6 +138,7 @@ impl Tab {
             last_active_ms: Cell::new(now_ms()),
             favicon_generation: Cell::new(0),
             security: RefCell::new(None),
+            pinned: Cell::new(false),
             closed: Cell::new(false),
         }))
     }
@@ -144,7 +150,43 @@ impl Tab {
             title: state.title.clone(),
             favicon: self.favicon.borrow().clone(),
             loading: state.loading,
+            audio: Audio::of(state.audible, state.muted),
+            pinned: self.pinned.get(),
         }
+    }
+
+    pub fn is_pinned(&self) -> bool {
+        self.pinned.get()
+    }
+
+    pub fn set_pinned(&self, pinned: bool) {
+        self.pinned.set(pinned);
+        self.notify();
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        if let Some(core) = self.core.get()
+            && let Err(e) = core.cast::<ICoreWebView2_8>().and_then(|c| c.SetIsMuted(muted))
+        {
+            log::warn!("tab {}: mute: {e}", self.id);
+        }
+    }
+
+    fn audio_changed(&self) {
+        let Some(core) = self.core.get().and_then(|c| c.cast::<ICoreWebView2_8>().ok()) else {
+            return;
+        };
+        let audible = core.IsDocumentPlayingAudio().unwrap_or(false);
+        let muted = core.IsMuted().unwrap_or(false);
+        {
+            let mut state = self.state.borrow_mut();
+            state.audible = audible;
+            state.muted = muted;
+        }
+        if let Some(window) = self.window() {
+            window.tab_audio_changed(self);
+        }
+        self.notify();
     }
 
     pub fn last_active_ms(&self) -> i64 {
@@ -500,6 +542,13 @@ impl Tab {
         ))?
         .forget();
         core.DocumentTitleChanged(signal(self, |tab| tab.title_changed()))?
+            .forget();
+        let audio = core.cast::<ICoreWebView2_8>()?;
+        audio
+            .IsDocumentPlayingAudioChanged(signal(self, |tab| tab.audio_changed()))?
+            .forget();
+        audio
+            .IsMutedChanged(signal(self, |tab| tab.audio_changed()))?
             .forget();
         core.cast::<ICoreWebView2_15>()?
             .FaviconChanged(signal(self, |tab| {

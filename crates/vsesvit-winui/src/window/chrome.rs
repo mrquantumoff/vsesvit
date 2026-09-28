@@ -106,6 +106,7 @@ const WINDOW_XAML: &str = r#"
         <ColumnDefinition Width="*"/>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
       <Button x:Name="SiteButton" Margin="4,0,0,0" Width="30" Height="26" Padding="0" CornerRadius="6"
               Background="Transparent" BorderThickness="0" AutomationProperties.Name="View site information">
@@ -157,12 +158,17 @@ const WINDOW_XAML: &str = r#"
           </Flyout>
         </Button.Flyout>
       </Button>
-      <ToggleButton x:Name="Star" Grid.Column="3" Style="{StaticResource ToolbarToggle}" Width="32" Height="26"
+      <Button x:Name="CopyLink" Grid.Column="3" Style="{StaticResource ToolbarButton}" Width="32" Height="26"
+              Margin="0,0,2,0" CornerRadius="6" Visibility="Collapsed"
+              ToolTipService.ToolTip="Copy link without trackers (Ctrl+Shift+C)" AutomationProperties.Name="Copy link">
+        <FontIcon x:Name="CopyLinkGlyph" Glyph="&#xE8C8;" FontSize="14"/>
+      </Button>
+      <ToggleButton x:Name="Star" Grid.Column="4" Style="{StaticResource ToolbarToggle}" Width="32" Height="26"
                     Margin="0,0,2,0" CornerRadius="6"
                     ToolTipService.ToolTip="Bookmark this page (Ctrl+D)" AutomationProperties.Name="Bookmark this page">
         <FontIcon x:Name="StarGlyph" Glyph="&#xE734;" FontSize="14"/>
       </ToggleButton>
-      <Border x:Name="AddressFocusRing" Grid.ColumnSpan="4" CornerRadius="8" BorderThickness="2" Margin="-1"
+      <Border x:Name="AddressFocusRing" Grid.ColumnSpan="5" CornerRadius="8" BorderThickness="2" Margin="-1"
               BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" IsHitTestVisible="False"
               Visibility="Collapsed"/>
     </Grid>
@@ -268,9 +274,18 @@ const WINDOW_XAML: &str = r#"
     </Grid.ColumnDefinitions>
     <Grid x:Name="LeftHost" Visibility="Collapsed"
           BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,1,0"/>
+    <!-- A tab's web view spans the three columns; in split view two tabs take the outer ones. -->
     <Grid x:Name="Pages" Grid.Column="1"
           Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}"
-          BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0"/>
+          BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+      <Border x:Name="SplitDivider" Grid.Column="1" Width="4" Visibility="Collapsed"
+              Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+    </Grid>
     <Grid x:Name="RightHost" Grid.Column="2" Visibility="Collapsed"
           BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="1,1,0,0"/>
   </Grid>
@@ -310,6 +325,8 @@ pub(super) struct Chrome {
     pub(super) zoom_chip_text: TextBlock,
     pub(super) zoom_bubble: Flyout,
     pub(super) zoom_level: TextBlock,
+    pub(super) copy_link: Button,
+    pub(super) copy_link_glyph: FontIcon,
     pub(super) star: ToggleButton,
     pub(super) star_glyph: FontIcon,
     pub(super) extension_actions: Panel,
@@ -325,6 +342,7 @@ pub(super) struct Chrome {
     pub(super) update_action: Button,
     pub(super) left_host: Panel,
     pub(super) pages: Panel,
+    pub(super) split_divider: UIElement,
     pub(super) right_host: Panel,
     pub(super) overlay: UIElement,
     pub(super) overlay_title: TextBlock,
@@ -354,6 +372,8 @@ impl Chrome {
             zoom_chip_text: xaml::find(&root, "ZoomChipText")?,
             zoom_bubble: xaml::find(&root, "ZoomBubble")?,
             zoom_level: xaml::find(&root, "ZoomLevel")?,
+            copy_link: xaml::find(&root, "CopyLink")?,
+            copy_link_glyph: xaml::find(&root, "CopyLinkGlyph")?,
             star: xaml::find(&root, "Star")?,
             star_glyph: xaml::find(&root, "StarGlyph")?,
             extension_actions: xaml::find(&root, "ExtensionActions")?,
@@ -369,6 +389,7 @@ impl Chrome {
             update_action: xaml::find(&root, "UpdateAction")?,
             left_host: xaml::find(&root, "LeftHost")?,
             pages: xaml::find(&root, "Pages")?,
+            split_divider: xaml::find(&root, "SplitDivider")?,
             right_host: xaml::find(&root, "RightHost")?,
             overlay: xaml::find(&root, "Overlay")?,
             overlay_title: xaml::find(&root, "OverlayTitle")?,

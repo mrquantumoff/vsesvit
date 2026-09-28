@@ -43,6 +43,10 @@ pub(crate) enum Command {
     /// Collapses or expands the vertical tab list. Chrome saves the page with Ctrl+S; Vsesvit
     /// gives the chord to its tab sidebar instead.
     ToggleTabPane,
+    /// Copies the page's address without its tracking parameters.
+    CopyCleanLink,
+    /// Copies the page's address as it is.
+    CopyLink,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -54,6 +58,7 @@ impl Mods {
     pub const SHIFT: Self = Self(2);
     pub const ALT: Self = Self(4);
     const CTRL_SHIFT: Self = Self(3);
+    const CTRL_ALT_SHIFT: Self = Self(7);
 
     pub fn from_bits(bits: u8) -> Option<Self> {
         (bits <= 7).then_some(Self(bits))
@@ -86,6 +91,7 @@ mod vk {
     pub const RIGHT: u16 = 0x27;
     pub const KEY_0: u16 = 0x30;
     pub const B: u16 = 0x42;
+    pub const C: u16 = 0x43;
     pub const D: u16 = 0x44;
     pub const F: u16 = 0x46;
     pub const H: u16 = 0x48;
@@ -128,6 +134,9 @@ pub(crate) const BINDINGS: &[Binding] = &[
     bind(vk::H, Mods::CTRL, C::ShowHistory, Overridable),
     bind(vk::J, Mods::CTRL, C::ShowDownloads, Overridable),
     bind(vk::S, Mods::CTRL, C::ToggleTabPane, Overridable),
+    // Chrome opens the element inspector with Ctrl+Shift+C; Vsesvit copies the clean link.
+    bind(vk::C, Mods::CTRL_SHIFT, C::CopyCleanLink, Reserved),
+    bind(vk::C, Mods::CTRL_ALT_SHIFT, C::CopyLink, Reserved),
     bind(vk::KEY_0 + 1, Mods::CTRL, C::SelectTab(0), Overridable),
     bind(vk::KEY_0 + 2, Mods::CTRL, C::SelectTab(1), Overridable),
     bind(vk::KEY_0 + 3, Mods::CTRL, C::SelectTab(2), Overridable),
@@ -293,6 +302,8 @@ mod tests {
         assert_eq!(lookup(0x33, Mods::CTRL), Some(Command::SelectTab(2)));
         assert_eq!(lookup(0x74, Mods::NONE), Some(Command::Reload));
         assert_eq!(lookup(0x53, Mods::CTRL), Some(Command::ToggleTabPane));
+        assert_eq!(lookup(0x43, Mods::CTRL_SHIFT), Some(Command::CopyCleanLink));
+        assert_eq!(lookup(0x43, Mods::CTRL_ALT_SHIFT), Some(Command::CopyLink));
         assert_eq!(lookup(0x54, Mods::ALT), None);
     }
 

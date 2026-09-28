@@ -22,6 +22,7 @@ pub(crate) struct TabPlan {
     pub id: Option<TabId>,
     /// A restored tab's title, shown until its page reports one; empty otherwise.
     pub title: String,
+    pub pinned: bool,
 }
 
 impl TabPlan {
@@ -30,6 +31,7 @@ impl TabPlan {
             url: Some(url),
             id: None,
             title: String::new(),
+            pinned: false,
         }
     }
 
@@ -38,6 +40,7 @@ impl TabPlan {
             url: None,
             id: None,
             title: String::new(),
+            pinned: false,
         }
     }
 }
@@ -99,6 +102,7 @@ fn restore_window(window: WindowSnapshot) -> Option<WindowPlan> {
             url: (tab.url.as_str() != "about:blank").then(|| tab.url.to_string()),
             id: Some(tab.id),
             title: tab.title,
+            pinned: tab.pinned,
         })
         .collect();
     Some(WindowPlan {
@@ -110,13 +114,19 @@ fn restore_window(window: WindowSnapshot) -> Option<WindowPlan> {
 }
 
 /// One tab in a snapshot. A tab that has not committed a URL yet is saved as the blank page.
-pub(crate) fn tab_snapshot(id: TabId, url: &str, title: &str, last_active_ms: i64) -> TabSnapshot {
+pub(crate) fn tab_snapshot(
+    id: TabId,
+    url: &str,
+    title: &str,
+    pinned: bool,
+    last_active_ms: i64,
+) -> TabSnapshot {
     let url = Url::parse(url).unwrap_or_else(|_| Url::parse("about:blank").expect("a valid URL"));
     TabSnapshot {
         id,
         url,
         title: title.to_owned(),
-        pinned: false,
+        pinned,
         last_active_ms,
         restore_state: None,
     }
@@ -154,12 +164,15 @@ mod tests {
     }
 
     fn tab(url: &str) -> TabSnapshot {
-        tab_snapshot(TabId::new(), url, "t", 1)
+        tab_snapshot(TabId::new(), url, "t", false, 1)
     }
 
     #[test]
     fn restore_keeps_windows_tabs_ids_and_selection() {
-        let a = tab("https://a.test/");
+        let a = TabSnapshot {
+            pinned: true,
+            ..tab("https://a.test/")
+        };
         let blank = tab("about:blank");
         let window = window_snapshot(
             vec![a.clone(), blank.clone()],
@@ -188,11 +201,13 @@ mod tests {
                         url: Some("https://a.test/".into()),
                         id: Some(a.id),
                         title: "t".into(),
+                        pinned: true,
                     },
                     TabPlan {
                         url: None,
                         id: Some(blank.id),
                         title: "t".into(),
+                        pinned: false,
                     },
                 ],
                 active: 1,
@@ -246,7 +261,7 @@ mod tests {
         let w = window_snapshot(vec![tab("https://a.test/")], Some(7), None, false).unwrap();
         assert_eq!(w.active_tab, 0);
         assert_eq!(
-            tab_snapshot(TabId::new(), "", "", 0).url.as_str(),
+            tab_snapshot(TabId::new(), "", "", false, 0).url.as_str(),
             "about:blank"
         );
     }

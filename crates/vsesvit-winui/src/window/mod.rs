@@ -8,7 +8,9 @@
 //! call, because XAML raises events such as `SelectionChanged` synchronously from inside them.
 
 mod chrome;
+mod tab_actions;
 mod tab_layout;
+mod tab_menu;
 mod wiring;
 
 use std::cell::{Cell, OnceCell, RefCell};
@@ -38,6 +40,8 @@ use crate::updates::{Action, Banner, Severity};
 use crate::{capture, connection, exec, omnibox, platform, xaml, zoom};
 
 use chrome::Chrome;
+use tab_actions::Split;
+pub(crate) use tab_menu::TabAction;
 use wiring::{click as click_handler, strip_events, with};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,6 +129,7 @@ pub(crate) struct BrowserWindow {
     suggestions: RefCell<Vec<(String, String)>>,
     /// The tab the toolbar currently shows.
     shown_tab: Cell<Option<TabId>>,
+    split: Cell<Option<Split>>,
     fullscreen: Cell<bool>,
     /// The toolbar's drag regions last sent to the window.
     drag_regions: RefCell<Vec<RectInt32>>,
@@ -181,6 +186,7 @@ impl BrowserWindow {
             address_edited: Cell::new(false),
             suggestions: RefCell::new(Vec::new()),
             shown_tab: Cell::new(None),
+            split: Cell::new(None),
             fullscreen: Cell::new(false),
             drag_regions: RefCell::new(Vec::new()),
             address_focused: Cell::new(false),
@@ -316,7 +322,17 @@ impl BrowserWindow {
         if let Initial::Url(url) = &initial {
             tab.set_planned(url, restored.map_or("", |p| p.title.as_str()));
         }
+        let pinned = restored.is_some_and(|p| p.pinned);
+        if pinned {
+            tab.set_pinned(true);
+        }
         xaml::set_visible(tab.view(), false)?;
+        let me = self.me.clone();
+        let id = tab.id;
+        tab.view()
+            .cast::<UIElement>()?
+            .GotFocus(move |_, _| wiring::with(&me, |w| w.page_focused(id)))?
+            .forget();
         self.ui
             .pages
             .Children()?
@@ -327,6 +343,13 @@ impl BrowserWindow {
         let index = match placement {
             Placement::End => count,
             Placement::After(opener) => self.index_of(opener).map_or(count, |i| i + 1),
+        };
+        // Only pinned tabs go among the pinned ones.
+        let pinned_before = u32::try_from(self.pinned_count(Some(tab.id))).unwrap_or(u32::MAX);
+        let index = if pinned {
+            index.min(pinned_before)
+        } else {
+            index.max(pinned_before)
         };
         self.strip().insert(index, tab.id, &tab.look())?;
         if foreground || self.strip().selected().is_none() {
@@ -383,6 +406,7 @@ impl BrowserWindow {
         }
         tab.close();
         self.tabs.borrow_mut().retain(|t| t.id != tab.id);
+        self.forget_split_of(tab.id);
         self.sync_selection();
         Ok(())
     }
@@ -425,13 +449,7 @@ impl BrowserWindow {
     /// Shows the selected tab's web view, hides the rest, and refreshes the toolbar.
     fn sync_selection(&self) {
         let active = self.active_tab();
-        let tabs = self.tabs.borrow().clone();
-        for tab in tabs {
-            let visible = active.as_ref().is_some_and(|a| a.id == tab.id);
-            if xaml::is_visible(tab.view()) != visible {
-                let _ = xaml::set_visible(tab.view(), visible);
-            }
-        }
+        self.place_views(active.as_ref().map(|t| t.id));
         if self.fullscreen.get() && !active.as_ref().is_some_and(|t| t.state().fullscreen) {
             self.set_fullscreen(false);
         }
@@ -462,6 +480,9 @@ impl BrowserWindow {
         }
     }
 
+    /// A tab started or stopped playing sound, or was muted or unmuted.
+    pub fn tab_audio_changed(&self, _tab: &Tab) {}
+
     pub fn tab_fullscreen_changed(&self, tab: &Tab, fullscreen: bool) {
         if self.active_tab().is_some_and(|a| a.id == tab.id) {
             self.set_fullscreen(fullscreen);
@@ -488,6 +509,7 @@ impl BrowserWindow {
         self.show_star(state.starred);
         self.show_site(&state.url);
         self.show_zoom(state.zoom);
+        let _ = xaml::set_visible(&self.ui.copy_link, tab_menu::has_link(&state.url));
         let title = if state.title.is_empty() || state.url.is_empty() {
             "Vsesvit".to_owned()
         } else {
@@ -770,6 +792,11 @@ impl BrowserWindow {
                     && let Some(browser) = self.browser()
                 {
                     browser.set_tab_pane_collapsed(!self.is_pane_collapsed());
+                }
+            }
+            Command::CopyCleanLink | Command::CopyLink => {
+                if let Some(tab) = active {
+                    self.copy_link(&tab, command == Command::CopyCleanLink);
                 }
             }
         }

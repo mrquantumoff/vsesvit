@@ -25,7 +25,13 @@ pub(crate) struct StripEvents {
     pub new_tab: Box<dyn Fn()>,
     pub reordered: Box<dyn Fn()>,
     pub toggle_collapsed: Box<dyn Fn()>,
+    /// The tab's speaker was clicked.
+    pub toggle_muted: Box<dyn Fn(TabId)>,
+    /// The tab's context menu is opening: fill it.
+    pub menu: Box<FillMenu>,
 }
+
+pub(crate) type FillMenu = dyn Fn(TabId, &MenuFlyout);
 
 pub(crate) type Events = Rc<StripEvents>;
 
@@ -113,11 +119,31 @@ impl Rows {
     }
 }
 
+/// The speaker and the context menu of a tab's header; `menu_owner` is what right-clicks open
+/// the menu on.
+fn wire_header(events: &Events, tab: TabId, header: &TabHeader, menu_owner: &UIElement) -> Result<()> {
+    let e = events.clone();
+    header
+        .audio_button()
+        .cast::<ButtonBase>()?
+        .Click(move |_, _| (e.toggle_muted)(tab))?
+        .forget();
+    let menu = xaml::context_menu()?;
+    let flyout = menu.cast::<FlyoutBase>()?;
+    let e = events.clone();
+    let filled = menu.clone();
+    flyout
+        .Opening(move |_, _| (e.menu)(tab, &filled))?
+        .forget();
+    menu_owner.SetContextFlyout(&flyout)
+}
+
 // ---- the horizontal strip ----
 
 pub(crate) struct TopStrip {
     view: TabView,
     rows: Rows,
+    events: Events,
 }
 
 impl TopStrip {
@@ -125,6 +151,7 @@ impl TopStrip {
         let this = Rc::new(Self {
             view,
             rows: Rows::default(),
+            events: events.clone(),
         });
         let weak = Rc::downgrade(&this);
         let e = events.clone();
@@ -157,6 +184,8 @@ impl TabStrip for TopStrip {
         header.apply(look);
         let item = TabViewItem::new()?;
         item.SetHeader(header.root())?;
+        item.SetIsClosable(!look.pinned)?;
+        wire_header(&self.events, tab, &header, &item.cast()?)?;
         let row = Row {
             tab,
             item: item.cast()?,
@@ -198,6 +227,9 @@ impl TabStrip for TopStrip {
 
     fn update(&self, tab: TabId, look: &TabLook) {
         self.rows.update(tab, look);
+        if let Some(item) = self.rows.item_of(tab).and_then(|i| i.cast::<TabViewItem>().ok()) {
+            let _ = item.SetIsClosable(!look.pinned);
+        }
     }
 
     fn clear(&self) -> Result<()> {
@@ -228,6 +260,15 @@ const PANE_XAML: &str = r#"
   </Button>
   <ListView x:Name="TabList" Grid.Row="2" SelectionMode="Single" CanReorderItems="True"
             CanDragItems="True" AllowDrop="True" AutomationProperties.Name="Tabs">
+    <!-- The default transitions without AddDelete: a tab moved by pinning is removed and
+         inserted at once, and its row would stay faded out. -->
+    <ListView.ItemContainerTransitions>
+      <TransitionCollection>
+        <ContentThemeTransition/>
+        <ReorderThemeTransition/>
+        <EntranceThemeTransition IsStaggeringEnabled="False"/>
+      </TransitionCollection>
+    </ListView.ItemContainerTransitions>
     <ListView.ItemContainerStyle>
       <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
         <Setter Property="Padding" Value="10,0,4,0"/>
@@ -327,6 +368,7 @@ impl SidePane {
                 .forget();
         }
         let root = header.root().cast::<UIElement>()?;
+        wire_header(&self.events, tab, header, &root)?;
         let target = root.clone();
         let e = self.events.clone();
         root.PointerReleased(move |_, args| {

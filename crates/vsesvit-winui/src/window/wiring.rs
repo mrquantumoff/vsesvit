@@ -66,6 +66,8 @@ impl BrowserWindow {
         let w = me();
         click(&ui.star, move || with(&w, |w| w.star_clicked()))?;
         let w = me();
+        click(&ui.copy_link, move || with(&w, |w| w.run(Command::CopyCleanLink)))?;
+        let w = me();
         click(&ui.site_button, move || {
             with(&w, |w| {
                 if let Err(e) = w.show_connection() {
@@ -239,6 +241,7 @@ pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
     let w = on(slot);
     let reordered = Box::new(move || {
         w(&|w| {
+            w.keep_pinned_first();
             if let Some(browser) = w.browser() {
                 browser.session_changed();
             }
@@ -252,12 +255,24 @@ pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
             }
         });
     });
+    let w = on(slot);
+    let toggle_muted = Box::new(move |id| {
+        w(&|w| {
+            if let Some(tab) = w.tab(id) {
+                tab.set_muted(!tab.state().muted);
+            }
+        });
+    });
+    let w = on(slot);
+    let menu = Box::new(move |id, menu: &MenuFlyout| w(&|w| w.fill_tab_menu(id, menu)));
     StripEvents {
         selection_changed,
         close,
         new_tab,
         reordered,
         toggle_collapsed,
+        toggle_muted,
+        menu,
     }
 }
 
