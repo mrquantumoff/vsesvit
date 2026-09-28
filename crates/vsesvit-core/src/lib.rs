@@ -18,6 +18,7 @@
 //! | module           | owns                                                                 |
 //! |------------------|----------------------------------------------------------------------|
 //! | [`address`]      | URLs as the address bar writes them: decoded, simplified              |
+//! | [`certificate`]  | X.509 certificates parsed for the connection popup                    |
 //! | [`crdt`]         | clock, stamps, `Lww<T>`, `Lattice`: the only merge primitives         |
 //! | [`bookmarks`]    | records, fractional positions, in-memory tree, `materialize`          |
 //! | [`downloads`]    | the downloads list (LOCAL), file naming, status text                  |
@@ -38,6 +39,7 @@ use std::path::{Path, PathBuf};
 
 pub mod address;
 pub mod bookmarks;
+pub mod certificate;
 pub mod crdt;
 mod db;
 pub mod downloads;
