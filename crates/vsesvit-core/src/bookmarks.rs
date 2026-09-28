@@ -464,6 +464,10 @@ impl Tree {
     pub fn ids_for_url(&self, url: &Url) -> &[BookmarkId] {
         self.by_url.get(url).map(Vec::as_slice).unwrap_or(&[])
     }
+    /// Whether a live bookmark has this serialized origin (`https://example.com`).
+    pub(crate) fn has_origin(&self, origin: &str) -> bool {
+        self.by_url.keys().any(|url| url.origin().ascii_serialization() == origin)
+    }
     /// A live folder (the visible roots included), i.e. a valid target for adds and moves.
     pub fn is_live_folder(&self, id: BookmarkId) -> bool {
         id.is_visible_root() || (!id.is_root() && self.children.contains_key(&id))

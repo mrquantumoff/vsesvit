@@ -19,6 +19,7 @@
 //! |------------------|----------------------------------------------------------------------|
 //! | [`crdt`]         | clock, stamps, `Lww<T>`, `Lattice`: the only merge primitives         |
 //! | [`bookmarks`]    | records, fractional positions, in-memory tree, `materialize`          |
+//! | [`favicons`]     | icons of bookmarked sites (LOCAL, never synced)                       |
 //! | [`history`]      | page records (grow-only visit sets) + deletion directives             |
 //! | [`import`]       | bookmarks from other browsers: HTML export, Chromium, Firefox         |
 //! | [`new_tab`]      | the new tab page: search box + most visited sites, as HTML            |
@@ -38,6 +39,7 @@ pub mod crdt;
 mod db;
 pub mod ext_storage;
 pub mod extensions;
+pub mod favicons;
 pub mod history;
 pub mod import;
 pub mod new_tab;
@@ -161,7 +163,7 @@ impl Profile {
     /// 3. load all bookmark records and materialize the tree
     /// 4. housekeeping, idempotent (`extensions::on_open`): wipe `staging/`, drop
     ///    `extension_installs` rows whose dir is missing, delete `extensions/*/*` dirs no
-    ///    row references
+    ///    row references; drop favicons of sites with no bookmark left
     pub fn open(root: &Path, opts: OpenOptions) -> Result<Profile, OpenError> {
         std::fs::create_dir_all(root)?;
         let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(root.join("LOCK"))?;
@@ -193,6 +195,7 @@ impl Profile {
             _not_send: PhantomData,
         };
         extensions::on_open(&mut profile).map_err(OpenError::from_core)?;
+        profile.favicons().prune().map_err(OpenError::from_core)?;
         Ok(profile)
     }
 
@@ -211,6 +214,10 @@ impl Profile {
 
     pub fn bookmarks(&mut self) -> bookmarks::Bookmarks<'_> {
         bookmarks::Bookmarks { p: self }
+    }
+
+    pub fn favicons(&mut self) -> favicons::Favicons<'_> {
+        favicons::Favicons { p: self }
     }
 
     pub fn history(&mut self) -> history::History<'_> {
