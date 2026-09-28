@@ -24,7 +24,7 @@ use crate::bookmarks_bar::{Bar, BarItem, Disposition, OpenLink};
 use crate::browser::{Browser, ClosedTab};
 use crate::dialogs::{self, Dialog};
 use crate::layout::StripKind;
-use crate::popup::{self, Activation, ExtensionAction, Popup};
+use crate::popup::{self, Activation, ExtensionAction, OpenerTab, Popup};
 use crate::session::{TabPlan, WindowPlan};
 use crate::shortcuts::Command;
 use crate::strip::{SidePane, TopStrip};
@@ -777,11 +777,16 @@ impl BrowserWindow {
             return;
         };
         let _ = children.Clear();
-        let Some(browser) = self.browser() else {
-            return;
-        };
         for action in actions {
-            match popup::action_button(action, browser.engine().environment().clone()) {
+            let me = self.me.clone();
+            let clicked = action.clone();
+            let on_click = move |anchor: &FrameworkElement| {
+                let Some(window) = me.upgrade() else { return };
+                if let Err(e) = window.show_popup(anchor, &clicked, Activation::Focus) {
+                    log::error!("popup of {}: {e}", clicked.extension_id);
+                }
+            };
+            match popup::action_button(action, on_click) {
                 Ok(button) => {
                     let _ = button.cast::<UIElement>().and_then(|b| children.Append(&b));
                 }
@@ -805,11 +810,31 @@ impl BrowserWindow {
             .extension_actions
             .Children()?
             .GetAt(u32::try_from(index).unwrap_or(u32::MAX))?;
+        self.show_popup(&button.cast()?, &actions[index], activation)
+    }
+
+    fn show_popup(
+        &self,
+        anchor: &FrameworkElement,
+        action: &ExtensionAction,
+        activation: Activation,
+    ) -> Result<Popup> {
+        let browser = self.browser().ok_or_else(windows_core::Error::empty)?;
+        let active = self.active_tab().map(|t| t.id);
+        let opener: Vec<OpenerTab> = self
+            .tabs_in_order()
+            .iter()
+            .map(|t| OpenerTab {
+                url: t.session_url(),
+                active: Some(t.id) == active,
+            })
+            .collect();
         popup::open(
-            &button.cast()?,
+            anchor,
             browser.engine().environment().clone(),
-            &actions[index],
+            action,
             activation,
+            &opener,
         )
     }
 

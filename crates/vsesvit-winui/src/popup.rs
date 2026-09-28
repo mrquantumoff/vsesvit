@@ -3,13 +3,16 @@
 //! WebView2 runs the extensions but draws no browser UI for them, so the shell draws each
 //! action button and hosts the popup: a `Flyout` holding a `WebView2` in the shared environment
 //! (and so the same profile), navigated to `chrome-extension://<engine id>/<popup>`. There the
-//! page has the full `chrome.*` API of an extension page.
+//! page has the full `chrome.*` API of an extension page. `js/popup.js` runs in every popup
+//! document to close the gaps to Chrome's popup view: it answers tab queries about "the current
+//! window" with the browser window's tabs and reports the size the popup should have.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+
+use serde::Serialize;
 
 use vsesvit_core::extensions::InstalledExtension;
 use vsesvit_core::extensions::manifest::RelPath;
@@ -18,10 +21,19 @@ use windows_core::{Interface, Result};
 use crate::bindings::*;
 use crate::{exec, xaml};
 
-/// Chrome's popup size limits.
+/// Chrome's popup size limits; `js/popup.js` keeps to them too.
 const MIN_SIZE: f64 = 25.0;
 const MAX_WIDTH: f64 = 800.0;
 const MAX_HEIGHT: f64 = 600.0;
+
+const POPUP_SCRIPT: &str = include_str!("js/popup.js");
+
+/// A tab of the browser window a popup opens from, as the popup's tab queries see it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct OpenerTab {
+    pub url: String,
+    pub active: bool,
+}
 
 /// Whether showing a popup may take keyboard focus (and with it, window activation).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,9 +119,10 @@ pub(crate) fn icon_markup(icon: Option<&Path>, size: u32) -> String {
     }
 }
 
+/// The toolbar button of `action`; a click calls `on_click` with the button to anchor to.
 pub(crate) fn action_button(
     action: &ExtensionAction,
-    environment: CoreWebView2Environment,
+    on_click: impl Fn(&FrameworkElement) + 'static,
 ) -> Result<Button> {
     let content = icon_markup(action.icon.as_deref(), 16);
     let title = xaml::escape(&action.title);
@@ -117,15 +130,10 @@ pub(crate) fn action_button(
         r#"<Button {{ns}} Background="Transparent" BorderThickness="0" Padding="0" Width="36" Height="32"
                    ToolTipService.ToolTip="{title}" AutomationProperties.Name="{title}">{content}</Button>"#
     ))?;
-    let action = action.clone();
     let anchor = button.cast::<FrameworkElement>()?;
     button
         .cast::<ButtonBase>()?
-        .Click(move |_, _| {
-            if let Err(e) = open(&anchor, environment.clone(), &action, Activation::Focus) {
-                log::error!("popup of {}: {e}", action.extension_id);
-            }
-        })?
+        .Click(move |_, _| on_click(&anchor))?
         .forget();
     Ok(button)
 }
@@ -159,12 +167,13 @@ impl Popup {
     }
 }
 
-/// Shows the action's popup under `anchor`.
+/// Shows the action's popup under `anchor`, for the browser window whose tabs are `opener`.
 pub(crate) fn open(
     anchor: &FrameworkElement,
     environment: CoreWebView2Environment,
     action: &ExtensionAction,
     activation: Activation,
+    opener: &[OpenerTab],
 ) -> Result<Popup> {
     let flyout: Flyout = xaml::load(FLYOUT_XAML)?;
     let flyout_base = flyout.cast::<FlyoutBase>()?;
@@ -195,8 +204,9 @@ pub(crate) fn open(
         })?
         .forget();
     let slot = popup.core.clone();
+    let script = popup_script(opener);
     exec::spawn(async move {
-        if let Err(e) = load(&flyout_base, &view, &environment, &url, &slot).await {
+        if let Err(e) = load(&flyout_base, &view, &environment, &url, &script, &slot).await {
             log::error!("popup {url}: {e}");
             let _ = flyout_base.Hide();
         }
@@ -209,6 +219,7 @@ async fn load(
     view: &WebView2,
     environment: &CoreWebView2Environment,
     url: &str,
+    script: &str,
     slot: &RefCell<Option<CoreWebView2>>,
 ) -> Result<()> {
     view.cast::<IWebView22>()?
@@ -220,46 +231,43 @@ async fn load(
         let _ = hide.Hide();
     })?
     .forget();
-    let fit_view = view.clone();
-    core.NavigationCompleted(move |sender, _| {
-        if let Some(core) = sender.as_ref() {
-            exec::spawn(fit_to_content(fit_view.clone(), core.clone()));
+    let element = view.cast::<FrameworkElement>()?;
+    core.WebMessageReceived(move |_, args| {
+        let size = args
+            .as_ref()
+            .and_then(|a| a.TryGetWebMessageAsString().ok())
+            .and_then(|m| parse_size(&m));
+        if let Some((width, height)) = size {
+            let _ = element.SetWidth(width);
+            let _ = element.SetHeight(height);
         }
     })?
     .forget();
+    core.AddScriptToExecuteOnDocumentCreatedAsync(script)?
+        .await?;
     *slot.borrow_mut() = Some(core.clone());
     log::info!("popup: {url}");
     core.Navigate(url)
 }
 
-/// Sizes the popup to its document, within Chrome's 25x25..800x600 limits.
-async fn fit_to_content(view: WebView2, core: CoreWebView2) {
-    const WIDTH: &str = "(() => { const d = document.documentElement; const old = d.style.width; \
-        d.style.width = 'max-content'; const w = d.getBoundingClientRect().width; \
-        d.style.width = old; return Math.ceil(w); })()";
-    const HEIGHT: &str = "Math.ceil(document.documentElement.getBoundingClientRect().height)";
-    let Ok(element) = view.cast::<FrameworkElement>() else {
-        return;
-    };
-    if let Some(width) = measure(&core, WIDTH).await {
-        let _ = element.SetWidth(width.clamp(MIN_SIZE, MAX_WIDTH));
-        exec::sleep(Duration::from_millis(60)).await;
-    }
-    if let Some(height) = measure(&core, HEIGHT).await {
-        let _ = element.SetHeight(height.clamp(MIN_SIZE, MAX_HEIGHT));
-    }
+/// `js/popup.js`, called with the opener's tabs.
+fn popup_script(opener: &[OpenerTab]) -> String {
+    let opener = serde_json::to_string(opener).expect("strings and booleans serialize");
+    format!("{}({opener});", POPUP_SCRIPT.trim_end())
 }
 
-async fn measure(core: &CoreWebView2, script: &str) -> Option<f64> {
-    let json = exec::timeout(Duration::from_secs(5), async {
-        core.ExecuteScriptAsync(script).ok()?.await.ok()
-    })
-    .await
-    .flatten()?;
-    json.to_string_lossy()
-        .parse::<f64>()
-        .ok()
-        .filter(|v| v.is_finite() && *v > 0.0)
+/// The size a popup's `{"popupSize": [width, height]}` message asks for, within Chrome's limits.
+fn parse_size(message: &str) -> Option<(f64, f64)> {
+    let value: serde_json::Value = serde_json::from_str(message).ok()?;
+    let [width, height] = value.get("popupSize")?.as_array()?.as_slice() else {
+        return None;
+    };
+    let fit = |v: &serde_json::Value, max: f64| {
+        v.as_f64()
+            .filter(|v| v.is_finite())
+            .map(|v| v.clamp(MIN_SIZE, max))
+    };
+    Some((fit(width, MAX_WIDTH)?, fit(height, MAX_HEIGHT)?))
 }
 
 #[cfg(test)]
@@ -321,6 +329,33 @@ mod tests {
             ExtensionAction::from_installed(&installed(manifest, Some("id"), true)).unwrap();
         assert_eq!(action.popup_url(), None);
         assert_eq!(action.icon, None);
+    }
+
+    #[test]
+    fn size_messages_are_clamped_to_chromes_limits() {
+        assert_eq!(
+            parse_size(r#"{"popupSize":[600,430]}"#),
+            Some((600.0, 430.0))
+        );
+        assert_eq!(
+            parse_size(r#"{"popupSize":[1,9000]}"#),
+            Some((25.0, 600.0))
+        );
+        assert_eq!(parse_size(r#"{"popupSize":[1]}"#), None);
+        assert_eq!(parse_size(r#"{"popupSize":["a",1]}"#), None);
+        assert_eq!(parse_size("not json"), None);
+    }
+
+    #[test]
+    fn the_popup_script_is_called_with_the_opener_tabs() {
+        let script = popup_script(&[OpenerTab {
+            url: "https://e.test/\"x".into(),
+            active: true,
+        }]);
+        assert!(
+            script.ends_with(r#"})([{"url":"https://e.test/\"x","active":true}]);"#),
+            "{script}"
+        );
     }
 
     #[test]
