@@ -541,21 +541,18 @@ impl Browser {
         }
     }
 
-    /// The bookmarks bar's contents, in display order, with the saved favicons of the links on
-    /// the bar itself.
+    /// The bookmarks bar's contents, in display order, with each link's saved favicon.
     pub fn bookmarks_bar_items(&self) -> Vec<BarItem> {
         self.core(|p| {
             let mut items = {
                 let bookmarks = p.bookmarks();
                 bookmarks_bar::items_from(BookmarkId::TOOLBAR, &|folder| bookmarks.children(folder))
             };
-            for item in &mut items {
-                if let BarItem::Link { url, icon, .. } = item
-                    && let Ok(url) = Url::parse(url)
-                {
-                    *icon = p.favicons().get(&url).ok().flatten();
-                }
-            }
+            bookmarks_bar::fill_icons(&mut items, &mut |url| {
+                Url::parse(url)
+                    .ok()
+                    .and_then(|url| p.favicons().get(&url).ok().flatten())
+            });
             items
         })
     }

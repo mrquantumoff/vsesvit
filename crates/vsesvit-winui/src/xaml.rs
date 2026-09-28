@@ -26,9 +26,13 @@ const ACRYLIC_MENU: &str = r#"
       </Style>
     </MenuFlyout.MenuFlyoutPresenterStyle>"#;
 
-/// An empty menu with the acrylic backdrop, opening below its anchor.
+/// An empty menu with the acrylic backdrop, opening below its anchor. It may extend past the
+/// window (Windows keeps it on the screen), so a long menu is never cut at the window's edge.
 pub(crate) fn acrylic_menu() -> Result<MenuFlyout> {
-    load(r#"<MenuFlyout {ns} Placement="BottomEdgeAlignedLeft">{acrylic_menu}</MenuFlyout>"#)
+    load(
+        r#"<MenuFlyout {ns} Placement="BottomEdgeAlignedLeft" ShouldConstrainToRootBounds="False">
+             {acrylic_menu}</MenuFlyout>"#,
+    )
 }
 
 /// Decodes a PNG into an image source.

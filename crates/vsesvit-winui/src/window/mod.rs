@@ -146,7 +146,11 @@ impl BrowserWindow {
         window.SetExtendsContentIntoTitleBar(true)?;
         let window2 = window.cast::<IWindow2>()?;
 
-        let bar = Bar::new(ui.bookmark_items.clone());
+        let bar = Bar::new(
+            ui.bookmarks_bar.clone(),
+            ui.bookmark_items.clone(),
+            ui.bookmarks_overflow.clone(),
+        );
         let slot = Rc::new(OnceCell::new());
         let events = Rc::new(strip_events(&slot));
         let top = TopStrip::new(ui.tab_view.clone(), &events)?;
@@ -214,6 +218,11 @@ impl BrowserWindow {
             height: (860.0 * scale) as i32,
         };
         self.app_window()?.Resize(size)
+    }
+
+    /// Resizes the window to `width` by `height` screen pixels.
+    pub fn resize(&self, width: i32, height: i32) -> Result<()> {
+        self.app_window()?.Resize(SizeInt32 { width, height })
     }
 
     pub fn browser(&self) -> Option<Rc<Browser>> {
@@ -823,9 +832,31 @@ impl BrowserWindow {
         self.bar.list().clone()
     }
 
-    /// The number of items the bookmarks bar shows.
+    /// The number of entries the bookmarks bar holds, shown or behind the chevron.
     pub fn bookmarks_bar_buttons(&self) -> u32 {
         self.bar.len()
+    }
+
+    /// The bar's items shown whole, and those in the chevron's menu.
+    pub fn bookmarks_bar_split(&self) -> (Vec<BarItem>, Vec<BarItem>) {
+        (self.bar.shown_items(), self.bar.overflow_items())
+    }
+
+    pub fn bookmarks_overflow_shown(&self) -> bool {
+        xaml::is_visible(&self.ui.bookmarks_overflow)
+    }
+
+    pub(crate) fn fit_bookmarks_bar(&self) {
+        self.bar.fit();
+    }
+
+    pub fn open_bookmarks_folder(&self, id: BookmarkId) -> Result<MenuFlyout> {
+        self.bar.open_folder(id, &self.open_link_handler())
+    }
+
+    /// The chevron's menu of the bookmarks that do not fit.
+    pub fn show_bookmarks_overflow(&self) -> Result<MenuFlyout> {
+        self.bar.show_overflow(&self.open_link_handler())
     }
 
     pub(super) fn bar_item_clicked(&self, clicked: &IInspectable) {

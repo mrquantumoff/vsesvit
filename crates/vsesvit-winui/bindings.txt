@@ -52,7 +52,10 @@ Windows.Graphics.RectInt32
 // ---- XAML tree ----
 Microsoft.UI.Xaml.Markup.XamlReader::Load
 Microsoft.UI.Xaml.DependencyObject
-Microsoft.UI.Xaml.IUIElement::{get_Visibility, put_Visibility, get_KeyboardAccelerators, put_KeyboardAcceleratorPlacementMode, Focus, get_XamlRoot, put_XamlRoot, GotFocus, LostFocus, PointerReleased, TransformToVisual, UpdateLayout}
+Microsoft.UI.Xaml.IUIElement::{get_Visibility, put_Visibility, get_KeyboardAccelerators, put_KeyboardAcceleratorPlacementMode, Focus, get_XamlRoot, put_XamlRoot, GotFocus, LostFocus, PointerReleased, TransformToVisual, UpdateLayout, Measure, get_DesiredSize, get_ContextFlyout, put_ContextFlyout, KeyDown}
+Microsoft.UI.Xaml.Input.KeyEventHandler
+Microsoft.UI.Xaml.Input.IKeyRoutedEventArgs::{get_Key, put_Handled}
+Windows.Foundation.Size
 Microsoft.UI.Xaml.Media.GeneralTransform
 Microsoft.UI.Xaml.Media.IGeneralTransform::TransformPoint
 Windows.Foundation.Point
@@ -60,7 +63,9 @@ Microsoft.UI.Xaml.Input.IPointerRoutedEventArgs::{GetCurrentPoint, put_Handled}
 Microsoft.UI.Input.IPointerPoint::get_Properties
 Microsoft.UI.Input.IPointerPointProperties::get_PointerUpdateKind
 Microsoft.UI.Input.PointerUpdateKind
-Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, put_MaxWidth, LayoutUpdated, get_ActualWidth, get_ActualHeight, put_RequestedTheme}
+Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, put_MaxWidth, LayoutUpdated, get_ActualWidth, get_ActualHeight, put_RequestedTheme, SizeChanged}
+Microsoft.UI.Xaml.SizeChangedEventHandler
+Microsoft.UI.Xaml.SizeChangedEventArgs
 Microsoft.UI.Xaml.ElementTheme
 Microsoft.UI.Xaml.Visibility
 Microsoft.UI.Xaml.FocusState
@@ -79,10 +84,10 @@ Microsoft.UI.Xaml.Controls.TabViewItem::CreateInstance
 Microsoft.UI.Xaml.Controls.ITabViewItem::put_Header
 Microsoft.UI.Xaml.Controls.ITabViewTabCloseRequestedEventArgs::get_Tab
 Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs
-Microsoft.UI.Xaml.Controls.IControl::put_IsEnabled
+Microsoft.UI.Xaml.Controls.IControl::{get_IsEnabled, put_IsEnabled}
 Microsoft.UI.Xaml.Controls.Button
 Microsoft.UI.Xaml.Controls.Primitives.IButtonBase::Click
-Microsoft.UI.Xaml.Controls.Primitives.IToggleButton::put_IsChecked
+Microsoft.UI.Xaml.Controls.Primitives.IToggleButton::{get_IsChecked, put_IsChecked}
 Microsoft.UI.Xaml.Controls.IFontIcon::put_Glyph
 Microsoft.UI.Xaml.Controls.IAutoSuggestBox::{get_Text, put_Text, TextChanged, QuerySubmitted, put_IsSuggestionListOpen}
 Microsoft.UI.Xaml.Controls.IAutoSuggestBoxTextChangedEventArgs::get_Reason
@@ -90,7 +95,9 @@ Microsoft.UI.Xaml.Controls.AutoSuggestionBoxTextChangeReason
 Microsoft.UI.Xaml.Controls.IAutoSuggestBoxQuerySubmittedEventArgs::{get_QueryText, get_ChosenSuggestion}
 Microsoft.UI.Xaml.Controls.IItemsControl::{put_ItemsSource, get_Items}
 Microsoft.UI.Xaml.Controls.ItemCollection
-Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text, put_Text, put_TextAlignment}
+Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text, put_Text, put_TextAlignment, TextChanged}
+Microsoft.UI.Xaml.Controls.TextChangedEventHandler
+Microsoft.UI.Xaml.Controls.TextChangedEventArgs
 Microsoft.UI.Xaml.TextAlignment
 Microsoft.UI.Xaml.Controls.ListViewBase
 Microsoft.UI.Xaml.Controls.IListViewBase::{ItemClick, DragItemsCompleted, ScrollIntoView}
@@ -118,12 +125,19 @@ Microsoft.UI.Xaml.Controls.Primitives.IRangeBase::{put_Maximum, put_Value}
 Microsoft.UI.Xaml.Controls.ITextBlock::{get_Text, put_Text}
 Microsoft.UI.Xaml.Controls.IImage::put_Source
 Microsoft.UI.Xaml.Controls.IProgressRing::put_IsActive
-Microsoft.UI.Xaml.Controls.IMenuFlyoutItem::{Click, put_Text}
+Microsoft.UI.Xaml.Controls.IMenuFlyoutItem::{Click, get_Text, put_Text, get_Icon, put_Icon}
 Microsoft.UI.Xaml.Controls.MenuFlyoutItem::CreateInstance
 Microsoft.UI.Xaml.Controls.MenuFlyout::CreateInstance
 Microsoft.UI.Xaml.Controls.IMenuFlyout::get_Items
 Microsoft.UI.Xaml.Controls.MenuFlyoutSubItem::CreateInstance
-Microsoft.UI.Xaml.Controls.IMenuFlyoutSubItem::{get_Items, put_Text}
+Microsoft.UI.Xaml.Controls.IMenuFlyoutSubItem::{get_Items, get_Text, put_Text, get_Icon, put_Icon}
+Microsoft.UI.Xaml.Controls.MenuFlyoutSeparator::CreateInstance
+Microsoft.UI.Xaml.Controls.ToggleMenuFlyoutItem::CreateInstance
+Microsoft.UI.Xaml.Controls.IToggleMenuFlyoutItem::{get_IsChecked, put_IsChecked}
+Microsoft.UI.Xaml.Controls.IconElement
+Microsoft.UI.Xaml.Controls.ImageIcon::CreateInstance
+Microsoft.UI.Xaml.Controls.IImageIcon::put_Source
+Microsoft.UI.Xaml.Controls.FontIcon::CreateInstance
 Microsoft.UI.Xaml.Controls.MenuFlyoutItemBase
 Microsoft.UI.Xaml.Controls.IButton::{put_Flyout, get_Flyout}
 Microsoft.UI.Xaml.Controls.IContentDialog::{ShowAsync, Hide}
@@ -132,9 +146,10 @@ Microsoft.UI.Xaml.Controls.IToggleSwitch::{get_IsOn, put_IsOn, Toggled}
 Microsoft.UI.Xaml.Controls.IInfoBar::{put_IsOpen, put_Title, put_Message, put_Severity}
 Microsoft.UI.Xaml.Controls.InfoBarSeverity
 Microsoft.UI.Xaml.Controls.IFlyout::get_Content
-Microsoft.UI.Xaml.Controls.Primitives.IFlyoutBase::{ShowAt, ShowAtWithOptions, Hide, Closed}
+Microsoft.UI.Xaml.Controls.Primitives.IFlyoutBase::{ShowAt, ShowAtWithOptions, Hide, Closed, Opening, get_Target, get_IsOpen, put_Placement, put_ShouldConstrainToRootBounds}
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions::CreateInstance
-Microsoft.UI.Xaml.Controls.Primitives.IFlyoutShowOptions::put_ShowMode
+Microsoft.UI.Xaml.Controls.Primitives.IFlyoutShowOptions::{put_ShowMode, put_Placement}
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowMode
 Microsoft.UI.Xaml.Input.KeyboardAccelerator::CreateInstance
 Microsoft.UI.Xaml.Input.IKeyboardAccelerator::{put_Key, put_Modifiers, Invoked}
@@ -195,6 +210,12 @@ Microsoft.Web.WebView2.Core.ICoreWebView2DownloadOperation::{get_Uri, get_BytesR
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadState
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadInterruptReason
 
+// ---- clipboard ----
+Windows.ApplicationModel.DataTransfer.DataPackage::CreateInstance
+Windows.ApplicationModel.DataTransfer.IDataPackage::SetText
+Windows.ApplicationModel.DataTransfer.Clipboard::{SetContent, GetContent, Flush}
+Windows.ApplicationModel.DataTransfer.IDataPackageView::GetTextAsync
+
 // ---- app lifecycle (single instance) and pickers ----
 Microsoft.Windows.AppLifecycle.AppInstance::{GetCurrent, FindOrRegisterForKey}
 Microsoft.Windows.AppLifecycle.IAppInstance::{UnregisterKey, RedirectActivationToAsync, GetActivatedEventArgs, Activated, get_IsCurrent, get_ProcessId}
@@ -235,7 +256,10 @@ Windows.Graphics.Capture.IGraphicsCaptureSession3::put_IsBorderRequired
 Windows.Graphics.Capture.IDirect3D11CaptureFrame::get_Surface
 Windows.Graphics.DirectX.DirectXPixelFormat
 Windows.Graphics.DirectX.Direct3D11.IDirect3DDevice
-Windows.Graphics.Imaging.SoftwareBitmap::CreateCopyFromSurfaceAsync
+Windows.Graphics.Imaging.SoftwareBitmap::{CreateCopyFromSurfaceAsync, CreateCopyWithAlphaFromBuffer}
+Windows.Graphics.Imaging.BitmapPixelFormat
+Windows.Graphics.Imaging.BitmapAlphaMode
+Windows.Security.Cryptography.CryptographicBuffer::CreateFromByteArray
 Windows.Graphics.Imaging.ISoftwareBitmap::{get_PixelWidth, get_PixelHeight, CopyToBuffer}
 Windows.Graphics.Imaging.BitmapEncoder::{CreateAsync, get_PngEncoderId}
 Windows.Graphics.Imaging.IBitmapEncoder::FlushAsync
@@ -288,6 +312,27 @@ Windows.Win32.ID3D11Device::{}
 Windows.Win32.IDXGIDevice::{}
 Windows.Win32.CreateDirect3D11DeviceFromDXGIDevice
 Windows.Win32.IGraphicsCaptureItemInterop::CreateForWindow
+Windows.Win32.EnumWindows
+Windows.Win32.GetWindowThreadProcessId
+Windows.Win32.IsWindowVisible
+Windows.Win32.GetAncestor
+Windows.Win32.GA_ROOTOWNER
+Windows.Win32.GetWindowTextW
+Windows.Win32.PostMessageW
+Windows.Win32.WM_CLOSE
+Windows.Win32.DwmGetWindowAttribute
+Windows.Win32.DWMWA_EXTENDED_FRAME_BOUNDS
+Windows.Win32.RECT
+Windows.Win32.CertOpenStore
+Windows.Win32.CERT_STORE_PROV_MEMORY
+Windows.Win32.CertAddEncodedCertificateToStore
+Windows.Win32.X509_ASN_ENCODING
+Windows.Win32.PKCS_7_ASN_ENCODING
+Windows.Win32.CERT_STORE_ADD_ALWAYS
+Windows.Win32.CertFreeCertificateContext
+Windows.Win32.CertCloseStore
+Windows.Win32.CryptUIDlgViewContext
+Windows.Win32.CERT_STORE_CERTIFICATE_CONTEXT
 
 // ---- classes used as typed handles (minimal mode emits only what is named) ----
 Microsoft.UI.Xaml.Controls.Panel

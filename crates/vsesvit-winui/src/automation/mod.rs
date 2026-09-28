@@ -38,7 +38,8 @@ const SECOND_TAB: &str = "data:text/html,<title>Second tab</title>\
     <body style='font:24px sans-serif'><h1>Second tab</h1></body>";
 
 /// The bookmarks bar: a bookmarked page keeps its favicon, a drag reorders the bookmarks in
-/// core, and a bar with more items than fit scrolls.
+/// core, and a bar with more items than fit shows the rest in the chevron's menu, also after
+/// the window narrows and widens again.
 async fn bar_steps(
     browser: &Rc<Browser>,
     window: &Rc<BrowserWindow>,
@@ -95,6 +96,8 @@ async fn bar_steps(
         "ok": dragged.is_some() && first_now == dragged && window.bookmarks_bar_items().first().map(BarItem::id) == dragged,
     }));
 
+    folder_menu(browser, window, &page, out_dir, steps).await?;
+
     let extra: Vec<BookmarkId> = browser.core(|p| {
         let mut bookmarks = p.bookmarks();
         (0..40)
@@ -113,18 +116,44 @@ async fn bar_steps(
     });
     browser.bookmarks_changed();
     exec::sleep(Duration::from_millis(500)).await;
-    let scrollable =
-        xaml::find_descendant::<IScrollViewer>(&list.cast().map_err(|e| e.to_string())?)
-            .and_then(|s| s.ScrollableWidth().ok())
-            .unwrap_or(0.0);
-    shoot(window, out_dir, "08d-bar-overflow-scrolls", steps, |w| {
-        json!({
-            "items": w.bookmarks_bar_buttons(),
-            "scrollable_width": scrollable,
-            "ok": w.bookmarks_bar_buttons() >= 42 && scrollable > 0.0,
-        })
+    shoot(window, out_dir, "08d-bar-overflow-chevron", steps, bar_fit).await;
+    let menu = window
+        .show_bookmarks_overflow()
+        .map_err(|e| e.to_string())?;
+    exec::sleep(Duration::from_millis(600)).await;
+    let (_, overflow) = window.bookmarks_bar_split();
+    let listed = menu.Items().and_then(|i| i.Size()).unwrap_or(0) as usize;
+    shoot(window, out_dir, "08e-bar-overflow-menu", steps, |_| {
+        json!({ "overflow": overflow.len(), "menu_entries": listed, "ok": listed == overflow.len() && listed > 0 })
     })
     .await;
+    let _ = menu.cast::<FlyoutBase>().and_then(|m| m.Hide());
+
+    let ((_, _, width, height), _) = window.bounds().ok_or("no window bounds")?;
+    let shown_wide = window.bookmarks_bar_split().0.len();
+    window
+        .resize(760, height as i32)
+        .map_err(|e| e.to_string())?;
+    exec::sleep(Duration::from_millis(800)).await;
+    shoot(window, out_dir, "08f-bar-narrow-window", steps, |w| {
+        let mut step = bar_fit(w);
+        let shown = w.bookmarks_bar_split().0.len();
+        step["shown_when_wide"] = json!(shown_wide);
+        if shown >= shown_wide {
+            step["ok"] = json!(false);
+        }
+        step
+    })
+    .await;
+    window
+        .resize(width as i32, height as i32)
+        .map_err(|e| e.to_string())?;
+    exec::sleep(Duration::from_millis(800)).await;
+    steps.push(json!({
+        "name": "08g-bar-refits-when-wider",
+        "shown": window.bookmarks_bar_split().0.len(),
+        "ok": window.bookmarks_bar_split().0.len() == shown_wide,
+    }));
     browser.core(|p| {
         let mut bookmarks = p.bookmarks();
         for id in extra {
@@ -133,6 +162,125 @@ async fn bar_steps(
     });
     browser.bookmarks_changed();
     Ok(())
+}
+
+/// A folder's menu from the bar: links with their favicons (or the page glyph), subfolders with
+/// the folder glyph, and long titles cut short.
+async fn folder_menu(
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    favicon_page: &str,
+    out_dir: &Path,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let folder = window
+        .bookmarks_bar_items()
+        .iter()
+        .find_map(|item| match item {
+            BarItem::Folder { id, title, .. } if title == "Fixture folder" => Some(*id),
+            _ => None,
+        })
+        .ok_or("no fixture folder on the bar")?;
+    let long = "A bookmark whose title is much longer than any menu should ever be wide";
+    let added = browser.core(|p| {
+        let mut bookmarks = p.bookmarks();
+        let page = Url::parse(favicon_page).map_err(|e| e.to_string())?;
+        let link = bookmarks.add_url(folder, InsertAt::End, long, &page);
+        let sub = bookmarks.add_folder(folder, InsertAt::End, "Nested folder");
+        Ok::<_, String>(vec![link, sub])
+    })?;
+    browser.bookmarks_changed();
+    exec::sleep(Duration::from_millis(300)).await;
+    let menu = window
+        .open_bookmarks_folder(folder)
+        .map_err(|e| e.to_string())?;
+    exec::sleep(Duration::from_millis(600)).await;
+    let labels: Vec<(String, String)> = menu
+        .Items()
+        .map(|items| {
+            (&items)
+                .into_iter()
+                .filter_map(|item| {
+                    let (text, icon) = if let Ok(link) = item.cast::<MenuFlyoutItem>() {
+                        (link.Text().ok()?, link.Icon().ok())
+                    } else {
+                        let sub = item.cast::<MenuFlyoutSubItem>().ok()?;
+                        (sub.Text().ok()?, sub.Icon().ok())
+                    };
+                    let kind = match icon {
+                        Some(icon) if icon.cast::<ImageIcon>().is_ok() => "favicon",
+                        Some(icon) if icon.cast::<FontIcon>().is_ok() => "glyph",
+                        _ => "none",
+                    };
+                    Some((text.to_string(), kind.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    shoot(window, out_dir, "08c2-folder-menu-icons", steps, |_| {
+        let cut = labels
+            .iter()
+            .any(|(t, _)| t.ends_with('\u{2026}') && t.chars().count() <= 50);
+        let favicon = labels.iter().any(|(_, k)| k == "favicon");
+        json!({
+            "entries": labels,
+            "ok": labels.len() == 3 && cut && favicon && labels.iter().all(|(_, k)| k != "none"),
+        })
+    })
+    .await;
+    let _ = menu.cast::<FlyoutBase>().and_then(|m| m.Hide());
+    browser.core(|p| {
+        let mut bookmarks = p.bookmarks();
+        for id in added.into_iter().flatten() {
+            let _ = bookmarks.remove(id);
+        }
+    });
+    browser.bookmarks_changed();
+    Ok(())
+}
+
+/// The bar holds every item, shows only whole ones inside its width, and lists the rest
+/// behind the chevron, which shows exactly when something overflows.
+fn bar_fit(window: &BrowserWindow) -> Value {
+    let (shown, overflow) = window.bookmarks_bar_split();
+    let list = window.bookmarks_bar_list();
+    let list_width = list
+        .cast::<FrameworkElement>()
+        .and_then(|l| l.ActualWidth())
+        .unwrap_or(0.0);
+    let entries = list
+        .cast::<ItemsControl>()
+        .and_then(|c| c.Items())
+        .and_then(|i| i.cast::<windows_collections::IVector<windows_core::IInspectable>>());
+    let mut rights = Vec::new();
+    if let Ok(entries) = entries {
+        for element in &entries {
+            let Ok(element) = element.cast::<FrameworkElement>() else {
+                continue;
+            };
+            if !xaml::is_visible(&element) {
+                continue;
+            }
+            let left = element
+                .cast::<UIElement>()
+                .and_then(|e| e.TransformToVisual(&list.cast::<UIElement>()?))
+                .and_then(|t| t.TransformPoint(Point { x: 0.0, y: 0.0 }))
+                .map_or(f32::NAN, |p| p.x);
+            rights.push(f64::from(left) + element.ActualWidth().unwrap_or(0.0));
+        }
+    }
+    let chevron = window.bookmarks_overflow_shown();
+    let whole = rights.iter().all(|r| *r <= list_width + 0.5);
+    json!({
+        "shown": shown.len(),
+        "overflow": overflow.len(),
+        "visible_entries": rights.len(),
+        "list_width": list_width,
+        "rightmost": rights.iter().copied().fold(0.0, f64::max),
+        "chevron": chevron,
+        "ok": whole && rights.len() == shown.len() && !overflow.is_empty() && chevron
+            && shown.len() + overflow.len() == window.bookmarks_bar_buttons() as usize,
+    })
 }
 
 /// Starts from a fresh profile when the run uses the one inside `out_dir`.

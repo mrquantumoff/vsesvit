@@ -36,6 +36,18 @@ impl BrowserWindow {
         let w = me();
         bar.DragItemsCompleted(move |_, _| with(&w, BrowserWindow::bar_item_dropped))?
             .forget();
+        let w = me();
+        ui.bookmarks_bar
+            .SizeChanged(move |_, _| with(&w, BrowserWindow::fit_bookmarks_bar))?
+            .forget();
+        let w = me();
+        click(&ui.bookmarks_overflow, move || {
+            with(&w, |w| {
+                if let Err(e) = w.show_bookmarks_overflow() {
+                    log::warn!("bookmarks overflow menu: {e}");
+                }
+            });
+        })?;
 
         let w = me();
         click(&ui.back, move || with(&w, |w| w.run(Command::Back)))?;

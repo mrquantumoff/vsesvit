@@ -183,26 +183,26 @@ const WINDOW_XAML: &str = r#"
   </Grid>
 
   <Grid x:Name="BookmarksBar" Grid.Row="2" Height="30" Padding="8,0,8,2" Background="Transparent">
-    <!-- Items drag to reorder, and the bar scrolls sideways (the mouse wheel too) instead of
-         clipping the items that do not fit. -->
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="*"/>
+      <ColumnDefinition Width="Auto"/>
+    </Grid.ColumnDefinitions>
+    <!-- Items drag to reorder. The bar never scrolls: what does not fit whole is collapsed and
+         listed by the chevron instead. -->
     <ListView x:Name="BookmarkItems" SelectionMode="None" IsItemClickEnabled="True"
               CanDragItems="True" CanReorderItems="True" AllowDrop="True"
-              ScrollViewer.HorizontalScrollMode="Enabled" ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+              ScrollViewer.HorizontalScrollMode="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
               ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled"
               AutomationProperties.Name="Bookmarks bar">
       <ListView.ItemsPanel>
         <ItemsPanelTemplate><ItemsStackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
       </ListView.ItemsPanel>
-      <ListView.ItemContainerStyle>
-        <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
-          <Setter Property="MinWidth" Value="0"/>
-          <Setter Property="MinHeight" Value="24"/>
-          <Setter Property="Height" Value="24"/>
-          <Setter Property="Padding" Value="6,0"/>
-          <Setter Property="Margin" Value="0,0,1,0"/>
-        </Style>
-      </ListView.ItemContainerStyle>
     </ListView>
+    <Button x:Name="BookmarksOverflow" Grid.Column="1" Style="{StaticResource ToolbarButton}" Width="28" Height="24"
+            Margin="2,0,0,0" CornerRadius="4" Visibility="Collapsed"
+            ToolTipService.ToolTip="More bookmarks" AutomationProperties.Name="More bookmarks">
+      <TextBlock Text="&#x00BB;" FontSize="16" Margin="0,-3,0,0"/>
+    </Button>
     <TextBlock x:Name="BookmarksHint" Margin="6,0" VerticalAlignment="Center"
                Style="{StaticResource CaptionTextBlockStyle}"
                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -265,8 +265,9 @@ pub(super) struct Chrome {
     pub(super) extension_actions: Panel,
     pub(super) downloads: Button,
     pub(super) downloads_busy: ProgressRing,
-    pub(super) bookmarks_bar: UIElement,
+    pub(super) bookmarks_bar: FrameworkElement,
     pub(super) bookmark_items: ListView,
+    pub(super) bookmarks_overflow: Button,
     pub(super) bookmarks_hint: UIElement,
     pub(super) update_bar: InfoBar,
     pub(super) update_action: Button,
@@ -303,6 +304,7 @@ impl Chrome {
             downloads_busy: xaml::find(&root, "DownloadsBusy")?,
             bookmarks_bar: xaml::find(&root, "BookmarksBar")?,
             bookmark_items: xaml::find(&root, "BookmarkItems")?,
+            bookmarks_overflow: xaml::find(&root, "BookmarksOverflow")?,
             bookmarks_hint: xaml::find(&root, "BookmarksHint")?,
             update_bar: xaml::find(&root, "UpdateBar")?,
             update_action: xaml::find(&root, "UpdateAction")?,
