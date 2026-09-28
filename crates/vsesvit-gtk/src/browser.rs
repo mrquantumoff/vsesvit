@@ -8,7 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
@@ -24,12 +24,13 @@ use vsesvit_webext::{Runtime, TabHost, TabId, TabInfo};
 use webkit::prelude::*;
 
 use crate::closed_tabs::ClosedTabs;
+use crate::downloads::Downloads;
 use crate::engine::Engine;
 use crate::profile::{self, Core};
 use crate::tab::{Commit, Tab};
 use crate::updates::Updates;
 use crate::window::{BrowserWindow, Focus};
-use crate::{downloads, favicons, omnibox, session};
+use crate::{favicons, omnibox, session};
 
 const CLOSED_TABS_KEPT: usize = 25;
 /// How long after the last tab change the session is written.
@@ -43,7 +44,7 @@ pub(crate) struct Inner {
     core: Core,
     engine: Engine,
     runtime: Runtime,
-    downloads_dir: PathBuf,
+    downloads: Rc<Downloads>,
     closed_tabs: RefCell<ClosedTabs<ClosedTab>>,
     /// Why the runtime could not load an enabled extension, by extension.
     extension_errors: RefCell<HashMap<ExtensionId, String>>,
@@ -70,8 +71,7 @@ impl Browser {
         let core: Core = Rc::new(RefCell::new(profile));
         let paths = core.borrow().paths().clone();
         let engine = Engine::new(&paths);
-        let downloads_dir = profile::downloads_dir();
-        downloads::watch(engine.session(), downloads_dir.clone(), app);
+        let downloads = Downloads::new(app, core.clone(), engine.session(), profile::downloads_dir());
         let updates_automatic = core.borrow_mut().prefs().get(&keys::UPDATES_AUTOMATIC);
         let inner = Rc::new_cyclic(|weak: &Weak<Inner>| {
             let host: Rc<dyn TabHost> = Rc::new(Host(weak.clone()));
@@ -81,7 +81,7 @@ impl Browser {
                 core,
                 engine,
                 runtime,
-                downloads_dir,
+                downloads,
                 closed_tabs: RefCell::new(ClosedTabs::new(CLOSED_TABS_KEPT)),
                 extension_errors: RefCell::new(HashMap::new()),
                 next_tab_id: Cell::new(1),
@@ -136,8 +136,8 @@ impl Browser {
         &self.0.runtime
     }
 
-    pub(crate) fn downloads_dir(&self) -> &Path {
-        &self.0.downloads_dir
+    pub(crate) fn downloads(&self) -> &Rc<Downloads> {
+        &self.0.downloads
     }
 
     /// Why the runtime is not running this enabled extension, when it failed to load it.

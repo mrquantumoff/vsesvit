@@ -64,6 +64,7 @@ const SECTIONS: &[(&str, &[Item])] = &[
             Item::Action("Show or hide the bookmarks bar", "win.show-bookmarks-bar"),
             Item::Action("Bookmarks", "win.show-bookmarks"),
             Item::Action("History", "win.show-history"),
+            Item::Action("Downloads", "win.show-downloads"),
             Item::Action("Settings", "win.show-settings"),
             Item::Action("Keyboard shortcuts", "app.shortcuts"),
         ],

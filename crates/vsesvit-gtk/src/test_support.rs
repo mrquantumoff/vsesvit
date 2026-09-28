@@ -17,6 +17,8 @@ use vsesvit_core::{OpenOptions, Profile};
 use crate::browser::Browser;
 
 const WAIT: Duration = Duration::from_secs(15);
+pub(crate) const STALLED_FILE_SIZE: u64 = 1_000_000;
+pub(crate) const STALLED_FILE_SENT: u64 = 1_000;
 
 thread_local! {
     static BROWSER: OnceCell<Browser> = const { OnceCell::new() };
@@ -90,6 +92,9 @@ pub(crate) enum Reply {
     Hang,
     /// Closes the connection without a response: a network error.
     Drop,
+    /// A file of [`STALLED_FILE_SIZE`] bytes to download, of which only the first
+    /// [`STALLED_FILE_SENT`] ever arrive.
+    StalledFile,
     NotFound,
 }
 
@@ -140,6 +145,17 @@ fn serve(stream: TcpStream, route: &(dyn Fn(&str) -> Reply + Send + Sync)) {
         Reply::Body(content_type, body) => ("200 OK", content_type, body),
         Reply::NotFound => ("404 Not Found", html, Vec::new()),
         Reply::Drop => return,
+        Reply::StalledFile => {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                 Content-Length: {STALLED_FILE_SIZE}\r\nConnection: close\r\n\r\n"
+            );
+            let _ = (&stream).write_all(head.as_bytes());
+            let _ = (&stream).write_all(&[0; STALLED_FILE_SENT as usize]);
+            loop {
+                std::thread::park();
+            }
+        }
         Reply::Hang => loop {
             std::thread::park();
         },

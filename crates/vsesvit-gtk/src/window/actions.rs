@@ -110,6 +110,9 @@ pub(super) fn install(window: &BrowserWindow) {
         ActionEntry::builder("show-history")
             .activate(|w: &BrowserWindow, _, _| dialogs::history::present(w))
             .build(),
+        ActionEntry::builder("show-downloads")
+            .activate(|w: &BrowserWindow, _, _| dialogs::downloads::present(w))
+            .build(),
         ActionEntry::builder("show-extensions")
             .activate(|w: &BrowserWindow, _, _| dialogs::extensions::present(w))
             .build(),

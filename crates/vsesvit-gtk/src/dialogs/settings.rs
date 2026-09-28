@@ -1,9 +1,11 @@
 //! The Settings dialog, bound to core's preferences: startup behaviour and homepage, tab
 //! position (applied to every window at once), default search engine, theme (through
-//! `AdwStyleManager`) and the bookmarks bar.
+//! `AdwStyleManager`), the bookmarks bar, and where downloads go.
+
+use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
+use gtk::{gio, glib};
 use vsesvit_core::prefs::{Startup, TabsPosition, Theme, keys};
 use vsesvit_core::search::SearchEngine;
 
@@ -54,13 +56,9 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
     appearance.add(&theme_row(&browser));
     appearance.add(&bookmarks_bar_row(&browser));
 
-    let downloads = adw::ActionRow::builder()
-        .title("Download Folder")
-        .subtitle(browser.downloads_dir().display().to_string())
-        .subtitle_selectable(true)
-        .build();
     let files = adw::PreferencesGroup::builder().title("Downloads").build();
-    files.add(&downloads);
+    files.add(&download_folder_row(window));
+    files.add(&download_ask_row(&browser));
 
     let page = adw::PreferencesPage::builder()
         .title("General")
@@ -257,6 +255,91 @@ fn bookmarks_bar_row(browser: &Browser) -> adw::SwitchRow {
         #[strong]
         browser,
         move |row| browser.set_bookmarks_bar_visible(row.is_active())
+    ));
+    row
+}
+
+/// The effective folder, a folder picker, and a way back to the platform's Downloads
+/// folder while another one is chosen.
+fn download_folder_row(window: &BrowserWindow) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title("Download Folder")
+        .subtitle_selectable(true)
+        .build();
+    let reset = gtk::Button::builder()
+        .label("Use Default")
+        .tooltip_text("Save to the Downloads folder")
+        .valign(gtk::Align::Center)
+        .build();
+    let change = gtk::Button::builder()
+        .label("Change…")
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&reset);
+    row.add_suffix(&change);
+    let browser = window.browser().clone();
+    let show = glib::clone!(
+        #[strong]
+        browser,
+        #[weak]
+        row,
+        #[weak]
+        reset,
+        move || {
+            row.set_subtitle(&browser.downloads().directory().display().to_string());
+            let custom = browser.core().borrow_mut().prefs().get(&keys::DOWNLOADS_DIR).is_some();
+            reset.set_visible(custom);
+        }
+    );
+    show();
+    let show = Rc::new(show);
+    change.connect_clicked(glib::clone!(
+        #[weak]
+        window,
+        #[strong]
+        show,
+        move |_| {
+            let show = show.clone();
+            let dialog = gtk::FileDialog::builder()
+                .title("Download Folder")
+                .initial_folder(&gio::File::for_path(window.browser().downloads().directory()))
+                .modal(true)
+                .build();
+            glib::spawn_future_local(async move {
+                let Ok(folder) = dialog.select_folder_future(Some(&window)).await else { return };
+                let Some(path) = folder.path() else { return };
+                let set = window.browser().core().borrow_mut().prefs().set(&keys::DOWNLOADS_DIR, &Some(path));
+                if let Err(e) = set {
+                    log::warn!("prefs: {e}");
+                }
+                show();
+            });
+        }
+    ));
+    reset.connect_clicked(move |_| {
+        let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);
+        if let Err(e) = reset {
+            log::warn!("prefs: {e}");
+        }
+        show();
+    });
+    row
+}
+
+fn download_ask_row(browser: &Browser) -> adw::SwitchRow {
+    let row = adw::SwitchRow::builder()
+        .title("Ask Where to Save Each File")
+        .active(browser.core().borrow_mut().prefs().get(&keys::DOWNLOADS_ASK))
+        .build();
+    row.connect_active_notify(glib::clone!(
+        #[strong]
+        browser,
+        move |row| {
+            let set = browser.core().borrow_mut().prefs().set(&keys::DOWNLOADS_ASK, &row.is_active());
+            if let Err(e) = set {
+                log::warn!("prefs: {e}");
+            }
+        }
     ));
     row
 }

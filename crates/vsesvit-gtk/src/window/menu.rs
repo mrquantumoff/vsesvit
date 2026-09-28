@@ -20,6 +20,7 @@ pub(super) fn main_menu() -> (gtk::MenuButton, gtk::Button) {
     let library = gio::Menu::new();
     library.append(Some("_Bookmarks"), Some("win.show-bookmarks"));
     library.append(Some("_History"), Some("win.show-history"));
+    library.append(Some("_Downloads"), Some("win.show-downloads"));
     library.append(Some("_Extensions"), Some("win.show-extensions"));
     library.append(Some("Show Bookmarks _Bar"), Some("win.show-bookmarks-bar"));
 

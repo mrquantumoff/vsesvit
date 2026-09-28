@@ -49,6 +49,8 @@ struct Ui {
     address: AddressBar,
     reload: gtk::Button,
     zoom_level: gtk::Button,
+    /// Hidden until a download starts.
+    downloads_button: gtk::Button,
     tab_view: adw::TabView,
     tab_bar: adw::TabBar,
     tab_list: TabList,
@@ -125,6 +127,9 @@ impl BrowserWindow {
         window.set_bookmarks_bar_visible(browser.bookmarks_bar_visible());
         window.refresh_bookmarks_bar();
         window.refresh_extension_actions();
+        if browser.downloads().started_this_session() {
+            window.show_downloads_button();
+        }
         if let Some(updates) = browser.updates() {
             updates.window_opened(&window);
         }
@@ -154,6 +159,15 @@ impl BrowserWindow {
 
     pub(crate) fn toast(&self, toast: adw::Toast) {
         self.ui().toasts.add_toast(toast);
+    }
+
+    pub(crate) fn show_downloads_button(&self) {
+        self.ui().downloads_button.set_visible(true);
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn shows_downloads_button(&self) -> bool {
+        self.ui().downloads_button.is_visible()
     }
 
     pub(crate) fn set_update_banner(&self, banner: Option<&Banner>) {
@@ -210,6 +224,8 @@ impl BrowserWindow {
             "Extensions",
         ));
         let (menu_button, zoom_level) = menu::main_menu();
+        let downloads_button = icon_button("folder-download-symbolic", "win.show-downloads", "Downloads");
+        downloads_button.set_visible(false);
 
         let header = adw::HeaderBar::new();
         header.pack_start(&sidebar_toggle);
@@ -218,6 +234,7 @@ impl BrowserWindow {
         header.pack_start(&reload);
         header.set_title_widget(Some(&title));
         header.pack_end(&menu_button);
+        header.pack_end(&downloads_button);
         header.pack_end(&icon_button("tab-new-symbolic", "win.new-tab", "New Tab"));
         header.pack_end(&extensions_area);
 
@@ -264,6 +281,7 @@ impl BrowserWindow {
             address,
             reload,
             zoom_level,
+            downloads_button,
             tab_view,
             tab_bar,
             tab_list,

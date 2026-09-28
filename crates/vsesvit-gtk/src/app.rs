@@ -51,6 +51,7 @@ const ACCELS: &[(&str, &[&str])] = &[
     ("win.show-bookmarks-bar", &["<Control><Shift>b"]),
     ("win.show-bookmarks", &["<Control><Shift>o"]),
     ("win.show-history", &["<Control>h"]),
+    ("win.show-downloads", &["<Control>j"]),
     ("win.show-settings", &["<Control>comma"]),
     ("app.new-window", &["<Control>n"]),
     ("app.shortcuts", &["<Control>question"]),
@@ -494,6 +495,8 @@ mod tests {
         dialogs::history::present(&window);
         close_dialog(&window);
         dialogs::bookmarks::present(&window);
+        close_dialog(&window);
+        dialogs::downloads::present(&window);
         close_dialog(&window);
         dialogs::extensions::present(&window);
         let slot: Slot = Rc::new(RefCell::new(Some(browser)));

@@ -1,8 +1,9 @@
-//! Dialogs opened from the primary menu, all on core data: Bookmarks, History, Extensions
-//! and Settings, plus About and the keyboard shortcuts.
+//! Dialogs opened from the primary menu, all on core data: Bookmarks, History, Downloads,
+//! Extensions and Settings, plus About and the keyboard shortcuts.
 
 pub(crate) mod about;
 pub(crate) mod bookmarks;
+pub(crate) mod downloads;
 pub(crate) mod extensions;
 pub(crate) mod history;
 pub(crate) mod settings;

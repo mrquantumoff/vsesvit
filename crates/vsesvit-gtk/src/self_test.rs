@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
+use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
-use vsesvit_core::prefs::TabsPosition;
+use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::NavTarget;
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::{OpenOptions, Profile};
@@ -32,6 +33,8 @@ const POLL: Duration = Duration::from_millis(50);
 const CWS_EXTENSION: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
 /// How many distinct colours the screenshot check samples before it is satisfied.
 const COLOR_SAMPLE_CAP: usize = 64;
+/// What the fixture server sends for `/download.bin`.
+const DOWNLOAD_FIXTURE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/site/download.bin"));
 /// The new tab page's tile links, once its search box is there.
 const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...document.querySelectorAll('.tile')].map(a => a.href).join(' ') : 'no search box'";
 
@@ -460,6 +463,44 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             )),
             other => Err(format!("restore returned {other:?}")),
         }
+    })
+    .await;
+
+    ctx.check("download", CHECK_TIMEOUT, |last| async move {
+        let dir = ctx.out_dir.join("downloads");
+        let _ = std::fs::remove_dir_all(&dir);
+        browser.core().borrow_mut().prefs().set(&keys::DOWNLOADS_DIR, &Some(dir.clone())).map_err(|e| e.to_string())?;
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        tab.load(ctx.server.url("/download.bin").as_str());
+        let expected = dir.join("download.bin");
+        let entry = wait_for(&last, || {
+            let entry = browser.downloads().list().into_iter().find(|d| d.path == expected);
+            match entry {
+                Some(entry) if entry.state == State::Completed => Ok(entry),
+                Some(entry) => Err(format!("the list entry is {:?}", entry.state)),
+                None => Err(format!("no list entry for {}", expected.display())),
+            }
+        })
+        .await;
+        let bytes = std::fs::read(&expected).map_err(|e| format!("{}: {e}", expected.display()))?;
+        if bytes != DOWNLOAD_FIXTURE {
+            return Err(format!("{} has {} bytes, not the {} served", expected.display(), bytes.len(), DOWNLOAD_FIXTURE.len()));
+        }
+        if !window.shows_downloads_button() {
+            return Err("the header shows no downloads button".to_owned());
+        }
+        gio::prelude::ActionGroupExt::activate_action(window, "show-downloads", None);
+        let dialog = window.visible_dialog().ok_or_else(|| "win.show-downloads opened no dialog".to_owned())?;
+        glib::timeout_future(Duration::from_millis(500)).await;
+        let shot = crate::screenshot::save_png(window, &ctx.out_dir.join("downloads.png")).await;
+        dialog.close();
+        shot.map_err(|e| e.to_string())?;
+        Ok(format!(
+            "{} matches the {} bytes served; list entry Completed, reading {:?}; the header shows the downloads button; downloads.png written",
+            expected.display(),
+            bytes.len(),
+            status_line(&entry, None, true)
+        ))
     })
     .await;
 
