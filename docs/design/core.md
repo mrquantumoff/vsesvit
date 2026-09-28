@@ -316,7 +316,7 @@ kinds), crash atomicity, indexes for history, and no fsync on the per-navigation
 the last few ms of commits; an app crash loses nothing. Typed tables per kind, not one JSON document table:
 `<field>_at` stamp columns next to each LWW field, `seq`, and `extra` (full DDL in `src/schema.sql`, with CHECKs for
 kind/field agreement, tombstone shape, and who owns `enabled`). Local-only tables (`tab_restore_state`,
-`extension_installs`, `ext_storage_local`, `favicons`, `downloads`) have no stamps, so sync cannot see them.
+`extension_installs`, `ext_storage_local`, `favicons`, `favicon_failures`, `downloads`) have no stamps, so sync cannot see them.
 
 ```
 %LOCALAPPDATA%\Vsesvit\data\profiles\<name>\   |  ~/.local/share/vsesvit/profiles/<name>/
