@@ -15,7 +15,7 @@
 //!
 //! The rules are Chromium's (`components/crx_file/crx_verifier.cc`): every proof must
 //! verify, one proof key must hash to `crx_id`, and store installs also need a proof by
-//! the Web Store publisher key. The header itself is not signed, so a header that
+//! the store's publisher key. The header itself is not signed, so a header that
 //! contains zip end-of-central-directory magic is rejected: a zip reader that scans
 //! backwards could otherwise be pointed at attacker-chosen bytes.
 //!
@@ -36,6 +36,14 @@ pub const CRX_MAGIC: &[u8; 4] = b"Cr24";
 pub const CWS_PUBLISHER_KEY_SHA256: [u8; 32] = [
     0x61, 0xf7, 0xf2, 0xa6, 0xbf, 0xcf, 0x74, 0xcd, 0x0b, 0xc1, 0xfe, 0x24, 0x97, 0xcc, 0x9b, 0x04, 0x25, 0x4c, 0x65, 0x8f, 0x79, 0xf2,
     0x14, 0x53, 0x92, 0x86, 0x7e, 0xa8, 0x36, 0x63, 0x67, 0xcf,
+];
+
+/// SHA-256 of the Microsoft Edge Add-ons publisher key's SPKI DER
+/// (`675bd8eddd385020177ccfeda25103895799fe41eca5c94e61dc13df359da1dc`): the P-256 key
+/// of the ECDSA proof on every CRX that `edge.microsoft.com` serves.
+pub const EDGE_PUBLISHER_KEY_SHA256: [u8; 32] = [
+    0x67, 0x5b, 0xd8, 0xed, 0xdd, 0x38, 0x50, 0x20, 0x17, 0x7c, 0xcf, 0xed, 0xa2, 0x51, 0x03, 0x89, 0x57, 0x99, 0xfe, 0x41, 0xec, 0xa5,
+    0xc9, 0x4e, 0x61, 0xdc, 0x13, 0xdf, 0x35, 0x9d, 0xa1, 0xdc,
 ];
 
 const SIGNED_DATA_CONTEXT: &[u8] = b"CRX3 SignedData\x00";
@@ -159,11 +167,34 @@ fn parse_signed_data(b: &[u8]) -> Result<[u8; 16], CrxError> {
     crx_id.and_then(|id| <[u8; 16]>::try_from(id).ok()).ok_or(CrxError::Malformed)
 }
 
+/// A store that countersigns the CRX files it serves with its own publisher key.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CrxStore {
+    ChromeWebStore,
+    EdgeAddons,
+}
+
+impl CrxStore {
+    pub fn publisher_key_sha256(self) -> &'static [u8; 32] {
+        match self {
+            CrxStore::ChromeWebStore => &CWS_PUBLISHER_KEY_SHA256,
+            CrxStore::EdgeAddons => &EDGE_PUBLISHER_KEY_SHA256,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            CrxStore::ChromeWebStore => "Chrome Web Store",
+            CrxStore::EdgeAddons => "Edge Add-ons",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum VerifyPolicy {
-    /// Store download: the id must equal `expected`, and a valid proof by the Web Store
-    /// publisher key must be present (as Chrome requires for store installs).
-    WebStore { expected: ExtensionId },
+    /// Store download: the id must equal `expected`, and a valid proof by `store`'s
+    /// publisher key must be present (as Chrome and Edge require for store installs).
+    WebStore { store: CrxStore, expected: ExtensionId },
     /// Local `.crx` file: a valid developer proof is enough.
     AnyDeveloperKey,
 }
@@ -173,7 +204,8 @@ pub struct VerifiedCrx {
     pub id: ExtensionId,
     /// Goes into `manifest.json` as `"key"`, base64.
     pub developer_key: Vec<u8>,
-    /// A valid proof by the Web Store publisher key is present. Always true under
+    /// A valid proof by the publisher key is present: the policy's store, or the Chrome
+    /// Web Store for [`VerifyPolicy::AnyDeveloperKey`]. Always true under
     /// [`VerifyPolicy::WebStore`], which requires it.
     pub publisher_verified: bool,
 }
@@ -182,13 +214,17 @@ pub struct VerifiedCrx {
 ///    the whole file, as in Chromium.
 /// 2. Developer proof: a proof whose `sha256(public_key)[..16] == crx_id`. Required.
 /// 3. `WebStore`: `ExtensionId::from_crx_id(crx_id) == expected`, and a proof whose
-///    `sha256(public_key) == CWS_PUBLISHER_KEY_SHA256`.
+///    `sha256(public_key)` is the store's publisher key hash.
 pub fn verify(crx: &Crx3<'_>, policy: &VerifyPolicy) -> Result<VerifiedCrx, CrxError> {
-    verify_with_publisher(crx, policy, &CWS_PUBLISHER_KEY_SHA256)
+    let publisher = match policy {
+        VerifyPolicy::WebStore { store, .. } => store.publisher_key_sha256(),
+        VerifyPolicy::AnyDeveloperKey => &CWS_PUBLISHER_KEY_SHA256,
+    };
+    verify_with_publisher(crx, policy, publisher)
 }
 
 /// [`verify`] with the publisher key hash as a parameter, so tests can stand in for
-/// the Web Store with a key they hold.
+/// a store with a key they hold.
 #[doc(hidden)]
 pub fn verify_with_publisher(crx: &Crx3<'_>, policy: &VerifyPolicy, publisher_key_sha256: &[u8; 32]) -> Result<VerifiedCrx, CrxError> {
     let digest = crx.signed_digest();
@@ -204,12 +240,12 @@ pub fn verify_with_publisher(crx: &Crx3<'_>, policy: &VerifyPolicy, publisher_ke
     }
     let developer_key = developer_key.ok_or(CrxError::NoDeveloperProof)?;
     let id = ExtensionId::from_crx_id(crx.crx_id);
-    if let VerifyPolicy::WebStore { expected } = policy {
+    if let VerifyPolicy::WebStore { store, expected } = policy {
         if id != *expected {
             return Err(CrxError::WrongId { expected: expected.as_str().to_owned(), actual: id.as_str().to_owned() });
         }
         if !publisher_verified {
-            return Err(CrxError::NoPublisherProof);
+            return Err(CrxError::NoPublisherProof(*store));
         }
     }
     Ok(VerifiedCrx { id, developer_key, publisher_verified })
@@ -253,8 +289,8 @@ pub enum CrxError {
     InvalidProof(ProofAlgorithm),
     #[error("no valid signature by the key the extension id is derived from")]
     NoDeveloperProof,
-    #[error("no valid Chrome Web Store publisher signature")]
-    NoPublisherProof,
+    #[error("no valid {} publisher signature", .0.name())]
+    NoPublisherProof(CrxStore),
     #[error("CRX is for extension {actual}, expected {expected}")]
     WrongId { expected: String, actual: String },
 }
@@ -377,8 +413,9 @@ mod tests {
     }
 
     #[test]
-    fn publisher_key_hash_matches_the_published_hex() {
-        let hex: String = CWS_PUBLISHER_KEY_SHA256.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(hex, "61f7f2a6bfcf74cd0bc1fe2497cc9b04254c658f79f2145392867ea8366367cf");
+    fn publisher_key_hashes_match_the_published_hex() {
+        let hex = |key: &[u8; 32]| key.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(hex(&CWS_PUBLISHER_KEY_SHA256), "61f7f2a6bfcf74cd0bc1fe2497cc9b04254c658f79f2145392867ea8366367cf");
+        assert_eq!(hex(&EDGE_PUBLISHER_KEY_SHA256), "675bd8eddd385020177ccfeda25103895799fe41eca5c94e61dc13df359da1dc");
     }
 }

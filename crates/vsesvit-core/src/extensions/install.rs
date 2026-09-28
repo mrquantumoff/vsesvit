@@ -4,8 +4,8 @@
 //! anything.
 //!
 //! ```text
-//! run():  resolve ─▶ fetch (in memory, size-capped; AMO: sha256 checked)
-//!                 ─▶ verify (CRX3: every proof + id binding + publisher proof;  AMO XPI: sha256 from the API)
+//! run():  resolve ─▶ fetch (in memory, size-capped; AMO, Edge Add-ons: sha256 checked)
+//!                 ─▶ verify (CRX3: every proof + id binding + the store's publisher proof;  AMO XPI: sha256 from the API)
 //!                 ─▶ unpack (zip-slip / symlink / name / size checks, drop _metadata/)
 //!                 ─▶ set manifest "key" (CRX: the verified key, so the unpacked dir keeps the store id;
 //!                                        XPI: removed, since nothing verified it)
@@ -23,7 +23,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::crx::{self, CrxError, VerifyPolicy};
+use super::crx::{self, CrxError, CrxStore, VerifyPolicy};
 use super::manifest::{self, Manifest, ManifestError};
 use super::{ExtensionId, StoreRef, Verification, is_windows_reserved_name};
 use crate::Url;
@@ -39,12 +39,20 @@ pub const MAX_ENTRIES: usize = 20_000;
 const MAX_RATIO: u64 = 100;
 const RATIO_ALLOWANCE: u64 = 1 << 20;
 const MAX_API_RESPONSE_BYTES: u64 = 1 << 20;
+/// Edge Add-ons' update service. Its `?response=redirect` form sends downloads to a
+/// plain-http CDN URL, which the https-only agent refuses, so installs go through an
+/// update check, which names an https one.
+const EDGE_UPDATE_URL: &str = "https://edge.microsoft.com/extensionwebstorebase/v1/crx";
 
 /// What the user gave us, parsed once at the boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InstallSource {
     ChromeWebStore {
+        id: ExtensionId,
+    },
+    /// Microsoft Edge Add-ons. Its ids are Chrome-style, so a bare id stays Chrome Web Store.
+    EdgeAddons {
         id: ExtensionId,
     },
     /// AMO slug or gecko id. After install the record is keyed by the gecko id.
@@ -67,7 +75,8 @@ impl InstallSource {
     /// Accepts:
     /// - `https://chromewebstore.google.com/detail/<slug>/<id>` and `.../detail/<id>`
     /// - `https://chrome.google.com/webstore/detail/<slug>/<id>` (legacy)
-    /// - a bare 32-char `a..p` id
+    /// - `https://microsoftedge.microsoft.com/addons/detail/<slug>/<id>` and `.../detail/<id>`
+    /// - a bare 32-char `a..p` id (Chrome Web Store)
     /// - `https://addons.mozilla.org/<locale>/firefox/addon/<slug>/` (the locale and
     ///   app segments are optional), or a bare gecko id (`name@domain`, `{uuid}`)
     /// - `file://` URLs or paths ending in `.crx` / `.xpi`, or naming a directory with a
@@ -122,8 +131,9 @@ impl InstallSource {
         let host = url.host_str().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase();
         let segments: Vec<&str> = url.path_segments().into_iter().flatten().filter(|s| !s.is_empty()).collect();
         match host.as_str() {
-            "chromewebstore.google.com" => cws_id_after(&segments, &["detail"]),
-            "chrome.google.com" => cws_id_after(&segments, &["webstore", "detail"]),
+            "chromewebstore.google.com" => crx_store_id_after(&segments, &["detail"], CrxStore::ChromeWebStore),
+            "chrome.google.com" => crx_store_id_after(&segments, &["webstore", "detail"], CrxStore::ChromeWebStore),
+            "microsoftedge.microsoft.com" => crx_store_id_after(&segments, &["addons", "detail"], CrxStore::EdgeAddons),
             "addons.mozilla.org" => {
                 let at = segments.iter().position(|s| *s == "addon").ok_or(SourceParseError::Unrecognized)?;
                 let slug =
@@ -138,6 +148,7 @@ impl InstallSource {
     pub fn store(&self) -> Option<StoreRef> {
         match self {
             InstallSource::ChromeWebStore { .. } => Some(StoreRef::ChromeWebStore),
+            InstallSource::EdgeAddons { .. } => Some(StoreRef::EdgeAddons),
             InstallSource::Amo { .. } => Some(StoreRef::Amo),
             _ => None,
         }
@@ -147,6 +158,7 @@ impl InstallSource {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             InstallSource::ChromeWebStore { .. } => "chrome_web_store",
+            InstallSource::EdgeAddons { .. } => "edge_addons",
             InstallSource::Amo { .. } => "amo",
             InstallSource::CrxFile { .. } => "crx_file",
             InstallSource::XpiFile { .. } => "xpi_file",
@@ -192,13 +204,14 @@ fn absolute_normalized(path: &Path) -> Option<PathBuf> {
 }
 
 /// `/detail/<slug>/<id>` or `/detail/<id>`, possibly followed by more segments.
-fn cws_id_after(segments: &[&str], prefix: &[&str]) -> Result<InstallSource, SourceParseError> {
+fn crx_store_id_after(segments: &[&str], prefix: &[&str], store: CrxStore) -> Result<InstallSource, SourceParseError> {
     let rest = segments.strip_prefix(prefix).ok_or(SourceParseError::Unrecognized)?;
-    rest.iter()
-        .take(2)
-        .find_map(|s| ExtensionId::parse(s).ok().filter(ExtensionId::is_chrome_style))
-        .map(|id| InstallSource::ChromeWebStore { id })
-        .ok_or(SourceParseError::BadId)
+    let id =
+        rest.iter().take(2).find_map(|s| ExtensionId::parse(s).ok().filter(ExtensionId::is_chrome_style)).ok_or(SourceParseError::BadId)?;
+    Ok(match store {
+        CrxStore::ChromeWebStore => InstallSource::ChromeWebStore { id },
+        CrxStore::EdgeAddons => InstallSource::EdgeAddons { id },
+    })
 }
 
 fn is_amo_slug(s: &str) -> bool {
@@ -229,7 +242,7 @@ fn percent_decode(s: &str) -> Option<String> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SourceParseError {
-    #[error("not a Chrome Web Store or addons.mozilla.org extension URL, an extension id, or an extension file")]
+    #[error("not a Chrome Web Store, Edge Add-ons or addons.mozilla.org extension URL, an extension id, or an extension file")]
     Unrecognized,
     #[error("the store URL does not contain a valid extension id")]
     BadId,
@@ -248,7 +261,7 @@ pub enum Intent {
 /// Where a running job is, for the install UI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstallPhase {
-    /// AMO only: asking the API which file to download.
+    /// AMO and Edge Add-ons: asking the store which file to download.
     Resolving,
     /// Reported after every received chunk. `total` is the server's `Content-Length`.
     Downloading {
@@ -270,8 +283,8 @@ pub struct InstallJob {
     pub(crate) staging: StagingDir,
     pub(crate) chrome_version: String,
     pub(crate) ui_locale: String,
-    /// The id the job must produce: the requested Chrome Web Store id, or the synced
-    /// record's id for a reconcile job.
+    /// The id the job must produce: the requested Chrome Web Store or Edge Add-ons id, or
+    /// the synced record's id for a reconcile job.
     pub(crate) expected_id: Option<ExtensionId>,
 }
 
@@ -284,7 +297,9 @@ impl InstallJob {
     /// `progress` is called on the calling thread.
     ///
     /// - CWS: GET the update2 URL (redirects followed; 204/empty = `NotAvailable`),
-    ///   `crx::parse` + `crx::verify(WebStore { expected: id })`.
+    ///   `crx::parse` + `crx::verify(WebStore { store, expected: id })`.
+    /// - Edge Add-ons: POST the update check, GET its codebase, check its sha256, then
+    ///   verify as CWS does, with the Edge publisher key.
     /// - AMO: GET the API JSON, GET `file.url`, check `file.hash`. Id = manifest gecko id,
     ///   which must equal the API `guid` when both exist, else the API `guid`.
     /// - CrxFile: `crx::verify(AnyDeveloperKey)`. The id comes from the developer key.
@@ -358,7 +373,18 @@ fn fetch(source: &InstallSource, chrome_version: &str, progress: &mut dyn FnMut(
         InstallSource::Unpacked { dir } => return Ok(Fetched::InPlace(dir.clone())),
         InstallSource::ChromeWebStore { id } => {
             let bytes = download(&agent(), InstallSource::cws_download_url(id, chrome_version).as_str(), progress)?;
-            Package::new(bytes, Format::Crx(VerifyPolicy::WebStore { expected: id.clone() }))
+            Package::new(bytes, Format::Crx(VerifyPolicy::WebStore { store: CrxStore::ChromeWebStore, expected: id.clone() }))
+        }
+        InstallSource::EdgeAddons { id } => {
+            progress(InstallPhase::Resolving);
+            let agent = agent();
+            let (url, expected_sha256) = edge_package(&agent, id, chrome_version)?;
+            let bytes = download(&agent, &url, progress)?;
+            let package = Package::new(bytes, Format::Crx(VerifyPolicy::WebStore { store: CrxStore::EdgeAddons, expected: id.clone() }));
+            if package.sha256 != expected_sha256 {
+                return Err(InstallError::HashMismatch);
+            }
+            package
         }
         InstallSource::Amo { slug_or_guid } => {
             progress(InstallPhase::Resolving);
@@ -396,7 +422,10 @@ fn stage(
             progress(InstallPhase::ReadingManifest);
             let manifest = Manifest::load(root, ui_locale)?;
             let verification = match policy {
-                VerifyPolicy::WebStore { .. } => Verification::ChromeWebStore { publisher_verified: verified.publisher_verified },
+                VerifyPolicy::WebStore { store: CrxStore::ChromeWebStore, .. } => {
+                    Verification::ChromeWebStore { publisher_verified: verified.publisher_verified }
+                }
+                VerifyPolicy::WebStore { store: CrxStore::EdgeAddons, .. } => Verification::EdgeAddons,
                 VerifyPolicy::AnyDeveloperKey => Verification::LocalCrx,
             };
             Ok((verified.id, manifest, verification))
@@ -531,10 +560,50 @@ fn amo_addon(agent: &ureq::Agent, slug_or_guid: &str) -> Result<AmoAddon, Instal
     serde_json::from_slice(&body).map_err(|e| InstallError::BadStoreResponse(e.to_string()))
 }
 
+/// The Omaha 3.1 update check Edge itself POSTs to [`EDGE_UPDATE_URL`] for a fresh install.
+fn edge_update_request(id: &ExtensionId, chrome_version: &str) -> serde_json::Value {
+    serde_json::json!({ "request": {
+        "protocol": "3.1",
+        "acceptformat": "crx3",
+        "prodversion": chrome_version,
+        "app": [{ "appid": id.as_str(), "installsource": "ondemand", "version": "0.0.0.0", "updatecheck": {} }],
+    }})
+}
+
+/// The codebase URL and sha256 of the CRX Edge Add-ons serves for `id`.
+fn edge_package(agent: &ureq::Agent, id: &ExtensionId, chrome_version: &str) -> Result<(String, [u8; 32]), InstallError> {
+    let request = edge_update_request(id, chrome_version).to_string();
+    let mut response = agent.post(EDGE_UPDATE_URL).header("Content-Type", "application/json").send(&request).map_err(network_error)?;
+    let body = response.body_mut().with_config().limit(MAX_API_RESPONSE_BYTES).read_to_vec().map_err(network_error)?;
+    parse_edge_update(&body)
+}
+
+/// An Omaha 3.1 JSON response, which starts with the `)]}'` line that guards against JSON
+/// hijacking. An app status other than `ok` (`error-unknownApplication` for an id the
+/// store does not have) or an update check other than `ok` means nothing to install.
+fn parse_edge_update(body: &[u8]) -> Result<(String, [u8; 32]), InstallError> {
+    let json = body.strip_prefix(b")]}'").unwrap_or(body);
+    let value: serde_json::Value = serde_json::from_slice(json).map_err(|e| InstallError::BadStoreResponse(e.to_string()))?;
+    let app = &value["response"]["app"][0];
+    if app["status"] != "ok" || app["updatecheck"]["status"] != "ok" {
+        return Err(InstallError::NotAvailable);
+    }
+    let field = |pointer: &str| {
+        app.pointer(pointer).and_then(serde_json::Value::as_str).ok_or_else(|| InstallError::BadStoreResponse(format!("no {pointer}")))
+    };
+    let codebase = field("/updatecheck/urls/url/0/codebase")?;
+    let hash = field("/updatecheck/manifest/packages/package/0/hash_sha256")?;
+    Ok((codebase.to_owned(), parse_hex_sha256(hash)?))
+}
+
 /// `"sha256:<64 hex>"`.
 fn parse_sha256(hash: &str) -> Result<[u8; 32], InstallError> {
-    let bad = || InstallError::BadStoreResponse(format!("file hash {hash:?}"));
-    let hex = hash.strip_prefix("sha256:").ok_or_else(bad)?;
+    parse_hex_sha256(hash.strip_prefix("sha256:").ok_or_else(|| InstallError::BadStoreResponse(format!("file hash {hash:?}")))?)
+}
+
+/// 64 hex digits, either case.
+fn parse_hex_sha256(hex: &str) -> Result<[u8; 32], InstallError> {
+    let bad = || InstallError::BadStoreResponse(format!("file hash {hex:?}"));
     if hex.len() != 64 {
         return Err(bad());
     }
@@ -820,11 +889,39 @@ mod tests {
             InstallSource::cws_download_url(&id, "150.0.7000.1").as_str(),
             "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=150.0.7000.1&acceptformat=crx2,crx3&x=id%3Dddkjiahejlhfcafbddmgiahcphecmpfh%26uc"
         );
+        let id = ExtensionId::parse("gcllgfdnfnllodcaambdaknbipemelie").unwrap();
+        assert_eq!(
+            edge_update_request(&id, "150.0.7000.1").to_string(),
+            r#"{"request":{"acceptformat":"crx3","app":[{"appid":"gcllgfdnfnllodcaambdaknbipemelie","installsource":"ondemand","updatecheck":{},"version":"0.0.0.0"}],"prodversion":"150.0.7000.1","protocol":"3.1"}}"#
+        );
         assert_eq!(InstallSource::amo_api_url("ublock-origin").as_str(), "https://addons.mozilla.org/api/v5/addons/addon/ublock-origin/");
         assert_eq!(
             InstallSource::amo_api_url("{d10d0bf8-f5b5-c8b4-a8b2-2b9879e08c5d}").as_str(),
             "https://addons.mozilla.org/api/v5/addons/addon/%7Bd10d0bf8-f5b5-c8b4-a8b2-2b9879e08c5d%7D/"
         );
+    }
+
+    #[test]
+    fn edge_update_responses() {
+        const XSSI: &str = ")]}'
+";
+        let hash = "B652C20CED279839FAE5A9B2C935BFB9FC32654496ECD9163615B8402D7892EF";
+        let ok = serde_json::json!({ "response": { "app": [{ "status": "ok", "updatecheck": {
+            "status": "ok",
+            "urls": { "url": [{ "codebase": "https://cdn.example/f?P1=1" }] },
+            "manifest": { "packages": { "package": [{ "hash_sha256": hash }] } },
+        }}]}});
+        let (url, sha256) = parse_edge_update(format!("{XSSI}{ok}").as_bytes()).unwrap();
+        assert_eq!(url, "https://cdn.example/f?P1=1");
+        assert_eq!(hex(&sha256), hash.to_ascii_lowercase());
+
+        let unknown = br#"{"response":{"app":[{"appid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"error-unknownApplication"}]}}"#;
+        assert!(matches!(parse_edge_update(unknown), Err(InstallError::NotAvailable)));
+        let no_update = br#"{"response":{"app":[{"status":"ok","updatecheck":{"status":"noupdate"}}]}}"#;
+        assert!(matches!(parse_edge_update(no_update), Err(InstallError::NotAvailable)));
+        let no_hash = br#"{"response":{"app":[{"status":"ok","updatecheck":{"status":"ok","urls":{"url":[{"codebase":"https://x/"}]}}}]}}"#;
+        assert!(matches!(parse_edge_update(no_hash), Err(InstallError::BadStoreResponse(_))));
+        assert!(matches!(parse_edge_update(b"<html>"), Err(InstallError::BadStoreResponse(_))));
     }
 
     #[test]

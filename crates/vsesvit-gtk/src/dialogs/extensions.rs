@@ -30,7 +30,7 @@ struct State {
 
 pub(crate) fn present(window: &BrowserWindow) {
     let source = adw::EntryRow::builder()
-        .title("Chrome Web Store or Firefox Add-ons link or ID")
+        .title("Chrome Web Store, Edge Add-ons or Firefox Add-ons link or ID")
         .show_apply_button(true)
         .input_purpose(gtk::InputPurpose::Url)
         .build();

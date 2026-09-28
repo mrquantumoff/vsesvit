@@ -18,28 +18,13 @@ impl Lattice for ExtensionRecord {
     }
 }
 
-fn store_text(s: &StoreRef) -> &'static str {
-    match s {
-        StoreRef::ChromeWebStore => "chrome_web_store",
-        StoreRef::Amo => "amo",
-    }
-}
-
-fn store_from_text(s: &str) -> Option<StoreRef> {
-    match s {
-        "chrome_web_store" => Some(StoreRef::ChromeWebStore),
-        "amo" => Some(StoreRef::Amo),
-        _ => None,
-    }
-}
-
 const COLUMNS: &str = "id, store, store_at, installed, installed_at, enabled, enabled_at, extra, seq";
 
 fn row_record(row: &rusqlite::Row<'_>) -> Result<(Seq, ExtensionRecord), rusqlite::Error> {
     let id: String = row.get(0)?;
     let id = ExtensionId::parse(&id).map_err(|_| crate::db::bad_column(0, "extension id"))?;
     let store: String = row.get(1)?;
-    let store = store_from_text(&store).ok_or_else(|| crate::db::bad_column(1, "store"))?;
+    let store = StoreRef::from_column(&store).ok_or_else(|| crate::db::bad_column(1, "store"))?;
     let rec = ExtensionRecord {
         id,
         store: Lww::new(store, stamp_col(row, 2)?),
@@ -62,7 +47,7 @@ pub(crate) fn store_record(conn: &rusqlite::Connection, rec: &ExtensionRecord, s
         &format!("INSERT OR REPLACE INTO extensions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"),
         params![
             rec.id.as_str(),
-            store_text(&rec.store.v),
+            rec.store.v.column(),
             rec.store.at.to_vec(),
             i64::from(rec.installed.v),
             rec.installed.at.to_vec(),

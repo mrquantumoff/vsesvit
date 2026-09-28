@@ -1,6 +1,6 @@
 # Vsesvit
 
-A web browser for Windows 11 and Linux, written in Rust. On Windows it is a WinUI 3 app around WebView2. On Linux it is a GTK4/libadwaita app around WebKitGTK. Both install Chrome Web Store extensions, and both store bookmarks, history, open tabs, extensions and settings in a sync-ready format.
+A web browser for Windows 11 and Linux, written in Rust. On Windows it is a WinUI 3 app around WebView2. On Linux it is a GTK4/libadwaita app around WebKitGTK. Both install Chrome Web Store and Microsoft Edge Add-ons extensions, and both store bookmarks, history, open tabs, extensions and settings in a sync-ready format.
 
 The plan, the decisions and their evidence are in [docs/PLAN.md](docs/PLAN.md).
 

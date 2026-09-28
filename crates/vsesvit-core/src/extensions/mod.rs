@@ -1,8 +1,8 @@
 //! Extensions: desired state (synced) kept apart from actual state (per device).
 //!
 //! - `extensions` table ([`ExtensionRecord`], synced): "the user wants store extension X,
-//!   enabled or not". Only store-origin extensions (Chrome Web Store, AMO) have one,
-//!   because only those can be installed on another device.
+//!   enabled or not". Only store-origin extensions (Chrome Web Store, Edge Add-ons, AMO)
+//!   have one, because only those can be installed on another device.
 //! - `extension_installs` table (local): "this device has version V of X in dir D".
 //!   Unpacked and file-installed extensions exist only here.
 //!
@@ -154,17 +154,22 @@ pub(crate) fn is_windows_reserved_name(name: &str) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum StoreRef {
     ChromeWebStore,
+    EdgeAddons,
     Amo,
 }
 
 impl StoreRef {
-    /// The `extensions.store` column value.
-    fn from_column(s: &str) -> Option<StoreRef> {
-        match s {
-            "chrome_web_store" => Some(StoreRef::ChromeWebStore),
-            "amo" => Some(StoreRef::Amo),
-            _ => None,
+    /// The `extensions.store` column value (same spelling as serde).
+    fn column(&self) -> &'static str {
+        match self {
+            StoreRef::ChromeWebStore => "chrome_web_store",
+            StoreRef::EdgeAddons => "edge_addons",
+            StoreRef::Amo => "amo",
         }
+    }
+
+    fn from_column(s: &str) -> Option<StoreRef> {
+        [StoreRef::ChromeWebStore, StoreRef::EdgeAddons, StoreRef::Amo].into_iter().find(|store| store.column() == s)
     }
 }
 
@@ -190,6 +195,11 @@ pub enum Verification {
     /// publisher key signed it. Installs without the publisher proof are refused, so
     /// a recorded store install always has `publisher_verified: true`.
     ChromeWebStore { publisher_verified: bool },
+    /// Downloaded from Microsoft Edge Add-ons, matching the update service's sha256: every
+    /// CRX3 proof verified, the developer key derives to the requested id, and the Edge
+    /// Add-ons publisher key signed it. That proof is required, so unlike `ChromeWebStore`
+    /// this carries no flag.
+    EdgeAddons,
     /// Downloaded from addons.mozilla.org over TLS, matching the API's sha256. Mozilla's
     /// own signature is not checked.
     AmoHash,
@@ -205,7 +215,7 @@ impl Verification {
     /// The id is the hash of a developer key this device saw sign the package. A manifest
     /// `key` proves nothing: it is a public key.
     fn binds_key(&self) -> bool {
-        matches!(self, Verification::ChromeWebStore { .. } | Verification::LocalCrx)
+        matches!(self, Verification::ChromeWebStore { .. } | Verification::EdgeAddons | Verification::LocalCrx)
     }
 }
 
@@ -399,7 +409,8 @@ impl Extensions<'_> {
             desired
         };
         let actual: HashMap<ExtensionId, bool> = {
-            let mut stmt = self.p.conn.prepare("SELECT id, source_kind IN ('chrome_web_store', 'amo') FROM extension_installs")?;
+            let mut stmt =
+                self.p.conn.prepare("SELECT id, source_kind IN ('chrome_web_store', 'edge_addons', 'amo') FROM extension_installs")?;
             let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?;
             let mut actual = HashMap::new();
             for row in rows {
@@ -420,6 +431,7 @@ impl Extensions<'_> {
             .map(|(id, store)| {
                 let source = match store {
                     StoreRef::ChromeWebStore => InstallSource::ChromeWebStore { id: id.clone() },
+                    StoreRef::EdgeAddons => InstallSource::EdgeAddons { id: id.clone() },
                     StoreRef::Amo => InstallSource::Amo { slug_or_guid: id.as_str().to_owned() },
                 };
                 self.job_expecting(source, Intent::Reconcile, Some(id.clone()))
@@ -472,7 +484,7 @@ impl Extensions<'_> {
 
     fn job(&self, source: InstallSource, intent: Intent) -> InstallJob {
         let expected = match &source {
-            InstallSource::ChromeWebStore { id } => Some(id.clone()),
+            InstallSource::ChromeWebStore { id } | InstallSource::EdgeAddons { id } => Some(id.clone()),
             _ => None,
         };
         self.job_expecting(source, intent, expected)
@@ -505,20 +517,25 @@ impl Extensions<'_> {
     }
 
     /// An install may not take:
-    /// - the id of a signature-verified package, installed here or wanted from the Chrome
-    ///   Web Store, unless it verified a developer key too (the id is that key's hash, so
-    ///   it is the same key). The id owns the extension's storage and engine identity.
+    /// - the id of a signature-verified package, installed here or wanted from a CRX store
+    ///   (Chrome Web Store, Edge Add-ons), unless it verified a developer key too (the id
+    ///   is that key's hash, so it is the same key). The id owns the extension's storage
+    ///   and engine identity.
     /// - an id that differs from an installed one only in letter case, since on Windows
     ///   both would share `extensions/<id>`.
     fn check_id(&self, id: &ExtensionId, verification: &Verification, existing: Option<&InstallRow>) -> Result<(), Error> {
         if !verification.binds_key() {
-            let wanted_from_cws = self
+            let wanted_from_crx_store = self
                 .p
                 .conn
-                .query_row("SELECT 1 FROM extensions WHERE id = ?1 AND installed AND store = 'chrome_web_store'", [id.as_str()], |_| Ok(()))
+                .query_row(
+                    "SELECT 1 FROM extensions WHERE id = ?1 AND installed AND store IN ('chrome_web_store', 'edge_addons')",
+                    [id.as_str()],
+                    |_| Ok(()),
+                )
                 .optional()?
                 .is_some();
-            if wanted_from_cws || existing.is_some_and(|r| r.verification.binds_key()) {
+            if wanted_from_crx_store || existing.is_some_and(|r| r.verification.binds_key()) {
                 return Err(InstallError::VerifiedIdTaken(id.as_str().to_owned()).into());
             }
         }
@@ -989,10 +1006,10 @@ mod store_tests {
         assert_eq!(job.source(), &InstallSource::ChromeWebStore { id: probe_id() }, "the store copy comes back");
     }
 
-    #[test]
-    fn an_unpacked_dir_with_a_store_extension_key_cannot_take_its_id() {
+    /// A developer copy of the probe at `<dir>/dev`, version 9.0, whose manifest `key` is
+    /// the probe's developer key, so it claims the store extension's id.
+    fn unpacked_with_probe_key(t: &mut TempProfile) -> StagedInstall {
         use base64::Engine as _;
-        let mut t = TempProfile::new();
         let dev = t.dir.join("dev");
         fs::create_dir_all(&dev).unwrap();
         for (name, bytes) in testkit::PROBE_FILES {
@@ -1002,12 +1019,15 @@ mod store_tests {
         let manifest = String::from_utf8(testkit::PROBE_FILES[0].1.to_vec()).unwrap();
         fs::write(dev.join("manifest.json"), manifest.replacen('{', &format!("{{\"key\": \"{key}\","), 1).replace("\"1.0.0\"", "\"9.0\""))
             .unwrap();
-        let unpacked = |t: &mut TempProfile| {
-            let job = t.p().extensions().prepare_install(InstallSource::Unpacked { dir: dev.clone() }).unwrap();
-            let staged = job.run(&mut |_| {}).unwrap();
-            assert_eq!(staged.id, probe_id());
-            staged
-        };
+        let job = t.p().extensions().prepare_install(InstallSource::Unpacked { dir: dev }).unwrap();
+        let staged = job.run(&mut |_| {}).unwrap();
+        assert_eq!(staged.id, probe_id());
+        staged
+    }
+
+    #[test]
+    fn an_unpacked_dir_with_a_store_extension_key_cannot_take_its_id() {
+        let mut t = TempProfile::new();
 
         // Wanted from the Chrome Web Store (another device installed it), not here yet.
         t.p()
@@ -1024,16 +1044,111 @@ mod store_tests {
                 ExtensionsTable::store(&tx.sql, &rec, seq)
             })
             .unwrap();
-        let staged = unpacked(&mut t);
+        let staged = unpacked_with_probe_key(&mut t);
         assert!(matches!(t.p().extensions().commit(staged), Err(Error::Install(InstallError::VerifiedIdTaken(_)))));
         assert!(t.p().extensions().list().unwrap().is_empty());
 
         // Installed from the store here.
         let staged = staged_from_store(&mut t, Intent::Reconcile);
         t.p().extensions().commit(staged).unwrap().unwrap();
-        let staged = unpacked(&mut t);
+        let staged = unpacked_with_probe_key(&mut t);
         assert!(matches!(t.p().extensions().commit(staged), Err(Error::Install(InstallError::VerifiedIdTaken(_)))));
         let ext = t.p().extensions().get(&probe_id()).unwrap().unwrap();
         assert_eq!((ext.version.as_str(), &ext.verification), ("1.0.0", &Verification::ChromeWebStore { publisher_verified: true }));
+    }
+
+    fn schema(conn: &rusqlite::Connection) -> Vec<(String, String, Option<String>)> {
+        let mut stmt = conn.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<_, _>>().unwrap()
+    }
+
+    /// A v3 profile (store CHECKs without 'edge_addons') with a Chrome Web Store record and
+    /// an unpacked install: migration v4 keeps both rows, ends at the fresh schema, and the
+    /// rebuilt tables take an Edge Add-ons install through its lifecycle.
+    #[test]
+    fn a_v3_profile_migrates_and_takes_an_edge_install() {
+        let fresh_schema = schema(&TempProfile::new().p().conn);
+        let dir = std::env::temp_dir().join(format!("vsesvit-store-{}", uuid::Uuid::new_v4().simple()));
+        let root = dir.join("profile");
+        let dev = dir.join("unpacked");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&dev).unwrap();
+        for (name, bytes) in testkit::PROBE_FILES {
+            fs::write(dev.join(name), bytes).unwrap();
+        }
+        let manifest = Manifest::load(&dev, "en").unwrap();
+        let unpacked_id = install::unpacked_id(&dev, &manifest);
+        let at = crate::crdt::Stamp { hlc: crate::crdt::Hlc(1), device: crate::crdt::DeviceId(7) };
+        let cws_record = ExtensionRecord {
+            id: ExtensionId::parse("ddkjiahejlhfcafbddmgiahcphecmpfh").unwrap(),
+            store: Lww::new(StoreRef::ChromeWebStore, at),
+            installed: Lww::new(true, at),
+            enabled: Lww::new(false, at),
+            extra: Extra::new(),
+        };
+        {
+            let mut conn = crate::db::open(&root.join("vsesvit.db")).unwrap();
+            let tx = conn.transaction().unwrap();
+            for sql in [crate::db::SCHEMA_V1, crate::db::SCHEMA_V1_EXTENSIONS, crate::favicons::SCHEMA, crate::downloads::SCHEMA] {
+                tx.execute_batch(sql).unwrap();
+            }
+            tx.pragma_update(None, "user_version", 3).unwrap();
+            ExtensionsTable::store(&tx, &cws_record, crate::crdt::Seq(1)).unwrap();
+            tx.execute(
+                "INSERT INTO extension_installs \
+                 (id, version, dir, source_kind, source, verification, manifest, local_enabled, engine_id, installed_ms) \
+                 VALUES (?1, '1.0.0', ?2, 'unpacked', ?3, ?4, ?5, 0, 'engine', 5)",
+                params![
+                    unpacked_id.as_str(),
+                    dev.to_str().unwrap(),
+                    to_json(&InstallSource::Unpacked { dir: dev.clone() }),
+                    to_json(&Verification::Unpacked),
+                    to_json(&manifest),
+                ],
+            )
+            .unwrap();
+            assert!(tx.execute("UPDATE extensions SET store = 'edge_addons'", []).is_err(), "v3 refuses the new store");
+            tx.commit().unwrap();
+        }
+
+        let mut t = TempProfile { dir, p: Some(Profile::open(&root, OpenOptions::default()).unwrap()) };
+        let version: u32 = t.p().conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 4);
+        assert_eq!(schema(&t.p().conn), fresh_schema, "a migrated profile has the fresh schema");
+        let kept_record = t.p().write(|tx| ExtensionsTable::load(&tx.sql, cws_record.id.as_str())).unwrap().unwrap();
+        assert_eq!(kept_record, cws_record);
+        let [kept] = <[InstalledExtension; 1]>::try_from(t.p().extensions().list().unwrap()).ok().unwrap();
+        assert_eq!((&kept.id, kept.enabled, kept.engine_id.as_deref()), (&unpacked_id, false, Some("engine")));
+
+        let mut staged = staged_from_store(&mut t, Intent::User);
+        staged.source = InstallSource::EdgeAddons { id: probe_id() };
+        staged.verification = Verification::EdgeAddons;
+        let ext = t.p().extensions().commit(staged).unwrap().unwrap();
+        assert_eq!((ext.verification, ext.enabled), (Verification::EdgeAddons, true));
+        let (rec, _) = desired(&mut t).unwrap();
+        assert_eq!((rec.store.v, rec.installed.v), (StoreRef::EdgeAddons, true));
+
+        remote_set_installed(&mut t, false);
+        let work = t.p().extensions().reconcile().unwrap();
+        assert_eq!(work.removed, [probe_id()], "an Edge install is a store install");
+
+        remote_set_installed(&mut t, true);
+        let work = t.p().extensions().reconcile().unwrap();
+        let mut jobs: Vec<(InstallSource, Option<ExtensionId>)> =
+            work.install.iter().map(|job| (job.source().clone(), job.expected_id.clone())).collect();
+        jobs.sort_by_key(|(_, id)| id.clone());
+        let mut expected = [
+            (InstallSource::EdgeAddons { id: probe_id() }, Some(probe_id())),
+            (InstallSource::ChromeWebStore { id: kept_record.id.clone() }, Some(kept_record.id.clone())),
+        ];
+        expected.sort_by_key(|(_, id)| id.clone());
+        assert_eq!(jobs, expected, "the Edge record, and the migrated Chrome Web Store record");
+        let staged = unpacked_with_probe_key(&mut t);
+        assert!(
+            matches!(t.p().extensions().commit(staged), Err(Error::Install(InstallError::VerifiedIdTaken(_)))),
+            "wanted from Edge Add-ons, so an unverified copy cannot take the id"
+        );
+        let job = t.p().extensions().prepare_install(InstallSource::EdgeAddons { id: probe_id() }).unwrap();
+        assert_eq!(job.expected_id, Some(probe_id()), "a user install checks the id too");
     }
 }

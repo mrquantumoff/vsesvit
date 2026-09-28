@@ -13,10 +13,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::crdt::{Clock, DeviceId, Hlc, Seq, Stamp};
 use crate::{Error, OpenError};
 
-pub(crate) const SCHEMA_VERSION: u32 = 3;
+pub(crate) const SCHEMA_VERSION: u32 = 4;
 pub(crate) const SCHEMA_V1: &str = include_str!("schema.sql");
 /// Extension tables, owned by `extensions`. Applied after `SCHEMA_V1` in the same transaction.
 pub(crate) const SCHEMA_V1_EXTENSIONS: &str = include_str!("extensions/schema.sql");
+/// Rebuilds both extension tables so their store CHECKs accept `edge_addons`.
+pub(crate) const SCHEMA_V4_EXTENSIONS: &str = include_str!("extensions/schema_v4.sql");
 
 /// `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=0`
 /// (a single process holds the profile, so contention is a bug, not a wait).
@@ -56,6 +58,12 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), OpenError> {
         let tx = conn.transaction()?;
         tx.execute_batch(crate::downloads::SCHEMA)?;
         tx.pragma_update(None, "user_version", 3)?;
+        tx.commit()?;
+    }
+    if found < 4 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V4_EXTENSIONS)?;
+        tx.pragma_update(None, "user_version", 4)?;
         tx.commit()?;
     }
     Ok(())

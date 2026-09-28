@@ -1,4 +1,4 @@
-//! Extensions: install from a Chrome Web Store or addons.mozilla.org link or id, a `.crx` /
+//! Extensions: install from a Chrome Web Store, Edge Add-ons or addons.mozilla.org link or id, a `.crx` /
 //! `.xpi` file or an unpacked folder, with progress; and the installed list with each
 //! extension's version, provenance, an on/off switch and a remove button.
 
@@ -24,7 +24,7 @@ pub(super) const MARKUP: &str = r#"
         <ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
       <TextBox x:Name="InstallSource"
-               PlaceholderText="Chrome Web Store or addons.mozilla.org link, extension ID, or file path"/>
+               PlaceholderText="Chrome Web Store, Edge Add-ons or addons.mozilla.org link, extension ID, or file path"/>
       <Button x:Name="InstallButton" Grid.Column="1" Content="Install" Style="{StaticResource AccentButtonStyle}"/>
       <Button x:Name="InstallFile" Grid.Column="2" Content="File..."
               ToolTipService.ToolTip="Install a .crx or .xpi file"/>

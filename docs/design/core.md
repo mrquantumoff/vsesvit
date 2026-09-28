@@ -350,7 +350,7 @@ device, and `None` means the platform's Downloads folder, which only the shell c
 Desired state (synced `extensions` rows, store installs only) is kept apart from actual state (local
 `extension_installs`: version, dir, source, parsed `Manifest`, `engine_id`). Every in-between state is an in-memory
 value, which gives the state machine *and* idempotency. `InstallSource::parse` handles CWS new and legacy URLs, bare
-ids, AMO URLs, `.crx`/`.xpi` paths, and unpacked dirs. `prepare_install` creates an `InstallJob`, which is `Send`, owns
+ids (CWS), Edge Add-ons URLs, AMO URLs, `.crx`/`.xpi` paths, and unpacked dirs. `prepare_install` creates an `InstallJob`, which is `Send`, owns
 a `StagingDir` guard and has no DB handle. `job.run()` runs off the UI thread and does
 fetch → verify → unpack → inject `key` → `Manifest::load`, producing a `StagedInstall` that only `run` can construct.
 `commit` runs on the UI thread: an atomic rename into the content-addressed dir (if the dir exists, it is already
@@ -420,7 +420,7 @@ and requires a valid tree covering exactly the live records.
 
 **Grafted.**
 
-- From candidate 2: each install records its provenance as a `Verification` enum (`ChromeWebStore { publisher_verified }`, `AmoHash`, `LocalCrx`, `LocalXpi`, `Unpacked`). The CRX3 parser rejects zip end-of-central-directory magic inside the header and fails if any proof is invalid, as Chromium does. `InstallJob::run` takes `progress: &mut dyn FnMut(InstallPhase)` for the download UI.
+- From candidate 2: each install records its provenance as a `Verification` enum (`ChromeWebStore { publisher_verified }`, `EdgeAddons`, `AmoHash`, `LocalCrx`, `LocalXpi`, `Unpacked`). The CRX3 parser rejects zip end-of-central-directory magic inside the header and fails if any proof is invalid, as Chromium does. `InstallJob::run` takes `progress: &mut dyn FnMut(InstallPhase)` for the download UI.
 - From candidate 2: the reading list is dropped as a kind. Code 9 is retired. If it comes back, it is a new table and kind and touches no existing row.
 - From candidate 3: search-engine records use `Record<T> = Live(T) | Tombstone(Stamp)` instead of live fields next to `deleted: Option<Stamp>`.
 - From candidate 3: the reserved credential wire shape is named now: `CredentialBlob { ciphertext, wrapped_by }` for kinds 10 and 11.
@@ -431,7 +431,7 @@ and requires a valid tree covering exactly the live records.
 - A history page record keeps only its newest 64 visits. Union followed by "keep the 64 largest `(at_ms, device)`" is still a semilattice join, because the top 64 of a union depends only on the global top 64. This bounds the record size.
 - `move_to`'s raw-chain cycle check carries a visited set, because the raw placement graph can contain cycles that do not involve the node being moved.
 - Session record equality ignores local restore state. Restore blobs live only in the local `tab_restore_state` table.
-- CRX3 verification also checks ECDSA P-256 proofs (the `p256` crate). It requires a developer proof whose key derives to `crx_id`. Downloads from the Chrome Web Store also need a proof by the Web Store publisher key, whose SPKI SHA-256 is `61f7f2a6bfcf74cd0bc1fe2497cc9b04254c658f79f2145392867ea8366367cf`.
+- CRX3 verification also checks ECDSA P-256 proofs (the `p256` crate). It requires a developer proof whose key derives to `crx_id`. Downloads from the Chrome Web Store also need a proof by the Web Store publisher key, whose SPKI SHA-256 is `61f7f2a6bfcf74cd0bc1fe2497cc9b04254c658f79f2145392867ea8366367cf`. Downloads from Edge Add-ons need a proof by the Edge publisher key (an ECDSA P-256 key, SPKI SHA-256 `675bd8eddd385020177ccfeda25103895799fe41eca5c94e61dc13df359da1dc`), and come from the codebase an Omaha 3.1 update check names, because the store's redirect URL points at plain http.
 - `BookmarkId::is_root` must not treat the nil UUID as a root.
 - The wire rule is tested with serde. Every synced field is `{"v": .., "at": ".."}`, and a field that needs a different merge rule needs a new `Kind`.
 

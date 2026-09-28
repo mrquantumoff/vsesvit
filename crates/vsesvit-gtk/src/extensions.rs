@@ -223,6 +223,7 @@ pub(crate) fn describe_verification(verification: &Verification) -> &'static str
     match verification {
         Verification::ChromeWebStore { publisher_verified: true } => "Chrome Web Store, publisher verified",
         Verification::ChromeWebStore { publisher_verified: false } => "Chrome Web Store, developer key only",
+        Verification::EdgeAddons => "Edge Add-ons, publisher verified",
         Verification::AmoHash => "Firefox Add-ons, hash checked",
         Verification::LocalCrx => "Local CRX, signature verified",
         Verification::LocalXpi => "Local XPI, not verified",

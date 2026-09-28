@@ -7,11 +7,12 @@
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
-use vsesvit_core::extensions::crx::{self, CWS_PUBLISHER_KEY_SHA256};
+use vsesvit_core::extensions::crx::{self, CWS_PUBLISHER_KEY_SHA256, EDGE_PUBLISHER_KEY_SHA256};
 use vsesvit_core::extensions::{DEFAULT_CHROME_VERSION, ExtensionId, InstallPhase, InstallSource, Verification};
 use vsesvit_core::{OpenOptions, Profile};
 
 const UBO_LITE: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
+const PROTON_PASS: &str = "gcllgfdnfnllodcaambdaknbipemelie";
 
 struct TempDir(PathBuf);
 
@@ -33,13 +34,9 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Prints the proofs the live CRX carries, then installs it through the real pipeline.
-#[test]
-#[ignore = "downloads uBlock Origin Lite from the Chrome Web Store"]
-fn installs_ublock_origin_lite_from_the_chrome_web_store() {
-    let id = ExtensionId::parse(UBO_LITE).unwrap();
-    let url = InstallSource::cws_download_url(&id, DEFAULT_CHROME_VERSION);
-    let bytes = ureq::get(url.as_str()).call().unwrap().into_body().with_config().limit(256 << 20).read_to_vec().unwrap();
+/// Prints the proofs the live CRX at `url` carries.
+fn print_proofs(url: &str) {
+    let bytes = ureq::get(url).call().unwrap().into_body().with_config().limit(256 << 20).read_to_vec().unwrap();
     let parsed = crx::parse(&bytes).unwrap();
     println!("CRX: {} bytes, header {} bytes", bytes.len(), bytes.len() - parsed.zip.len() - 12);
     for (algorithm, proof) in parsed.proofs() {
@@ -48,6 +45,8 @@ fn installs_ublock_origin_lite_from_the_chrome_web_store() {
             "developer (derives to crx_id)"
         } else if key_hash == CWS_PUBLISHER_KEY_SHA256 {
             "Chrome Web Store publisher"
+        } else if key_hash == EDGE_PUBLISHER_KEY_SHA256 {
+            "Edge Add-ons publisher"
         } else {
             "other"
         };
@@ -58,6 +57,14 @@ fn installs_ublock_origin_lite_from_the_chrome_web_store() {
             proof.signature.len()
         );
     }
+}
+
+/// Prints the proofs the live CRX carries, then installs it through the real pipeline.
+#[test]
+#[ignore = "downloads uBlock Origin Lite from the Chrome Web Store"]
+fn installs_ublock_origin_lite_from_the_chrome_web_store() {
+    let id = ExtensionId::parse(UBO_LITE).unwrap();
+    print_proofs(InstallSource::cws_download_url(&id, DEFAULT_CHROME_VERSION).as_str());
 
     let t = TempDir::new();
     let mut p = Profile::open(&t.0.join("profile"), OpenOptions::default()).unwrap();
@@ -79,6 +86,34 @@ fn installs_ublock_origin_lite_from_the_chrome_web_store() {
     assert_eq!(ext.manifest.key_id(), Some(id), "the injected key keeps the store id");
     assert!(!ext.dir.join("_metadata").exists());
     assert!(!ext.manifest.dnr_rulesets.is_empty(), "uBO Lite filters with declarativeNetRequest");
+}
+
+/// Prints the proofs the live CRX carries, then installs it through the real pipeline.
+#[test]
+#[ignore = "downloads Proton Pass from Microsoft Edge Add-ons"]
+fn installs_proton_pass_from_edge_add_ons() {
+    let id = ExtensionId::parse(PROTON_PASS).unwrap();
+    // The redirect form ends at a plain-http CDN URL; the pipeline asks the update service
+    // for an https one instead.
+    print_proofs(&format!(
+        "https://edge.microsoft.com/extensionwebstorebase/v1/crx?response=redirect&x=id%3D{PROTON_PASS}%26installsource%3Dondemand%26uc"
+    ));
+
+    let t = TempDir::new();
+    let mut p = Profile::open(&t.0.join("profile"), OpenOptions::default()).unwrap();
+    let source =
+        InstallSource::parse("https://microsoftedge.microsoft.com/addons/detail/proton-pass-free-passwor/gcllgfdnfnllodcaambdaknbipemelie")
+            .unwrap();
+    assert_eq!(source, InstallSource::EdgeAddons { id: id.clone() });
+    let staged = p.extensions().prepare_install(source).unwrap().run(&mut |_| {}).unwrap();
+    let ext = p.extensions().commit(staged).unwrap().unwrap();
+    println!("installed {} {} into {}; verification = {:?}", ext.manifest.name, ext.version, ext.dir.display(), ext.verification);
+
+    assert_eq!(ext.id, id);
+    assert_eq!(ext.verification, Verification::EdgeAddons);
+    assert_eq!(ext.manifest.key_id(), Some(id), "the injected key keeps the store id");
+    assert!(!ext.dir.join("_metadata").exists());
+    assert!(ext.enabled);
 }
 
 #[test]

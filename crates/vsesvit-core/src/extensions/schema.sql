@@ -1,5 +1,7 @@
 -- Extension tables, applied by db::migrate right after ../schema.sql in the same transaction.
 -- Owned by the extensions module. Same conventions as ../schema.sql.
+-- These are the v1 definitions. Migration v4 (schema_v4.sql) rebuilt both tables to add
+-- 'edge_addons' to the store CHECKs, and holds their current definitions.
 
 -- ── Extensions: desired (Kind::Extensions) vs actual (LOCAL) ─────────────────────────
 CREATE TABLE extensions (                -- store-origin extensions only

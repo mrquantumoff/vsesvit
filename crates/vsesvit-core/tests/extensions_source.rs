@@ -10,6 +10,10 @@ fn cws(id: &str) -> InstallSource {
     InstallSource::ChromeWebStore { id: ExtensionId::parse(id).unwrap() }
 }
 
+fn edge(id: &str) -> InstallSource {
+    InstallSource::EdgeAddons { id: ExtensionId::parse(id).unwrap() }
+}
+
 fn amo(slug: &str) -> InstallSource {
     InstallSource::Amo { slug_or_guid: slug.to_owned() }
 }
@@ -40,6 +44,38 @@ fn chrome_web_store_urls_and_ids() {
         Err(SourceParseError::Unrecognized)
     ));
     assert_eq!(cws(UBO_LITE).store(), Some(StoreRef::ChromeWebStore));
+}
+
+#[test]
+fn edge_add_ons_urls() {
+    const PROTON_PASS: &str = "gcllgfdnfnllodcaambdaknbipemelie";
+    for input in [
+        "https://microsoftedge.microsoft.com/addons/detail/proton-pass-free-passwor/gcllgfdnfnllodcaambdaknbipemelie",
+        "https://microsoftedge.microsoft.com/addons/detail/proton-pass-free-passwor/gcllgfdnfnllodcaambdaknbipemelie?hl=uk",
+        "https://microsoftedge.microsoft.com/addons/detail/gcllgfdnfnllodcaambdaknbipemelie",
+        "https://microsoftedge.microsoft.com/addons/detail/gcllgfdnfnllodcaambdaknbipemelie#reviews",
+        "http://MICROSOFTEDGE.microsoft.com./addons/detail/x/gcllgfdnfnllodcaambdaknbipemelie",
+    ] {
+        assert_eq!(InstallSource::parse(input).unwrap(), edge(PROTON_PASS), "{input:?}");
+    }
+    assert_eq!(InstallSource::parse(PROTON_PASS).unwrap(), cws(PROTON_PASS), "a bare id stays Chrome Web Store");
+    assert!(matches!(
+        InstallSource::parse("https://microsoftedge.microsoft.com/addons/detail/proton-pass-free-passwor"),
+        Err(SourceParseError::BadId)
+    ));
+    assert!(matches!(
+        InstallSource::parse("https://microsoftedge.microsoft.com/addons/detail/x/gcllgfdnfnllodcaambdaknbipemelz"),
+        Err(SourceParseError::BadId)
+    ));
+    assert!(matches!(
+        InstallSource::parse("https://microsoftedge.microsoft.com/addons/Microsoft-Edge-Extensions-Home"),
+        Err(SourceParseError::Unrecognized)
+    ));
+    assert!(matches!(
+        InstallSource::parse("https://edge.microsoft.com/addons/detail/x/gcllgfdnfnllodcaambdaknbipemelie"),
+        Err(SourceParseError::Unrecognized)
+    ));
+    assert_eq!(edge(PROTON_PASS).store(), Some(StoreRef::EdgeAddons));
 }
 
 #[test]

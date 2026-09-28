@@ -110,6 +110,7 @@ pub(crate) fn verification_label(verification: &Verification) -> &'static str {
         Verification::ChromeWebStore {
             publisher_verified: false,
         } => "Chrome Web Store",
+        Verification::EdgeAddons => "Edge Add-ons, signed by the store",
         Verification::AmoHash => "addons.mozilla.org, checksum verified",
         Verification::LocalCrx => "Local .crx, developer signature verified",
         Verification::LocalXpi => "Local .xpi, not verified",

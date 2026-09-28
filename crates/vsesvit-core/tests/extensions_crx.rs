@@ -3,7 +3,7 @@
 #![cfg(feature = "testkit")]
 
 use vsesvit_core::extensions::ExtensionId;
-use vsesvit_core::extensions::crx::{self, CrxError, ProofAlgorithm, VerifyPolicy};
+use vsesvit_core::extensions::crx::{self, CrxError, CrxStore, ProofAlgorithm, VerifyPolicy};
 use vsesvit_core::testkit::{self, CrxKey, encode_crx3, sign_crx3, write_crx3, zip_files};
 
 const FILES: &[(&str, &[u8])] =
@@ -69,10 +69,10 @@ fn round_trip_ecdsa_developer_key_and_mixed_proofs() {
 fn web_store_policy_needs_the_expected_id_and_a_publisher_proof() {
     let dev = CrxKey::probe();
     let publisher = CrxKey::ecdsa(42);
-    let store = VerifyPolicy::WebStore { expected: dev.extension_id() };
+    let store = VerifyPolicy::WebStore { store: CrxStore::ChromeWebStore, expected: dev.extension_id() };
 
     let unpublished = write_crx3(FILES, &dev);
-    assert!(matches!(verify(&unpublished, &store), Err(CrxError::NoPublisherProof)));
+    assert!(matches!(verify(&unpublished, &store), Err(CrxError::NoPublisherProof(CrxStore::ChromeWebStore))));
 
     // The real publisher key is Google's; a key we hold stands in for it here.
     let published = sign_crx3(&zip_files(FILES), dev.crx_id(), &[&dev, &publisher]);
@@ -80,7 +80,31 @@ fn web_store_policy_needs_the_expected_id_and_a_publisher_proof() {
     let verified = crx::verify_with_publisher(&parsed, &store, &publisher.key_sha256()).unwrap();
     assert!(verified.publisher_verified);
     assert_eq!(verified.id, dev.extension_id());
-    assert!(matches!(crx::verify(&parsed, &store), Err(CrxError::NoPublisherProof)), "only the pinned key counts");
+    assert!(matches!(crx::verify(&parsed, &store), Err(CrxError::NoPublisherProof(_))), "only the pinned key counts");
+}
+
+#[test]
+fn edge_add_ons_policy_needs_the_edge_publisher_proof() {
+    let dev = CrxKey::probe();
+    let publisher = CrxKey::ecdsa(43);
+    let edge = VerifyPolicy::WebStore { store: CrxStore::EdgeAddons, expected: dev.extension_id() };
+    let chrome = VerifyPolicy::WebStore { store: CrxStore::ChromeWebStore, expected: dev.extension_id() };
+
+    let unpublished = write_crx3(FILES, &dev);
+    let refused = verify(&unpublished, &edge).unwrap_err();
+    assert!(matches!(refused, CrxError::NoPublisherProof(CrxStore::EdgeAddons)));
+    assert_eq!(refused.to_string(), "no valid Edge Add-ons publisher signature");
+
+    // The real publisher key is Microsoft's; a key we hold stands in for it here.
+    let published = sign_crx3(&zip_files(FILES), dev.crx_id(), &[&dev, &publisher]);
+    let parsed = crx::parse(&published).unwrap();
+    let verified = crx::verify_with_publisher(&parsed, &edge, &publisher.key_sha256()).unwrap();
+    assert!(verified.publisher_verified);
+    assert_eq!(verified.id, dev.extension_id());
+    assert!(matches!(crx::verify(&parsed, &edge), Err(CrxError::NoPublisherProof(CrxStore::EdgeAddons))), "only the pinned key counts");
+    assert_eq!(CrxStore::EdgeAddons.publisher_key_sha256(), &crx::EDGE_PUBLISHER_KEY_SHA256);
+    assert_ne!(CrxStore::EdgeAddons.publisher_key_sha256(), CrxStore::ChromeWebStore.publisher_key_sha256());
+    assert!(matches!(crx::verify(&parsed, &chrome), Err(CrxError::NoPublisherProof(CrxStore::ChromeWebStore))));
 }
 
 #[test]
@@ -94,7 +118,7 @@ fn flipped_zip_byte_fails_every_proof() {
 #[test]
 fn wrong_expected_id_is_rejected() {
     let bytes = write_crx3(FILES, &CrxKey::probe());
-    let policy = VerifyPolicy::WebStore { expected: CrxKey::second().extension_id() };
+    let policy = VerifyPolicy::WebStore { store: CrxStore::ChromeWebStore, expected: CrxKey::second().extension_id() };
     match verify(&bytes, &policy) {
         Err(CrxError::WrongId { expected, actual }) => {
             assert_eq!(expected, CrxKey::second().extension_id().as_str());
