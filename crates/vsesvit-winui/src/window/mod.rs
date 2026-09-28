@@ -152,6 +152,7 @@ impl BrowserWindow {
         window.SetTitle("Vsesvit")?;
         window.SetContent(&ui.root)?;
         window.SetExtendsContentIntoTitleBar(true)?;
+        platform::set_window_icon(platform::window_handle(&window)?);
         let window2 = window.cast::<IWindow2>()?;
 
         let slot = Rc::new(OnceCell::new());

@@ -343,6 +343,18 @@ Windows.Win32.SendInput
 Windows.Win32.INPUT
 Windows.Win32.INPUT_KEYBOARD
 Windows.Win32.KEYEVENTF_KEYUP
+Windows.Win32.GetModuleHandleW
+Windows.Win32.LoadImageW
+Windows.Win32.IMAGE_ICON
+Windows.Win32.LR_DEFAULTSIZE
+Windows.Win32.LR_SHARED
+Windows.Win32.SendMessageW
+Windows.Win32.WM_SETICON
+Windows.Win32.ICON_SMALL
+Windows.Win32.ICON_BIG
+Windows.Win32.GetSystemMetrics
+Windows.Win32.SM_CXSMICON
+Windows.Win32.SM_CYSMICON
 
 // ---- classes used as typed handles (minimal mode emits only what is named) ----
 Microsoft.UI.Xaml.Controls.Panel

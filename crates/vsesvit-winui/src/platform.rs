@@ -220,6 +220,37 @@ pub(crate) fn window_handle(window: &Window) -> windows_core::Result<HWND> {
     Ok(hwnd)
 }
 
+/// Gives the window the exe's icon, which WinUI leaves unset: the taskbar button reads the exe,
+/// but its hover thumbnail and Alt+Tab draw the window's own icons.
+pub(crate) fn set_window_icon(hwnd: HWND) {
+    /// `winresource`'s ID for the icon `vsesvit`'s build script embeds, as `MAKEINTRESOURCE`.
+    const APP_ICON: PCWSTR = PCWSTR(std::ptr::without_provenance(1));
+    unsafe {
+        let exe = GetModuleHandleW(PCWSTR::null());
+        let load = |cx, cy| {
+            // Shared icons at system sizes are cached by the OS and never freed.
+            LoadImageW(
+                exe,
+                APP_ICON,
+                IMAGE_ICON as u32,
+                cx,
+                cy,
+                (LR_DEFAULTSIZE | LR_SHARED) as u32,
+            )
+        };
+        let small = load(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+        let big = load(0, 0);
+        if small.is_null() || big.is_null() {
+            log::warn!(
+                "loading the app icon: {}",
+                windows_core::Error::from_thread()
+            );
+        }
+        SendMessageW(hwnd, WM_SETICON as u32, ICON_SMALL as usize, small as isize);
+        SendMessageW(hwnd, WM_SETICON as u32, ICON_BIG as usize, big as isize);
+    }
+}
+
 /// Puts `text` on the clipboard, where it stays after Vsesvit exits.
 pub(crate) fn copy_text(text: &str) -> windows_core::Result<()> {
     let package = DataPackage::new()?;
