@@ -29,6 +29,8 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 /// The Web Store install downloads about 10 MB; it gets longer than the default.
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL: Duration = Duration::from_millis(50);
+/// How long a popover gets to open and draw before it is captured.
+const POPOVER_SETTLE: Duration = Duration::from_millis(400);
 /// uBlock Origin Lite.
 const CWS_EXTENSION: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
 /// How many distinct colours the screenshot check samples before it is satisfied.
@@ -104,6 +106,7 @@ pub(crate) fn run(out_dir: &Path, network: bool) -> ExitCode {
     }
     let profile_dir = out_dir.join("profile");
     let _ = std::fs::remove_dir_all(&profile_dir);
+    crate::SCRIPTED.set(true);
     let report = Rc::new(RefCell::new(Report::default()));
 
     let started = Instant::now();
@@ -582,6 +585,35 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             "engine (pop-ups, smooth, GPU) = {engine:?}; Home opened {page2_url}; home-button.png and {} written",
             shots.join(", ")
         ))
+    })
+    .await;
+
+    ctx.check("zoom_indicator", CHECK_TIMEOUT, |last| async move {
+        let address = window.address_bar();
+        let at_100 = address.shown_zoom();
+        gio::prelude::ActionGroupExt::activate_action(window, "zoom-in", None);
+        wait_for(&last, || match address.shown_zoom() {
+            Some(level) if level == "110%" => Ok(()),
+            other => Err(format!("after zoom-in the address bar shows {other:?}")),
+        })
+        .await;
+        address.click_zoom();
+        let bubble = address.bubble().ok_or_else(|| "clicking the zoom level opened no bubble".to_owned())?;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[bubble.clone()], &ctx.out_dir.join("zoom.png"))
+            .await
+            .map_err(|e| format!("{e}; bubble mapped={} realized={} surface={:?}", bubble.is_mapped(), bubble.is_realized(), bubble.surface()))?;
+        gio::prelude::ActionGroupExt::activate_action(window, "zoom-reset", None);
+        wait_for(&last, || match address.shown_zoom() {
+            None => Ok(()),
+            Some(level) => Err(format!("after zoom-reset the address bar still shows {level}")),
+        })
+        .await;
+        bubble.popdown();
+        match at_100 {
+            None => Ok("hidden at 100%, 110% after zoom-in with its bubble open (zoom.png), hidden after reset".to_owned()),
+            Some(level) => Err(format!("the address bar showed {level} at 100%")),
+        }
     })
     .await;
 

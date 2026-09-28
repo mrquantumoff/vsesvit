@@ -836,9 +836,9 @@ impl BrowserWindow {
     }
 
     fn sync_zoom(&self, tab: &Tab) {
-        self.ui()
-            .zoom_level
-            .set_label(&zoom::percent(tab.web_view().zoom_level()));
+        let level = tab.web_view().zoom_level();
+        self.ui().zoom_level.set_label(&zoom::percent(level));
+        self.ui().address.set_zoom(level);
     }
 
     fn set_action_enabled(&self, name: &str, enabled: bool) {

@@ -7,7 +7,9 @@
 //! a suggestion selected, and `cancelled` when Escape gives up editing.
 //!
 //! Inside the entry, the page's security is at the start and the bookmark star at the end;
-//! clicking the star runs `win.bookmark-page`. The text is centered while the entry rests,
+//! clicking the star runs `win.bookmark-page`. When the page is zoomed, its zoom level sits
+//! before the star and opens Chrome's zoom bubble. The bubbles these open are anchored to
+//! them through [`AddressBar::show_popover`]. The text is centered while the entry rests,
 //! and starts at the left while the user is in it.
 
 use std::cell::{Cell, RefCell};
@@ -21,6 +23,18 @@ use gtk::{gdk, glib};
 use vsesvit_core::address::simplified_url;
 
 use crate::tab::display_uri;
+use crate::zoom;
+
+/// Room between the zoom level and the star.
+const ZOOM_GAP: i32 = 2;
+
+/// What a bubble from the address bar points at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Anchor {
+    Security,
+    Zoom,
+    Star,
+}
 
 /// One suggestion row. `activate` runs when the row is chosen.
 #[derive(Clone)]
@@ -76,6 +90,13 @@ mod imp {
     #[derive(Default)]
     pub struct AddressBar {
         pub(super) entry: gtk::Entry,
+        /// Holds the entry, with the zoom level over it.
+        pub(super) overlay: gtk::Overlay,
+        pub(super) zoom: gtk::Button,
+        /// The zoom bubble's level, while it is open.
+        pub(super) zoom_label: glib::WeakRef<gtk::Label>,
+        /// The bubble open from the security icon, the zoom level or the star.
+        pub(super) bubble: RefCell<Option<gtk::Popover>>,
         pub(super) popover: gtk::Popover,
         pub(super) list: gtk::ListBox,
         pub(super) items: RefCell<Vec<Suggestion>>,
@@ -119,6 +140,9 @@ mod imp {
 
         fn dispose(&self) {
             self.popover.unparent();
+            if let Some(bubble) = self.bubble.take() {
+                bubble.unparent();
+            }
         }
     }
 
@@ -129,6 +153,9 @@ mod imp {
                 self.popover.set_size_request(width, -1);
             }
             self.popover.present();
+            if let Some(bubble) = self.bubble.borrow().as_ref() {
+                bubble.present();
+            }
         }
     }
 
@@ -159,7 +186,28 @@ impl AddressBar {
                 let _ = entry.activate_action("win.bookmark-page", None);
             }
         });
-        self.set_child(Some(entry));
+        let zoom = &imp.zoom;
+        zoom.add_css_class("flat");
+        zoom.add_css_class("address-zoom");
+        zoom.set_tooltip_text(Some("Zoom"));
+        zoom.set_valign(gtk::Align::Center);
+        zoom.set_visible(false);
+        zoom.connect_clicked(glib::clone!(
+            #[weak(rename_to = bar)]
+            self,
+            move |_| bar.show_zoom_bubble()
+        ));
+        let overlay = &imp.overlay;
+        overlay.set_child(Some(entry));
+        overlay.add_overlay(zoom);
+        overlay.connect_get_child_position(glib::clone!(
+            #[weak]
+            entry,
+            #[upgrade_or]
+            None,
+            move |_, child| Some(before_star(&entry, child))
+        ));
+        self.set_child(Some(overlay));
         self.set_starred(false);
         self.align_text();
 
@@ -359,6 +407,110 @@ impl AddressBar {
         entry.set_secondary_icon_tooltip_text(Some(tooltip));
     }
 
+    /// Shows the zoom level before the star unless it is 100%, and in the zoom bubble.
+    pub(crate) fn set_zoom(&self, level: f64) {
+        let imp = self.imp();
+        let percent = zoom::percent(level);
+        let zoomed = (level - zoom::DEFAULT).abs() > 0.001;
+        imp.zoom.set_label(&percent);
+        imp.zoom.set_visible(zoomed);
+        // The text stops short of the zoom level rather than run under it.
+        let reserve = if zoomed { imp.zoom.measure(gtk::Orientation::Horizontal, -1).1 + ZOOM_GAP } else { 0 };
+        if let Some(text) = imp.entry.delegate() {
+            text.set_margin_end(reserve);
+        }
+        if let Some(label) = imp.zoom_label.upgrade() {
+            label.set_label(&percent);
+        }
+    }
+
+    fn show_zoom_bubble(&self) {
+        let level = gtk::Label::builder()
+            .label(self.imp().zoom.label().unwrap_or_default())
+            .width_chars(5)
+            .css_classes(["numeric", "heading"])
+            .build();
+        let step = |icon: &str, action: &str, tooltip: &str| {
+            gtk::Button::builder().icon_name(icon).action_name(action).tooltip_text(tooltip).build()
+        };
+        let steps = gtk::Box::builder().css_classes(["linked"]).build();
+        steps.append(&step("zoom-out-symbolic", "win.zoom-out", "Zoom Out"));
+        steps.append(&step("zoom-in-symbolic", "win.zoom-in", "Zoom In"));
+        let reset = gtk::Button::builder().label("Reset").action_name("win.zoom-reset").tooltip_text("Reset to 100%").build();
+        let content = gtk::Box::builder().spacing(8).margin_start(6).margin_end(6).margin_top(4).margin_bottom(4).build();
+        content.append(&gtk::Label::new(Some("Zoom:")));
+        content.append(&level);
+        content.append(&steps);
+        content.append(&reset);
+        let popover = gtk::Popover::builder().child(&content).css_classes(["zoom-bubble"]).build();
+        self.imp().zoom_label.set(Some(&level));
+        self.show_popover(&popover, Anchor::Zoom);
+    }
+
+    /// Opens `popover` pointing at `anchor`, closing any other bubble. It is dropped when
+    /// it closes.
+    pub(crate) fn show_popover(&self, popover: &gtk::Popover, anchor: Anchor) {
+        let imp = self.imp();
+        if let Some(previous) = imp.bubble.take() {
+            previous.popdown();
+        }
+        popover.set_parent(self);
+        popover.set_pointing_to(Some(&self.anchor_rect(anchor)));
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.connect_closed(glib::clone!(
+            #[weak(rename_to = bar)]
+            self,
+            move |popover| {
+                let imp = bar.imp();
+                if imp.bubble.borrow().as_ref() == Some(popover) {
+                    imp.bubble.take();
+                }
+                // Unparenting from inside `closed` confuses GTK's popover teardown.
+                let popover = popover.clone();
+                glib::idle_add_local_once(move || {
+                    if popover.parent().is_some() {
+                        popover.unparent();
+                    }
+                });
+            }
+        ));
+        imp.bubble.replace(Some(popover.clone()));
+        crate::popup(popover);
+    }
+
+    /// The zoom level shown before the star, once it is laid out, if the page is zoomed.
+    #[cfg(any(test, feature = "self-test"))]
+    pub(crate) fn shown_zoom(&self) -> Option<String> {
+        let zoom = &self.imp().zoom;
+        (zoom.is_mapped() && zoom.width() > 0).then(|| zoom.label().unwrap_or_default().into())
+    }
+
+    /// Clicks the zoom level, as the user would.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn click_zoom(&self) {
+        self.imp().zoom.emit_clicked();
+    }
+
+    /// The bubble open from the address bar, if any.
+    #[cfg_attr(not(any(test, feature = "self-test")), allow(dead_code))]
+    pub(crate) fn bubble(&self) -> Option<gtk::Popover> {
+        self.imp().bubble.borrow().clone()
+    }
+
+    /// Where `anchor` is, in the bar's coordinates.
+    fn anchor_rect(&self, anchor: Anchor) -> gdk::Rectangle {
+        let imp = self.imp();
+        let (widget, rect): (&gtk::Widget, gdk::Rectangle) = match anchor {
+            Anchor::Security => (imp.entry.upcast_ref(), imp.entry.icon_area(gtk::EntryIconPosition::Primary)),
+            Anchor::Star => (imp.entry.upcast_ref(), imp.entry.icon_area(gtk::EntryIconPosition::Secondary)),
+            Anchor::Zoom => (imp.zoom.upcast_ref(), gdk::Rectangle::new(0, 0, imp.zoom.width(), imp.zoom.height())),
+        };
+        let origin = widget
+            .compute_point(self, &gtk::graphene::Point::new(rect.x() as f32, rect.y() as f32))
+            .map_or((rect.x(), rect.y()), |p| (p.x() as i32, p.y() as i32));
+        gdk::Rectangle::new(origin.0, origin.1, rect.width().max(1), rect.height().max(1))
+    }
+
     /// Centered while the entry shows the page's address, at the start while the user is in
     /// it or has typed something.
     fn align_text(&self) {
@@ -495,6 +647,19 @@ impl AddressBar {
             None => imp.list.unselect_all(),
         }
     }
+}
+
+/// Where the zoom level goes in the entry: just before the star, vertically centered.
+fn before_star(entry: &gtk::Entry, child: &gtk::Widget) -> gdk::Rectangle {
+    let (_, width, ..) = child.measure(gtk::Orientation::Horizontal, -1);
+    let (_, height, ..) = child.measure(gtk::Orientation::Vertical, -1);
+    let star = entry.icon_area(gtk::EntryIconPosition::Secondary);
+    let x = if entry.direction() == gtk::TextDirection::Rtl {
+        star.x() + star.width() + ZOOM_GAP
+    } else {
+        star.x() - width - ZOOM_GAP
+    };
+    gdk::Rectangle::new(x, (entry.height() - height) / 2, width, height)
 }
 
 fn suggestion_row(item: &Suggestion) -> gtk::ListBoxRow {

@@ -74,6 +74,7 @@ pub(crate) const CSS: &str = "
 .bookmark-row.drop-before { box-shadow: inset 0 2px @accent_bg_color; }
 .bookmark-row.drop-after { box-shadow: inset 0 -2px @accent_bg_color; }
 .drop-into { background-color: alpha(@accent_bg_color, 0.25); border-radius: 6px; }
+.address-zoom { min-height: 20px; min-width: 0; padding: 0 6px; font-size: 0.85em; border-radius: 10px; }
 .tab-sidebar { background-color: @sidebar_bg_color; }
 .tab-sidebar listview { background: transparent; }
 .tab-sidebar row { padding: 0; }

@@ -32,10 +32,27 @@ mod updates;
 mod window;
 mod zoom;
 
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
 use cli::Command;
+use gtk::prelude::*;
+
+thread_local! {
+    /// Set by the self-test; see [`popup`].
+    static SCRIPTED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Opens a menu or bubble. An autohide popover takes a Wayland popup grab, which the
+/// compositor refuses without a real input event, so under the self-test's scripted clicks
+/// popovers open without autohide and stay up to be checked and captured.
+pub(crate) fn popup(popover: &impl IsA<gtk::Popover>) {
+    if SCRIPTED.get() {
+        popover.set_autohide(false);
+    }
+    popover.popup();
+}
 
 /// The application id for the default profile. Other profiles derive theirs from it.
 pub const APP_ID: &str = "dev.mrquantumoff.vsesvit";
