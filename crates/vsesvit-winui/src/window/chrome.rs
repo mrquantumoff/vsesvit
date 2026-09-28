@@ -86,10 +86,16 @@ const WINDOW_XAML: &str = r#"
             ToolTipService.ToolTip="Forward (Alt+Right)" AutomationProperties.Name="Forward">
       <FontIcon Glyph="&#xE72A;" FontSize="16"/>
     </Button>
-    <Button x:Name="Reload" Grid.Column="2" Style="{StaticResource ToolbarButton}"
-            ToolTipService.ToolTip="Refresh (Ctrl+R)" AutomationProperties.Name="Refresh">
-      <FontIcon x:Name="ReloadGlyph" Glyph="&#xE72C;" FontSize="16"/>
-    </Button>
+    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2">
+      <Button x:Name="Reload" Style="{StaticResource ToolbarButton}"
+              ToolTipService.ToolTip="Refresh (Ctrl+R)" AutomationProperties.Name="Refresh">
+        <FontIcon x:Name="ReloadGlyph" Glyph="&#xE72C;" FontSize="16"/>
+      </Button>
+      <Button x:Name="Home" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
+              ToolTipService.ToolTip="Home" AutomationProperties.Name="Home">
+        <FontIcon Glyph="&#xE80F;" FontSize="16"/>
+      </Button>
+    </StackPanel>
     <!-- The address pill, as in Brave: the page's security at its start, the address centered
          in it (at the start while editing), the star at its end. -->
     <Grid x:Name="AddressPill" Grid.Column="3" Margin="12,0" Height="32" VerticalAlignment="Center"
@@ -249,6 +255,7 @@ pub(super) struct Chrome {
     pub(super) forward: Control,
     pub(super) reload: Button,
     pub(super) reload_glyph: FontIcon,
+    pub(super) home: Button,
     pub(super) address: AutoSuggestBox,
     pub(super) address_pill: FrameworkElement,
     pub(super) address_focus_ring: UIElement,
@@ -284,6 +291,7 @@ impl Chrome {
             forward: xaml::find(&root, "Forward")?,
             reload: xaml::find(&root, "Reload")?,
             reload_glyph: xaml::find(&root, "ReloadGlyph")?,
+            home: xaml::find(&root, "Home")?,
             address: xaml::find(&root, "Address")?,
             address_pill: xaml::find(&root, "AddressPill")?,
             address_focus_ring: xaml::find(&root, "AddressFocusRing")?,

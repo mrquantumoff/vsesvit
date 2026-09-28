@@ -55,6 +55,21 @@ impl NewWindowRequest {
     }
 }
 
+/// The engine's autofill preferences, applied to each tab's engine view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Autofill {
+    pub passwords: bool,
+    pub forms: bool,
+}
+
+impl Autofill {
+    fn apply(self, settings: &CoreWebView2Settings) -> Result<()> {
+        let settings = settings.cast::<ICoreWebView2Settings4>()?;
+        settings.SetIsPasswordAutosaveEnabled(self.passwords)?;
+        settings.SetIsGeneralAutofillEnabled(self.forms)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TabState {
     /// The committed URL; empty until the first commit.
@@ -222,6 +237,9 @@ impl Tab {
         let settings = core.Settings()?;
         settings.SetAreDevToolsEnabled(true)?;
         settings.SetIsWebMessageEnabled(false)?;
+        if let Some(browser) = self.window().and_then(|w| w.browser()) {
+            self.apply_autofill(&settings, browser.autofill());
+        }
         self.wire(&core)?;
         self.inject(&core, page_script).await?;
         let _ = self.core.set(core.clone());
@@ -287,6 +305,12 @@ impl Tab {
         if let Err(e) = shown {
             log::warn!("tab {}: new tab page: {e}", self.id);
             self.navigate("about:blank");
+        }
+    }
+
+    pub fn go_to_new_tab_page(&self) {
+        if let Some(core) = self.core.get() {
+            self.show_new_tab_page(core);
         }
     }
 
@@ -367,6 +391,19 @@ impl Tab {
     pub fn set_starred(&self, starred: bool) {
         self.state.borrow_mut().starred = starred;
         self.notify();
+    }
+
+    pub fn set_autofill(&self, autofill: Autofill) {
+        if let Some(settings) = self.core.get().and_then(|c| c.Settings().ok()) {
+            self.apply_autofill(&settings, autofill);
+        }
+    }
+
+    /// A runtime too old for these settings keeps its defaults; the tab still works.
+    fn apply_autofill(&self, settings: &CoreWebView2Settings, autofill: Autofill) {
+        if let Err(e) = autofill.apply(settings) {
+            log::warn!("tab {}: autofill settings: {e}", self.id);
+        }
     }
 
     /// Releases the engine view. The window removes the XAML parts.
@@ -585,8 +622,9 @@ impl Tab {
     fn new_window_requested(self: &Rc<Self>, args: &CoreWebView2NewWindowRequestedEventArgs) {
         let Some(window) = self.window() else { return };
         // WebView2 turns Edge's popup blocker off and leaves this to the app: like a browser,
-        // open only the windows a user gesture asked for.
-        if !args.IsUserInitiated().unwrap_or(false) {
+        // open only the windows a user gesture asked for, unless the user allows pop-ups.
+        let blocking = window.browser().is_none_or(|b| b.blocks_popups());
+        if blocking && !args.IsUserInitiated().unwrap_or(false) {
             let url = args.Uri().unwrap_or_default();
             log::info!("tab {}: blocked a popup to {url}: no user gesture", self.id);
             let _ = args.SetHandled(true);

@@ -21,6 +21,8 @@ use crate::bindings::*;
 use crate::window::{Backdrop, BrowserWindow};
 use crate::xaml;
 
+pub(crate) use settings::CATEGORIES as SETTINGS_CATEGORIES;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dialog {
     Bookmarks,

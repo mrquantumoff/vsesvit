@@ -10,14 +10,15 @@ use serde_json::{Value, json};
 use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, NodeKind};
 use vsesvit_core::extensions::ExtensionId;
-use vsesvit_core::prefs::TabsPosition;
+use vsesvit_core::history::Transition;
+use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::testkit;
 use windows_core::{IInspectable, Interface, Result};
 
 use super::{shoot, wait_layout};
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::dialogs::{self, Dialog, Preview};
+use crate::dialogs::{self, Dialog, Preview, SETTINGS_CATEGORIES};
 use crate::window::{Backdrop, BrowserWindow};
 use crate::{engine, exec, xaml};
 
@@ -61,14 +62,24 @@ async fn until<T>(mut f: impl FnMut() -> Option<T>) -> Option<T> {
     exec::wait_for(WAIT, POLL, &mut f).await
 }
 
-/// Settings: "Vertical, on the right" in the Tabs box moves the tab list; "on the left" brings
-/// it back.
+/// Settings: each category shows its own panel alone, and one taller than the dialog scrolls
+/// to its end; then the settings themselves, category by category.
 pub(super) async fn settings(
     window: &Rc<BrowserWindow>,
     out_dir: &Path,
+    page2: &Url,
     steps: &mut Vec<Value>,
 ) -> Result<()> {
     let preview = open(window, Dialog::Settings).await?;
+    let categories: ListView = preview.find("SettingsCategories")?;
+    for (index, category) in SETTINGS_CATEGORIES.iter().enumerate() {
+        select_index(&categories, index)?;
+        settle().await;
+        category_steps(window, out_dir, &preview, category.panel, steps).await?;
+    }
+
+    select_index(&categories, 1)?;
+    settle().await;
     let tabs: ComboBox = preview.find("TabsPosition")?;
     select_index(&tabs, 1)?;
     let moved = wait_layout(window, TabsPosition::Right).await;
@@ -81,6 +92,22 @@ pub(super) async fn settings(
     let back = wait_layout(window, TabsPosition::Left).await;
     steps.push(json!({ "name": "14b-settings-back-to-left", "layout": format!("{back:?}"), "ok": back == Some(TabsPosition::Left) }));
 
+    let transparent: ToggleSwitch = preview.find("Transparent")?;
+    let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
+    let before = browser.backdrop();
+    transparent.SetIsOn(true)?;
+    let on = browser.backdrop();
+    transparent.SetIsOn(false)?;
+    let off = browser.backdrop();
+    steps.push(json!({
+        "name": "14c-settings-transparent-window",
+        "backdrops": format!("{before:?} -> {on:?} -> {off:?}"),
+        "ok": before == Backdrop::Mica && on == Backdrop::Acrylic && off == Backdrop::Mica,
+    }));
+    home_button(window, out_dir, &preview, page2, steps).await?;
+
+    select_index(&categories, 2)?;
+    settle().await;
     let compact: ToggleSwitch = preview.find("CompactAddress")?;
     let full_urls: ToggleSwitch = preview.find("FullUrls")?;
     let defaults = (compact.IsOn()?, full_urls.IsOn()?);
@@ -97,18 +124,196 @@ pub(super) async fn settings(
         "ok": defaults == (true, false) && narrow > 0.0 && narrow <= 720.5 && wide > narrow,
     }));
 
-    let transparent: ToggleSwitch = preview.find("Transparent")?;
-    let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
-    let before = browser.backdrop();
-    transparent.SetIsOn(true)?;
-    let on = browser.backdrop();
-    transparent.SetIsOn(false)?;
-    let off = browser.backdrop();
+    select_index(&categories, 0)?;
+    settle().await;
+    let gpu: ToggleSwitch = preview.find("HardwareAcceleration")?;
+    let smooth: ToggleSwitch = preview.find("SmoothScrolling")?;
+    let arguments = || engine::browser_arguments(|pref| browser.core(|p| p.prefs().get(pref)));
+    let defaults = arguments();
+    gpu.SetIsOn(false)?;
+    smooth.SetIsOn(false)?;
+    let off = arguments();
+    gpu.SetIsOn(true)?;
+    smooth.SetIsOn(true)?;
     steps.push(json!({
-        "name": "14c-settings-transparent-window",
-        "backdrops": format!("{before:?} -> {on:?} -> {off:?}"),
-        "ok": before == Backdrop::Mica && on == Backdrop::Acrylic && off == Backdrop::Mica,
+        "name": "14f-settings-engine-startup-switches",
+        "arguments": [defaults, off, arguments()],
+        "ok": defaults.is_empty() && off == "--disable-smooth-scrolling --disable-gpu" && arguments().is_empty(),
     }));
+    Ok(())
+}
+
+/// One category's panel, alone on screen; a panel taller than the dialog also scrolled to its
+/// end, where the General panel shows the profile folder.
+async fn category_steps(
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    preview: &Preview,
+    panel_name: &str,
+    steps: &mut Vec<Value>,
+) -> Result<()> {
+    let panel: IScrollViewer = preview.find(panel_name)?;
+    let alone = SETTINGS_CATEGORIES.iter().all(|c| {
+        preview
+            .find::<UIElement>(c.panel)
+            .is_ok_and(|p| xaml::is_visible(&p) == (c.panel == panel_name))
+    });
+    let slug = panel_name.trim_end_matches("Panel").to_lowercase();
+    let scrollable = panel.ScrollableHeight()?;
+    shoot(window, out_dir, &format!("14-settings-{slug}"), steps, |_| {
+        json!({ "panel": panel_name, "shown_alone": alone, "scrollable_height": scrollable, "ok": alone })
+    })
+    .await;
+    if scrollable <= 0.0 {
+        return Ok(());
+    }
+    panel.ChangeViewWithOptionalAnimation(None, Some(scrollable), None, true)?;
+    settle().await;
+    let offset = panel.VerticalOffset()?;
+    let profile_in_view = (panel_name == "GeneralPanel")
+        .then(|| in_view(&panel, &preview.find::<UIElement>("ProfilePath")?))
+        .transpose()?;
+    shoot(
+        window,
+        out_dir,
+        &format!("14-settings-{slug}-scrolled"),
+        steps,
+        |_| {
+            json!({
+                "offset": offset,
+                "scrollable_height": scrollable,
+                "profile_folder_in_view": profile_in_view,
+                "ok": (offset - scrollable).abs() < 1.0 && profile_in_view != Some(false),
+            })
+        },
+    )
+    .await;
+    panel.ChangeViewWithOptionalAnimation(None, Some(0.0), None, true)?;
+    Ok(())
+}
+
+/// Whether all of `element` is inside the visible part of `viewer`.
+fn in_view(viewer: &IScrollViewer, element: &UIElement) -> Result<bool> {
+    let viewer = viewer.cast::<FrameworkElement>()?;
+    let top = element
+        .TransformToVisual(&viewer.cast::<UIElement>()?)?
+        .TransformPoint(Point { x: 0.0, y: 0.0 })?
+        .y;
+    let height = element.cast::<FrameworkElement>()?.ActualHeight()?;
+    Ok(top >= 0.0 && f64::from(top) + height <= viewer.ActualHeight()? + 0.5)
+}
+
+/// The Home button follows its switch in the toolbar at once, and opens the home page in the
+/// current tab.
+async fn home_button(
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    preview: &Preview,
+    page2: &Url,
+    steps: &mut Vec<Value>,
+) -> Result<()> {
+    let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
+    let switch: ToggleSwitch = preview.find("ShowHomeButton")?;
+    let hidden_by_default = !switch.IsOn()? && !window.home_button_shown();
+    switch.SetIsOn(true)?;
+    settle().await;
+    let shown = window.home_button_shown();
+    shoot(window, out_dir, "14e-settings-home-button", steps, |_| {
+        json!({ "hidden_by_default": hidden_by_default, "shown": shown, "ok": hidden_by_default && shown })
+    })
+    .await;
+
+    browser.write_pref(&keys::HOMEPAGE, &page2.to_string());
+    let tab = window.active_tab().ok_or_else(windows_core::Error::empty)?;
+    let was = tab.state().url;
+    window.go_home();
+    let went = until(|| (tab.state().url == page2.as_str()).then_some(())).await;
+    tab.go_back();
+    let returned = until(|| (tab.state().url == was && !tab.state().loading).then_some(())).await;
+    if let Err(e) = browser.core(|p| p.prefs().reset(&keys::HOMEPAGE)) {
+        log::warn!("home page: {e}");
+    }
+    switch.SetIsOn(false)?;
+    let hidden_again = !window.home_button_shown();
+    steps.push(json!({
+        "name": "14e-settings-home-button-opens-home-page",
+        "opened_home_page": went.is_some(),
+        "back_to": returned.map(|()| was),
+        "hidden_again": hidden_again,
+        "ok": went.is_some() && hidden_again,
+    }));
+    Ok(())
+}
+
+/// Settings, Privacy and security: the Clear browsing data flyout's Clear deletes history in
+/// core and the page's cookies in the engine, and says so under the button.
+pub(super) async fn clear_browsing_data(
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    page: &Url,
+    steps: &mut Vec<Value>,
+) -> Result<()> {
+    let tab = window.active_tab().ok_or_else(windows_core::Error::empty)?;
+    if let Err(e) = browser.core(|p| p.history().record_visit(page, Transition::Link)) {
+        log::warn!("history: {e}");
+    }
+    tab.eval("document.cookie = 'vsesvit_probe=1; max-age=3600'; document.cookie")
+        .await?;
+    let cookie_before = tab.eval("document.cookie").await?;
+    let visits = || {
+        browser
+            .core(|p| p.history().visits_between(0, i64::MAX, 10))
+            .map(|v| v.len())
+            .unwrap_or_default()
+    };
+    let visits_before = visits();
+
+    let preview = open(window, Dialog::Settings).await?;
+    let categories: ListView = preview.find("SettingsCategories")?;
+    select_index(&categories, SETTINGS_CATEGORIES.len() - 1)?;
+    settle().await;
+    let button: Button = preview.find("ClearBrowsingData")?;
+    invoke(&button)?;
+    settle().await;
+    shoot(
+        window,
+        out_dir,
+        "23-clear-browsing-data-flyout",
+        steps,
+        |_| json!({ "ok": true }),
+    )
+    .await;
+    let content: DependencyObject = button
+        .cast::<IButton>()?
+        .Flyout()?
+        .cast::<Flyout>()?
+        .Content()?
+        .cast()?;
+    let confirm: Button = xaml::find_named(&content, "ClearBrowsingDataConfirm")
+        .ok_or_else(|| windows_core::Error::new(E_FAIL, "no Clear button in the flyout"))?;
+    invoke(&confirm)?;
+    let status: TextBlock = preview.find("ClearBrowsingDataStatus")?;
+    let reported = until(|| {
+        status
+            .Text()
+            .ok()
+            .filter(|t| !t.is_empty() && xaml::is_visible(&status))
+    })
+    .await;
+    let cookie_after = tab.eval("document.cookie").await?;
+    exec::sleep(Duration::from_millis(400)).await;
+    shoot(window, out_dir, "23-clear-browsing-data", steps, |_| {
+        json!({
+            "visits": [visits_before, visits()],
+            "cookie": [cookie_before, cookie_after],
+            "status": reported,
+            "ok": visits_before > 0 && visits() == 0
+                && cookie_before.contains("vsesvit_probe") && !cookie_after.contains("vsesvit_probe")
+                && reported.as_deref() == Some("Browsing data cleared."),
+        })
+    })
+    .await;
     Ok(())
 }
 

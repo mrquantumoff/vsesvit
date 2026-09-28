@@ -975,6 +975,68 @@ unsafe impl Send for CoreWebView2BrowserExtension {}
 unsafe impl Sync for CoreWebView2BrowserExtension {}
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2BrowsingDataKinds(pub u32);
+impl CoreWebView2BrowsingDataKinds {
+    pub const FileSystems: Self = Self(1);
+    pub const IndexedDb: Self = Self(2);
+    pub const LocalStorage: Self = Self(4);
+    pub const WebSql: Self = Self(8);
+    pub const CacheStorage: Self = Self(16);
+    pub const AllDomStorage: Self = Self(32);
+    pub const Cookies: Self = Self(64);
+    pub const AllSite: Self = Self(128);
+    pub const DiskCache: Self = Self(256);
+    pub const DownloadHistory: Self = Self(512);
+    pub const GeneralAutofill: Self = Self(1024);
+    pub const PasswordAutosave: Self = Self(2048);
+    pub const BrowsingHistory: Self = Self(4096);
+    pub const Settings: Self = Self(8192);
+    pub const AllProfile: Self = Self(16384);
+    pub const ServiceWorkers: Self = Self(32768);
+}
+impl windows_core::imp::TypeKind for CoreWebView2BrowsingDataKinds {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2BrowsingDataKinds {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2BrowsingDataKinds;u4)",
+    );
+}
+impl CoreWebView2BrowsingDataKinds {
+    pub const fn contains(&self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+impl core::ops::BitOr for CoreWebView2BrowsingDataKinds {
+    type Output = Self;
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+impl core::ops::BitAnd for CoreWebView2BrowsingDataKinds {
+    type Output = Self;
+    fn bitand(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+}
+impl core::ops::BitOrAssign for CoreWebView2BrowsingDataKinds {
+    fn bitor_assign(&mut self, other: Self) {
+        self.0.bitor_assign(other.0);
+    }
+}
+impl core::ops::BitAndAssign for CoreWebView2BrowsingDataKinds {
+    fn bitand_assign(&mut self, other: Self) {
+        self.0.bitand_assign(other.0);
+    }
+}
+impl core::ops::Not for CoreWebView2BrowsingDataKinds {
+    type Output = Self;
+    fn not(self) -> Self {
+        Self(self.0.not())
+    }
+}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CoreWebView2CapturePreviewImageFormat(pub i32);
 impl CoreWebView2CapturePreviewImageFormat {
     pub const Png: Self = Self(0);
@@ -4025,6 +4087,16 @@ impl windows_core::RuntimeType for IButton {
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
 impl IButton {
+    pub fn Flyout(&self) -> windows_core::Result<FlyoutBase> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Flyout)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
     pub fn SetFlyout<P0>(&self, value: P0) -> windows_core::Result<()>
     where
         P0: windows_core::Param<FlyoutBase>,
@@ -4041,7 +4113,10 @@ impl IButton {
 #[repr(C)]
 pub struct IButton_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
-    Flyout: usize,
+    pub Flyout: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     pub SetFlyout: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
@@ -5563,9 +5638,25 @@ impl windows_core::RuntimeType for ICoreWebView2EnvironmentOptions {
     const SIGNATURE: windows_core::imp::ConstBuffer =
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
+impl ICoreWebView2EnvironmentOptions {
+    pub fn SetAdditionalBrowserArguments(&self, value: &str) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetAdditionalBrowserArguments)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(value)),
+            )
+            .ok()
+        }
+    }
+}
 #[repr(C)]
 pub struct ICoreWebView2EnvironmentOptions_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+    AdditionalBrowserArguments: usize,
+    pub SetAdditionalBrowserArguments: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2EnvironmentOptions6,
@@ -5934,6 +6025,40 @@ pub struct ICoreWebView2Profile_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2Profile2,
+    ICoreWebView2Profile2_Vtbl,
+    0x93d21e18_1b06_59d0_9687_10f4844b016d
+);
+impl windows_core::RuntimeType for ICoreWebView2Profile2 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2Profile2 {
+    pub fn ClearBrowsingDataAsync(
+        &self,
+        datakinds: CoreWebView2BrowsingDataKinds,
+    ) -> windows_core::Result<windows_future::IAsyncAction> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ClearBrowsingDataAsync)(
+                windows_core::Interface::as_raw(self),
+                datakinds,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2Profile2_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub ClearBrowsingDataAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        CoreWebView2BrowsingDataKinds,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2Profile7,
     ICoreWebView2Profile7_Vtbl,
     0x5f665761_5c12_5f39_b9fe_607e6e94add1
@@ -6010,6 +6135,45 @@ pub struct ICoreWebView2Settings_Vtbl {
     SetIsStatusBarEnabled: usize,
     AreDevToolsEnabled: usize,
     pub SetAreDevToolsEnabled:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2Settings4,
+    ICoreWebView2Settings4_Vtbl,
+    0xd6a955f0_daef_5a6a_a6f6_c72f0ede7620
+);
+impl windows_core::RuntimeType for ICoreWebView2Settings4 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2Settings4 {
+    pub fn SetIsPasswordAutosaveEnabled(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetIsPasswordAutosaveEnabled)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn SetIsGeneralAutofillEnabled(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetIsGeneralAutofillEnabled)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2Settings4_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    IsPasswordAutosaveEnabled: usize,
+    pub SetIsPasswordAutosaveEnabled:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    IsGeneralAutofillEnabled: usize,
+    pub SetIsGeneralAutofillEnabled:
         unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
@@ -9269,6 +9433,51 @@ impl IScrollViewer {
             .map(|| result__)
         }
     }
+    pub fn VerticalOffset(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).VerticalOffset)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ScrollableHeight(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ScrollableHeight)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn ChangeViewWithOptionalAnimation(
+        &self,
+        horizontaloffset: Option<f64>,
+        verticaloffset: Option<f64>,
+        zoomfactor: Option<f32>,
+        disableanimation: bool,
+    ) -> windows_core::Result<bool> {
+        let horizontaloffset__ =
+            horizontaloffset.map(<windows_reference::IReference<f64> as From<_>>::from);
+        let verticaloffset__ =
+            verticaloffset.map(<windows_reference::IReference<f64> as From<_>>::from);
+        let zoomfactor__ = zoomfactor.map(<windows_reference::IReference<f32> as From<_>>::from);
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ChangeViewWithOptionalAnimation)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Param::param(horizontaloffset__.as_ref()).abi(),
+                windows_core::Param::param(verticaloffset__.as_ref()).abi(),
+                windows_core::Param::param(zoomfactor__.as_ref()).abi(),
+                disableanimation,
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
 }
 #[repr(C)]
 pub struct IScrollViewer_Vtbl {
@@ -9312,6 +9521,57 @@ pub struct IScrollViewer_Vtbl {
     ViewportWidth: usize,
     pub ScrollableWidth:
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    ComputedHorizontalScrollBarVisibility: usize,
+    ExtentWidth: usize,
+    pub VerticalOffset:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    ViewportHeight: usize,
+    pub ScrollableHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    ComputedVerticalScrollBarVisibility: usize,
+    ExtentHeight: usize,
+    MinZoomFactor: usize,
+    SetMinZoomFactor: usize,
+    MaxZoomFactor: usize,
+    SetMaxZoomFactor: usize,
+    ZoomFactor: usize,
+    ZoomSnapPoints: usize,
+    TopLeftHeader: usize,
+    SetTopLeftHeader: usize,
+    LeftHeader: usize,
+    SetLeftHeader: usize,
+    TopHeader: usize,
+    SetTopHeader: usize,
+    ReduceViewportForCoreInputViewOcclusions: usize,
+    SetReduceViewportForCoreInputViewOcclusions: usize,
+    HorizontalAnchorRatio: usize,
+    SetHorizontalAnchorRatio: usize,
+    VerticalAnchorRatio: usize,
+    SetVerticalAnchorRatio: usize,
+    CanContentRenderOutsideBounds: usize,
+    SetCanContentRenderOutsideBounds: usize,
+    AnchorRequested: usize,
+    RemoveAnchorRequested: usize,
+    ViewChanging: usize,
+    RemoveViewChanging: usize,
+    ViewChanged: usize,
+    RemoveViewChanged: usize,
+    DirectManipulationStarted: usize,
+    RemoveDirectManipulationStarted: usize,
+    DirectManipulationCompleted: usize,
+    RemoveDirectManipulationCompleted: usize,
+    ScrollToHorizontalOffset: usize,
+    ScrollToVerticalOffset: usize,
+    ZoomToFactor: usize,
+    ChangeView: usize,
+    pub ChangeViewWithOptionalAnimation: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        bool,
+        *mut bool,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ISelectionChangedEventArgs,

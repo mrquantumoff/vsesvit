@@ -7,6 +7,7 @@
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
+use vsesvit_core::prefs::{Pref, keys};
 use windows_core::imp::IGenericFactory;
 use windows_core::{HSTRING, IInspectable, Interface, PCSTR, Result, s, w};
 use windows_future::IAsyncOperation;
@@ -15,6 +16,23 @@ use crate::bindings::*;
 
 pub(crate) struct Engine {
     environment: CoreWebView2Environment,
+}
+
+/// Preferences the engine reads only when its environment is created, each with the browser
+/// argument that turns it off.
+const STARTUP_SWITCHES: [(&Pref<bool>, &str); 2] = [
+    (&keys::SMOOTH_SCROLLING, "--disable-smooth-scrolling"),
+    (&keys::HARDWARE_ACCELERATION, "--disable-gpu"),
+];
+
+/// The browser arguments for the startup preferences that are off.
+pub(crate) fn browser_arguments(mut enabled: impl FnMut(&Pref<bool>) -> bool) -> String {
+    STARTUP_SWITCHES
+        .iter()
+        .filter(|(pref, _)| !enabled(pref))
+        .map(|(_, argument)| *argument)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The installed WebView2 runtime's version, as `CoreWebView2Environment` reports it
@@ -45,7 +63,9 @@ pub(crate) fn chromium_version(version: &str) -> Option<String> {
 }
 
 impl Engine {
-    pub async fn create(user_data_dir: &Path) -> Result<Self> {
+    /// `arguments` are Chromium switches, which WebView2 reads only here (see
+    /// [`browser_arguments`]).
+    pub async fn create(user_data_dir: &Path, arguments: &str) -> Result<Self> {
         std::fs::create_dir_all(user_data_dir).map_err(|e| {
             windows_core::Error::new(E_FAIL, format!("{}: {e}", user_data_dir.display()))
         })?;
@@ -56,6 +76,12 @@ impl Engine {
         options
             .cast::<ICoreWebView2EnvironmentOptions6>()?
             .SetAreBrowserExtensionsEnabled(true)?;
+        if !arguments.is_empty() {
+            options
+                .cast::<ICoreWebView2EnvironmentOptions>()?
+                .SetAdditionalBrowserArguments(arguments)?;
+            log::info!("WebView2 browser arguments: {arguments}");
+        }
         let statics = app_local_factory::<ICoreWebView2EnvironmentStatics>(
             "Microsoft.Web.WebView2.Core.CoreWebView2Environment",
         )?;
@@ -256,7 +282,22 @@ pub(crate) async fn extensions(profile: &CoreWebView2Profile) -> Result<Vec<Engi
 mod tests {
     use std::path::Path;
 
-    use super::{chromium_version, engine_path, extended_length};
+    use vsesvit_core::prefs::keys;
+
+    use super::{browser_arguments, chromium_version, engine_path, extended_length};
+
+    #[test]
+    fn startup_preferences_that_are_off_become_arguments() {
+        assert_eq!(browser_arguments(|_| true), "");
+        assert_eq!(
+            browser_arguments(|_| false),
+            "--disable-smooth-scrolling --disable-gpu"
+        );
+        assert_eq!(
+            browser_arguments(|pref| pref.key != keys::HARDWARE_ACCELERATION.key),
+            "--disable-gpu"
+        );
+    }
 
     #[test]
     fn long_folders_get_the_extended_form() {

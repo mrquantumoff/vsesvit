@@ -20,10 +20,11 @@ use vsesvit_core::{Profile, Url};
 use crate::bookmarks_bar::{self, BarItem};
 use crate::config::{Config, Mode};
 use crate::downloads::Downloads;
-use crate::engine::Engine;
+use crate::engine::{self, Engine};
 use crate::extensions::ExtensionHost;
 use crate::popup::ExtensionAction;
 use crate::session::{self, TabPlan, WindowPlan};
+use crate::tab::Autofill;
 use crate::updates::{self, Action, Trigger, Updates};
 use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
 use crate::{app, cli, exec, instance, omnibox, platform, shortcuts};
@@ -120,13 +121,15 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         mut profile,
         profile_open_ms,
     } = launch;
-    let engine = Engine::create(&profile.paths().engine_data).await?;
+    let arguments = engine::browser_arguments(|pref| profile.prefs().get(pref));
+    let engine = Engine::create(&profile.paths().engine_data, &arguments).await?;
     let page_script = Rc::new(shortcuts::PageScript::new(&secret()));
     let prefs = WindowPrefs {
         tabs: profile.prefs().get(&keys::TABS_POSITION),
         pane_collapsed: profile.prefs().get(&TAB_PANE_COLLAPSED),
         theme: profile.prefs().get(&keys::THEME),
         bookmarks_bar: profile.prefs().get(&keys::SHOW_BOOKMARKS_BAR),
+        home_button: profile.prefs().get(&keys::SHOW_HOME_BUTTON),
         backdrop: profile.prefs().get(&WINDOW_BACKDROP),
         compact_address: profile.prefs().get(&keys::COMPACT_ADDRESS_BAR),
         full_urls: profile.prefs().get(&keys::SHOW_FULL_URLS),
@@ -401,6 +404,12 @@ impl Browser {
         }
     }
 
+    /// What the Home button opens: the home page, or `None` for the new tab page.
+    pub fn home_page(&self) -> Option<String> {
+        let homepage = self.core(|p| p.prefs().get(&keys::HOMEPAGE));
+        self.homepage_url(&homepage)
+    }
+
     /// Something changed that a restored session should reflect. Saved a moment later, so a
     /// burst of changes is one write.
     pub fn session_changed(&self) {
@@ -646,6 +655,40 @@ impl Browser {
         self.update_prefs(|p| p.bookmarks_bar = visible);
         for window in self.windows() {
             window.set_bookmarks_bar_visible(visible);
+        }
+    }
+
+    pub fn home_button_visible(&self) -> bool {
+        self.prefs.get().home_button
+    }
+
+    pub fn set_home_button_visible(&self, visible: bool) {
+        self.write_pref(&keys::SHOW_HOME_BUTTON, &visible);
+        self.update_prefs(|p| p.home_button = visible);
+        for window in self.windows() {
+            window.set_home_button_visible(visible);
+        }
+    }
+
+    /// Read on each request: pages open windows rarely.
+    pub fn blocks_popups(&self) -> bool {
+        self.core(|p| p.prefs().get(&keys::BLOCK_POPUPS))
+    }
+
+    pub fn autofill(&self) -> Autofill {
+        self.core(|p| Autofill {
+            passwords: p.prefs().get(&keys::SAVE_PASSWORDS),
+            forms: p.prefs().get(&keys::AUTOFILL_FORMS),
+        })
+    }
+
+    /// Gives every open tab the autofill preferences; a new tab reads them as it starts.
+    pub fn apply_autofill(&self) {
+        let autofill = self.autofill();
+        for window in self.windows() {
+            for tab in window.tabs_in_order() {
+                tab.set_autofill(autofill);
+            }
         }
     }
 

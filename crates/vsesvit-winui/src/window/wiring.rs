@@ -50,6 +50,8 @@ impl BrowserWindow {
             });
         })?;
         let w = me();
+        click(&ui.home, move || with(&w, |w| w.go_home()))?;
+        let w = me();
         click(&ui.star, move || with(&w, |w| w.star_clicked()))?;
         let w = me();
         click(&ui.update_action, move || with(&w, |w| w.update_clicked()))?;

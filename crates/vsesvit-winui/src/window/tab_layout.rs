@@ -152,6 +152,7 @@ impl BrowserWindow {
             ui.back.cast::<FrameworkElement>(),
             ui.forward.cast::<FrameworkElement>(),
             ui.reload.cast::<FrameworkElement>(),
+            ui.home.cast::<FrameworkElement>(),
             Ok(ui.address_pill.clone()),
             ui.extension_actions.cast::<FrameworkElement>(),
             ui.downloads.cast::<FrameworkElement>(),

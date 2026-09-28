@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::extensions::{ExtensionId, InstallSource};
-use vsesvit_core::prefs::{TabsPosition, Theme};
+use vsesvit_core::prefs::{TabsPosition, Theme, keys};
 use vsesvit_core::testkit::{self, FixtureServer};
 use windows_core::Interface;
 
@@ -328,6 +328,23 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     close_all_but(&window, &first);
     window.run(Command::SelectTab(0));
 
+    // With "Block pop-ups" off, the same page opens both.
+    browser.write_pref(&keys::BLOCK_POPUPS, &false);
+    let before = window.tab_count();
+    let opener = window
+        .open_url_tab(&opener_page, true)
+        .map_err(|e| e.to_string())?;
+    wait_loaded(&opener).await?;
+    let allowed = wait_for_tab_count(&window, before + 3).await.is_ok();
+    browser.write_pref(&keys::BLOCK_POPUPS, &true);
+    steps.push(json!({
+        "name": "06c-popups-allowed",
+        "popups": window.tab_count().saturating_sub(before + 1),
+        "ok": allowed,
+    }));
+    close_all_but(&window, &first);
+    window.run(Command::SelectTab(0));
+
     // Ctrl+click on a link opens it in a background tab.
     let link = eval(&first, LINK_CENTER).await?;
     let background = match serde_json::from_str::<Vec<f64>>(&link) {
@@ -407,7 +424,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     }));
 
     let page2 = server.url("/page2.html");
-    if let Err(e) = dialog_steps::settings(&window, out_dir, steps).await {
+    if let Err(e) = dialog_steps::settings(&window, out_dir, &page2, steps).await {
         dialog_steps::failed(steps, "14-settings-dialog", &e);
     }
     if let Err(e) = dialog_steps::extensions(browser, &window, out_dir, &crx, steps).await {
@@ -499,6 +516,12 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     .await;
     other.close_tab(other_tab.id);
     exec::sleep(Duration::from_millis(300)).await;
+
+    // Last: it clears the site data every step above may rely on.
+    let result = dialog_steps::clear_browsing_data(browser, &window, out_dir, &page2, steps).await;
+    if let Err(e) = result {
+        dialog_steps::failed(steps, "23-clear-browsing-data", &e);
+    }
     Ok(())
 }
 

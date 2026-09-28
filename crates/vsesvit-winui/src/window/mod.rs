@@ -82,6 +82,8 @@ pub(crate) struct WindowPrefs {
     pub pane_collapsed: bool,
     pub theme: Theme,
     pub bookmarks_bar: bool,
+    /// The Home button next to Reload.
+    pub home_button: bool,
     pub backdrop: Backdrop,
     /// A narrow address bar centered in the toolbar.
     pub compact_address: bool,
@@ -178,6 +180,7 @@ impl BrowserWindow {
         this.apply_backdrop(prefs.backdrop);
         this.set_compact_address(prefs.compact_address);
         this.set_bookmarks_bar_visible(prefs.bookmarks_bar);
+        this.set_home_button_visible(prefs.home_button);
         this.wire()?;
         this.install_accelerators()?;
         this.size_for_screen()?;
@@ -703,6 +706,18 @@ impl BrowserWindow {
         }
     }
 
+    /// The Home button: the home page in the current tab, or the new tab page by default.
+    pub fn go_home(&self) {
+        let (Some(browser), Some(tab)) = (self.browser(), self.active_tab()) else {
+            return;
+        };
+        // Chrome counts the Home button as a bookmark (AUTO_BOOKMARK).
+        match browser.home_page() {
+            Some(url) => tab.navigate_as(&url, Transition::Bookmark),
+            None => tab.go_to_new_tab_page(),
+        }
+    }
+
     /// Enter in the address box.
     pub fn address_submitted(&self, text: &str) {
         self.address_edited.set(false);
@@ -775,6 +790,14 @@ impl BrowserWindow {
     pub fn set_bookmarks_bar_visible(&self, visible: bool) {
         self.bookmarks_bar_wanted.set(visible);
         let _ = xaml::set_visible(&self.ui.bookmarks_bar, visible && !self.fullscreen.get());
+    }
+
+    pub fn set_home_button_visible(&self, visible: bool) {
+        let _ = xaml::set_visible(&self.ui.home, visible);
+    }
+
+    pub fn home_button_shown(&self) -> bool {
+        xaml::is_visible(&self.ui.home)
     }
 
     pub fn bookmarks_bar_shown(&self) -> bool {

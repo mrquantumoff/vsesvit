@@ -94,7 +94,7 @@ Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text, put_Text, put_TextAli
 Microsoft.UI.Xaml.TextAlignment
 Microsoft.UI.Xaml.Controls.ListViewBase
 Microsoft.UI.Xaml.Controls.IListViewBase::{ItemClick, DragItemsCompleted, ScrollIntoView}
-Microsoft.UI.Xaml.Controls.IScrollViewer::{get_ScrollableWidth, get_HorizontalOffset}
+Microsoft.UI.Xaml.Controls.IScrollViewer::{get_ScrollableWidth, get_HorizontalOffset, get_ScrollableHeight, get_VerticalOffset, ChangeViewWithOptionalAnimation}
 Microsoft.UI.Xaml.Controls.ListViewItem::CreateInstance
 Microsoft.UI.Xaml.Controls.IItemClickEventArgs::get_ClickedItem
 Microsoft.UI.Xaml.Controls.DragItemsCompletedEventArgs
@@ -125,7 +125,7 @@ Microsoft.UI.Xaml.Controls.IMenuFlyout::get_Items
 Microsoft.UI.Xaml.Controls.MenuFlyoutSubItem::CreateInstance
 Microsoft.UI.Xaml.Controls.IMenuFlyoutSubItem::{get_Items, put_Text}
 Microsoft.UI.Xaml.Controls.MenuFlyoutItemBase
-Microsoft.UI.Xaml.Controls.IButton::put_Flyout
+Microsoft.UI.Xaml.Controls.IButton::{put_Flyout, get_Flyout}
 Microsoft.UI.Xaml.Controls.IContentDialog::{ShowAsync, Hide}
 Microsoft.UI.Xaml.Controls.ContentDialogResult
 Microsoft.UI.Xaml.Controls.IToggleSwitch::{get_IsOn, put_IsOn, Toggled}
@@ -159,6 +159,7 @@ Microsoft.UI.Xaml.Controls.IWebView22::EnsureCoreWebView2WithEnvironmentAsync
 
 // ---- WebView2 engine ----
 Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions
+Microsoft.Web.WebView2.Core.ICoreWebView2EnvironmentOptions::put_AdditionalBrowserArguments
 Microsoft.Web.WebView2.Core.ICoreWebView2EnvironmentOptions6::put_AreBrowserExtensionsEnabled
 Microsoft.Web.WebView2.Core.ICoreWebView2EnvironmentStatics::{CreateWithOptionsAsync, GetAvailableBrowserVersionString}
 Microsoft.Web.WebView2.Core.ICoreWebView2Environment::get_BrowserVersionString
@@ -166,6 +167,7 @@ Microsoft.Web.WebView2.Core.ICoreWebView2Environment15::CreateFindOptions
 Microsoft.Web.WebView2.Core.ICoreWebView2FindOptions::{put_FindTerm, put_SuppressDefaultFindDialog}
 Microsoft.Web.WebView2.Core.ICoreWebView2::{get_Settings, get_Source, get_CanGoBack, get_CanGoForward, get_DocumentTitle, get_ContainsFullScreenElement, NavigationStarting, ContentLoading, SourceChanged, HistoryChanged, NavigationCompleted, WebMessageReceived, NewWindowRequested, DocumentTitleChanged, ContainsFullScreenElementChanged, WindowCloseRequested, ProcessFailed, Navigate, NavigateToString, AddScriptToExecuteOnDocumentCreatedAsync, ExecuteScriptAsync, CapturePreviewAsync, CallDevToolsProtocolMethodAsync, Reload, GoBack, GoForward, Stop, GetDevToolsProtocolEventReceiver}
 Microsoft.Web.WebView2.Core.ICoreWebView2Settings::{put_AreDevToolsEnabled, put_IsWebMessageEnabled}
+Microsoft.Web.WebView2.Core.ICoreWebView2Settings4::{put_IsPasswordAutosaveEnabled, put_IsGeneralAutofillEnabled}
 Microsoft.Web.WebView2.Core.ICoreWebView2SourceChangedEventArgs::get_IsNewDocument
 Microsoft.Web.WebView2.Core.ICoreWebView2NavigationCompletedEventArgs::{get_IsSuccess, get_WebErrorStatus}
 Microsoft.Web.WebView2.Core.ICoreWebView2NavigationStartingEventArgs::get_Uri
@@ -182,6 +184,8 @@ Microsoft.Web.WebView2.Core.CoreWebView2FaviconImageFormat
 Microsoft.Web.WebView2.Core.ICoreWebView2_28::get_Find
 Microsoft.Web.WebView2.Core.ICoreWebView2Find::{StartAsync, get_MatchCount, Stop}
 Microsoft.Web.WebView2.Core.CoreWebView2CapturePreviewImageFormat
+Microsoft.Web.WebView2.Core.ICoreWebView2Profile2::ClearBrowsingDataAsync
+Microsoft.Web.WebView2.Core.CoreWebView2BrowsingDataKinds
 Microsoft.Web.WebView2.Core.ICoreWebView2Profile7::AddBrowserExtensionAsync
 Microsoft.Web.WebView2.Core.CoreWebView2Profile_Manual3::GetBrowserExtensionsAsync
 Microsoft.Web.WebView2.Core.ICoreWebView2BrowserExtension::{get_Id, get_Name, get_IsEnabled, RemoveAsync, EnableAsync}
