@@ -12,12 +12,15 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use vsesvit_core::Url;
+use vsesvit_core::downloads::State;
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
 use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::NavTarget;
 use vsesvit_core::testkit::{self, FixtureServer};
 
+use crate::bindings::Panel;
 use crate::browser::Browser;
+use crate::dialogs::{self, Dialog};
 use crate::layout;
 use crate::popup::Activation;
 use crate::report::{Check, Report};
@@ -34,6 +37,9 @@ const NETWORK_TIMEOUT: Duration = Duration::from_secs(240);
 const POLL: Duration = Duration::from_millis(100);
 const FIXTURE_TITLE: &str = "Vsesvit fixture";
 const PAGE2_TITLE: &str = "Vsesvit fixture 2";
+/// What the fixture server sends for `/download.bin`.
+const DOWNLOAD_FIXTURE: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/site/download.bin"));
 /// The new tab page's tile links, once its search box is there.
 const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...document.querySelectorAll('.tile')].map(a => a.href).join(' ') : 'no search box'";
 /// uBlock Origin Lite.
@@ -42,11 +48,19 @@ const CWS_ID: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
 /// Starts from a fresh profile: removes what an earlier run left in `out_dir`.
 pub(crate) fn prepare(out_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out_dir)?;
-    match std::fs::remove_dir_all(out_dir.join("profile")) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-        _ => {}
+    for dir in ["profile", "downloads"] {
+        match std::fs::remove_dir_all(out_dir.join(dir)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
     }
-    for file in ["report.json", "window.png", "probe.crx", "vsesvit.log"] {
+    for file in [
+        "report.json",
+        "window.png",
+        "downloads.png",
+        "probe.crx",
+        "vsesvit.log",
+    ] {
         match std::fs::remove_file(out_dir.join(file)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
             _ => {}
@@ -474,6 +488,53 @@ async fn checks(
         (s.url == "about:blank" && s.title == "New tab")
             .then_some(detail.clone())
             .ok_or(detail)
+    })
+    .await;
+
+    check(report, "download", DEFAULT_TIMEOUT, async |p| {
+        let dir = out_dir.join("downloads");
+        browser.set_download_dir(Some(&dir));
+        let url = server.url("/download.bin");
+        tab.navigate(url.as_str());
+        let entry = until(p, |p| {
+            let list = browser.download_list();
+            p.observe(format!(
+                "list {:?}",
+                list.iter()
+                    .map(|d| format!("{:?} {}", d.state, d.path.display()))
+                    .collect::<Vec<_>>()
+            ));
+            list.into_iter()
+                .find(|d| d.url == url.as_str() && d.state == State::Completed)
+        })
+        .await;
+        let bytes =
+            std::fs::read(&entry.path).map_err(|e| format!("{}: {e}", entry.path.display()))?;
+        let button = window.downloads_button_shown();
+        let preview = dialogs::preview(&window, Dialog::Downloads)
+            .map_err(|e| format!("Downloads view: {e}"))?;
+        exec::sleep(Duration::from_millis(500)).await;
+        let rows = preview
+            .find::<Panel>("DownloadRows")
+            .and_then(|rows| rows.Children()?.Size())
+            .map_err(|e| format!("Downloads view rows: {e}"))?;
+        let shot = window.capture().await.map_err(|e| format!("capture: {e}"))?;
+        drop(preview);
+        let path = out_dir.join("downloads.png");
+        std::fs::write(&path, &shot.png).map_err(|e| format!("{}: {e}", path.display()))?;
+        let detail = format!(
+            "{} ({} bytes, {} recorded) in {}; toolbar button shown: {button}; the view lists {rows}",
+            entry.path.display(),
+            bytes.len(),
+            entry.received,
+            dir.display()
+        );
+        let ok = entry.path.parent() == Some(dir.as_path())
+            && bytes == DOWNLOAD_FIXTURE
+            && bytes.len() as u64 == entry.received
+            && button
+            && rows == 1;
+        ok.then_some(detail.clone()).ok_or(detail)
     })
     .await;
 
