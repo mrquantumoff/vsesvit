@@ -131,3 +131,16 @@ fn tabs_are_vertical_on_the_left_by_default_and_the_choice_is_synced() {
     assert_eq!(p.prefs().get(&keys::TABS_POSITION), TabsPosition::Right);
     assert!(exported(&mut p).iter().any(|(id, _)| id == "tabs.position"));
 }
+
+#[test]
+fn the_extension_toolbar_list_round_trips_and_syncs() {
+    use vsesvit_core::extensions::toolbar::{Entry, TOOLBAR};
+
+    let (mut p, _dir) = open();
+    assert_eq!(p.prefs().get(&TOOLBAR), Vec::<Entry>::new());
+    let list = vec![Entry { id: "b".into(), pinned: true }, Entry { id: "a".into(), pinned: false }];
+    p.prefs().set(&TOOLBAR, &list).unwrap();
+    assert_eq!(p.prefs().get(&TOOLBAR), list);
+    let (_, record) = exported(&mut p).into_iter().find(|(key, _)| key == TOOLBAR.key).expect("synced");
+    assert_eq!(record.value.v.unwrap().as_str(), r#"[{"id":"b","pinned":true},{"id":"a","pinned":false}]"#);
+}

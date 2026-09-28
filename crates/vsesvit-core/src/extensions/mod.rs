@@ -28,6 +28,7 @@ pub(crate) use sync_table::ExtensionsTable;
 pub mod crx;
 mod install;
 pub mod manifest;
+pub mod toolbar;
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
