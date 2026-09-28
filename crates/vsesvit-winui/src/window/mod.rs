@@ -33,7 +33,7 @@ use crate::shortcuts::Command;
 use crate::strip::{SidePane, TopStrip};
 use crate::tab::{Initial, Tab, TabId};
 use crate::updates::{Action, Banner, Severity};
-use crate::{capture, exec, omnibox, platform, xaml};
+use crate::{capture, exec, omnibox, platform, xaml, zoom};
 
 use chrome::Chrome;
 use wiring::strip_events;
@@ -474,6 +474,7 @@ impl BrowserWindow {
         }
         self.show_star(state.starred);
         self.show_site(&state.url);
+        self.show_zoom(state.zoom);
         let title = if state.title.is_empty() || state.url.is_empty() {
             "Vsesvit".to_owned()
         } else {
@@ -539,6 +540,44 @@ impl BrowserWindow {
         let _ = self.ui.site_icon.SetGlyph(glyph);
         let _ =
             xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.site_icon, &tip));
+    }
+
+    /// The zoom chip, shown while the page is not at 100%, and the zoom bubble's level.
+    fn show_zoom(&self, level: zoom::Level) {
+        let label = level.label();
+        let _ = self.ui.zoom_chip_text.SetText(&label);
+        let _ = self.ui.zoom_level.SetText(&label);
+        let _ = xaml::set_visible(&self.ui.zoom_chip, !level.is_default());
+        if level.is_default() {
+            let _ = self
+                .ui
+                .zoom_bubble
+                .cast::<FlyoutBase>()
+                .and_then(|b| b.Hide());
+        }
+    }
+
+    /// A button of the zoom bubble.
+    pub(super) fn zoom_clicked(&self, step: zoom::Step) {
+        match self.active_tab() {
+            Some(tab) if self.is_foreground() => tab.zoom(step),
+            _ => log::info!("zoom {step:?}: the window is not in the foreground"),
+        }
+    }
+
+    pub fn zoom_chip_shown(&self) -> Option<String> {
+        xaml::is_visible(&self.ui.zoom_chip)
+            .then(|| self.ui.zoom_chip_text.Text().ok())
+            .flatten()
+            .map(|t| t.to_string())
+    }
+
+    /// Opens the zoom bubble, as a click on the chip does.
+    pub fn show_zoom_bubble(&self) -> Result<()> {
+        self.ui
+            .zoom_bubble
+            .cast::<FlyoutBase>()?
+            .ShowAt(&self.ui.zoom_chip.cast::<FrameworkElement>()?)
     }
 
     fn show_star(&self, starred: bool) {

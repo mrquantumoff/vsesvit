@@ -105,6 +105,7 @@ const WINDOW_XAML: &str = r#"
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="*"/>
         <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
       <FontIcon x:Name="SiteIcon" Margin="12,0,2,0" FontSize="14" Glyph="&#xE721;"
                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
@@ -127,12 +128,38 @@ const WINDOW_XAML: &str = r#"
           </Style>
         </AutoSuggestBox.TextBoxStyle>
       </AutoSuggestBox>
-      <ToggleButton x:Name="Star" Grid.Column="2" Style="{StaticResource ToolbarToggle}" Width="32" Height="26"
+      <!-- The page's zoom when it is not 100%, as in Chrome; it opens the zoom bubble. The bubble
+           takes no focus, so its buttons zoom the page that has it. -->
+      <Button x:Name="ZoomChip" Grid.Column="2" Height="24" Padding="8,0" Margin="0,0,2,0"
+              CornerRadius="12" FontSize="12" Visibility="Collapsed" AllowFocusOnInteraction="False"
+              Background="{ThemeResource SubtleFillColorSecondaryBrush}" BorderThickness="0"
+              ToolTipService.ToolTip="Zoom" AutomationProperties.Name="Zoom">
+        <TextBlock x:Name="ZoomChipText" Text="100%"/>
+        <Button.Flyout>
+          <Flyout x:Name="ZoomBubble" Placement="BottomEdgeAlignedRight" ShowMode="Transient">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Zoom:" VerticalAlignment="Center"/>
+              <TextBlock x:Name="ZoomLevel" Text="100%" MinWidth="44" VerticalAlignment="Center"/>
+              <Button x:Name="ZoomOut" Width="36" AllowFocusOnInteraction="False"
+                      ToolTipService.ToolTip="Zoom out (Ctrl+minus)" AutomationProperties.Name="Zoom out">
+                <FontIcon Glyph="&#xE738;" FontSize="12"/>
+              </Button>
+              <Button x:Name="ZoomIn" Width="36" AllowFocusOnInteraction="False"
+                      ToolTipService.ToolTip="Zoom in (Ctrl+plus)" AutomationProperties.Name="Zoom in">
+                <FontIcon Glyph="&#xE710;" FontSize="12"/>
+              </Button>
+              <Button x:Name="ZoomReset" Content="Reset" AllowFocusOnInteraction="False"
+                      ToolTipService.ToolTip="Reset to the default (Ctrl+0)"/>
+            </StackPanel>
+          </Flyout>
+        </Button.Flyout>
+      </Button>
+      <ToggleButton x:Name="Star" Grid.Column="3" Style="{StaticResource ToolbarToggle}" Width="32" Height="26"
                     Margin="0,0,2,0" CornerRadius="6"
                     ToolTipService.ToolTip="Bookmark this page (Ctrl+D)" AutomationProperties.Name="Bookmark this page">
         <FontIcon x:Name="StarGlyph" Glyph="&#xE734;" FontSize="14"/>
       </ToggleButton>
-      <Border x:Name="AddressFocusRing" Grid.ColumnSpan="3" CornerRadius="8" BorderThickness="2" Margin="-1"
+      <Border x:Name="AddressFocusRing" Grid.ColumnSpan="4" CornerRadius="8" BorderThickness="2" Margin="-1"
               BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" IsHitTestVisible="False"
               Visibility="Collapsed"/>
     </Grid>
@@ -260,6 +287,10 @@ pub(super) struct Chrome {
     pub(super) address_pill: FrameworkElement,
     pub(super) address_focus_ring: UIElement,
     pub(super) site_icon: FontIcon,
+    pub(super) zoom_chip: Button,
+    pub(super) zoom_chip_text: TextBlock,
+    pub(super) zoom_bubble: Flyout,
+    pub(super) zoom_level: TextBlock,
     pub(super) star: ToggleButton,
     pub(super) star_glyph: FontIcon,
     pub(super) extension_actions: Panel,
@@ -297,6 +328,10 @@ impl Chrome {
             address_pill: xaml::find(&root, "AddressPill")?,
             address_focus_ring: xaml::find(&root, "AddressFocusRing")?,
             site_icon: xaml::find(&root, "SiteIcon")?,
+            zoom_chip: xaml::find(&root, "ZoomChip")?,
+            zoom_chip_text: xaml::find(&root, "ZoomChipText")?,
+            zoom_bubble: xaml::find(&root, "ZoomBubble")?,
+            zoom_level: xaml::find(&root, "ZoomLevel")?,
             star: xaml::find(&root, "Star")?,
             star_glyph: xaml::find(&root, "StarGlyph")?,
             extension_actions: xaml::find(&root, "ExtensionActions")?,

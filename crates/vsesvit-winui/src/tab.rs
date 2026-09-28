@@ -14,11 +14,11 @@ use windows_core::{IInspectable, Interface, Ref, Result};
 
 use crate::bindings::*;
 use crate::browser::CommitKind;
-use crate::{exec, xaml};
 use crate::shortcuts::{self, PageMessage, PageScript};
 use crate::store;
 use crate::tab_header::TabLook;
 use crate::window::BrowserWindow;
+use crate::{exec, xaml, zoom};
 
 /// Identifies a tab within this process.
 pub(crate) type TabId = u64;
@@ -80,6 +80,7 @@ pub(crate) struct TabState {
     pub can_go_forward: bool,
     pub starred: bool,
     pub fullscreen: bool,
+    pub zoom: zoom::Level,
 }
 
 pub(crate) struct Tab {
@@ -381,6 +382,16 @@ impl Tab {
         }
     }
 
+    /// Zooms the page as its keyboard shortcut does. Only for a window in the foreground.
+    pub fn zoom(&self, step: zoom::Step) {
+        self.focus_page();
+        // The page takes the focus a moment after the web view does.
+        exec::spawn(async move {
+            exec::sleep(Duration::from_millis(50)).await;
+            zoom::press(step);
+        });
+    }
+
     pub fn focus_page(&self) {
         let _ = self
             .view
@@ -662,6 +673,18 @@ impl Tab {
             }
             Some(PageMessage::Store(request)) => {
                 exec::spawn(store::answer(window, self.id, request));
+            }
+            Some(PageMessage::Zoom(ratio)) => {
+                let scale = window
+                    .xaml_root()
+                    .and_then(|r| r.RasterizationScale())
+                    .unwrap_or(1.0);
+                let level = zoom::Level(zoom::percent(ratio, scale));
+                if self.state.borrow().zoom != level {
+                    log::debug!("tab {}: zoom {}", self.id, level.label());
+                    self.state.borrow_mut().zoom = level;
+                    self.notify();
+                }
             }
             None => {}
         }

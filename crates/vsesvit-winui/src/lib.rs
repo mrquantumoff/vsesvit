@@ -81,6 +81,7 @@ mod tab_header;
 mod updates;
 mod window;
 mod xaml;
+mod zoom;
 
 use std::process::ExitCode;
 use std::time::Instant;

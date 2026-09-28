@@ -145,7 +145,7 @@ pub(crate) const BINDINGS: &[Binding] = &[
 ];
 
 /// A message the shortcut script sent to the host.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum PageMessage {
     Key(Command),
     /// The user Ctrl+clicked or middle-clicked a link; the new-window request that follows
@@ -153,6 +153,8 @@ pub(crate) enum PageMessage {
     BackgroundLink(String),
     /// An extension store page asked to install, remove or list extensions (see `store`).
     Store(StoreRequest),
+    /// The page's `devicePixelRatio`, when it loads and whenever it changes (see `zoom`).
+    Zoom(f64),
 }
 
 /// The binding the script reports through (`Runtime.bindingCalled` events carry its name).
@@ -198,6 +200,7 @@ fn parse_page_message(message: &str) -> Option<PageMessage> {
         "link" => Some(PageMessage::BackgroundLink(
             value.get("url")?.as_str()?.to_owned(),
         )),
+        "zoom" => Some(PageMessage::Zoom(value.get("dpr")?.as_f64()?)),
         "store" => store::parse_request(
             value.get("host")?.as_str()?,
             value.get("detail")?.as_str()?,
@@ -237,6 +240,15 @@ fn page_script() -> String {
   }};
   addEventListener("click", (e) => {{ if (e.isTrusted && (e.ctrlKey || e.metaKey) && !e.shiftKey) link(e); }}, true);
   addEventListener("auxclick", (e) => {{ if (e.isTrusted && e.button === 1 && !e.shiftKey) link(e); }}, true);
+  let ratio = 0;
+  const zoom = () => {{
+    if (devicePixelRatio === ratio) return;
+    ratio = devicePixelRatio;
+    report(JSON.stringify({{ t: "zoom", dpr: ratio }}));
+    matchMedia("(resolution: " + ratio + "dppx)").addEventListener("change", zoom, {{ once: true }});
+  }};
+  zoom();
+  addEventListener("resize", zoom);
   document.addEventListener("vsesvit-store", (e) => {{
     if (typeof e.detail === "string") report(JSON.stringify({{ t: "store", host: location.hostname, detail: e.detail }}));
   }});
@@ -320,6 +332,17 @@ mod tests {
     }
 
     #[test]
+    fn zoom_reports_carry_the_pixel_ratio() {
+        let zoom = r#"{"t":"zoom","dpr":1.925}"#;
+        assert_eq!(
+            parse_binding_call(&called(BINDING, zoom)),
+            Some(PageMessage::Zoom(1.925))
+        );
+        let bad = r#"{"t":"zoom","dpr":"big"}"#;
+        assert_eq!(parse_binding_call(&called(BINDING, bad)), None);
+    }
+
+    #[test]
     fn store_requests_carry_the_senders_host() {
         let request = r#"{"t":"store","host":"chromewebstore.google.com","detail":"{\"seq\":1,\"op\":\"list\"}"}"#;
         assert!(matches!(
@@ -335,7 +358,10 @@ mod tests {
         let script = page_script();
         assert!(script.contains("\"87:1\""), "Ctrl+W is reserved");
         assert!(script.contains("\"68:1\""), "Ctrl+D is overridable");
-        assert!(script.contains("\"83:1\""), "Ctrl+S is overridable, so pages keep their own");
+        assert!(
+            script.contains("\"83:1\""),
+            "Ctrl+S is overridable, so pages keep their own"
+        );
         assert!(!script.contains("\"82:1\""), "Ctrl+R is left to WebView2");
     }
 

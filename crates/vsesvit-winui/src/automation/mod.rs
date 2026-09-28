@@ -284,6 +284,70 @@ fn bar_fit(window: &BrowserWindow) -> Value {
     })
 }
 
+/// The zoom chip shows the page's zoom when it is not 100%, follows the selected tab, and opens
+/// the zoom bubble. Without OS input the page cannot be zoomed as a person would, so the page's
+/// pixel ratio is emulated at 110% of the window's scale instead, which is what zoom changes,
+/// with the resize event a real zoom fires.
+async fn zoom_steps(
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    out_dir: &Path,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    window.run(Command::SelectTab(0));
+    let scale = window
+        .xaml_root()
+        .and_then(|r| r.RasterizationScale())
+        .map_err(|e| e.to_string())?;
+    let emulate =
+        json!({ "width": 0, "height": 0, "deviceScaleFactor": scale * 1.1, "mobile": false });
+    devtools(tab, "Emulation.setDeviceMetricsOverride", &emulate).await?;
+    // Emulation changes the ratio without the resize a real zoom brings.
+    eval(tab, "dispatchEvent(new Event('resize'))").await?;
+    let chip = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        window.zoom_chip_shown()
+    })
+    .await;
+    shoot(
+        window,
+        out_dir,
+        "12c-zoom-chip",
+        steps,
+        |_| json!({ "chip": chip, "ok": chip.as_deref() == Some("110%") }),
+    )
+    .await;
+    window.show_zoom_bubble().map_err(|e| e.to_string())?;
+    exec::sleep(Duration::from_millis(500)).await;
+    shoot(
+        window,
+        out_dir,
+        "12d-zoom-bubble",
+        steps,
+        |w| json!({ "ok": w.zoom_chip_shown().as_deref() == Some("110%") }),
+    )
+    .await;
+    window.run(Command::SelectTab(1));
+    exec::sleep(Duration::from_millis(300)).await;
+    let other_tab = window.zoom_chip_shown();
+    window.run(Command::SelectTab(0));
+    exec::sleep(Duration::from_millis(300)).await;
+    let back = window.zoom_chip_shown();
+    devtools(tab, "Emulation.clearDeviceMetricsOverride", &json!({})).await?;
+    eval(tab, "dispatchEvent(new Event('resize'))").await?;
+    let cleared = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        window.zoom_chip_shown().is_none().then_some(())
+    })
+    .await;
+    steps.push(json!({
+        "name": "12e-zoom-follows-the-tab",
+        "other_tab": other_tab,
+        "back": back,
+        "hidden_at_100": cleared.is_some(),
+        "ok": other_tab.is_none() && back.as_deref() == Some("110%") && cleared.is_some(),
+    }));
+    Ok(())
+}
+
 /// Starts from a fresh profile when the run uses the one inside `out_dir`.
 pub(crate) fn prepare(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out_dir)?;
@@ -599,6 +663,8 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
         "no_op_with_tabs_on_top": top_before == top_after,
         "ok": toggled == [true, true] && !window.is_pane_collapsed() && top_before == top_after,
     }));
+
+    zoom_steps(&window, &first, out_dir, steps).await?;
 
     let count = window.show_suggestions("fixture");
     steps.push(json!({

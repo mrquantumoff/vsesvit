@@ -12,7 +12,7 @@ use crate::dialogs::Dialog;
 use crate::exec;
 use crate::shortcuts::{BINDINGS, Command, Mods};
 use crate::strip::StripEvents;
-use crate::xaml;
+use crate::{xaml, zoom};
 
 impl BrowserWindow {
     pub(super) fn wire(&self) -> Result<()> {
@@ -67,6 +67,15 @@ impl BrowserWindow {
         click(&ui.star, move || with(&w, |w| w.star_clicked()))?;
         let w = me();
         click(&ui.update_action, move || with(&w, |w| w.update_clicked()))?;
+        for (name, step) in [
+            ("ZoomIn", zoom::Step::In),
+            ("ZoomOut", zoom::Step::Out),
+            ("ZoomReset", zoom::Step::Reset),
+        ] {
+            let w = me();
+            let button: Button = xaml::find(&ui.root, name)?;
+            click(&button, move || with(&w, |w| w.zoom_clicked(step)))?;
+        }
         let w = me();
         click(&ui.downloads, move || {
             with(&w, |w| w.show_dialog(Dialog::Downloads));

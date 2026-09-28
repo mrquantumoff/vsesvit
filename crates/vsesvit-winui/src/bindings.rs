@@ -28,6 +28,7 @@ windows_core::link!("kernel32.dll" "system" fn LocalFree(hmem : HLOCAL) -> HLOCA
 windows_core::link!("user32.dll" "system" fn MessageBoxW(hwnd : HWND, lptext : windows_core::PCWSTR, lpcaption : windows_core::PCWSTR, utype : u32) -> i32);
 windows_core::link!("user32.dll" "system" fn PostMessageW(hwnd : HWND, msg : u32, wparam : WPARAM, lparam : LPARAM) -> windows_core::BOOL);
 windows_core::link!("shell32.dll" "system" fn SHGetKnownFolderPath(rfid : *const KNOWNFOLDERID, dwflags : u32, htoken : HANDLE, ppszpath : *mut windows_core::PWSTR) -> windows_core::HRESULT);
+windows_core::link!("user32.dll" "system" fn SendInput(cinputs : u32, pinputs : *const INPUT, cbsize : i32) -> u32);
 windows_core::link!("user32.dll" "system" fn SetProcessDpiAwarenessContext(value : DPI_AWARENESS_CONTEXT) -> windows_core::BOOL);
 windows_core::link!("shell32.dll" "system" fn ShellExecuteW(hwnd : HWND, lpoperation : windows_core::PCWSTR, lpfile : windows_core::PCWSTR, lpparameters : windows_core::PCWSTR, lpdirectory : windows_core::PCWSTR, nshowcmd : i32) -> HINSTANCE);
 windows_core::link!("api-ms-win-appmodel-runtime-l1-1-5.dll" "system" fn TryCreatePackageDependency(user : PSID, packagefamilyname : windows_core::PCWSTR, minversion : PACKAGE_VERSION, packagedependencyprocessorarchitectures : PackageDependencyProcessorArchitectures, lifetimekind : PackageDependencyLifetimeKind, lifetimeartifact : windows_core::PCWSTR, options : CreatePackageDependencyOptions, packagedependencyid : *mut windows_core::PWSTR) -> windows_core::HRESULT);
@@ -3332,6 +3333,13 @@ impl windows_core::RuntimeName for Grid {
 unsafe impl Send for Grid {}
 unsafe impl Sync for Grid {}
 pub type HANDLE = *mut core::ffi::c_void;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HARDWAREINPUT {
+    pub uMsg: u32,
+    pub wParamL: u16,
+    pub wParamH: u16,
+}
 pub type HCERTSTORE = *mut core::ffi::c_void;
 pub type HCRYPTPROV_LEGACY = usize;
 pub type HINSTANCE = *mut core::ffi::c_void;
@@ -9734,6 +9742,30 @@ pub struct IMicaBackdropFactory_Vtbl {
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct INPUT {
+    pub r#type: u32,
+    pub Anonymous: INPUT_0,
+}
+impl Default for INPUT {
+    fn default() -> Self {
+        unsafe { core::mem::zeroed() }
+    }
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union INPUT_0 {
+    pub mi: MOUSEINPUT,
+    pub ki: KEYBDINPUT,
+    pub hi: HARDWAREINPUT,
+}
+impl Default for INPUT_0 {
+    fn default() -> Self {
+        unsafe { core::mem::zeroed() }
+    }
+}
+pub const INPUT_KEYBOARD: i32 = 1;
 windows_core::imp::define_interface!(
     IOutputStream,
     IOutputStream_Vtbl,
@@ -12978,6 +13010,35 @@ impl IXamlRoot {
             .map(|| result__)
         }
     }
+    pub fn Changed<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<XamlRoot>, windows_core::Ref<XamlRootChangedEventArgs>) + 'static,
+    {
+        let handler: TypedEventHandler<XamlRoot, XamlRootChangedEventArgs> = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<XamlRoot, XamlRootChangedEventArgs>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<XamlRoot, XamlRootChangedEventArgs, F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).Changed)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveChanged,
+            ))
+        }
+    }
 }
 #[repr(C)]
 pub struct IXamlRoot_Vtbl {
@@ -12986,6 +13047,27 @@ pub struct IXamlRoot_Vtbl {
     Size: usize,
     pub RasterizationScale:
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    IsHostVisible: usize,
+    pub Changed: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveChanged:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IXamlRootChangedEventArgs,
+    IXamlRootChangedEventArgs_Vtbl,
+    0x61d2c719_f8a1_515a_902c_cfa498ba7a7f
+);
+impl windows_core::RuntimeType for IXamlRootChangedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IXamlRootChangedEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
     IXamlType,
@@ -13434,6 +13516,16 @@ impl windows_core::RuntimeName for ItemsControl {
 }
 unsafe impl Send for ItemsControl {}
 unsafe impl Sync for ItemsControl {}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KEYBDINPUT {
+    pub wVk: u16,
+    pub wScan: u16,
+    pub dwFlags: u32,
+    pub time: u32,
+    pub dwExtraInfo: usize,
+}
+pub const KEYEVENTF_KEYUP: i32 = 2;
 pub const KF_FLAG_DEFAULT: KNOWN_FOLDER_FLAG = 0;
 pub type KNOWNFOLDERID = windows_core::GUID;
 pub type KNOWN_FOLDER_FLAG = u32;
@@ -13775,6 +13867,16 @@ unsafe impl Sync for ListViewItem {}
 pub const MB_ICONERROR: i32 = 16;
 pub const MB_OK: i32 = 0;
 pub const MB_YESNO: i32 = 4;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MOUSEINPUT {
+    pub dx: i32,
+    pub dy: i32,
+    pub mouseData: u32,
+    pub dwFlags: u32,
+    pub time: u32,
+    pub dwExtraInfo: usize,
+}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MenuFlyout(windows_core::IUnknown);
@@ -16525,6 +16627,33 @@ impl windows_core::RuntimeName for XamlRoot {
 }
 unsafe impl Send for XamlRoot {}
 unsafe impl Sync for XamlRoot {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct XamlRootChangedEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    XamlRootChangedEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for XamlRootChangedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IXamlRootChangedEventArgs>();
+}
+unsafe impl windows_core::Interface for XamlRootChangedEventArgs {
+    type Vtable = <IXamlRootChangedEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IXamlRootChangedEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for XamlRootChangedEventArgs {
+    type Target = IXamlRootChangedEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for XamlRootChangedEventArgs {
+    const NAME: &'static str = "Microsoft.UI.Xaml.XamlRootChangedEventArgs";
+}
+unsafe impl Send for XamlRootChangedEventArgs {}
+unsafe impl Sync for XamlRootChangedEventArgs {}
 #[repr(C)]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct XmlnsDefinition {
