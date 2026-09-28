@@ -27,6 +27,7 @@ const SITE: &[(&str, &str, &[u8])] = &[
     site_file!("page2.html", "text/html; charset=utf-8"),
     site_file!("allowed.png", "image/png"),
     site_file!("vsesvit-blocked/pixel.png", "image/png"),
+    site_file!("download.bin", "application/octet-stream"),
 ];
 
 const MAX_REQUEST_HEAD: usize = 16 * 1024;

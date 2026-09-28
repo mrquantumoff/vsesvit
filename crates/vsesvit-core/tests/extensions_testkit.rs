@@ -38,11 +38,14 @@ fn fixture_server_serves_the_site_and_records_hits() {
     assert!(head.contains("Content-Type: image/png"), "{head}");
     assert_eq!(body, fixture("allowed.png"));
     assert!(get(&server, "/vsesvit-blocked/pixel.png").0.contains("image/png"));
+    let (head, body) = get(&server, "/download.bin");
+    assert!(head.contains("Content-Type: application/octet-stream"), "{head}");
+    assert_eq!(body, fixture("download.bin"));
     assert_eq!(get(&server, "/").1, fixture("index.html"));
     assert!(get(&server, "/favicon.ico").0.starts_with("HTTP/1.1 404"));
     assert!(get(&server, "/../Cargo.toml").0.starts_with("HTTP/1.1 404"));
 
-    assert_eq!(server.hits(), ["/index.html", "/allowed.png", "/vsesvit-blocked/pixel.png", "/", "/favicon.ico", "/../Cargo.toml"]);
+    assert_eq!(server.hits(), ["/index.html", "/allowed.png", "/vsesvit-blocked/pixel.png", "/download.bin", "/", "/favicon.ico", "/../Cargo.toml"]);
 }
 
 #[test]
