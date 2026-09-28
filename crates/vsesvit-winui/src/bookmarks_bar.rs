@@ -80,9 +80,108 @@ pub(crate) fn fill_icons(items: &mut [BarItem], favicon: &mut dyn FnMut(&str) ->
 pub(crate) enum Disposition {
     CurrentTab,
     BackgroundTab,
+    NewWindow,
 }
 
-pub(crate) type OpenLink = Rc<dyn Fn(&str, Disposition)>;
+/// What the bar asks its window to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BarCommand {
+    Open(String, Disposition),
+    /// The links directly in a folder, each in a background tab.
+    OpenAll(Vec<String>),
+    /// The bookmark editor for a bookmark or folder.
+    Edit(BookmarkId),
+    CopyLink(String),
+    /// Deletes a bookmark; a folder with `contents` items in it only once the user confirms.
+    Delete {
+        id: BookmarkId,
+        title: String,
+        contents: usize,
+    },
+    AddPage,
+    AddFolder,
+    ToggleBar,
+    Manager,
+}
+
+/// Runs the bar's commands; the window provides it.
+pub(crate) type BarHost = Rc<dyn Fn(BarCommand)>;
+
+/// An entry of a bookmark context menu.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MenuEntry {
+    Command(String, BarCommand),
+    /// A command with a check mark, checked or not.
+    Toggle(String, bool, BarCommand),
+    Separator,
+}
+
+/// The context menu of a bar item, or of the bar's empty space (`None`), as Chrome has them.
+pub(crate) fn context_entries(item: Option<&BarItem>) -> Vec<MenuEntry> {
+    use MenuEntry::{Command, Separator, Toggle};
+    let command = |label: &str, command| Command(label.to_owned(), command);
+    match item {
+        Some(BarItem::Link { id, title, url, .. }) => vec![
+            command(
+                "Open in new tab",
+                BarCommand::Open(url.clone(), Disposition::BackgroundTab),
+            ),
+            command(
+                "Open in new window",
+                BarCommand::Open(url.clone(), Disposition::NewWindow),
+            ),
+            Separator,
+            command("Edit\u{2026}", BarCommand::Edit(*id)),
+            command("Copy link", BarCommand::CopyLink(url.clone())),
+            Separator,
+            command(
+                "Delete",
+                BarCommand::Delete {
+                    id: *id,
+                    title: title.clone(),
+                    contents: 0,
+                },
+            ),
+        ],
+        Some(BarItem::Folder {
+            id,
+            title,
+            children,
+        }) => {
+            let links: Vec<String> = children
+                .iter()
+                .filter_map(|child| match child {
+                    BarItem::Link { url, .. } => Some(url.clone()),
+                    BarItem::Folder { .. } => None,
+                })
+                .collect();
+            vec![
+                Command(
+                    format!("Open all ({}) in new tabs", links.len()),
+                    BarCommand::OpenAll(links),
+                ),
+                Separator,
+                command("Rename\u{2026}", BarCommand::Edit(*id)),
+                Separator,
+                command(
+                    "Delete",
+                    BarCommand::Delete {
+                        id: *id,
+                        title: title.clone(),
+                        contents: children.len(),
+                    },
+                ),
+            ]
+        }
+        None => vec![
+            command("Add page\u{2026}", BarCommand::AddPage),
+            command("Add folder\u{2026}", BarCommand::AddFolder),
+            Separator,
+            Toggle("Show bookmarks bar".to_owned(), true, BarCommand::ToggleBar),
+            command("Bookmark manager", BarCommand::Manager),
+        ],
+    }
+}
 
 const VK_CONTROL: i32 = 0x11;
 /// The bar's left and right padding in the window markup.
@@ -104,19 +203,52 @@ pub(crate) struct Bar {
     root: FrameworkElement,
     list: ListView,
     chevron: Button,
+    host: BarHost,
     rows: RefCell<Vec<Row>>,
     shown: Cell<usize>,
+    /// The entries of the open bookmark menus and the item each shows.
+    menu_rows: RefCell<Vec<(MenuFlyoutItemBase, BarItem)>>,
+    /// The context menu of every item, on the bar and in its menus. It fills itself for the
+    /// item it opens on.
+    item_menu: MenuFlyout,
+    /// The context menu of the bar's empty space.
+    bar_menu: MenuFlyout,
 }
 
 impl Bar {
-    pub fn new(root: FrameworkElement, list: ListView, chevron: Button) -> Self {
-        Self {
+    pub fn new(
+        root: FrameworkElement,
+        list: ListView,
+        chevron: Button,
+        host: BarHost,
+    ) -> Result<Rc<Self>> {
+        let bar = Rc::new(Self {
             root,
             list,
             chevron,
+            host,
             rows: RefCell::new(Vec::new()),
             shown: Cell::new(0),
+            menu_rows: RefCell::new(Vec::new()),
+            item_menu: xaml::context_menu()?,
+            bar_menu: xaml::context_menu()?,
+        });
+        for menu in [&bar.item_menu, &bar.bar_menu] {
+            let me = Rc::downgrade(&bar);
+            let flyout = menu.cast::<FlyoutBase>()?;
+            let opening = flyout.clone();
+            flyout
+                .Opening(move |_, _| {
+                    if let Some(bar) = me.upgrade() {
+                        bar.context_opening(&opening);
+                    }
+                })?
+                .forget();
         }
+        bar.root
+            .cast::<UIElement>()?
+            .SetContextFlyout(&bar.bar_menu.cast::<FlyoutBase>()?)?;
+        Ok(bar)
     }
 
     pub fn list(&self) -> &ListView {
@@ -153,22 +285,20 @@ impl Bar {
     }
 
     /// Replaces the bar's entries.
-    pub fn set(&self, items: &[BarItem], open: &OpenLink) {
+    pub fn set(&self, items: &[BarItem]) {
         let Ok(entries) = self.entries() else {
             return;
         };
         let _ = entries.Clear();
         let mut rows = Vec::with_capacity(items.len());
         for item in items {
-            match entry(item, open) {
+            match self.entry(item) {
                 Ok(element) => {
                     let _ = entries.Append(&element);
-                    if let Ok(element) = element.cast() {
-                        rows.push(Row {
-                            element,
-                            item: item.clone(),
-                        });
-                    }
+                    rows.push(Row {
+                        element,
+                        item: item.clone(),
+                    });
                 }
                 Err(e) => log::warn!("bookmarks bar item: {e}"),
             }
@@ -203,13 +333,12 @@ impl Bar {
         for row in &rows[shown..] {
             let _ = xaml::set_visible(&row.element, false);
         }
-        log::debug!("bookmarks bar: {available} wide, items {widths:?}, {shown} shown");
         self.shown.set(shown);
         let _ = xaml::set_visible(&self.chevron, shown < rows.len());
     }
 
     /// The user clicked `clicked` (an entry or its content): open the link or the folder's menu.
-    pub fn clicked(&self, clicked: &IInspectable, open: &OpenLink) {
+    pub fn clicked(&self, clicked: &IInspectable) {
         let row = self
             .rows
             .borrow()
@@ -227,11 +356,11 @@ impl Bar {
             return;
         };
         match item {
-            BarItem::Link { url, .. } => open(&url, disposition()),
+            BarItem::Link { url, .. } => (self.host)(BarCommand::Open(url, disposition())),
             BarItem::Folder { children, .. } => {
                 let shown = element
                     .cast()
-                    .and_then(|anchor| show_menu(&anchor, &children, open));
+                    .and_then(|anchor| self.show_menu(&anchor, &children));
                 if let Err(e) = shown {
                     log::warn!("bookmarks bar folder menu: {e}");
                 }
@@ -239,8 +368,17 @@ impl Bar {
         }
     }
 
+    /// The bar entry of `id` while the bar shows it whole.
+    pub fn element_of(&self, id: BookmarkId) -> Option<FrameworkElement> {
+        let rows = self.rows.borrow();
+        rows[..self.shown.get().min(rows.len())]
+            .iter()
+            .find(|row| row.item.id() == id)
+            .and_then(|row| row.element.cast().ok())
+    }
+
     /// The menu of the folder `id` on the bar, as a click opens it.
-    pub fn open_folder(&self, id: BookmarkId, open: &OpenLink) -> Result<MenuFlyout> {
+    pub fn open_folder(&self, id: BookmarkId) -> Result<MenuFlyout> {
         let row = self.rows.borrow().iter().find_map(|row| match &row.item {
             BarItem::Folder {
                 id: f, children, ..
@@ -249,12 +387,109 @@ impl Bar {
         });
         let (element, children) =
             row.ok_or_else(|| windows_core::Error::new(E_FAIL, "no such folder on the bar"))?;
-        show_menu(&element.cast()?, &children, open)
+        self.show_menu(&element.cast()?, &children)
     }
 
     /// The chevron: a menu of the items that do not fit.
-    pub fn show_overflow(&self, open: &OpenLink) -> Result<MenuFlyout> {
-        show_menu(&self.chevron.cast()?, &self.overflow_items(), open)
+    pub fn show_overflow(&self) -> Result<MenuFlyout> {
+        self.show_menu(&self.chevron.cast()?, &self.overflow_items())
+    }
+
+    /// Opens the context menu of the item `id` (on the bar or in an open menu), or of the bar
+    /// itself for `None`, as a right click there does.
+    pub fn show_context_menu(&self, id: Option<BookmarkId>) -> Result<MenuFlyout> {
+        let options = FlyoutShowOptions::new()?;
+        options.SetPlacement(FlyoutPlacementMode::BottomEdgeAlignedLeft)?;
+        let Some(id) = id else {
+            self.bar_menu
+                .cast::<FlyoutBase>()?
+                .ShowAtWithOptions(&self.root, &options)?;
+            return Ok(self.bar_menu.clone());
+        };
+        let on_bar = self
+            .rows
+            .borrow()
+            .iter()
+            .find(|row| row.item.id() == id)
+            .and_then(|row| row.element.cast::<FrameworkElement>().ok());
+        let in_menu = || {
+            self.menu_rows
+                .borrow()
+                .iter()
+                .find(|(_, item)| item.id() == id)
+                .and_then(|(entry, _)| entry.cast::<FrameworkElement>().ok())
+        };
+        let target = on_bar
+            .or_else(in_menu)
+            .ok_or_else(|| windows_core::Error::new(E_FAIL, "no such bookmark shown"))?;
+        self.item_menu
+            .cast::<FlyoutBase>()?
+            .ShowAtWithOptions(&target, &options)?;
+        Ok(self.item_menu.clone())
+    }
+
+    /// A context menu is opening: fill it for the item it opens on.
+    fn context_opening(&self, flyout: &FlyoutBase) {
+        let target = flyout.Target().ok();
+        let item = target.as_ref().and_then(|target| {
+            let rows = self.rows.borrow();
+            let on_bar = rows
+                .iter()
+                .find(|row| xaml::same_object(&row.element, target))
+                .map(|row| row.item.clone());
+            on_bar.or_else(|| {
+                self.menu_rows
+                    .borrow()
+                    .iter()
+                    .find(|(entry, _)| xaml::same_object(entry, target))
+                    .map(|(_, item)| item.clone())
+            })
+        });
+        let for_bar = xaml::same_object(flyout, &self.bar_menu);
+        if !for_bar && item.is_none() {
+            return;
+        }
+        let entries = context_entries(item.as_ref());
+        if let Err(e) = flyout
+            .cast::<MenuFlyout>()
+            .and_then(|menu| self.fill_context(&menu, &entries))
+        {
+            log::warn!("bookmark context menu: {e}");
+        }
+    }
+
+    fn fill_context(&self, menu: &MenuFlyout, entries: &[MenuEntry]) -> Result<()> {
+        let items = menu.Items()?;
+        items.Clear()?;
+        for entry in entries {
+            let (element, command): (MenuFlyoutItemBase, _) = match entry {
+                MenuEntry::Separator => {
+                    items.Append(&MenuFlyoutSeparator::new()?.cast::<MenuFlyoutItemBase>()?)?;
+                    continue;
+                }
+                MenuEntry::Command(label, command) => {
+                    let item = MenuFlyoutItem::new()?;
+                    item.SetText(label)?;
+                    if matches!(command, BarCommand::OpenAll(links) if links.is_empty()) {
+                        item.cast::<Control>()?.SetIsEnabled(false)?;
+                    }
+                    (item.cast()?, command.clone())
+                }
+                MenuEntry::Toggle(label, checked, command) => {
+                    let item = ToggleMenuFlyoutItem::new()?;
+                    item.cast::<MenuFlyoutItem>()?.SetText(label)?;
+                    item.SetIsChecked(*checked)?;
+                    (item.cast()?, command.clone())
+                }
+            };
+            let host = self.host.clone();
+            element
+                .cast::<MenuFlyoutItem>()?
+                .Click(move |_, _| host(command.clone()))?
+                .forget();
+            items.Append(&element)?;
+        }
+        Ok(())
     }
 
     /// After a drag within the bar: the bookmark that moved and the bookmark it now sits
@@ -272,6 +507,109 @@ impl Bar {
             })
             .collect();
         moved(&before, &after)
+    }
+
+    /// An entry of the bar. Its look is set on the entry itself rather than through the list's
+    /// item container style, which only reaches entries the list has laid out: `fit` measures
+    /// entries it keeps collapsed too.
+    fn entry(&self, item: &BarItem) -> Result<ListViewItem> {
+        let (title, glyph, tip) = match item {
+            BarItem::Link { title, url, .. } => (title, "&#xE774;", format!("{title}\n{url}")),
+            BarItem::Folder { title, .. } => (title, "&#xE8B7;", title.clone()),
+        };
+        let element: ListViewItem = xaml::load(&format!(
+            r#"<ListViewItem {{ns}} MinWidth="0" MinHeight="24" Height="24" Padding="6,0" Margin="0,0,1,0"
+                   ToolTipService.ToolTip="{tip}" AutomationProperties.Name="{name}">
+                 <StackPanel Orientation="Horizontal" Spacing="5">
+                   <Grid Width="14" Height="14">
+                     <FontIcon x:Name="Glyph" Glyph="{glyph}" FontSize="11"/>
+                     <Image x:Name="Favicon" Width="14" Height="14" Visibility="Collapsed"/>
+                   </Grid>
+                   <TextBlock Text="{name}" FontSize="12" MaxWidth="140" TextTrimming="CharacterEllipsis"
+                              VerticalAlignment="Center"/>
+                 </StackPanel>
+               </ListViewItem>"#,
+            tip = xaml::escape(&tip),
+            name = xaml::escape(title),
+        ))?;
+        let target = element.cast::<UIElement>()?;
+        target.SetContextFlyout(&self.item_menu.cast::<FlyoutBase>()?)?;
+        if let BarItem::Link { url, icon, .. } = item {
+            if let Some(png) = icon.clone() {
+                xaml::show_favicon(&element.cast()?, png)?;
+            }
+            let (url, host) = (url.clone(), self.host.clone());
+            let source = target.clone();
+            target
+                .PointerReleased(move |_, args| {
+                    let Some(args) = args.as_ref() else { return };
+                    let middle = args
+                        .GetCurrentPoint(&source)
+                        .and_then(|point| point.Properties())
+                        .and_then(|properties| properties.PointerUpdateKind())
+                        .is_ok_and(|kind| kind == PointerUpdateKind::MiddleButtonReleased);
+                    if middle {
+                        let _ = args.SetHandled(true);
+                        host(BarCommand::Open(url.clone(), Disposition::BackgroundTab));
+                    }
+                })?
+                .forget();
+        }
+        Ok(element)
+    }
+
+    fn show_menu(&self, anchor: &FrameworkElement, children: &[BarItem]) -> Result<MenuFlyout> {
+        let menu = xaml::acrylic_menu()?;
+        self.menu_rows.borrow_mut().clear();
+        self.fill_menu(&menu.Items()?, children)?;
+        menu.cast::<FlyoutBase>()?.ShowAt(anchor)?;
+        Ok(menu)
+    }
+
+    fn fill_menu(
+        &self,
+        items: &windows_collections::IVector<MenuFlyoutItemBase>,
+        children: &[BarItem],
+    ) -> Result<()> {
+        let context = self.item_menu.cast::<FlyoutBase>()?;
+        for child in children {
+            let entry: MenuFlyoutItemBase = match child {
+                BarItem::Link {
+                    title, url, icon, ..
+                } => {
+                    let entry = MenuFlyoutItem::new()?;
+                    entry.SetText(&menu_label(title))?;
+                    entry.SetIcon(&link_icon(icon.clone())?)?;
+                    ToolTipService::SetToolTip(&entry, &xaml::boxed(&format!("{title}\n{url}"))?)?;
+                    let (url, host) = (url.clone(), self.host.clone());
+                    entry
+                        .Click(move |_, _| host(BarCommand::Open(url.clone(), disposition())))?
+                        .forget();
+                    entry.cast()?
+                }
+                BarItem::Folder {
+                    title, children, ..
+                } => {
+                    let folder = MenuFlyoutSubItem::new()?;
+                    folder.SetText(&menu_label(title))?;
+                    folder.SetIcon(&glyph_icon(FOLDER_GLYPH)?)?;
+                    self.fill_menu(&folder.Items()?, children)?;
+                    folder.cast()?
+                }
+            };
+            entry.cast::<UIElement>()?.SetContextFlyout(&context)?;
+            self.menu_rows
+                .borrow_mut()
+                .push((entry.clone(), child.clone()));
+            items.Append(&entry)?;
+        }
+        if children.is_empty() {
+            let empty = MenuFlyoutItem::new()?;
+            empty.SetText("(empty)")?;
+            empty.cast::<Control>()?.SetIsEnabled(false)?;
+            items.Append(&empty.cast::<MenuFlyoutItemBase>()?)?;
+        }
+        Ok(())
     }
 }
 
@@ -328,103 +666,6 @@ fn disposition() -> Disposition {
     } else {
         Disposition::CurrentTab
     }
-}
-
-/// An entry of the bar. Its look is set on the entry itself rather than through the list's item
-/// container style, which only reaches entries the list has laid out: `Bar::fit` measures
-/// entries it keeps collapsed too.
-fn entry(item: &BarItem, open: &OpenLink) -> Result<IInspectable> {
-    let (title, glyph, tip) = match item {
-        BarItem::Link { title, url, .. } => (title, "&#xE774;", format!("{title}\n{url}")),
-        BarItem::Folder { title, .. } => (title, "&#xE8B7;", title.clone()),
-    };
-    let element: ListViewItem = xaml::load(&format!(
-        r#"<ListViewItem {{ns}} MinWidth="0" MinHeight="24" Height="24" Padding="6,0" Margin="0,0,1,0"
-               ToolTipService.ToolTip="{tip}" AutomationProperties.Name="{name}">
-             <StackPanel Orientation="Horizontal" Spacing="5">
-               <Grid Width="14" Height="14">
-                 <FontIcon x:Name="Glyph" Glyph="{glyph}" FontSize="11"/>
-                 <Image x:Name="Favicon" Width="14" Height="14" Visibility="Collapsed"/>
-               </Grid>
-               <TextBlock Text="{name}" FontSize="12" MaxWidth="140" TextTrimming="CharacterEllipsis"
-                          VerticalAlignment="Center"/>
-             </StackPanel>
-           </ListViewItem>"#,
-        tip = xaml::escape(&tip),
-        name = xaml::escape(title),
-    ))?;
-    if let BarItem::Link { url, icon, .. } = item {
-        if let Some(png) = icon.clone() {
-            xaml::show_favicon(&element.cast()?, png)?;
-        }
-        let (url, middle_open) = (url.clone(), open.clone());
-        let target = element.cast::<UIElement>()?;
-        let source = target.clone();
-        target
-            .PointerReleased(move |_, args| {
-                let Some(args) = args.as_ref() else { return };
-                let middle = args
-                    .GetCurrentPoint(&source)
-                    .and_then(|point| point.Properties())
-                    .and_then(|properties| properties.PointerUpdateKind())
-                    .is_ok_and(|kind| kind == PointerUpdateKind::MiddleButtonReleased);
-                if middle {
-                    let _ = args.SetHandled(true);
-                    middle_open(&url, Disposition::BackgroundTab);
-                }
-            })?
-            .forget();
-    }
-    element.cast()
-}
-
-fn show_menu(
-    anchor: &FrameworkElement,
-    children: &[BarItem],
-    open: &OpenLink,
-) -> Result<MenuFlyout> {
-    let menu = xaml::acrylic_menu()?;
-    fill_menu(&menu.Items()?, children, open)?;
-    menu.cast::<FlyoutBase>()?.ShowAt(anchor)?;
-    Ok(menu)
-}
-
-fn fill_menu(
-    items: &windows_collections::IVector<MenuFlyoutItemBase>,
-    children: &[BarItem],
-    open: &OpenLink,
-) -> Result<()> {
-    for child in children {
-        match child {
-            BarItem::Link {
-                title, url, icon, ..
-            } => {
-                let entry = MenuFlyoutItem::new()?;
-                entry.SetText(&menu_label(title))?;
-                entry.SetIcon(&link_icon(icon.clone())?)?;
-                ToolTipService::SetToolTip(&entry, &xaml::boxed(&format!("{title}\n{url}"))?)?;
-                let (url, open) = (url.clone(), open.clone());
-                entry.Click(move |_, _| open(&url, disposition()))?.forget();
-                items.Append(&entry.cast::<MenuFlyoutItemBase>()?)?;
-            }
-            BarItem::Folder {
-                title, children, ..
-            } => {
-                let folder = MenuFlyoutSubItem::new()?;
-                folder.SetText(&menu_label(title))?;
-                folder.SetIcon(&glyph_icon(FOLDER_GLYPH)?)?;
-                fill_menu(&folder.Items()?, children, open)?;
-                items.Append(&folder.cast::<MenuFlyoutItemBase>()?)?;
-            }
-        }
-    }
-    if children.is_empty() {
-        let empty = MenuFlyoutItem::new()?;
-        empty.SetText("(empty)")?;
-        empty.cast::<Control>()?.SetIsEnabled(false)?;
-        items.Append(&empty.cast::<MenuFlyoutItemBase>()?)?;
-    }
-    Ok(())
 }
 
 const FOLDER_GLYPH: &str = "\u{E8B7}";
@@ -569,6 +810,70 @@ mod tests {
             panic!("a folder")
         };
         assert!(matches!(&children[0], BarItem::Link { icon: Some(_), .. }));
+    }
+
+    #[test]
+    fn context_menus_match_chromes() {
+        let link = BarItem::Link {
+            id: BookmarkId::MOBILE,
+            title: "A".into(),
+            url: "https://a.test/".into(),
+            icon: None,
+        };
+        let labels = |item: Option<&BarItem>| -> Vec<String> {
+            context_entries(item)
+                .into_iter()
+                .map(|e| match e {
+                    MenuEntry::Command(label, _) | MenuEntry::Toggle(label, _, _) => label,
+                    MenuEntry::Separator => "-".into(),
+                })
+                .collect()
+        };
+        assert_eq!(
+            labels(Some(&link)),
+            [
+                "Open in new tab",
+                "Open in new window",
+                "-",
+                "Edit\u{2026}",
+                "Copy link",
+                "-",
+                "Delete"
+            ]
+        );
+        let folder = BarItem::Folder {
+            id: BookmarkId::OTHER,
+            title: "F".into(),
+            children: vec![link.clone(), link.clone()],
+        };
+        assert_eq!(
+            labels(Some(&folder)),
+            [
+                "Open all (2) in new tabs",
+                "-",
+                "Rename\u{2026}",
+                "-",
+                "Delete"
+            ]
+        );
+        assert!(context_entries(Some(&folder)).contains(&MenuEntry::Command(
+            "Delete".into(),
+            BarCommand::Delete {
+                id: BookmarkId::OTHER,
+                title: "F".into(),
+                contents: 2
+            }
+        )));
+        assert_eq!(
+            labels(None),
+            [
+                "Add page\u{2026}",
+                "Add folder\u{2026}",
+                "-",
+                "Show bookmarks bar",
+                "Bookmark manager"
+            ]
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ use vsesvit_core::prefs::{TabsPosition, Theme, keys};
 use vsesvit_core::testkit::{self, FixtureServer};
 use windows_core::Interface;
 
+mod bookmark_steps;
 mod dialog_steps;
 
 use crate::bindings::*;
@@ -48,7 +49,7 @@ async fn bar_steps(
     steps: &mut Vec<Value>,
 ) -> Result<(), String> {
     let page = second.state().url;
-    browser.toggle_bookmark(&page, "Second tab");
+    browser.bookmark_page(&page, "Second tab");
     if let Some(png) = second.favicon_png() {
         browser.record_favicon(&page, &png);
     }
@@ -529,11 +530,20 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
         json!({
             "bar": format!("{:?}", w.bookmarks_bar_items()),
             "starred": first.state().starred,
-            "ok": folder.is_ok() && w.bookmarks_bar_items().len() == 2 && first.state().starred,
+            "star_bubble": w.bookmark_editor().is_some(),
+            "ok": folder.is_ok() && w.bookmarks_bar_items().len() == 2 && first.state().starred
+                && w.bookmark_editor().is_some(),
         })
     })
     .await;
+    if let Some(editor) = window.bookmark_editor() {
+        editor.close();
+    }
     bar_steps(browser, &window, &second, out_dir, steps).await?;
+    let star_page = Url::parse("data:text/html,<title>Star test</title><h1>Star test</h1>")
+        .map_err(|e| e.to_string())?;
+    bookmark_steps::star_bubble(browser, &window, &star_page, out_dir, steps).await?;
+    bookmark_steps::context_menus(browser, &window, out_dir, steps).await?;
 
     // The tab layouts, set through the preference as the Settings dialog does.
     for (position, name) in [
@@ -922,7 +932,7 @@ async fn wait_for_tab_count(window: &Rc<BrowserWindow>, count: usize) -> Result<
     .ok_or_else(|| format!("expected {count} tabs, have {}", window.tab_count()))
 }
 
-async fn wait_loaded(tab: &Rc<Tab>) -> Result<(), String> {
+pub(super) async fn wait_loaded(tab: &Rc<Tab>) -> Result<(), String> {
     exec::wait_for(LOAD_TIMEOUT, Duration::from_millis(100), || {
         let state = tab.state();
         (tab.is_ready() && !state.loading && !state.url.is_empty()).then_some(())

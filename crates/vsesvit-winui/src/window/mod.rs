@@ -21,7 +21,8 @@ use vsesvit_core::prefs::{TabsPosition, Theme};
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
-use crate::bookmarks_bar::{Bar, BarItem, Disposition, OpenLink};
+use crate::bookmark_editor::{Editor, Target};
+use crate::bookmarks_bar::{Bar, BarCommand, BarHost, BarItem, Disposition};
 use crate::browser::{Browser, ClosedTab};
 use crate::dialogs::{self, Dialog};
 use crate::downloads::Indicator;
@@ -35,7 +36,7 @@ use crate::updates::{Action, Banner, Severity};
 use crate::{capture, exec, omnibox, platform, xaml};
 
 use chrome::Chrome;
-use wiring::{strip_events, with};
+use wiring::strip_events;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Show {
@@ -129,7 +130,9 @@ pub(crate) struct BrowserWindow {
     address_focused: Cell<bool>,
     full_urls: Cell<bool>,
     bookmarks_bar_wanted: Cell<bool>,
-    bar: Bar,
+    bar: Rc<Bar>,
+    /// The bookmark editor opened last, from the star or the bookmarks bar.
+    editor: RefCell<Option<Rc<Editor>>>,
     dialog_open: Cell<bool>,
     /// What the update bar shows; the user may have closed it since.
     update_banner: RefCell<Option<Banner>>,
@@ -146,12 +149,13 @@ impl BrowserWindow {
         window.SetExtendsContentIntoTitleBar(true)?;
         let window2 = window.cast::<IWindow2>()?;
 
+        let slot = Rc::new(OnceCell::new());
         let bar = Bar::new(
             ui.bookmarks_bar.clone(),
             ui.bookmark_items.clone(),
             ui.bookmarks_overflow.clone(),
-        );
-        let slot = Rc::new(OnceCell::new());
+            bar_host(&slot),
+        )?;
         let events = Rc::new(strip_events(&slot));
         let top = TopStrip::new(ui.tab_view.clone(), &events)?;
         let side = SidePane::new(&events)?;
@@ -172,6 +176,7 @@ impl BrowserWindow {
             full_urls: Cell::new(prefs.full_urls),
             bookmarks_bar_wanted: Cell::new(prefs.bookmarks_bar),
             bar,
+            editor: RefCell::new(None),
             dialog_open: Cell::new(false),
             update_banner: RefCell::new(None),
             closed: Cell::new(false),
@@ -699,7 +704,8 @@ impl BrowserWindow {
         }
     }
 
-    /// The star button and Ctrl+D: bookmark the page into the bookmarks bar, or remove it.
+    /// The star button and Ctrl+D: bookmarks the page at the end of the bookmarks bar and opens
+    /// the editor as "Bookmark added", or opens it as "Edit bookmark" on a bookmarked page.
     pub fn star_clicked(&self) {
         let (Some(tab), Some(browser)) = (self.active_tab(), self.browser()) else {
             return;
@@ -709,10 +715,37 @@ impl BrowserWindow {
             self.show_star(false);
             return;
         }
-        browser.toggle_bookmark(&state.url, &state.title);
-        if let Some(png) = tab.favicon_png() {
-            browser.record_favicon(&state.url, &png);
+        let target = match browser.bookmark_of(&state.url) {
+            Some(id) => Target::Existing(id),
+            None => {
+                let Some(id) = browser.bookmark_page(&state.url, &state.title) else {
+                    return;
+                };
+                if let Some(png) = tab.favicon_png() {
+                    browser.record_favicon(&state.url, &png);
+                }
+                Target::Added(id)
+            }
+        };
+        self.refresh_chrome();
+        if let Ok(star) = self.ui.star.cast::<FrameworkElement>() {
+            self.open_editor(&star, target);
         }
+    }
+
+    fn open_editor(&self, anchor: &FrameworkElement, target: Target) {
+        if let Some(open) = self.editor.take() {
+            open.close();
+        }
+        match Editor::open(&self.me(), anchor, target, self.is_foreground()) {
+            Ok(editor) => *self.editor.borrow_mut() = Some(editor),
+            Err(e) => log::error!("bookmark editor: {e}"),
+        }
+    }
+
+    /// The bookmark editor while it is open.
+    pub fn bookmark_editor(&self) -> Option<Rc<Editor>> {
+        self.editor.borrow().clone().filter(|e| e.is_open())
     }
 
     /// The Home button: the home page in the current tab, or the new tab page by default.
@@ -813,14 +846,9 @@ impl BrowserWindow {
         xaml::is_visible(&self.ui.bookmarks_bar)
     }
 
-    fn open_link_handler(&self) -> OpenLink {
-        let window = self.me.clone();
-        Rc::new(move |url, disposition| with(&window, |w| w.open_link(url, disposition)))
-    }
-
     /// Replaces the bookmarks bar's items.
     pub fn set_bookmarks_bar(&self, items: &[BarItem]) {
-        self.bar.set(items, &self.open_link_handler());
+        self.bar.set(items);
         let _ = xaml::set_visible(&self.ui.bookmarks_hint, items.is_empty());
     }
 
@@ -851,16 +879,16 @@ impl BrowserWindow {
     }
 
     pub fn open_bookmarks_folder(&self, id: BookmarkId) -> Result<MenuFlyout> {
-        self.bar.open_folder(id, &self.open_link_handler())
+        self.bar.open_folder(id)
     }
 
     /// The chevron's menu of the bookmarks that do not fit.
     pub fn show_bookmarks_overflow(&self) -> Result<MenuFlyout> {
-        self.bar.show_overflow(&self.open_link_handler())
+        self.bar.show_overflow()
     }
 
     pub(super) fn bar_item_clicked(&self, clicked: &IInspectable) {
-        self.bar.clicked(clicked, &self.open_link_handler());
+        self.bar.clicked(clicked);
     }
 
     /// A bar item was dragged to a new place: move its bookmark there in core.
@@ -876,6 +904,83 @@ impl BrowserWindow {
         browser.bookmarks_changed();
     }
 
+    /// Opens the context menu of a bookmark the bar or one of its menus shows, or of the bar
+    /// itself for `None`.
+    pub fn show_bookmark_context_menu(&self, id: Option<BookmarkId>) -> Result<MenuFlyout> {
+        self.bar.show_context_menu(id)
+    }
+
+    /// Runs a command of the bookmarks bar or of its menus.
+    pub(crate) fn bar_command(&self, command: BarCommand) {
+        let Some(browser) = self.browser() else {
+            return;
+        };
+        match command {
+            BarCommand::Open(url, disposition) => self.open_link(&url, disposition),
+            BarCommand::OpenAll(urls) => {
+                for url in urls {
+                    self.open_link(&url, Disposition::BackgroundTab);
+                }
+            }
+            BarCommand::Edit(id) => {
+                let anchor = self.bar.element_of(id).unwrap_or_else(|| self.bar_anchor());
+                self.open_editor(&anchor, Target::Existing(id));
+            }
+            BarCommand::CopyLink(url) => {
+                if let Err(e) = platform::copy_text(&url) {
+                    log::warn!("copy link: {e}");
+                }
+            }
+            BarCommand::Delete {
+                id,
+                title,
+                contents: 0,
+            } => {
+                log::info!("deleting the bookmark {title:?}");
+                browser.remove_bookmark(id);
+            }
+            BarCommand::Delete {
+                id,
+                title,
+                contents,
+            } => {
+                let me = self.me();
+                exec::spawn(async move {
+                    let text = format!(
+                        "\u{201C}{title}\u{201D} and the {contents} item(s) in it will be deleted."
+                    );
+                    match dialogs::confirm(&me, "Delete this folder?", &text, "Delete").await {
+                        Ok(true) => browser.remove_bookmark(id),
+                        Ok(false) => {}
+                        Err(e) => log::warn!("confirm folder delete: {e}"),
+                    }
+                });
+            }
+            BarCommand::AddPage => {
+                let state = self.active_tab().map(|t| t.state()).unwrap_or_default();
+                let target = Target::NewPage {
+                    title: state.title,
+                    url: readable_url(omnibox::display_url(&state.url)),
+                };
+                self.open_editor(&self.bar_anchor(), target);
+            }
+            BarCommand::AddFolder => self.open_editor(&self.bar_anchor(), Target::NewFolder),
+            BarCommand::ToggleBar => self.run(Command::ToggleBookmarksBar),
+            BarCommand::Manager => self.show_dialog(Dialog::Bookmarks),
+        }
+    }
+
+    /// Where the editor opens for what the bar does not show whole: under the chevron, or at
+    /// the bar's end.
+    fn bar_anchor(&self) -> FrameworkElement {
+        if xaml::is_visible(&self.ui.bookmarks_overflow)
+            && let Ok(chevron) = self.ui.bookmarks_overflow.cast()
+        {
+            return chevron;
+        }
+        self.ui.bookmarks_bar.clone()
+    }
+
     pub fn open_link(&self, url: &str, disposition: Disposition) {
         let result = match (disposition, self.active_tab()) {
             (Disposition::CurrentTab, Some(tab)) => {
@@ -884,6 +989,15 @@ impl BrowserWindow {
             }
             (Disposition::CurrentTab, None) => self.open_url_tab(url, true).map(drop),
             (Disposition::BackgroundTab, _) => self.open_url_tab(url, false).map(drop),
+            (Disposition::NewWindow, _) => match self.browser() {
+                Some(browser) => browser
+                    .open_window(
+                        &WindowPlan::with_tabs(vec![TabPlan::url(url.to_owned())]),
+                        Show::Activate,
+                    )
+                    .map(drop),
+                None => Ok(()),
+            },
         };
         if let Err(e) = result {
             log::error!("open {url}: {e}");
@@ -1140,6 +1254,20 @@ impl BrowserWindow {
     pub async fn capture(&self) -> Result<capture::WindowShot> {
         capture::window_png(platform::window_handle(&self.window)?).await
     }
+}
+
+/// The bookmarks bar's commands reach the window through `slot`, as it is created after the
+/// bar. They run on the next turn: a command may rebuild the menu or bar entry it came from.
+fn bar_host(slot: &wiring::WindowSlot) -> BarHost {
+    let slot = slot.clone();
+    Rc::new(move |command| {
+        let window = slot.get().cloned();
+        exec::spawn(async move {
+            if let Some(window) = window.and_then(|w| w.upgrade()) {
+                window.bar_command(command);
+            }
+        });
+    })
 }
 
 /// How much of a restored window's title bar must be on a display for it to stay where it was

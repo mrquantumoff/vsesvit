@@ -219,3 +219,11 @@ pub(crate) fn window_handle(window: &Window) -> windows_core::Result<HWND> {
     unsafe { native.window_handle(&mut hwnd).ok()? };
     Ok(hwnd)
 }
+
+/// Puts `text` on the clipboard, where it stays after Vsesvit exits.
+pub(crate) fn copy_text(text: &str) -> windows_core::Result<()> {
+    let package = DataPackage::new()?;
+    package.SetText(text)?;
+    Clipboard::SetContent(&package)?;
+    Clipboard::Flush()
+}

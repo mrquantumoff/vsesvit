@@ -156,7 +156,7 @@ const BACKDROP: [u8; 4] = [0x2C, 0x2C, 0x2C, 0xFF];
 /// be its shadow.
 fn opaque_bounds(layer: &Layer) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
     let (width, height) = (layer.width as usize, layer.height as usize);
-    let solid = |x: usize, y: usize| layer.pixels[(y * width + x) * 4 + 3] >= 0x60;
+    let solid = |x: usize, y: usize| layer.pixels[(y * width + x) * 4 + 3] >= 0x30;
     let xs: Vec<usize> = (0..width)
         .filter(|&x| (0..height).any(|y| solid(x, y)))
         .collect();

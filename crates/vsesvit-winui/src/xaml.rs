@@ -35,6 +35,11 @@ pub(crate) fn acrylic_menu() -> Result<MenuFlyout> {
     )
 }
 
+/// An empty context menu with the acrylic backdrop, which opens where it was asked for.
+pub(crate) fn context_menu() -> Result<MenuFlyout> {
+    load(r#"<MenuFlyout {ns} ShouldConstrainToRootBounds="False">{acrylic_menu}</MenuFlyout>"#)
+}
+
 /// Decodes a PNG into an image source.
 pub(crate) async fn png_image(png: &[u8]) -> Result<ImageSource> {
     let stream = InMemoryRandomAccessStream::new()?.cast::<IRandomAccessStream>()?;

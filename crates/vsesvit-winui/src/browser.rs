@@ -11,12 +11,13 @@ use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
+use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, keys};
 use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::{Profile, Url};
 
+use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
 use crate::bookmarks_bar::{self, BarItem};
 use crate::config::{Config, Mode};
 use crate::downloads::Downloads;
@@ -511,23 +512,76 @@ impl Browser {
         Url::parse(url).is_ok_and(|url| self.core(|p| p.bookmarks().is_bookmarked(&url)))
     }
 
-    /// The star button: removes every bookmark of `url`, or adds one to the bookmarks bar.
-    pub fn toggle_bookmark(&self, url: &str, title: &str) {
-        let Ok(url) = Url::parse(url) else { return };
+    /// The star button on a page that is not bookmarked: a bookmark of it at the end of the
+    /// bookmarks bar.
+    pub fn bookmark_page(&self, url: &str, title: &str) -> Option<BookmarkId> {
+        let url = Url::parse(url).ok()?;
+        let added = self.core(|p| {
+            p.bookmarks()
+                .add_url(BookmarkId::TOOLBAR, InsertAt::End, title, &url)
+        });
+        self.bookmarks_changed();
+        added
+            .inspect_err(|e| log::warn!("bookmark {url}: {e}"))
+            .ok()
+    }
+
+    /// The first bookmark of `url`, which the star edits.
+    pub fn bookmark_of(&self, url: &str) -> Option<BookmarkId> {
+        let url = Url::parse(url).ok()?;
+        self.core(|p| p.bookmarks().find_by_url(&url).first().map(|n| n.id))
+    }
+
+    pub fn bookmark(&self, id: BookmarkId) -> Option<BookmarkNode> {
+        self.core(|p| p.bookmarks().get(id))
+    }
+
+    /// The folders a bookmark can go to (the bookmarks bar, Other bookmarks, and Mobile
+    /// bookmarks when it has any), indented by depth, without `exclude` and its subfolders.
+    pub fn bookmark_folders(&self, exclude: Option<BookmarkId>) -> Vec<FolderChoice> {
+        self.core(|p| {
+            let bookmarks = p.bookmarks();
+            let children = |id| bookmarks.children(id);
+            let roots: Vec<BookmarkNode> =
+                [BookmarkId::TOOLBAR, BookmarkId::OTHER, BookmarkId::MOBILE]
+                    .into_iter()
+                    .filter(|&id| id != BookmarkId::MOBILE || !children(id).is_empty())
+                    .filter_map(|id| bookmarks.get(id))
+                    .collect();
+            bookmark_editor::folder_choices(&roots, &children, exclude)
+        })
+    }
+
+    /// Saves what the bookmark editor holds. Returns the bookmark it saved.
+    pub fn save_bookmark(&self, edit: &Edit) -> Result<BookmarkId, vsesvit_core::Error> {
         let result = self.core(|p| {
             let mut bookmarks = p.bookmarks();
-            let existing: Vec<BookmarkId> =
-                bookmarks.find_by_url(&url).iter().map(|n| n.id).collect();
-            if existing.is_empty() {
-                bookmarks
-                    .add_url(BookmarkId::TOOLBAR, InsertAt::End, title, &url)
-                    .map(drop)
-            } else {
-                existing.into_iter().try_for_each(|id| bookmarks.remove(id))
+            match &edit.target {
+                Target::Added(id) | Target::Existing(id) => {
+                    bookmarks.rename(*id, &edit.name)?;
+                    if let Some(url) = &edit.url {
+                        bookmarks.set_url(*id, url)?;
+                    }
+                    if bookmarks.get(*id).is_some_and(|n| n.parent != edit.folder) {
+                        bookmarks.move_to(*id, edit.folder, InsertAt::End)?;
+                    }
+                    Ok(*id)
+                }
+                Target::NewPage { .. } => match &edit.url {
+                    Some(url) => bookmarks.add_url(edit.folder, InsertAt::End, &edit.name, url),
+                    None => bookmarks.add_folder(edit.folder, InsertAt::End, &edit.name),
+                },
+                Target::NewFolder => bookmarks.add_folder(edit.folder, InsertAt::End, &edit.name),
             }
         });
-        if let Err(e) = result {
-            log::warn!("bookmark {url}: {e}");
+        self.bookmarks_changed();
+        result
+    }
+
+    /// Deletes a bookmark, or a folder with everything in it.
+    pub fn remove_bookmark(&self, id: BookmarkId) {
+        if let Err(e) = self.core(|p| p.bookmarks().remove(id)) {
+            log::warn!("remove bookmark: {e}");
         }
         self.bookmarks_changed();
     }

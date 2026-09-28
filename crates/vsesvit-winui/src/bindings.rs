@@ -7804,6 +7804,18 @@ impl IFlyout {
             .and_then(|| windows_core::imp::Type::from_abi(result__))
         }
     }
+    pub fn SetContent<P0>(&self, value: P0) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<UIElement>,
+    {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetContent)(
+                windows_core::Interface::as_raw(self),
+                value.param().abi(),
+            )
+            .ok()
+        }
+    }
 }
 #[repr(C)]
 pub struct IFlyout_Vtbl {
@@ -7811,6 +7823,10 @@ pub struct IFlyout_Vtbl {
     pub Content: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub SetContent: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(

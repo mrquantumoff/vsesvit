@@ -145,7 +145,7 @@ Microsoft.UI.Xaml.Controls.ContentDialogResult
 Microsoft.UI.Xaml.Controls.IToggleSwitch::{get_IsOn, put_IsOn, Toggled}
 Microsoft.UI.Xaml.Controls.IInfoBar::{put_IsOpen, put_Title, put_Message, put_Severity}
 Microsoft.UI.Xaml.Controls.InfoBarSeverity
-Microsoft.UI.Xaml.Controls.IFlyout::get_Content
+Microsoft.UI.Xaml.Controls.IFlyout::{get_Content, put_Content}
 Microsoft.UI.Xaml.Controls.Primitives.IFlyoutBase::{ShowAt, ShowAtWithOptions, Hide, Closed, Opening, get_Target, get_IsOpen, put_Placement, put_ShouldConstrainToRootBounds}
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions::CreateInstance

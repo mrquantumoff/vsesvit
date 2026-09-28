@@ -316,6 +316,9 @@ async fn checks(
             (bookmarked && in_bar && buttons >= 1 && window.bookmarks_bar_shown() && starred).then(|| p.last())
         })
         .await;
+        if let Some(editor) = window.bookmark_editor() {
+            editor.close();
+        }
         Ok(seen)
     })
     .await;
@@ -540,10 +543,7 @@ async fn checks(
 
     check(report, "screenshot", DEFAULT_TIMEOUT, async |_| {
         exec::sleep(Duration::from_millis(500)).await;
-        let shot = window
-            .capture()
-            .await
-            .map_err(|e| format!("capture: {e}"))?;
+        let shot = window.capture().await.map_err(|e| format!("capture: {e}"))?;
         let path = out_dir.join("window.png");
         std::fs::write(&path, &shot.png).map_err(|e| format!("{}: {e}", path.display()))?;
         let detail = format!(
