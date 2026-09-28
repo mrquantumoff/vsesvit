@@ -45,6 +45,24 @@ pub(crate) async fn png_image(png: &[u8]) -> Result<ImageSource> {
     bitmap.cast()
 }
 
+/// In markup that has a `Glyph` icon and a collapsed `Favicon` image: shows the favicon in the
+/// glyph's place once the PNG has decoded.
+pub(crate) fn show_favicon(root: &FrameworkElement, png: Vec<u8>) -> Result<()> {
+    let image: Image = find(root, "Favicon")?;
+    let glyph: UIElement = find(root, "Glyph")?;
+    crate::exec::spawn(async move {
+        match png_image(&png).await {
+            Ok(source) => {
+                let _ = image.SetSource(&source);
+                let _ = set_visible(&image, true);
+                let _ = set_visible(&glyph, false);
+            }
+            Err(e) => log::debug!("favicon: {e}"),
+        }
+    });
+    Ok(())
+}
+
 /// Every byte of a stream, from its start.
 pub(crate) async fn read_all(stream: &IRandomAccessStream) -> Result<Vec<u8>> {
     let size = u32::try_from(stream.Size()?).map_err(|_| windows_core::Error::empty())?;

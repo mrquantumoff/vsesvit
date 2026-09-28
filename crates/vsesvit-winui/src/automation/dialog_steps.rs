@@ -19,7 +19,7 @@ use crate::bindings::*;
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog, Preview};
 use crate::window::{Backdrop, BrowserWindow};
-use crate::{engine, exec};
+use crate::{engine, exec, xaml};
 
 const WAIT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
@@ -106,12 +106,9 @@ fn tree_node(tree: &TreeView, label: &str) -> Option<TreeViewNode> {
             let text = node
                 .Content()
                 .ok()
-                .and_then(|c| {
-                    c.cast::<windows_reference::IReference<windows_core::HSTRING>>()
-                        .ok()
-                })
-                .and_then(|c| c.Value().ok())
-                .map(|t| t.to_string_lossy());
+                .and_then(|c| c.cast::<FrameworkElement>().ok())
+                .and_then(|c| xaml::find::<TextBlock>(&c, "Label").ok())
+                .and_then(|t| t.Text().ok());
             if text.as_deref() == Some(label) {
                 return Some(node);
             }
@@ -122,6 +119,47 @@ fn tree_node(tree: &TreeView, label: &str) -> Option<TreeViewNode> {
         None
     }
     search(&tree.RootNodes().ok()?, label)
+}
+
+/// How many favicons the tree shows on screen: visible images in its visual tree. An image is
+/// made visible only once its PNG has decoded.
+fn favicons_shown(tree: &TreeView) -> usize {
+    fn count(element: &DependencyObject) -> usize {
+        let own = element
+            .cast::<Image>()
+            .is_ok_and(|image| xaml::is_visible(&image))
+            && element
+                .cast::<FrameworkElement>()
+                .and_then(|e| e.Name())
+                .is_ok_and(|name| name == "Favicon");
+        let children = VisualTreeHelper::GetChildrenCount(element).unwrap_or(0);
+        usize::from(own)
+            + (0..children)
+                .filter_map(|i| VisualTreeHelper::GetChild(element, i).ok())
+                .map(|child| count(&child))
+                .sum::<usize>()
+    }
+    tree.cast::<DependencyObject>()
+        .map(|t| count(&t))
+        .unwrap_or(0)
+}
+
+/// Whether the tree shows `label` as rendered text (not only as node content).
+fn label_rendered(tree: &TreeView, label: &str) -> bool {
+    fn find(element: &DependencyObject, label: &str) -> bool {
+        if element
+            .cast::<TextBlock>()
+            .is_ok_and(|t| t.Text().is_ok_and(|text| text == label))
+        {
+            return true;
+        }
+        let children = VisualTreeHelper::GetChildrenCount(element).unwrap_or(0);
+        (0..children)
+            .filter_map(|i| VisualTreeHelper::GetChild(element, i).ok())
+            .any(|child| find(&child, label))
+    }
+    tree.cast::<DependencyObject>()
+        .is_ok_and(|t| find(&t, label))
 }
 
 fn select_node(tree: &TreeView, label: &str) -> Result<()> {
@@ -144,7 +182,7 @@ pub(super) async fn bookmarks(
     let tree: TreeView = preview.find("BookmarksTree")?;
     let children = |id| browser.core(|p| p.bookmarks().children(id));
 
-    select_node(&tree, "\u{1F4C1} Fixture folder")?;
+    select_node(&tree, "Fixture folder")?;
     let name: TextBox = preview.find("BookmarkName")?;
     let shown = name.Text().unwrap_or_default();
     name.SetText("Renamed folder")?;
@@ -193,6 +231,7 @@ pub(super) async fn bookmarks(
             .find(|n| n.parent == BookmarkId::OTHER)
     })
     .await;
+    let favicons = until(|| (favicons_shown(&tree) > 0).then(|| favicons_shown(&tree))).await;
     exec::sleep(Duration::from_millis(400)).await;
     shoot(window, out_dir, "16-bookmarks-dialog", steps, |w| {
         json!({
@@ -201,8 +240,13 @@ pub(super) async fn bookmarks(
             "added_folder": added.map(|n| n.title),
             "deleted_it": deleted.is_some(),
             "moved_to_other": moved.is_some(),
+            "favicons_shown": favicons,
+            "labels_rendered": label_rendered(&tree, "Other bookmarks") && label_rendered(&tree, "Second tab"),
             "bar": format!("{:?}", w.bookmarks_bar_items()),
-            "ok": shown == "Fixture folder" && renamed.is_some() && deleted.is_some() && moved.is_some(),
+            "ok": shown == "Fixture folder" && renamed.is_some() && deleted.is_some() && moved.is_some()
+                && favicons.is_some()
+                && label_rendered(&tree, "Other bookmarks")
+                && label_rendered(&tree, "Second tab"),
         })
     })
     .await;

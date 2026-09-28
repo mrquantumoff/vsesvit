@@ -94,7 +94,6 @@ async fn bar_steps(
         "first_in_core": format!("{first_now:?}"),
         "ok": dragged.is_some() && first_now == dragged && window.bookmarks_bar_items().first().map(BarItem::id) == dragged,
     }));
-    browser.toggle_bookmark(&page, "Second tab");
 
     let extra: Vec<BookmarkId> = browser.core(|p| {
         let mut bookmarks = p.bookmarks();

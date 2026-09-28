@@ -22,7 +22,12 @@ pub(super) const MARKUP: &str = r#"
   <Grid Width="760" ColumnSpacing="20">
     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="280"/></Grid.ColumnDefinitions>
     <TreeView x:Name="BookmarksTree" Height="420" SelectionMode="Single" CanDragItems="True"
-              CanReorderItems="True" AllowDrop="True"/>
+              CanReorderItems="True" AllowDrop="True">
+      <!-- Each node's content is its icon and label, built in code. -->
+      <TreeView.ItemTemplate>
+        <DataTemplate><TreeViewItem Content="{Binding Content}"/></DataTemplate>
+      </TreeView.ItemTemplate>
+    </TreeView>
     <StackPanel Grid.Column="1" Spacing="10">
       <TextBox x:Name="BookmarkName" Header="Name" IsEnabled="False"/>
       <TextBox x:Name="BookmarkUrl" Header="URL" IsEnabled="False"/>
@@ -194,13 +199,18 @@ impl Editor {
             return;
         };
         let (tree, folders) = browser.core(|p| {
-            let bookmarks = p.bookmarks();
-            let children = |id| bookmarks.children(id);
-            let roots: Vec<Branch> = ROOTS
-                .iter()
-                .filter_map(|&id| bookmarks.get(id))
-                .map(|node| Branch::of(node, &children))
-                .collect();
+            let mut roots: Vec<Branch> = {
+                let bookmarks = p.bookmarks();
+                let children = |id| bookmarks.children(id);
+                ROOTS
+                    .iter()
+                    .filter_map(|&id| bookmarks.get(id))
+                    .map(|node| Branch::of(node, &children))
+                    .collect()
+            };
+            for branch in &mut roots {
+                branch.fill_icons(&mut |url| p.favicons().get(url).ok().flatten());
+            }
             let mut folders = Vec::new();
             for branch in &roots {
                 branch.folders(0, &mut folders);
@@ -232,7 +242,26 @@ impl Editor {
 
     fn node_for(&self, branch: &Branch) -> Result<TreeViewNode> {
         let node = TreeViewNode::new()?;
-        node.SetContent(&xaml::boxed(&branch.label())?)?;
+        let glyph = match branch.node.kind {
+            NodeKind::Folder => "&#xE8B7;",
+            NodeKind::Url => "&#xE774;",
+            NodeKind::Separator => "",
+        };
+        let content: FrameworkElement = xaml::load(&format!(
+            r#"<StackPanel {{ns}} Orientation="Horizontal" Spacing="8">
+                 <Grid Width="16" Height="16" VerticalAlignment="Center">
+                   <FontIcon x:Name="Glyph" Glyph="{glyph}" FontSize="14"/>
+                   <Image x:Name="Favicon" Width="16" Height="16" Visibility="Collapsed"/>
+                 </Grid>
+                 <TextBlock x:Name="Label" Text="{label}" VerticalAlignment="Center"
+                            TextTrimming="CharacterEllipsis"/>
+               </StackPanel>"#,
+            label = xaml::escape(&branch.label()),
+        ))?;
+        if let Some(png) = branch.icon.clone() {
+            xaml::show_favicon(&content, png)?;
+        }
+        node.SetContent(&content)?;
         node.SetIsExpanded(true)?;
         let children = node.Children()?;
         for child in &branch.children {
@@ -625,6 +654,8 @@ impl Editor {
 /// A bookmark and its descendants, read from core in one borrow.
 struct Branch {
     node: BookmarkNode,
+    /// A link's saved favicon (PNG).
+    icon: Option<Vec<u8>>,
     children: Vec<Branch>,
 }
 
@@ -640,14 +671,24 @@ impl Branch {
         };
         Self {
             node,
+            icon: None,
             children: kids,
+        }
+    }
+
+    fn fill_icons(&mut self, favicon: &mut dyn FnMut(&Url) -> Option<Vec<u8>>) {
+        if let Some(url) = &self.node.url {
+            self.icon = favicon(url);
+        }
+        for child in &mut self.children {
+            child.fill_icons(favicon);
         }
     }
 
     fn label(&self) -> String {
         let node = &self.node;
         match node.kind {
-            NodeKind::Folder => format!("\u{1F4C1} {}", node.title),
+            NodeKind::Folder => node.title.clone(),
             NodeKind::Separator => "\u{2014}\u{2014}\u{2014}".to_owned(),
             NodeKind::Url if node.title.is_empty() => {
                 node.url.as_ref().map(Url::to_string).unwrap_or_default()

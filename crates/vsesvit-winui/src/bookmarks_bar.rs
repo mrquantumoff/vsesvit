@@ -9,7 +9,7 @@ use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, NodeKind};
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
-use crate::{exec, xaml};
+use crate::xaml;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BarItem {
@@ -221,7 +221,7 @@ fn entry(item: &BarItem, open: &OpenLink) -> Result<IInspectable> {
     ))?;
     if let BarItem::Link { url, icon, .. } = item {
         if let Some(png) = icon.clone() {
-            show_favicon(&element, png)?;
+            xaml::show_favicon(&element.cast()?, png)?;
         }
         let (url, middle_open) = (url.clone(), open.clone());
         let target = element.cast::<UIElement>()?;
@@ -242,24 +242,6 @@ fn entry(item: &BarItem, open: &OpenLink) -> Result<IInspectable> {
             .forget();
     }
     element.cast()
-}
-
-/// Swaps the entry's glyph for the favicon once the PNG has decoded.
-fn show_favicon(element: &ListViewItem, png: Vec<u8>) -> Result<()> {
-    let root = element.cast::<FrameworkElement>()?;
-    let image: Image = xaml::find(&root, "Favicon")?;
-    let glyph: UIElement = xaml::find(&root, "Glyph")?;
-    exec::spawn(async move {
-        match xaml::png_image(&png).await {
-            Ok(source) => {
-                let _ = image.SetSource(&source);
-                let _ = xaml::set_visible(&image, true);
-                let _ = xaml::set_visible(&glyph, false);
-            }
-            Err(e) => log::debug!("bookmark favicon: {e}"),
-        }
-    });
-    Ok(())
 }
 
 fn show_menu(anchor: &IInspectable, children: &[BarItem], open: &OpenLink) -> Result<()> {
