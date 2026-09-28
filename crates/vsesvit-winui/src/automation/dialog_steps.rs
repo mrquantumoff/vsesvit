@@ -18,7 +18,7 @@ use super::{shoot, wait_layout};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog, Preview};
-use crate::window::BrowserWindow;
+use crate::window::{Backdrop, BrowserWindow};
 use crate::{engine, exec};
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -80,6 +80,19 @@ pub(super) async fn settings(
     select_index(&tabs, 0)?;
     let back = wait_layout(window, TabsPosition::Left).await;
     steps.push(json!({ "name": "14b-settings-back-to-left", "layout": format!("{back:?}"), "ok": back == Some(TabsPosition::Left) }));
+
+    let transparent: ToggleSwitch = preview.find("Transparent")?;
+    let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
+    let before = browser.backdrop();
+    transparent.SetIsOn(true)?;
+    let on = browser.backdrop();
+    transparent.SetIsOn(false)?;
+    let off = browser.backdrop();
+    steps.push(json!({
+        "name": "14c-settings-transparent-window",
+        "backdrops": format!("{before:?} -> {on:?} -> {off:?}"),
+        "ok": before == Backdrop::Mica && on == Backdrop::Acrylic && off == Backdrop::Mica,
+    }));
     Ok(())
 }
 

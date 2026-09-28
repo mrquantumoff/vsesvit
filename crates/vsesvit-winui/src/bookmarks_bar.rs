@@ -62,11 +62,11 @@ pub(crate) fn button(item: &BarItem, open: &OpenLink) -> Result<UIElement> {
         BarItem::Folder { title, .. } => (title, "&#xE8B7;", title.clone()),
     };
     let button: Button = xaml::load(&format!(
-        r#"<Button {{ns}} Background="Transparent" BorderThickness="0" Padding="8,2" Height="28" MaxWidth="220"
+        r#"<Button {{ns}} Background="Transparent" BorderThickness="0" Padding="6,0" Height="24" MaxWidth="160"
                    ToolTipService.ToolTip="{tip}" AutomationProperties.Name="{name}">
-             <StackPanel Orientation="Horizontal" Spacing="6">
-               <FontIcon Glyph="{glyph}" FontSize="12"/>
-               <TextBlock Text="{name}" TextTrimming="CharacterEllipsis"/>
+             <StackPanel Orientation="Horizontal" Spacing="5">
+               <FontIcon Glyph="{glyph}" FontSize="11"/>
+               <TextBlock Text="{name}" FontSize="12" TextTrimming="CharacterEllipsis"/>
              </StackPanel>
            </Button>"#,
         tip = xaml::escape(&tip),
@@ -98,7 +98,7 @@ pub(crate) fn button(item: &BarItem, open: &OpenLink) -> Result<UIElement> {
                 .forget();
         }
         BarItem::Folder { children, .. } => {
-            let menu = MenuFlyout::new()?;
+            let menu = xaml::acrylic_menu()?;
             fill_menu(&menu.Items()?, children, open)?;
             button.SetFlyout(&menu.cast::<FlyoutBase>()?)?;
         }

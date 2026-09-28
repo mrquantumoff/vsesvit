@@ -7,9 +7,28 @@ use crate::bindings::*;
 
 pub(crate) const NAMESPACES: &str = r#"xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml""#;
 
-/// Parses markup whose root element carries `{ns}` in place of the XAML namespaces.
+/// Parses markup whose root element carries `{ns}` in place of the XAML namespaces. Every
+/// `{acrylic_menu}` becomes [`ACRYLIC_MENU`].
 pub(crate) fn load<T: Interface>(markup: &str) -> Result<T> {
-    XamlReader::Load(&markup.replacen("{ns}", NAMESPACES, 1))?.cast()
+    let markup = markup
+        .replacen("{ns}", NAMESPACES, 1)
+        .replace("{acrylic_menu}", ACRYLIC_MENU);
+    XamlReader::Load(&markup)?.cast()
+}
+
+/// Children of a `MenuFlyout` that give it its own acrylic backdrop, as Windows 11 menus have,
+/// so the menu shows what is behind it even where it extends past the window.
+const ACRYLIC_MENU: &str = r#"
+    <MenuFlyout.SystemBackdrop><DesktopAcrylicBackdrop/></MenuFlyout.SystemBackdrop>
+    <MenuFlyout.MenuFlyoutPresenterStyle>
+      <Style TargetType="MenuFlyoutPresenter" BasedOn="{StaticResource DefaultMenuFlyoutPresenterStyle}">
+        <Setter Property="Background" Value="Transparent"/>
+      </Style>
+    </MenuFlyout.MenuFlyoutPresenterStyle>"#;
+
+/// An empty menu with the acrylic backdrop.
+pub(crate) fn acrylic_menu() -> Result<MenuFlyout> {
+    load("<MenuFlyout {ns}>{acrylic_menu}</MenuFlyout>")
 }
 
 pub(crate) fn find<T: Interface>(scope: &FrameworkElement, name: &str) -> Result<T> {

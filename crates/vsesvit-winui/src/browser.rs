@@ -24,7 +24,7 @@ use crate::extensions::ExtensionHost;
 use crate::popup::ExtensionAction;
 use crate::session::{self, TabPlan, WindowPlan};
 use crate::updates::{self, Action, Trigger, Updates};
-use crate::window::{BrowserWindow, Show, WindowPrefs};
+use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
 use crate::{app, cli, exec, instance, omnibox, platform, shortcuts};
 
 /// Recently closed tabs kept for Ctrl+Shift+T.
@@ -39,6 +39,13 @@ const TAB_PANE_COLLAPSED: Pref<bool> = Pref {
     key: "tabs.pane_collapsed",
     scope: Scope::Local,
     default: || false,
+};
+
+/// The window material. Per device: only the Windows shell has one.
+const WINDOW_BACKDROP: Pref<Backdrop> = Pref {
+    key: "window.backdrop",
+    scope: Scope::Local,
+    default: || Backdrop::Mica,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +125,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         pane_collapsed: profile.prefs().get(&TAB_PANE_COLLAPSED),
         theme: profile.prefs().get(&keys::THEME),
         bookmarks_bar: profile.prefs().get(&keys::SHOW_BOOKMARKS_BAR),
+        backdrop: profile.prefs().get(&WINDOW_BACKDROP),
     };
     let updates = if config.mode.is_interactive() {
         Updates::detect()
@@ -599,6 +607,18 @@ impl Browser {
         self.update_prefs(|p| p.theme = theme);
         for window in self.windows() {
             window.apply_theme(theme);
+        }
+    }
+
+    pub fn backdrop(&self) -> Backdrop {
+        self.prefs.get().backdrop
+    }
+
+    pub fn set_backdrop(&self, backdrop: Backdrop) {
+        self.write_pref(&WINDOW_BACKDROP, &backdrop);
+        self.update_prefs(|p| p.backdrop = backdrop);
+        for window in self.windows() {
+            window.apply_backdrop(backdrop);
         }
     }
 

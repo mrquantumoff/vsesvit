@@ -10,6 +10,7 @@ use windows_core::{Interface, Result};
 use super::Wired;
 use crate::bindings::*;
 use crate::browser::Browser;
+use crate::window::Backdrop;
 use crate::xaml;
 
 pub(super) const MARKUP: &str = r#"
@@ -20,6 +21,12 @@ pub(super) const MARKUP: &str = r#"
     <TextBox x:Name="Homepage" Header="Home page" PlaceholderText="https://"/>
     <ComboBox x:Name="Theme" Header="Theme" MinWidth="320"/>
     <ToggleSwitch x:Name="ShowBookmarksBar" Header="Show the bookmarks bar"/>
+    <StackPanel Spacing="4">
+      <ToggleSwitch x:Name="Transparent" Header="Transparent window"/>
+      <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                 Text="Shows a blur of the windows behind Vsesvit (acrylic). When off, the window is tinted by your desktop background (Mica), like other Windows 11 apps."/>
+    </StackPanel>
     <StackPanel Spacing="4">
       <ToggleSwitch x:Name="UpdatesAutomatic" Header="Download and install updates automatically"/>
       <TextBlock x:Name="UpdatesUnavailable" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
@@ -117,6 +124,22 @@ pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Wir
         }
     })?
     .forget();
+
+    let transparent: ToggleSwitch = xaml::find(root, "Transparent")?;
+    transparent.SetIsOn(browser.backdrop() == Backdrop::Acrylic)?;
+    let w = weak.clone();
+    let source = transparent.clone();
+    transparent
+        .Toggled(move |_, _| {
+            if let (Some(b), Ok(on)) = (w.upgrade(), source.IsOn()) {
+                b.set_backdrop(if on {
+                    Backdrop::Acrylic
+                } else {
+                    Backdrop::Mica
+                });
+            }
+        })?
+        .forget();
 
     let updates: ToggleSwitch = xaml::find(root, "UpdatesAutomatic")?;
     let unavailable: UIElement = xaml::find(root, "UpdatesUnavailable")?;

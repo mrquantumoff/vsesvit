@@ -16,7 +16,7 @@ use vsesvit_core::prefs::Theme;
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
-use crate::window::BrowserWindow;
+use crate::window::{Backdrop, BrowserWindow};
 use crate::xaml;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,16 +51,23 @@ impl Dialog {
 }
 
 const DIALOG_OPEN: &str = r#"<ContentDialog {ns} Title="TITLE" CloseButtonText="Close" DefaultButton="Close"
-    Style="{StaticResource DefaultContentDialogStyle}">
+    Style="{StaticResource DefaultContentDialogStyle}"BACKGROUND>
   <ContentDialog.Resources>
     <x:Double x:Key="ContentDialogMaxWidth">900</x:Double>
     <x:Double x:Key="ContentDialogMaxHeight">800</x:Double>
   </ContentDialog.Resources>"#;
 
-fn markup(dialog: Dialog) -> String {
+/// With the transparent window, dialogs are acrylic too: a blur of the window under them.
+fn markup(dialog: Dialog, backdrop: Backdrop) -> String {
+    let background = match backdrop {
+        Backdrop::Mica => "",
+        Backdrop::Acrylic => r#" Background="{ThemeResource AcrylicInAppFillColorDefaultBrush}""#,
+    };
     format!(
         "{}{}\n</ContentDialog>",
-        DIALOG_OPEN.replacen("TITLE", dialog.title(), 1),
+        DIALOG_OPEN
+            .replacen("TITLE", dialog.title(), 1)
+            .replacen("BACKGROUND", background, 1),
         dialog.body()
     )
 }
@@ -91,7 +98,7 @@ pub(crate) async fn show(window: &Rc<BrowserWindow>, dialog: Dialog) -> Result<(
 
 pub(crate) fn build(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Built> {
     let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
-    let dialog: ContentDialog = xaml::load(&markup(kind))?;
+    let dialog: ContentDialog = xaml::load(&markup(kind, browser.backdrop()))?;
     dialog
         .cast::<UIElement>()?
         .SetXamlRoot(&window.xaml_root()?)?;

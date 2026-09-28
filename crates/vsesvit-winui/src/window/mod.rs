@@ -53,6 +53,25 @@ enum Placement {
     After(TabId),
 }
 
+/// The material behind the window's chrome, which is transparent over it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Backdrop {
+    /// Mica Alt, tinted by the desktop background: the Windows 11 default for tabbed apps.
+    Mica,
+    /// Acrylic, a blur of the windows behind this one.
+    Acrylic,
+}
+
+impl Backdrop {
+    fn markup(self) -> &'static str {
+        match self {
+            Backdrop::Mica => r#"<MicaBackdrop {ns} Kind="BaseAlt"/>"#,
+            Backdrop::Acrylic => r#"<DesktopAcrylicBackdrop {ns}/>"#,
+        }
+    }
+}
+
 /// The window's look, from preferences.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WindowPrefs {
@@ -60,6 +79,7 @@ pub(crate) struct WindowPrefs {
     pub pane_collapsed: bool,
     pub theme: Theme,
     pub bookmarks_bar: bool,
+    pub backdrop: Backdrop,
 }
 
 pub(crate) struct BrowserWindow {
@@ -94,11 +114,6 @@ impl BrowserWindow {
         window.SetContent(&ui.root)?;
         window.SetExtendsContentIntoTitleBar(true)?;
         let window2 = window.cast::<IWindow2>()?;
-        // Mica Alt, the tabbed-app variant; the chrome above it is translucent (see chrome.rs).
-        // Built from markup because the minimal bindings do not carry `MicaBackdrop.Kind`.
-        window2.SetSystemBackdrop(&xaml::load::<SystemBackdrop>(
-            r#"<MicaBackdrop {ns} Kind="BaseAlt"/>"#,
-        )?)?;
 
         let slot = Rc::new(OnceCell::new());
         let events = Rc::new(strip_events(&slot));
@@ -127,6 +142,7 @@ impl BrowserWindow {
         this.side.set_compact(prefs.pane_collapsed);
         this.show_layout(prefs.tabs)?;
         this.apply_theme(prefs.theme);
+        this.apply_backdrop(prefs.backdrop);
         this.set_bookmarks_bar_visible(prefs.bookmarks_bar);
         this.wire()?;
         this.install_accelerators()?;
@@ -806,6 +822,17 @@ impl BrowserWindow {
         };
         if let Err(e) = self.app_window().and_then(|w| w.SetPresenterByKind(kind)) {
             log::warn!("fullscreen: {e}");
+        }
+    }
+
+    pub fn apply_backdrop(&self, backdrop: Backdrop) {
+        let set = xaml::load::<SystemBackdrop>(backdrop.markup()).and_then(|b| {
+            self.window
+                .cast::<IWindow2>()
+                .and_then(|w| w.SetSystemBackdrop(&b))
+        });
+        if let Err(e) = set {
+            log::warn!("window backdrop {backdrop:?}: {e}");
         }
     }
 

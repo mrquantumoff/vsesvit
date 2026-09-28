@@ -9,13 +9,13 @@ const WINDOW_XAML: &str = r#"
 <Grid {ns}>
   <Grid.Resources>
     <ResourceDictionary>
-    <!-- The selected tab joins the toolbar below it on the same translucent layer over Mica. -->
+    <!-- The chrome is transparent over the window's backdrop; the selected tab is only a tint. -->
     <ResourceDictionary.ThemeDictionaries>
       <ResourceDictionary x:Key="Light">
-        <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="LayerOnMicaBaseAltFillColorDefaultBrush"/>
+        <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="SubtleFillColorSecondaryBrush"/>
       </ResourceDictionary>
       <ResourceDictionary x:Key="Default">
-        <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="LayerOnMicaBaseAltFillColorDefaultBrush"/>
+        <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="SubtleFillColorSecondaryBrush"/>
       </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
     <Style x:Key="ToolbarButton" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
@@ -67,7 +67,7 @@ const WINDOW_XAML: &str = r#"
   </TabView>
 
   <Grid x:Name="Toolbar" Grid.Row="1" Padding="6,4,0,4" ColumnSpacing="2"
-        Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}">
+        Background="Transparent">
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
@@ -103,6 +103,7 @@ const WINDOW_XAML: &str = r#"
       <FontIcon Glyph="&#xE712;" FontSize="16"/>
       <Button.Flyout>
         <MenuFlyout Placement="BottomEdgeAlignedRight">
+          {acrylic_menu}
           <MenuFlyoutItem x:Name="MenuNewTab" Text="New tab" KeyboardAcceleratorTextOverride="Ctrl+T">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xECCD;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
@@ -132,9 +133,12 @@ const WINDOW_XAML: &str = r#"
     <Grid x:Name="ToolbarDrag" Grid.Column="7" Width="196" Background="Transparent" Visibility="Collapsed"/>
   </Grid>
 
-  <Grid x:Name="BookmarksBar" Grid.Row="2" Height="32" Padding="8,0,8,4"
-        Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}">
-    <StackPanel x:Name="BookmarkItems" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center"/>
+  <Grid x:Name="BookmarksBar" Grid.Row="2" Height="30" Padding="8,0,8,2" Background="Transparent">
+    <!-- Scrolls sideways (the mouse wheel too) instead of clipping when the items do not fit. -->
+    <ScrollViewer x:Name="BookmarkScroller" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Hidden"
+                  VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled">
+      <StackPanel x:Name="BookmarkItems" Orientation="Horizontal" Spacing="1" VerticalAlignment="Center"/>
+    </ScrollViewer>
     <TextBlock x:Name="BookmarksHint" Margin="6,0" VerticalAlignment="Center"
                Style="{StaticResource CaptionTextBlockStyle}"
                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
