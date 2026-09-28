@@ -313,7 +313,7 @@ impl BookmarksBar {
     }
 
     /// Whether the bar's button for `url` shows a stored favicon rather than the generic icon.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "self-test"))]
     pub(crate) fn shows_favicon(&self, url: &str) -> bool {
         self.button_for(url)
             .and_then(|button| button.child())

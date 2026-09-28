@@ -285,6 +285,25 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("favicon_preload", CHECK_TIMEOUT, |last| async move {
+        let url = ctx.server.url("/icon.html");
+        let id = browser.core().borrow_mut().bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Icon page", &url).map_err(|e| e.to_string())?;
+        browser.bookmarks_changed();
+        wait_for(&last, || {
+            let stored = browser.core().borrow_mut().favicons().get(&url).map_err(|e| e.to_string())?.is_some();
+            let shown = window.bookmarks_bar().shows_favicon(url.as_str());
+            if stored && shown { Ok(()) } else { Err(format!("icon stored={stored}, shown on the bar={shown}")) }
+        })
+        .await;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("favicon-preload.png")).await.map_err(|e| e.to_string())?;
+        let visited = ctx.server.hits().iter().any(|path| path == "/icon.html");
+        browser.core().borrow_mut().bookmarks().remove(id).map_err(|e| e.to_string())?;
+        browser.bookmarks_changed();
+        Ok(format!("the bar shows the icon of {url}, fetched without a tab (page fetched by core: {visited}); favicon-preload.png"))
+    })
+    .await;
+
     ctx.check("navigate", CHECK_TIMEOUT, |last| async move {
         window.address_bar().submit_text(index_url.as_str());
         let tab = wait_for(&last, || window.selected_tab().ok_or_else(|| "no selected tab".to_owned())).await;

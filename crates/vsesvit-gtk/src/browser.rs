@@ -13,8 +13,9 @@ use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::glib;
+use gtk::{gio, glib};
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
+use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, keys};
@@ -33,6 +34,8 @@ use crate::window::{BrowserWindow, Focus};
 use crate::{favicons, omnibox, session};
 
 const CLOSED_TABS_KEPT: usize = 25;
+/// How many sites one background favicon fetch looks up.
+const FAVICON_BATCH: usize = 32;
 /// How long after the last tab change the session is written.
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 
@@ -54,7 +57,19 @@ pub(crate) struct Inner {
     session_save: RefCell<Option<glib::SourceId>>,
     /// Set once the application has shut down: the session saved then is final.
     shut_down: Cell<bool>,
+    favicon_fetch: Cell<FetchState>,
+    /// What else shows bookmarks (an open Bookmarks dialog), refreshed with the bars.
+    bookmark_views: RefCell<Vec<Weak<dyn Fn()>>>,
     updates: Option<Updates>,
+}
+
+/// The background fetch of bookmarked sites' icons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FetchState {
+    Idle,
+    Running,
+    /// Bookmarks changed while a fetch ran: look again when it ends.
+    RunningStale,
 }
 
 /// Enough of a closed tab to bring it back with its history.
@@ -87,6 +102,8 @@ impl Browser {
                 next_window_id: Cell::new(1),
                 session_save: RefCell::new(None),
                 shut_down: Cell::new(false),
+                favicon_fetch: Cell::new(FetchState::Idle),
+                bookmark_views: RefCell::new(Vec::new()),
                 updates: Updates::new(app, updates_automatic),
             }
         });
@@ -117,6 +134,7 @@ impl Browser {
             Err(e) => log::warn!("cannot list extensions: {e}"),
         }
         self.reconcile_extensions();
+        self.preload_favicons();
     }
 
     pub(crate) fn app(&self) -> &adw::Application {
@@ -393,12 +411,70 @@ impl Browser {
         favicons::record(&mut self.core().borrow_mut(), &uri, &icon)
     }
 
-    /// After any bookmark write: every window's bar and star follow the new tree.
+    /// After any bookmark write: every window's bar and star, and every other view of the
+    /// bookmarks, follow the new tree, and new sites get their icons.
     pub(crate) fn bookmarks_changed(&self) {
         for window in self.windows() {
             window.refresh_bookmarks_bar();
             window.sync_star();
         }
+        let views: Vec<Rc<dyn Fn()>> = {
+            let mut views = self.0.bookmark_views.borrow_mut();
+            views.retain(|view| view.strong_count() > 0);
+            views.iter().filter_map(Weak::upgrade).collect()
+        };
+        for refresh in views {
+            refresh();
+        }
+        self.preload_favicons();
+    }
+
+    /// Runs `refresh` after every bookmark change for as long as the caller keeps it.
+    pub(crate) fn watch_bookmarks(&self, refresh: &Rc<dyn Fn()>) {
+        self.0.bookmark_views.borrow_mut().push(Rc::downgrade(refresh));
+    }
+
+    /// Fetches the icons of bookmarked sites that have none, without visiting them: core
+    /// picks the pages, a worker thread fetches them, and core stores the results here.
+    /// Anything stored refreshes the bookmarks, which looks for the next batch.
+    pub(crate) fn preload_favicons(&self) {
+        let state = &self.0.favicon_fetch;
+        if state.get() != FetchState::Idle {
+            state.set(FetchState::RunningStale);
+            return;
+        }
+        let pages = match self.core().borrow_mut().favicons().missing(FAVICON_BATCH) {
+            Ok(pages) => pages,
+            Err(e) => {
+                log::warn!("favicons to fetch: {e}");
+                return;
+            }
+        };
+        if pages.is_empty() {
+            return;
+        }
+        state.set(FetchState::Running);
+        let weak = Rc::downgrade(&self.0);
+        glib::spawn_future_local(async move {
+            let fetched = gio::spawn_blocking(move || FaviconFetch::new(pages).run()).await;
+            let Some(browser) = weak.upgrade().map(Browser) else { return };
+            let stale = browser.0.favicon_fetch.replace(FetchState::Idle) == FetchState::RunningStale;
+            let changed = match fetched {
+                Ok(results) => browser.core().borrow_mut().favicons().commit_fetched(results).unwrap_or_else(|e| {
+                    log::warn!("storing fetched favicons: {e}");
+                    false
+                }),
+                Err(_) => {
+                    log::warn!("the favicon fetch panicked");
+                    false
+                }
+            };
+            if changed {
+                browser.bookmarks_changed();
+            } else if stale {
+                browser.preload_favicons();
+            }
+        });
     }
 
     // Omnibox.
@@ -768,6 +844,26 @@ mod tests {
         window.destroy();
         assert!(stored.is_some(), "the favicon is kept once the page is bookmarked");
         assert!(shown, "the bar shows the kept favicon");
+    }
+
+    #[gtk::test]
+    fn bookmarked_sites_get_their_icons_without_being_visited() {
+        let pixels = glib::Bytes::from_owned([40u8, 90, 200, 255].repeat(16 * 16));
+        let icon = gtk::gdk::MemoryTexture::new(16, 16, gtk::gdk::MemoryFormat::R8g8b8a8, &pixels, 16 * 4);
+        let png = icon.save_to_png_bytes().to_vec();
+        let server = Server::start("127.0.0.4", move |path| match path {
+            "/" => Reply::Body("text/html", b"<!doctype html><title>Unvisited</title><link rel=icon href=/icon.png>".to_vec()),
+            "/icon.png" => Reply::Body("image/png", png.clone()),
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let url = server.url("/");
+        let window = BrowserWindow::new(&browser);
+        let id = browser.core().borrow_mut().bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Unvisited", &Url::parse(&url).unwrap()).unwrap();
+        browser.bookmarks_changed();
+        wait_until("the bar to show the fetched icon", || window.bookmarks_bar().shows_favicon(&url));
+        browser.core().borrow_mut().bookmarks().remove(id).unwrap();
+        window.destroy();
     }
 
     #[gtk::test]

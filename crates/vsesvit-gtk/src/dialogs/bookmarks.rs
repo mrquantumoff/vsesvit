@@ -4,7 +4,7 @@
 //! call followed by a rebuild of the tree from the merged records, so the dialog always
 //! shows the tree every device would show.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
@@ -36,6 +36,9 @@ struct State {
     stack: gtk::Stack,
     results: gtk::ListBox,
     result_rows: RefCell<Vec<gtk::Widget>>,
+    /// Rebuilds the tree after any bookmark change (an edit on the bar, icons that
+    /// arrived), for as long as the dialog exists.
+    watch: OnceCell<Rc<dyn Fn()>>,
 }
 
 /// What a tree row holds: the node, and its stored favicon, fetched with the folder's
@@ -114,8 +117,17 @@ fn build(window: &BrowserWindow) -> Rc<State> {
         stack,
         results,
         result_rows: RefCell::new(Vec::new()),
+        watch: OnceCell::new(),
     });
     state.rebuild();
+    let weak = Rc::downgrade(&state);
+    let watch: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(state) = weak.upgrade() {
+            state.rebuild();
+        }
+    });
+    window.browser().watch_bookmarks(&watch);
+    let _ = state.watch.set(watch);
     list.set_factory(Some(&row_factory(Rc::downgrade(&state))));
 
     list.connect_activate(glib::clone!(
@@ -268,11 +280,11 @@ impl State {
         self.stack.set_visible_child_name(page);
     }
 
+    /// The watch rebuilds the tree along with the bars.
     fn changed(&self) {
         if let Some(window) = self.window.upgrade() {
             window.browser().bookmarks_changed();
         }
-        self.rebuild();
     }
 
     fn report(&self, result: Result<(), vsesvit_core::Error>) {
