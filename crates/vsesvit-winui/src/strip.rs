@@ -215,7 +215,7 @@ const PANE_XAML: &str = r#"
     <RowDefinition Height="*"/>
   </Grid.RowDefinitions>
   <Button x:Name="PaneToggle" Width="36" Height="32" Padding="0" Background="Transparent" BorderThickness="0"
-          ToolTipService.ToolTip="Collapse the tab list" AutomationProperties.Name="Collapse the tab list">
+          ToolTipService.ToolTip="Collapse the tab list (Ctrl+S)" AutomationProperties.Name="Collapse the tab list">
     <FontIcon Glyph="&#xE700;" FontSize="16"/>
   </Button>
   <Button x:Name="PaneNewTab" Grid.Row="1" Height="36" Padding="10,0" HorizontalAlignment="Stretch"
@@ -302,9 +302,9 @@ impl SidePane {
         let _ = self.root.SetWidth(width);
         let _ = xaml::set_visible(&self.new_tab_text, !compact);
         let tip = if compact {
-            "Expand the tab list"
+            "Expand the tab list (Ctrl+S)"
         } else {
-            "Collapse the tab list"
+            "Collapse the tab list (Ctrl+S)"
         };
         let _ = xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.toggle, &tip));
         self.rows.each_header(|header| header.set_compact(compact));

@@ -40,6 +40,9 @@ pub(crate) enum Command {
     ShowBookmarks,
     ShowHistory,
     ShowDownloads,
+    /// Collapses or expands the vertical tab list. Chrome saves the page with Ctrl+S; Vsesvit
+    /// gives the chord to its tab sidebar instead.
+    ToggleTabPane,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -91,6 +94,7 @@ mod vk {
     pub const N: u16 = 0x4E;
     pub const O: u16 = 0x4F;
     pub const R: u16 = 0x52;
+    pub const S: u16 = 0x53;
     pub const T: u16 = 0x54;
     pub const W: u16 = 0x57;
     pub const F4: u16 = 0x73;
@@ -123,6 +127,7 @@ pub(crate) const BINDINGS: &[Binding] = &[
     bind(vk::O, Mods::CTRL_SHIFT, C::ShowBookmarks, Overridable),
     bind(vk::H, Mods::CTRL, C::ShowHistory, Overridable),
     bind(vk::J, Mods::CTRL, C::ShowDownloads, Overridable),
+    bind(vk::S, Mods::CTRL, C::ToggleTabPane, Overridable),
     bind(vk::KEY_0 + 1, Mods::CTRL, C::SelectTab(0), Overridable),
     bind(vk::KEY_0 + 2, Mods::CTRL, C::SelectTab(1), Overridable),
     bind(vk::KEY_0 + 3, Mods::CTRL, C::SelectTab(2), Overridable),
@@ -275,6 +280,7 @@ mod tests {
         assert_eq!(lookup(0x09, Mods::CTRL_SHIFT), Some(Command::PreviousTab));
         assert_eq!(lookup(0x33, Mods::CTRL), Some(Command::SelectTab(2)));
         assert_eq!(lookup(0x74, Mods::NONE), Some(Command::Reload));
+        assert_eq!(lookup(0x53, Mods::CTRL), Some(Command::ToggleTabPane));
         assert_eq!(lookup(0x54, Mods::ALT), None);
     }
 
@@ -329,6 +335,7 @@ mod tests {
         let script = page_script();
         assert!(script.contains("\"87:1\""), "Ctrl+W is reserved");
         assert!(script.contains("\"68:1\""), "Ctrl+D is overridable");
+        assert!(script.contains("\"83:1\""), "Ctrl+S is overridable, so pages keep their own");
         assert!(!script.contains("\"82:1\""), "Ctrl+R is left to WebView2");
     }
 

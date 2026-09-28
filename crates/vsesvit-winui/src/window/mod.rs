@@ -654,6 +654,13 @@ impl BrowserWindow {
             Command::ShowBookmarks => self.show_dialog(Dialog::Bookmarks),
             Command::ShowHistory => self.show_dialog(Dialog::History),
             Command::ShowDownloads => self.show_dialog(Dialog::Downloads),
+            Command::ToggleTabPane => {
+                if self.tabs_position.get() != TabsPosition::Top
+                    && let Some(browser) = self.browser()
+                {
+                    browser.set_tab_pane_collapsed(!self.is_pane_collapsed());
+                }
+            }
         }
     }
 

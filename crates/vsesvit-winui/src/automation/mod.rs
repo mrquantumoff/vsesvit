@@ -574,6 +574,32 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     .await;
     browser.set_tab_pane_collapsed(false);
 
+    // Ctrl+S typed into the page collapses the vertical tab list and expands it again; with
+    // tabs on top it does nothing.
+    let mut toggled = Vec::new();
+    for _ in 0..2 {
+        let before = window.is_pane_collapsed();
+        press(&first, 0x53, 2).await?;
+        let changed = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+            (window.is_pane_collapsed() != before).then_some(())
+        })
+        .await;
+        toggled.push(changed.is_some());
+    }
+    browser.set_tabs_position(TabsPosition::Top);
+    wait_layout(&window, TabsPosition::Top).await;
+    let top_before = window.is_pane_collapsed();
+    window.run(Command::ToggleTabPane);
+    let top_after = window.is_pane_collapsed();
+    browser.set_tabs_position(TabsPosition::Left);
+    wait_layout(&window, TabsPosition::Left).await;
+    steps.push(json!({
+        "name": "12b-ctrl-s-toggles-the-tab-pane",
+        "toggled": toggled,
+        "no_op_with_tabs_on_top": top_before == top_after,
+        "ok": toggled == [true, true] && !window.is_pane_collapsed() && top_before == top_after,
+    }));
+
     let count = window.show_suggestions("fixture");
     steps.push(json!({
         "name": "13-omnibox-suggestions",
