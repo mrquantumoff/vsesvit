@@ -1,7 +1,9 @@
-//! How one tab looks in a tab list: favicon (or a spinner while loading), title, a speaker while
-//! the page plays sound (it mutes the tab), a pin for pinned tabs, and in the vertical pane a
-//! close button. Each list builds its own header per tab from a `TabLook`.
+//! How one tab looks in a tab list: favicon (or a spinner while loading), title, a camera,
+//! microphone or screen while the page captures one, a speaker while the page plays sound (it
+//! mutes the tab), a pin for pinned tabs, and in the vertical pane a close button. Each list
+//! builds its own header per tab from a `TabLook`.
 
+use vsesvit_core::permissions::Capturing;
 use windows_core::Result;
 
 use crate::bindings::*;
@@ -43,6 +45,21 @@ pub(crate) struct TabLook {
     pub loading: bool,
     pub audio: Audio,
     pub pinned: bool,
+    pub capturing: Capturing,
+}
+
+/// The in-use icon's glyph, and whether it is a recording (camera or microphone, shown red as
+/// Chrome's dot is) rather than a screen share.
+fn capture_glyph(capturing: Capturing) -> Option<(&'static str, bool)> {
+    if capturing.camera {
+        Some(("\u{E714}", true))
+    } else if capturing.microphone {
+        Some(("\u{E720}", true))
+    } else if capturing.screen {
+        Some(("\u{E7F4}", false))
+    } else {
+        None
+    }
 }
 
 // No column spacing: the gaps are margins of the parts that collapse, so a row of the collapsed
@@ -63,6 +80,10 @@ const HEADER_XAML: &str = r#"
   <StackPanel x:Name="Buttons" Grid.Column="2" Orientation="Horizontal" Margin="4,0,0,0">
     <FontIcon x:Name="Pin" Glyph="&#xE718;" FontSize="10" Margin="0,0,6,0" Visibility="Collapsed"
               VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+    <Grid x:Name="Capture" Width="20" VerticalAlignment="Center" Visibility="Collapsed" Background="Transparent">
+      <FontIcon x:Name="CaptureRecording" FontSize="12" Foreground="{ThemeResource SystemFillColorCriticalBrush}"/>
+      <FontIcon x:Name="CaptureSharing" FontSize="12" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+    </Grid>
     <Button x:Name="Audio" Width="24" Height="24" Padding="0" Background="Transparent"
             BorderThickness="0" VerticalAlignment="Center" Visibility="Collapsed"
             AutomationProperties.Name="Mute or unmute tab">
@@ -84,6 +105,9 @@ pub(crate) struct TabHeader {
     title: TextBlock,
     buttons: UIElement,
     pin: UIElement,
+    capture: FrameworkElement,
+    capture_recording: FontIcon,
+    capture_sharing: FontIcon,
     audio: Button,
     audio_glyph: FontIcon,
     close: Option<Button>,
@@ -102,6 +126,9 @@ impl TabHeader {
             title: xaml::find(&root, "Title")?,
             buttons: xaml::find(&root, "Buttons")?,
             pin: xaml::find(&root, "Pin")?,
+            capture: xaml::find(&root, "Capture")?,
+            capture_recording: xaml::find(&root, "CaptureRecording")?,
+            capture_sharing: xaml::find(&root, "CaptureSharing")?,
             audio: xaml::find(&root, "Audio")?,
             audio_glyph: xaml::find(&root, "AudioGlyph")?,
             close: closable.then_some(close),
@@ -132,6 +159,7 @@ impl TabHeader {
         let _ = xaml::set_visible(&self.favicon, favicon);
         let _ = xaml::set_visible(&self.default_icon, !look.loading && !favicon);
         let _ = xaml::set_visible(&self.pin, look.pinned);
+        self.show_capture(look.capturing);
         let button = look.audio.button();
         let _ = xaml::set_visible(&self.audio, button.is_some());
         if let Some((glyph, tip)) = button {
@@ -141,6 +169,26 @@ impl TabHeader {
         // A pinned tab closes from its menu or with Ctrl+W, as in Chrome.
         if let Some(close) = &self.close {
             let _ = xaml::set_visible(close, !look.pinned);
+        }
+    }
+
+    fn show_capture(&self, capturing: Capturing) {
+        let glyph = capture_glyph(capturing);
+        let _ = xaml::set_visible(&self.capture, glyph.is_some());
+        let Some((glyph, recording)) = glyph else {
+            return;
+        };
+        let (shown, hidden) = if recording {
+            (&self.capture_recording, &self.capture_sharing)
+        } else {
+            (&self.capture_sharing, &self.capture_recording)
+        };
+        let _ = shown.SetGlyph(glyph);
+        let _ = xaml::set_visible(shown, true);
+        let _ = xaml::set_visible(hidden, false);
+        if let Some(tip) = capturing.description() {
+            let _ =
+                xaml::boxed(&tip).and_then(|tip| ToolTipService::SetToolTip(&self.capture, &tip));
         }
     }
 

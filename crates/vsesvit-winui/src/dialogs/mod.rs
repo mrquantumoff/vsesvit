@@ -11,6 +11,7 @@ mod downloads;
 mod extensions;
 mod history;
 mod settings;
+mod site_permissions;
 
 use std::rc::Rc;
 

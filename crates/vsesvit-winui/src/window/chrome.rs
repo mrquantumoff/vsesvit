@@ -112,11 +112,18 @@ const WINDOW_XAML: &str = r#"
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
-      <Button x:Name="SiteButton" Margin="4,0,0,0" Width="30" Height="26" Padding="0" CornerRadius="6"
-              Background="Transparent" BorderThickness="0" AutomationProperties.Name="View site information">
-        <FontIcon x:Name="SiteIcon" FontSize="14" Glyph="&#xE721;"
-                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-      </Button>
+      <StackPanel Orientation="Horizontal">
+        <Button x:Name="SiteButton" Margin="4,0,0,0" Width="30" Height="26" Padding="0" CornerRadius="6"
+                Background="Transparent" BorderThickness="0" AutomationProperties.Name="View site information">
+          <FontIcon x:Name="SiteIcon" FontSize="14" Glyph="&#xE721;"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        </Button>
+        <!-- While the page uses the camera, microphone or screen; opens the site-info popup. -->
+        <Button x:Name="CaptureButton" Width="30" Height="26" Padding="0" CornerRadius="6" Visibility="Collapsed"
+                Background="Transparent" BorderThickness="0">
+          <FontIcon x:Name="CaptureGlyph" FontSize="14" Glyph="&#xE714;"/>
+        </Button>
+      </StackPanel>
       <AutoSuggestBox x:Name="Address" Grid.Column="1" VerticalAlignment="Center"
                       PlaceholderText="Search or enter web address" UpdateTextOnSelect="False"
                       AutomationProperties.Name="Address and search bar">
@@ -276,11 +283,19 @@ const WINDOW_XAML: &str = r#"
                Text="For quick access, place your bookmarks here on the bookmarks bar."/>
   </Grid>
 
-  <InfoBar x:Name="UpdateBar" Grid.Row="3" IsOpen="False" CornerRadius="0" BorderThickness="0,1,0,0">
-    <InfoBar.ActionButton>
-      <Button x:Name="UpdateAction"/>
-    </InfoBar.ActionButton>
-  </InfoBar>
+  <StackPanel Grid.Row="3">
+    <InfoBar x:Name="UpdateBar" IsOpen="False" CornerRadius="0" BorderThickness="0,1,0,0">
+      <InfoBar.ActionButton>
+        <Button x:Name="UpdateAction"/>
+      </InfoBar.ActionButton>
+    </InfoBar>
+    <!-- While the selected tab shares the screen. -->
+    <InfoBar x:Name="ShareBar" IsOpen="False" IsClosable="False" CornerRadius="0" BorderThickness="0,1,0,0">
+      <InfoBar.ActionButton>
+        <Button x:Name="ShareStop" Content="Stop sharing"/>
+      </InfoBar.ActionButton>
+    </InfoBar>
+  </StackPanel>
 
   <Grid Grid.Row="4">
     <Grid.ColumnDefinitions>
@@ -342,6 +357,8 @@ pub(super) struct Chrome {
     pub(super) address_progress: FrameworkElement,
     pub(super) site_button: Button,
     pub(super) site_icon: FontIcon,
+    pub(super) capture_button: Button,
+    pub(super) capture_glyph: FontIcon,
     pub(super) zoom_chip: Button,
     pub(super) zoom_chip_text: TextBlock,
     pub(super) zoom_bubble: Flyout,
@@ -361,6 +378,8 @@ pub(super) struct Chrome {
     pub(super) bookmarks_hint: UIElement,
     pub(super) update_bar: InfoBar,
     pub(super) update_action: Button,
+    pub(super) share_bar: InfoBar,
+    pub(super) share_stop: Button,
     pub(super) left_host: Panel,
     pub(super) pages: Panel,
     pub(super) split_divider: UIElement,
@@ -391,6 +410,8 @@ impl Chrome {
             address_progress: xaml::find(&root, "AddressProgress")?,
             site_button: xaml::find(&root, "SiteButton")?,
             site_icon: xaml::find(&root, "SiteIcon")?,
+            capture_button: xaml::find(&root, "CaptureButton")?,
+            capture_glyph: xaml::find(&root, "CaptureGlyph")?,
             zoom_chip: xaml::find(&root, "ZoomChip")?,
             zoom_chip_text: xaml::find(&root, "ZoomChipText")?,
             zoom_bubble: xaml::find(&root, "ZoomBubble")?,
@@ -410,6 +431,8 @@ impl Chrome {
             bookmarks_hint: xaml::find(&root, "BookmarksHint")?,
             update_bar: xaml::find(&root, "UpdateBar")?,
             update_action: xaml::find(&root, "UpdateAction")?,
+            share_bar: xaml::find(&root, "ShareBar")?,
+            share_stop: xaml::find(&root, "ShareStop")?,
             left_host: xaml::find(&root, "LeftHost")?,
             pages: xaml::find(&root, "Pages")?,
             split_divider: xaml::find(&root, "SplitDivider")?,

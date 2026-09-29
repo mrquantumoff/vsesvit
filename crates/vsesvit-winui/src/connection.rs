@@ -1,6 +1,7 @@
 //! The popup of the security icon at the start of the address bar: whether the connection is
-//! secure, the host, the TLS parameters and the site's certificate chain, and Chrome's "Show
-//! certificate" button, which opens the Windows certificate viewer.
+//! secure, the host, the site's permissions (filled by the window), the TLS parameters and the
+//! site's certificate chain, and Chrome's "Show certificate" button, which opens the Windows
+//! certificate viewer.
 //!
 //! Each tab keeps the engine's last `Security.visibleSecurityStateChanged` report (the DevTools
 //! protocol's view of the page's connection: the TLS parameters and the chain as base64 DER);
@@ -177,6 +178,7 @@ pub(crate) fn content(url: &str, host: &str, report: Option<&Report>) -> Result<
         r#"<TextBlock Text="{}" TextWrapping="Wrap" Style="{{StaticResource CaptionTextBlockStyle}}"/>"#,
         xaml::escape(explanation)
     ));
+    body.push_str(r#"<StackPanel x:Name="SitePermissions" Visibility="Collapsed"/>"#);
     let report = report.filter(|_| headline != Headline::Local);
     if let Some(tls) = report.and_then(|r| r.tls.as_ref()) {
         body.push_str(&format!(

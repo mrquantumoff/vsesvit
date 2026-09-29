@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use vsesvit_core::history::Transition;
+use vsesvit_core::permissions::{Origin, Permission};
 use vsesvit_core::{new_tab, session};
 use windows_core::{IInspectable, Interface, Ref, Result};
 
@@ -19,10 +20,14 @@ use crate::store;
 use crate::tab_header::{Audio, TabLook};
 use crate::window::BrowserWindow;
 use crate::media::{self, MediaAction, Playback};
-use crate::{exec, xaml, zoom};
+use crate::permissions::{Requested, TabPermissions};
+use crate::{capturing, exec, xaml, zoom};
 
 /// Identifies a tab within this process.
 pub(crate) type TabId = u64;
+
+/// How often a page that may capture is asked what it captures.
+const CAPTURE_POLL: Duration = Duration::from_millis(500);
 
 /// What a new tab loads first.
 pub(crate) enum Initial {
@@ -129,6 +134,9 @@ pub(crate) struct Tab {
     security: RefCell<Option<String>>,
     /// Pinned tabs lead the tab list.
     pinned: Cell<bool>,
+    permissions: TabPermissions,
+    /// The page's capture is being polled (see `capturing`).
+    capture_polled: Cell<bool>,
     closed: Cell<bool>,
 }
 
@@ -157,6 +165,8 @@ impl Tab {
             favicon_generation: Cell::new(0),
             security: RefCell::new(None),
             pinned: Cell::new(false),
+            permissions: TabPermissions::default(),
+            capture_polled: Cell::new(false),
             closed: Cell::new(false),
         }))
     }
@@ -170,6 +180,7 @@ impl Tab {
             loading: state.loading(),
             audio: Audio::of(state.audible, state.muted),
             pinned: self.pinned.get(),
+            capturing: self.permissions.capturing(),
         }
     }
 
@@ -359,6 +370,10 @@ impl Tab {
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({ "source": media::MAIN_WORLD_SCRIPT }).to_string(),
             ),
+            (
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": capturing::MAIN_WORLD_SCRIPT }).to_string(),
+            ),
         ];
         for (method, params) in calls {
             core.CallDevToolsProtocolMethodAsync(method, &params)?
@@ -523,6 +538,7 @@ impl Tab {
     /// Releases the engine view. The window removes the XAML parts.
     pub fn close(&self) {
         if !self.closed.replace(true) {
+            self.permissions.close();
             let _ = self.view.Close();
         }
     }
@@ -637,6 +653,21 @@ impl Tab {
                 },
             ))?
             .forget();
+        core.PermissionRequested(on(
+            self,
+            |tab, args: &CoreWebView2PermissionRequestedEventArgs| {
+                tab.permission_requested(args);
+            },
+        ))?
+        .forget();
+        core.cast::<ICoreWebView2_27>()?
+            .ScreenCaptureStarting(on(
+                self,
+                |tab, args: &CoreWebView2ScreenCaptureStartingEventArgs| {
+                    tab.screen_capture_starting(args);
+                },
+            ))?
+            .forget();
         core.ProcessFailed(on(
             self,
             |tab, args: &CoreWebView2ProcessFailedEventArgs| {
@@ -654,6 +685,12 @@ impl Tab {
     fn committed(self: &Rc<Self>, kind: CommitKind) {
         self.refresh_url();
         let url = self.state.borrow().url.clone();
+        let prompt_gone = self
+            .permissions
+            .committed(&url, kind == CommitKind::NewDocument);
+        if prompt_gone && let Some(window) = self.window() {
+            window.permission_prompt_gone(self.id);
+        }
         let transition = match kind {
             CommitKind::NewDocument => self.transition.take().unwrap_or(Transition::Link),
             CommitKind::SameDocument => Transition::Link,
@@ -769,6 +806,96 @@ impl Tab {
             deferral,
         };
         window.open_tab_from(self.id, Initial::Opener(request), background);
+    }
+
+    pub fn permissions(&self) -> &TabPermissions {
+        &self.permissions
+    }
+
+    /// The committed page's site; `None` for an opaque origin (`data:`, `about:`, `file:`).
+    pub fn origin(&self) -> Option<Origin> {
+        Origin::parse(&self.state.borrow().url)
+    }
+
+    fn permission_requested(self: &Rc<Self>, args: &CoreWebView2PermissionRequestedEventArgs) {
+        let Some(window) = self.window() else { return };
+        let Some(browser) = window.browser() else {
+            return;
+        };
+        match self.permissions.request(&browser, args) {
+            // The prompt opens on the next turn, not inside the engine's event.
+            Ok(Requested::Waiting) => exec::spawn(async move { window.show_permission_prompt() }),
+            Ok(Requested::Settled) => {}
+            Err(e) => log::warn!("tab {}: permission request: {e}", self.id),
+        }
+        self.watch_capture();
+    }
+
+    fn screen_capture_starting(self: &Rc<Self>, args: &CoreWebView2ScreenCaptureStartingEventArgs) {
+        let Some(browser) = self.window().and_then(|w| w.browser()) else {
+            return;
+        };
+        let source = args
+            .OriginalSourceFrameInfo()
+            .and_then(|frame| frame.Source())
+            .ok()
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| self.state().url);
+        let origin = Origin::parse(&source);
+        if self
+            .permissions
+            .blocks_screen_share(&browser, origin.as_ref())
+        {
+            log::info!("tab {}: screen sharing is blocked for {source}", self.id);
+            if let Err(e) = args.SetCancel(true) {
+                log::warn!("tab {}: cancel screen capture: {e}", self.id);
+            }
+            return;
+        }
+        self.permissions.watch();
+        self.watch_capture();
+    }
+
+    /// Polls what the page captures while a capture may be live (see `capturing`).
+    pub fn watch_capture(self: &Rc<Self>) {
+        if !self.permissions.watched() || self.capture_polled.replace(true) {
+            return;
+        }
+        let tab = self.clone();
+        exec::spawn(async move {
+            while !tab.closed.get() && tab.permissions.watched() {
+                tab.poll_capture().await;
+                exec::sleep(CAPTURE_POLL).await;
+            }
+            tab.capture_polled.set(false);
+        });
+    }
+
+    async fn poll_capture(&self) {
+        // A page between documents cannot answer; the next poll reads the new one.
+        let Ok(json) = self.eval(capturing::STATE_SCRIPT).await else {
+            return;
+        };
+        if self
+            .permissions
+            .set_capturing(capturing::parse_state(&json))
+        {
+            self.notify();
+        }
+    }
+
+    /// Ends the page's capture that `permission` governs: a Stop button, or a block while in use.
+    pub fn stop_capture(self: &Rc<Self>, permission: Permission) {
+        let Some(script) = capturing::stop_script(permission) else {
+            return;
+        };
+        let tab = self.clone();
+        exec::spawn(async move {
+            if let Err(e) = tab.eval(&script).await {
+                log::debug!("tab {}: stop {permission:?}: {e}", tab.id);
+            }
+            tab.poll_capture().await;
+        });
     }
 
     fn binding_called(&self, args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs) {

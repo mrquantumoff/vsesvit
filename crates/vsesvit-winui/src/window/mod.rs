@@ -9,6 +9,7 @@
 
 mod chrome;
 mod media;
+mod permissions;
 mod progress;
 mod tab_actions;
 mod tab_layout;
@@ -150,6 +151,7 @@ pub(crate) struct BrowserWindow {
     editor: RefCell<Option<Rc<Editor>>>,
     /// The security icon's popup opened last.
     connection: RefCell<Option<Flyout>>,
+    permissions: permissions::PermissionUi,
     dialog_open: Cell<bool>,
     /// What the update bar shows; the user may have closed it since.
     update_banner: RefCell<Option<Banner>>,
@@ -208,6 +210,7 @@ impl BrowserWindow {
             toolbar,
             editor: RefCell::new(None),
             connection: RefCell::new(None),
+            permissions: permissions::PermissionUi::default(),
             dialog_open: Cell::new(false),
             update_banner: RefCell::new(None),
             closed: Cell::new(false),
@@ -223,6 +226,7 @@ impl BrowserWindow {
         this.set_bookmarks_bar_visible(prefs.bookmarks_bar);
         this.set_home_button_visible(prefs.home_button);
         this.wire()?;
+        this.wire_permissions()?;
         this.install_accelerators()?;
         this.size_for_screen()?;
         match show {
@@ -480,6 +484,7 @@ impl BrowserWindow {
             }
         }
         self.refresh_chrome();
+        self.show_permission_prompt();
     }
 
     fn strip_selection_changed(&self, kind: StripKind) {
@@ -526,6 +531,7 @@ impl BrowserWindow {
         self.show_star(state.starred);
         self.show_site(&state.url);
         self.show_zoom(state.zoom);
+        self.show_permissions_state();
         let _ = xaml::set_visible(&self.ui.copy_link, tab_menu::has_link(&state.url));
         let title = if state.title.is_empty() || state.url.is_empty() {
             "Vsesvit".to_owned()
@@ -672,7 +678,7 @@ impl BrowserWindow {
             .cast::<FlyoutBase>()?
             .ShowAtWithOptions(&self.ui.site_button.cast::<FrameworkElement>()?, &options)?;
         *self.connection.borrow_mut() = Some(flyout);
-        Ok(())
+        self.fill_site_permissions(&tab)
     }
 
     pub fn hide_connection(&self) {

@@ -108,6 +108,17 @@ pub(super) const MARKUP: &str = r#"
       </StackPanel>
     </ScrollViewer>
 
+    <ScrollViewer x:Name="SitePermissionsPanel" Grid.Column="1" Padding="0,0,16,0" VerticalScrollBarVisibility="Auto"
+                  Visibility="Collapsed">
+      <StackPanel Spacing="16" Padding="0,0,0,12">
+        <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                   Text="What you allowed or blocked for each site. Other sites ask before they use your camera, microphone, location and more."/>
+        <TextBlock x:Name="SitePermissionsEmpty" Text="Sites you allow or block show here." Visibility="Collapsed"/>
+        <StackPanel x:Name="SitePermissionsList" Spacing="20"/>
+      </StackPanel>
+    </ScrollViewer>
+
     <ScrollViewer x:Name="PrivacyPanel" Grid.Column="1" Padding="0,0,16,0" VerticalScrollBarVisibility="Auto"
                   Visibility="Collapsed">
       <StackPanel Spacing="28" Padding="0,0,0,12">
@@ -154,7 +165,7 @@ pub(crate) struct Category {
     pub panel: &'static str,
 }
 
-pub(crate) const CATEGORIES: [Category; 4] = [
+pub(crate) const CATEGORIES: [Category; 5] = [
     Category {
         label: "General",
         glyph: "\u{E713}",
@@ -169,6 +180,11 @@ pub(crate) const CATEGORIES: [Category; 4] = [
         label: "Search",
         glyph: "\u{E721}",
         panel: "SearchPanel",
+    },
+    Category {
+        label: "Site permissions",
+        glyph: "\u{E8D7}",
+        panel: "SitePermissionsPanel",
     },
     Category {
         label: "Privacy and security",
@@ -265,6 +281,7 @@ pub(super) fn wire(
     wire_categories(root)?;
     wire_downloads(root, browser, window)?;
     wire_clear_browsing_data(root, browser)?;
+    super::site_permissions::wire(root, browser)?;
 
     let tabs: ComboBox = xaml::find(root, "TabsPosition")?;
     let w = weak.clone();
