@@ -1005,7 +1005,8 @@ impl BrowserWindow {
     pub(super) fn close_suggestions(&self) {
         let _ = self.ui.address.SetIsSuggestionListOpen(false);
         self.suggestions.borrow_mut().clear();
-        let empty = windows_collections::IVector::<IInspectable>::from(Vec::<Option<IInspectable>>::new());
+        let empty =
+            windows_collections::IVector::<IInspectable>::from(Vec::<Option<IInspectable>>::new());
         let _ = self
             .ui
             .address

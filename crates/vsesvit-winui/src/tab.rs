@@ -15,12 +15,12 @@ use windows_core::{IInspectable, Interface, Ref, Result};
 
 use crate::bindings::*;
 use crate::browser::CommitKind;
+use crate::permissions::{Requested, TabPermissions};
 use crate::shortcuts::{self, PageMessage, PageScript};
 use crate::store;
 use crate::tab_header::{Audio, TabLook};
 use crate::window::BrowserWindow;
 use crate::media::{self, MediaAction, Playback};
-use crate::permissions::{Requested, TabPermissions};
 use crate::{capturing, exec, xaml, zoom};
 
 /// Identifies a tab within this process.
