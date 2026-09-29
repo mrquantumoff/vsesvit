@@ -88,7 +88,8 @@ impl Permission {
         }
     }
 
-    /// Screen sharing is chosen share by share, so only a block is remembered (as Chrome does).
+    /// Screen sharing is chosen share by share, so only a block is remembered (as Chrome does),
+    /// and "Allow this time" covers that one request, not the rest of the tab's visit.
     pub fn remembers_allow(self) -> bool {
         self != Permission::ScreenShare
     }
@@ -333,7 +334,7 @@ impl TabGrants {
         if self.site.as_ref() != origin {
             *self = TabGrants { site: origin.cloned(), granted: BTreeSet::new() };
         }
-        self.granted.extend(permissions);
+        self.granted.extend(permissions.iter().filter(|p| p.remembers_allow()));
     }
 }
 

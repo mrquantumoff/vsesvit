@@ -248,8 +248,10 @@ fn answers_store_grant_or_do_nothing() {
     assert!(p.site_permissions().answer(Some(&site), &[ScreenShare], Answer::AllowThisTime, &mut grants).unwrap());
     assert_eq!(upto(&mut p), before, "dismissing and one-time grants store nothing");
     assert_eq!(p.site_permissions().get(&site, Notifications), None);
-    assert!(grants.allows(Some(&site), ScreenShare));
-    assert_eq!(grants.granted().collect::<Vec<_>>(), [ScreenShare]);
+    assert!(!grants.allows(Some(&site), ScreenShare), "each screen share is asked for");
+    assert_eq!(grants.granted().count(), 0);
+    assert!(p.site_permissions().answer(Some(&site), &[Camera, ScreenShare], Answer::AllowThisTime, &mut grants).unwrap());
+    assert_eq!(grants.granted().collect::<Vec<_>>(), [Camera]);
 
     assert!(matches!(
         p.site_permissions().answer(Some(&site), &[ScreenShare], Answer::AllowWhileVisiting, &mut grants),
