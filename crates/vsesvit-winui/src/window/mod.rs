@@ -683,6 +683,8 @@ impl BrowserWindow {
                 });
             })?;
         }
+        // Before it shows, not once it is open: a closing prompt can hold the opening back.
+        self.fill_permissions_in(&content, &tab)?;
         let flyout = connection::flyout(&content)?;
         self.prompt_yields_to(&flyout)?;
         let options = FlyoutShowOptions::new()?;
@@ -695,7 +697,7 @@ impl BrowserWindow {
             .cast::<FlyoutBase>()?
             .ShowAtWithOptions(&self.ui.site_button.cast::<FrameworkElement>()?, &options)?;
         *self.connection.borrow_mut() = Some(flyout);
-        self.fill_site_permissions(&tab)
+        Ok(())
     }
 
     pub fn hide_connection(&self) {

@@ -406,11 +406,20 @@ impl BrowserWindow {
     }
 
     /// Fills the open site-info popup's Permissions section for `tab`.
-    pub(super) fn fill_site_permissions(&self, tab: &Rc<Tab>) -> Result<()> {
-        let Some(popup) = self.connection_popup() else {
-            return Ok(());
-        };
-        let panel: Panel = xaml::find(&popup, "SitePermissions")?;
+    fn fill_site_permissions(&self, tab: &Rc<Tab>) -> Result<()> {
+        match self.connection_popup() {
+            Some(popup) => self.fill_permissions_in(&popup, tab),
+            None => Ok(()),
+        }
+    }
+
+    /// Fills the Permissions section of site-info popup content `popup` for `tab`.
+    pub(super) fn fill_permissions_in(
+        &self,
+        popup: &FrameworkElement,
+        tab: &Rc<Tab>,
+    ) -> Result<()> {
+        let panel: Panel = xaml::find(popup, "SitePermissions")?;
         // The refill replaces the focused control when it is one of the section's; focus
         // left on nothing would take the keyboard out of the popup and close it.
         let focused = self

@@ -652,16 +652,26 @@ async fn prompt_rules(
 
     window.show_connection().map_err(|e| e.to_string())?;
     exec::sleep(Duration::from_millis(600)).await;
-    let (popup, withdrawn) = (
-        window.connection_popup().is_some(),
-        window.permission_prompt().is_none(),
-    );
+    let popup = window.connection_popup();
+    let withdrawn = window.permission_prompt().is_none();
+    // The site's stored Block shows though the popup opened as the prompt closed.
+    let rows = popup
+        .as_ref()
+        .is_some_and(|p| in_popup::<UIElement>(p, "PermissionRowNotifications").is_ok());
+    let popup = popup.is_some();
     shoot_clear(
         window,
         out_dir,
         "24q-site-info-over-a-waiting-prompt",
         steps,
-        |_| json!({ "popup": popup, "prompt_withdrawn": withdrawn, "ok": popup && withdrawn }),
+        |_| {
+            json!({
+                "popup": popup,
+                "prompt_withdrawn": withdrawn,
+                "notifications_row": rows,
+                "ok": popup && withdrawn && rows,
+            })
+        },
     )
     .await;
     window.hide_connection();
