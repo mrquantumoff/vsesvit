@@ -275,14 +275,22 @@ fn fill_site_permissions(content: &adw::Bin, browser: &Browser) {
         return;
     }
     let page = adw::PreferencesPage::new();
-    for site in settings.chunk_by(|a, b| a.origin == b.origin) {
-        let group = group(&site[0].origin.host_for_display());
+    let sites: Vec<&[SiteSetting]> = settings.chunk_by(|a, b| a.origin == b.origin).collect();
+    let hosts: Vec<String> = sites.iter().map(|site| site[0].origin.host_for_display()).collect();
+    for (&site, host) in sites.iter().zip(&hosts) {
+        let group = group(&site_heading(&site[0].origin, host, &hosts));
         for setting in site {
             group.add(&site_setting_row(content, browser, setting));
         }
         page.add(&group);
     }
     content.set_child(Some(&page));
+}
+
+/// A site by its host, or by its whole origin when another listed site has the same host
+/// (`http://example.com` and `https://example.com`).
+fn site_heading(origin: &Origin, host: &str, hosts: &[String]) -> String {
+    if hosts.iter().filter(|h| *h == host).count() > 1 { origin.as_str().to_owned() } else { host.to_owned() }
 }
 
 fn site_setting_row(content: &adw::Bin, browser: &Browser, setting: &SiteSetting) -> adw::ComboRow {
@@ -565,4 +573,17 @@ fn index_of<T: PartialEq, const N: usize>(options: &[(T, &str); N], value: &T) -
         .position(|(v, _)| v == value)
         .and_then(|i| u32::try_from(i).ok())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sites_on_one_host_are_told_apart_by_scheme() {
+        let origins = ["http://example.com", "https://example.com", "https://meet.example"].map(|o| Origin::parse(o).expect("an origin"));
+        let hosts: Vec<String> = origins.iter().map(Origin::host_for_display).collect();
+        let headings: Vec<String> = origins.iter().zip(&hosts).map(|(o, h)| site_heading(o, h, &hosts)).collect();
+        assert_eq!(headings, ["http://example.com", "https://example.com", "meet.example"]);
+    }
 }

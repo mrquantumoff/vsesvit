@@ -4,7 +4,8 @@
 //! focus.
 //!
 //! It emits `edited` for every change the user makes, `submitted` when Enter is pressed without
-//! a suggestion selected, and `cancelled` when Escape gives up editing.
+//! a suggestion selected, `cancelled` when Escape gives up editing, and `bubble-changed` when a
+//! bubble opens from it or closes.
 //!
 //! Inside the entry, the page's security is at the start and the bookmark star at the end;
 //! clicking the star runs `win.bookmark-page`. While the page uses the camera, microphone or
@@ -104,6 +105,9 @@ mod imp {
         pub(super) zoom_label: glib::WeakRef<gtk::Label>,
         /// The bubble open from the security icon, the zoom level or the star.
         pub(super) bubble: RefCell<Option<gtk::Popover>>,
+        /// The permission prompt, also on the security icon; the window shows it only while
+        /// no bubble is open.
+        pub(super) prompt: RefCell<Option<gtk::Popover>>,
         pub(super) popover: gtk::Popover,
         pub(super) list: gtk::ListBox,
         pub(super) items: RefCell<Vec<Suggestion>>,
@@ -136,6 +140,7 @@ mod imp {
                         .param_types([String::static_type()])
                         .build(),
                     Signal::builder("cancelled").build(),
+                    Signal::builder("bubble-changed").build(),
                 ]
             })
         }
@@ -148,6 +153,7 @@ mod imp {
         fn dispose(&self) {
             self.popover.unparent();
             self.bubble.take();
+            self.prompt.take();
         }
     }
 
@@ -160,6 +166,9 @@ mod imp {
             self.popover.present();
             if let Some(bubble) = self.bubble.borrow().as_ref() {
                 bubble.present();
+            }
+            if let Some(prompt) = self.prompt.borrow().as_ref() {
+                prompt.present();
             }
         }
     }
@@ -509,11 +518,38 @@ impl AddressBar {
                 let imp = bar.imp();
                 if imp.bubble.borrow().as_ref() == Some(popover) {
                     imp.bubble.take();
+                    bar.emit_by_name::<()>("bubble-changed", &[]);
                 }
             }
         ));
         imp.bubble.replace(Some(popover.clone()));
         crate::popup(popover, self);
+        self.emit_by_name::<()>("bubble-changed", &[]);
+    }
+
+    /// Opens a permission prompt on the security icon. Other bubbles stay as they are.
+    pub(crate) fn show_prompt(&self, popover: &gtk::Popover) {
+        let imp = self.imp();
+        popover.set_pointing_to(Some(&self.anchor_rect(Anchor::Security)));
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.connect_closed(glib::clone!(
+            #[weak(rename_to = bar)]
+            self,
+            move |popover| {
+                let imp = bar.imp();
+                if imp.prompt.borrow().as_ref() == Some(popover) {
+                    imp.prompt.take();
+                }
+            }
+        ));
+        imp.prompt.replace(Some(popover.clone()));
+        crate::popup(popover, self);
+    }
+
+    /// The permission prompt on screen, if any.
+    #[cfg(any(test, feature = "self-test"))]
+    pub(crate) fn prompt(&self) -> Option<gtk::Popover> {
+        self.imp().prompt.borrow().clone().filter(|p| p.is_visible())
     }
 
     /// The zoom level shown before the star, once it is laid out, if the page is zoomed.
@@ -610,6 +646,14 @@ impl AddressBar {
             "submitted",
             false,
             glib::closure_local!(move |bar: &Self, text: String| f(bar, &text)),
+        )
+    }
+
+    pub(crate) fn connect_bubble_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_closure(
+            "bubble-changed",
+            false,
+            glib::closure_local!(move |bar: &Self| f(bar)),
         )
     }
 

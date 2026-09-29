@@ -45,8 +45,9 @@ const ASK_LOCATION: &str = "delete document.documentElement.dataset.location; na
 const LOCATION_OUTCOME: &str = "document.documentElement.dataset.location || ''";
 const QUERY_LOCATION: &str = "delete document.documentElement.dataset.locationState; navigator.permissions.query({name: 'geolocation'}).then(s => document.documentElement.dataset.locationState = s.state); 'asked'";
 const LOCATION_STATE: &str = "document.documentElement.dataset.locationState || ''";
-const ASK_CAMERA_AND_MICROPHONE: &str = "delete document.documentElement.dataset.capture; navigator.mediaDevices.getUserMedia({video: true, audio: true}).then(s => { window.captured = s; document.documentElement.dataset.capture = s.getTracks().map(t => t.kind + ':' + t.readyState).join(' '); }, e => document.documentElement.dataset.capture = e.name); 'asked'";
+const ASK_CAMERA_AND_MICROPHONE: &str = "delete document.documentElement.dataset.capture; navigator.mediaDevices.getUserMedia({video: true, audio: true}).then(s => { window.captured = s; document.documentElement.dataset.capture = s.getTracks().map(t => t.kind + ':' + t.readyState).sort().join(' '); }, e => document.documentElement.dataset.capture = e.name); 'asked'";
 const CAPTURE_OUTCOME: &str = "document.documentElement.dataset.capture || ''";
+const CAPTURED_TRACKS: &str = "window.captured.getTracks().map(t => t.kind + ':' + t.readyState).sort().join(' ')";
 /// The new tab page's tile links, once its search box is there.
 const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...document.querySelectorAll('.tile')].map(a => a.href).join(' ') : 'no search box'";
 
@@ -882,6 +883,17 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
         let view = tab.web_view();
         let origin = Origin::of(&ctx.server.url("/")).ok_or_else(|| "the fixture server has no origin".to_owned())?;
+        let _cleanup = Cleanup(|| {
+            if let Some(bubble) = window.address_bar().bubble() {
+                bubble.popdown();
+            }
+            if let Some(dialog) = window.visible_dialog() {
+                dialog.close();
+            }
+            if let Err(e) = browser.core().borrow_mut().site_permissions().reset_site(&origin) {
+                log::warn!("site permissions: {e}");
+            }
+        });
         let stored = || browser.core().borrow_mut().site_permissions().get(&origin, Permission::Location);
         let address = window.address_bar();
         // WebKit keeps a document's first answer, so each request after it comes from a fresh load.
@@ -891,25 +903,30 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             wait_js(&last, view, "String(!window.stale && document.readyState == 'complete')", |s| s == "true").await;
             Ok::<_, String>(())
         };
+        let query = || async {
+            eval_js(view, QUERY_LOCATION).await?;
+            Ok::<_, String>(wait_js(&last, view, LOCATION_STATE, |s| !s.is_empty()).await)
+        };
 
         eval_js(view, ASK_LOCATION).await?;
-        let prompt = wait_for(&last, || shown_prompt(window).ok_or_else(|| "no permission prompt".to_owned())).await;
+        let prompt = wait_for(&last, || address.prompt().ok_or_else(|| "no permission prompt".to_owned())).await;
         let heading = heading_of(&prompt);
         glib::timeout_future(POPOVER_SETTLE).await;
         crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&prompt), &ctx.out_dir.join("permission-prompt.png"))
             .await
             .map_err(|e| e.to_string())?;
+        glib::timeout_future(crate::permissions::PROMPT_GUARD).await;
         button_labelled(prompt.upcast_ref(), Answer::AllowWhileVisiting.label())
             .ok_or_else(|| "the prompt has no Allow while visiting".to_owned())?
             .emit_clicked();
         wait_for(&last, || if stored() == Some(Setting::Allow) { Ok(()) } else { Err(format!("location is stored as {:?}", stored())) }).await;
-        eval_js(view, QUERY_LOCATION).await?;
-        let state = wait_js(&last, view, LOCATION_STATE, |s| !s.is_empty()).await;
+        let state = query().await?;
 
         reload().await?;
+        let state_after_reload = query().await?;
         eval_js(view, ASK_LOCATION).await?;
         glib::timeout_future(Duration::from_secs(1)).await;
-        let asked_again = shown_prompt(window).is_some();
+        let asked_again = address.prompt().is_some();
         let second = eval_js(view, LOCATION_OUTCOME).await?;
 
         address.click_security();
@@ -927,7 +944,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         reload().await?;
         eval_js(view, ASK_LOCATION).await?;
         let blocked = wait_js(&last, view, LOCATION_OUTCOME, |s| !s.is_empty()).await;
-        let asked_when_blocked = shown_prompt(window).is_some();
+        let asked_when_blocked = address.prompt().is_some();
 
         gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
         let dialog = window
@@ -935,35 +952,26 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             .and_downcast::<adw::PreferencesDialog>()
             .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
         dialog.set_visible_page_name("privacy");
-        let Some(entry) = find::<adw::ActionRow>(dialog.upcast_ref(), |r| r.title() == "Site Permissions") else {
-            dialog.close();
-            return Err("the Privacy page has no Site Permissions row".to_owned());
-        };
-        entry.emit_by_name::<()>("activated", &[]);
+        find::<adw::ActionRow>(dialog.upcast_ref(), |r| r.title() == "Site Permissions")
+            .ok_or_else(|| "the Privacy page has no Site Permissions row".to_owned())?
+            .emit_by_name::<()>("activated", &[]);
         glib::timeout_future(Duration::from_millis(600)).await;
-        let shot = crate::screenshot::save_png(window, &ctx.out_dir.join("settings-site-permissions.png")).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("settings-site-permissions.png")).await.map_err(|e| e.to_string())?;
         let listed = find::<adw::ComboRow>(dialog.upcast_ref(), |r| r.title() == Permission::Location.label() && r.is_mapped()).map(|r| selected_label(&r));
-        let remove = find::<gtk::Button>(dialog.upcast_ref(), |b| b.tooltip_text().as_deref() == Some("Remove") && b.is_mapped());
-        let remove = match (shot, remove) {
-            (Ok(()), Some(remove)) => remove,
-            (shot, remove) => {
-                dialog.close();
-                return Err(format!("settings-site-permissions.png: {:?}; a Remove button: {}", shot.map_err(|e| e.to_string()), remove.is_some()));
-            }
-        };
-        remove.emit_clicked();
+        find::<gtk::Button>(dialog.upcast_ref(), |b| b.tooltip_text().as_deref() == Some("Remove") && b.is_mapped())
+            .ok_or_else(|| "the Location row has no Remove button".to_owned())?
+            .emit_clicked();
         wait_for(&last, || if stored().is_none() { Ok(()) } else { Err(format!("after Remove, location is stored as {:?}", stored())) }).await;
         glib::timeout_future(POPOVER_SETTLE).await;
         let empty = find::<adw::StatusPage>(dialog.upcast_ref(), |p| p.is_mapped()).and_then(|p| p.description()).map(String::from);
-        let shot = crate::screenshot::save_png(window, &ctx.out_dir.join("settings-site-permissions-empty.png")).await;
-        dialog.close();
-        shot.map_err(|e| e.to_string())?;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("settings-site-permissions-empty.png")).await.map_err(|e| e.to_string())?;
 
         let detail = format!(
-            "prompt {heading:?} (permission-prompt.png); Allow while visiting stored Allow and the page's permissions.query reads {state:?}; a second request prompted={asked_again} (outcome {second:?}; without GeoClue the position never arrives); Block in site info stored Block (site-info-permissions.png) and the next request failed with code {blocked:?}, prompted={asked_when_blocked}; Settings lists Location as {listed:?} (settings-site-permissions.png); Remove there went back to Ask and left {empty:?} (settings-site-permissions-empty.png)"
+            "prompt {heading:?} (permission-prompt.png); Allow while visiting stored Allow and the page's permissions.query reads {state:?}, after a reload {state_after_reload:?}; the reloaded page's request prompted={asked_again} (outcome {second:?}; without GeoClue the position never arrives); Block in site info stored Block (site-info-permissions.png) and the next request failed with code {blocked:?}, prompted={asked_when_blocked}; Settings lists Location as {listed:?} (settings-site-permissions.png); Remove there went back to Ask and left {empty:?} (settings-site-permissions-empty.png)"
         );
         let ok = heading.as_deref() == Some("Know your location?")
             && state == "granted"
+            && state_after_reload == "granted"
             && !asked_again
             && second != "1"
             && blocked == "1"
@@ -975,20 +983,33 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     .await;
 
     ctx.check("capture_in_use", CHECK_TIMEOUT, |last| async move {
-        browser.engine().settings().set_enable_mock_capture_devices(true);
         let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
         let view = tab.web_view();
         let origin = Origin::of(&ctx.server.url("/")).ok_or_else(|| "the fixture server has no origin".to_owned())?;
+        let settings = browser.engine().settings();
+        let (mock_devices, position) = (settings.enables_mock_capture_devices(), browser.tabs_position());
+        let _cleanup = Cleanup(|| {
+            for permission in [Permission::Camera, Permission::Microphone, Permission::ScreenShare] {
+                crate::permissions::stop(view, permission);
+            }
+            if let Some(bubble) = window.address_bar().bubble() {
+                bubble.popdown();
+            }
+            browser.set_tabs_position(position);
+            settings.set_enable_mock_capture_devices(mock_devices);
+            if let Err(e) = browser.core().borrow_mut().site_permissions().reset_site(&origin) {
+                log::warn!("site permissions: {e}");
+            }
+        });
+        settings.set_enable_mock_capture_devices(true);
         let address = window.address_bar();
 
         eval_js(view, ASK_CAMERA_AND_MICROPHONE).await?;
-        let prompt = wait_for(&last, || shown_prompt(window).ok_or_else(|| "no permission prompt".to_owned())).await;
+        let prompt = wait_for(&last, || address.prompt().ok_or_else(|| "no permission prompt".to_owned())).await;
         let heading = heading_of(&prompt);
-        let answers: Vec<&str> = [Answer::AllowWhileVisiting, Answer::AllowThisTime, Answer::NeverAllow, Answer::Dismiss]
-            .into_iter()
-            .filter(|a| button_labelled(prompt.upcast_ref(), a.label()).is_some())
-            .map(Answer::label)
-            .collect();
+        let buttons: Vec<String> = all::<gtk::Button>(prompt.upcast_ref()).iter().filter_map(|b| b.label()).map(String::from).collect();
+        let expected: Vec<&str> = [Answer::AllowWhileVisiting, Answer::AllowThisTime, Answer::NeverAllow, Answer::Dismiss].map(Answer::label).to_vec();
+        glib::timeout_future(crate::permissions::PROMPT_GUARD).await;
         button_labelled(prompt.upcast_ref(), Answer::AllowThisTime.label())
             .ok_or_else(|| "the prompt has no Allow this time".to_owned())?
             .emit_clicked();
@@ -998,13 +1019,13 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             shown => Err(format!("capturing {:?}, the address bar shows {shown:?}", tab.capturing())),
         })
         .await;
+        let indicator = window.tab_indicator(&tab);
         glib::timeout_future(POPOVER_SETTLE).await;
         crate::screenshot::save_png(window, &ctx.out_dir.join("capture-in-use.png")).await.map_err(|e| e.to_string())?;
         browser.set_tabs_position(TabsPosition::Top);
         glib::timeout_future(POPOVER_SETTLE).await;
-        let top = crate::screenshot::save_png(window, &ctx.out_dir.join("capture-in-use-top.png")).await;
-        browser.set_tabs_position(TabsPosition::Left);
-        top.map_err(|e| e.to_string())?;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("capture-in-use-top.png")).await.map_err(|e| e.to_string())?;
+        browser.set_tabs_position(position);
 
         address.click_in_use();
         let info = address.bubble().ok_or_else(|| "the in-use button opened no popover".to_owned())?;
@@ -1029,21 +1050,22 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         })
         .await;
         stop.emit_clicked();
-        wait_for(&last, || match (tab.capturing().any(), address.shown_in_use()) {
-            (false, None) => Ok(()),
-            (capturing, shown) => Err(format!("after Stop: capturing={capturing}, the address bar shows {shown:?}")),
+        wait_for(&last, || match (tab.capturing().any(), address.shown_in_use(), window.tab_indicator(&tab)) {
+            (false, None, None) => Ok(()),
+            (capturing, shown, indicator) => Err(format!("after Stop: capturing={capturing}, the address bar shows {shown:?}, the tab {indicator:?}")),
         })
         .await;
         info.popdown();
-        let ended = eval_js(view, "window.captured.getTracks().map(t => t.kind + ':' + t.readyState).join(' ')").await?;
-        browser.core().borrow_mut().site_permissions().reset_site(&origin).map_err(|e| e.to_string())?;
+        let ended = wait_js(&last, view, CAPTURED_TRACKS, |s| s == "audio:ended video:ended").await;
 
         let detail = format!(
-            "prompt {heading:?} offering {answers:?}; Allow this time gave the page {tracks:?}; the address bar said {in_use:?} (capture-in-use.png, capture-in-use-top.png); site info showed {before:?} (site-info-capture.png); Block on Camera stored {camera_stored:?} and stopped it, microphone still on={microphone_on}; Stop ended the rest, tracks now {ended:?}; screen sharing needs a user gesture and is not scripted"
+            "prompt {heading:?} with buttons {buttons:?}; Allow this time gave the page {tracks:?}; the address bar said {in_use:?} and the tab {indicator:?} (capture-in-use.png, capture-in-use-top.png); site info showed {before:?} (site-info-capture.png); Block on Camera stored {camera_stored:?} and stopped it, microphone still on={microphone_on}; Stop ended the rest and the indicators, tracks now {ended:?}; screen sharing needs a user gesture and is not scripted"
         );
         let ok = heading.as_deref() == Some("Use your camera and microphone?")
-            && answers.len() == 4
+            && buttons == expected
+            && tracks == "audio:live video:live"
             && in_use == "Using your camera and microphone"
+            && indicator == Some(("camera-web-symbolic".to_owned(), "Using your camera and microphone".to_owned()))
             && before == ["Camera: Allowed this time, Stop=true", "Microphone: Allowed this time, Stop=true"]
             && camera_stored == Some(Setting::Block)
             && microphone_on;
@@ -1137,9 +1159,24 @@ fn popover_of(widget: &gtk::Widget) -> Option<gtk::Popover> {
     None
 }
 
-/// The permission prompt on the address bar, if one is open.
-fn shown_prompt(window: &crate::window::BrowserWindow) -> Option<gtk::Popover> {
-    window.address_bar().bubble().filter(|b| b.has_css_class("permission-prompt") && b.is_visible())
+/// Runs its closure when dropped, so a check's cleanup also runs when it fails or times out.
+struct Cleanup<F: FnMut()>(F);
+
+impl<F: FnMut()> Drop for Cleanup<F> {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+
+/// Every widget of type `W` under `root`, in order.
+fn all<W: IsA<gtk::Widget>>(root: &gtk::Widget) -> Vec<W> {
+    let mut found: Vec<W> = root.downcast_ref::<W>().cloned().into_iter().collect();
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        found.extend(all(&widget));
+        child = widget.next_sibling();
+    }
+    found
 }
 
 /// Picks the choice labelled `label` in a combo row, as the user would from its list.

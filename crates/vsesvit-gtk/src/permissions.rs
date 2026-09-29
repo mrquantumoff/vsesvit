@@ -4,10 +4,13 @@
 //! per tab, and the Permissions section of the site-info popover.
 //!
 //! WebKit's requests carry no origin, so a request is taken to come from the document on
-//! screen: the tab's committed URI.
+//! screen: the tab's committed URI. `navigator.permissions.query` is answered by the same
+//! rule, so a frame never reads a state its requests would not meet.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::glib;
@@ -173,7 +176,7 @@ pub(crate) fn query(tab: &Tab, query: &webkit::PermissionStateQuery) -> bool {
     let permission = query.name().as_deref().and_then(queried);
     let state = match (permission, tab.window()) {
         (Some(permission), Some(window)) => {
-            let origin = query.security_origin().and_then(|o| Origin::parse(&o.to_str()));
+            let origin = origin_of(requesting_document(tab).as_deref());
             state_of(&decide(window.browser(), tab, origin.as_ref(), &[permission]))
         }
         _ => webkit::PermissionState::Prompt,
@@ -192,8 +195,8 @@ pub(crate) fn notification_allowed(tab: &Tab) -> bool {
 }
 
 /// Hands WebKit the stored notification settings, which every web process it starts from
-/// now on reads for `Notification.permission`; one already running keeps what it had. Done
-/// at startup and after each change rather than from WebKit's
+/// now on reads for `Notification.permission`. One already running keeps what it had, even
+/// across a reload. Done at startup and after each change rather than from WebKit's
 /// `initialize-notification-permissions`, which fires inside WebKit calls the shell may make
 /// while it holds the profile.
 pub(crate) fn seed_notifications(browser: &Browser) {
@@ -231,7 +234,8 @@ pub(crate) fn next_prompt(browser: &Browser, tab: &Tab) -> Option<NextPrompt> {
 }
 
 /// Applies the button pressed (Dismiss for a closed bubble) to `request`, if `tab` still
-/// waits on it. `asked` is what the prompt asked for.
+/// waits on it. `asked` is what the prompt asked for. The caller then runs [`enforce`], since
+/// a stored answer can decide other tabs' requests.
 pub(crate) fn answer(browser: &Browser, tab: &Tab, request: &webkit::PermissionRequest, asked: &[Permission], answer: Answer) {
     let pending = {
         let mut state = tab.permissions().borrow_mut();
@@ -248,7 +252,6 @@ pub(crate) fn answer(browser: &Browser, tab: &Tab, request: &webkit::PermissionR
         log::warn!("site permissions: {e}");
         false
     });
-    seed_notifications(browser);
     settle(&pending.request, holds(granted, pending.asked_by.as_deref(), tab.committed_uri().as_deref()));
 }
 
@@ -372,10 +375,18 @@ pub(crate) fn sharing_title(uri: Option<&str>) -> String {
 
 // The prompt bubble.
 
+/// How long after the prompt shows its buttons ignore activation, so that a click or a key
+/// meant for the page cannot answer it (as Chrome guards its prompts).
+pub(crate) const PROMPT_GUARD: Duration = Duration::from_millis(500);
+
 /// The heading, the body and a button per answer in order, the first one suggested.
 /// `on_answer` gets the button pressed.
+///
+/// The bubble takes no grab and no focus: the page or the address bar keeps the keyboard, so
+/// typing goes on where it was, and only a deliberate click answers.
 pub(crate) fn prompt_popover(prompt: &Prompt, on_answer: impl Fn(Answer) + 'static) -> gtk::Popover {
     let on_answer = Rc::new(on_answer);
+    let shown_at: Rc<Cell<Option<Instant>>> = Rc::default();
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
@@ -393,12 +404,18 @@ pub(crate) fn prompt_popover(prompt: &Prompt, on_answer: impl Fn(Answer) + 'stat
         if i == 0 {
             button.add_css_class("suggested-action");
         }
-        let on_answer = on_answer.clone();
-        button.connect_clicked(move |_| on_answer(answer));
+        let (on_answer, shown_at) = (on_answer.clone(), shown_at.clone());
+        button.connect_clicked(move |_| {
+            if shown_at.get().is_some_and(|at| at.elapsed() >= PROMPT_GUARD) {
+                on_answer(answer);
+            }
+        });
         buttons.append(&button);
     }
     content.append(&buttons);
-    gtk::Popover::builder().child(&content).css_classes(["permission-prompt"]).build()
+    let popover = gtk::Popover::builder().child(&content).autohide(false).css_classes(["permission-prompt"]).build();
+    popover.connect_map(move |_| shown_at.set(Some(Instant::now())));
+    popover
 }
 
 fn wrapped(text: &str, classes: &[&str]) -> gtk::Label {
@@ -410,7 +427,8 @@ fn wrapped(text: &str, classes: &[&str]) -> gtk::Label {
 /// A row's choice in the site-info popover.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Choice {
-    /// A one-time grant of this tab, with nothing stored.
+    /// Allowed for now with nothing stored: a one-time grant of this tab, or a screen share
+    /// allowed for that one request.
     ThisTime,
     Ask,
     Allow,
@@ -428,10 +446,11 @@ impl Choice {
     }
 }
 
-/// A row's choices and the current one. Nothing is stored without an origin, and Allow is
-/// never stored for what is asked every time.
-fn choices(origin: Option<&Origin>, permission: Permission, stored: Option<Setting>, granted: bool) -> (Vec<Choice>, Choice) {
-    let this_time = granted && stored.is_none();
+/// A row's choices and the current one. `allowed_now` is a one-time grant or a live capture.
+/// Nothing is stored without an origin, and Allow is never stored for what is asked every
+/// time.
+fn choices(origin: Option<&Origin>, permission: Permission, stored: Option<Setting>, allowed_now: bool) -> (Vec<Choice>, Choice) {
+    let this_time = allowed_now && stored.is_none();
     let mut choices = Vec::new();
     if this_time {
         choices.push(Choice::ThisTime);
@@ -483,7 +502,8 @@ fn fill_section(section: &gtk::Box, browser: &Browser, tab: &Tab) {
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     for permission in shown {
         let setting = stored.iter().find(|(p, _)| *p == permission).map(|(_, s)| *s);
-        let (choices, current) = choices(origin.as_ref(), permission, setting, granted.contains(&permission));
+        let allowed_now = granted.contains(&permission) || in_use.contains(&permission);
+        let (choices, current) = choices(origin.as_ref(), permission, setting, allowed_now);
         let row = permission_row(section, browser, tab, origin.as_ref(), permission, &choices, current);
         if in_use.contains(&permission) {
             row.add_suffix(&stop_button(tab, permission));
@@ -637,7 +657,8 @@ mod tests {
         assert_eq!(choices(site, Permission::Camera, Some(Setting::Block), false), (vec![Ask, Allow, Block], Block));
         assert_eq!(choices(site, Permission::Camera, None, true), (vec![ThisTime, Ask, Allow, Block], ThisTime));
         assert_eq!(choices(site, Permission::Camera, Some(Setting::Allow), true), (vec![Ask, Allow, Block], Allow));
-        assert_eq!(choices(site, Permission::ScreenShare, None, true), (vec![ThisTime, Ask, Block], ThisTime), "screen sharing is never kept");
+        assert_eq!(choices(site, Permission::ScreenShare, None, true), (vec![ThisTime, Ask, Block], ThisTime), "a live share is allowed only now");
+        assert_eq!(choices(site, Permission::ScreenShare, Some(Setting::Block), false), (vec![Ask, Block], Block));
         assert_eq!(choices(None, Permission::Camera, None, true), (vec![ThisTime, Ask], ThisTime), "nothing is stored for an opaque origin");
     }
 
@@ -657,14 +678,15 @@ mod tests {
         use std::rc::Rc;
 
         use super::*;
-        use crate::test_support::{Reply, Server, browser, wait_until};
+        use crate::test_support::{Reply, Server, browser, settle, wait_until};
         use crate::window::{BrowserWindow, Focus};
 
         const LOCATION: &str = "navigator.geolocation.getCurrentPosition(() => document.title = 'location:ok', e => document.title = 'location:' + e.code); 'asked'";
         const MICROPHONE: &str = "navigator.mediaDevices.getUserMedia({audio: true}).then(s => { window.stream = s; document.title = 'microphone:ok'; }, e => document.title = 'microphone:' + e.name); 'asked'";
 
+        /// Popovers behave as for a user: the site-info bubble hides on a click outside.
         fn setup() -> (Server, BrowserWindow) {
-            crate::SCRIPTED.set(true);
+            crate::SCRIPTED.set(false);
             let browser = browser();
             browser.engine().settings().set_enable_mock_capture_devices(true);
             let server = Server::start("127.0.0.1", |_| Reply::Page("Asking"));
@@ -679,13 +701,15 @@ mod tests {
             tab
         }
 
-        fn run(tab: &Tab, script: &str) {
-            let done = Rc::new(RefCell::new(false));
-            let flag = done.clone();
-            tab.web_view().evaluate_javascript(script, None, None, None::<&gtk::gio::Cancellable>, move |_| {
-                flag.replace(true);
+        /// Runs `script` in the tab's page and returns its value as a string.
+        fn run(tab: &Tab, script: &str) -> String {
+            let result = Rc::new(RefCell::new(None));
+            let slot = result.clone();
+            tab.web_view().evaluate_javascript(script, None, None, None::<&gtk::gio::Cancellable>, move |value| {
+                slot.replace(Some(value.map_or_else(|e| e.to_string(), |v| v.to_str().to_string())));
             });
-            wait_until("the script to run", || *done.borrow());
+            wait_until("the script to run", || result.borrow().is_some());
+            result.take().unwrap_or_default()
         }
 
         fn waiting(tab: &Tab) -> usize {
@@ -708,14 +732,30 @@ mod tests {
 
         /// The heading of the permission prompt on screen, if one is.
         fn prompt(window: &BrowserWindow) -> Option<String> {
-            let bubble = window.address_bar().bubble().filter(|b| b.has_css_class("permission-prompt") && b.is_visible())?;
+            let bubble = window.address_bar().prompt()?;
             widgets::<gtk::Label>(bubble.upcast_ref()).into_iter().find(|l| l.has_css_class("heading")).map(|l| l.label().into())
         }
 
-        fn press(window: &BrowserWindow, answer: Answer) {
-            let bubble = window.address_bar().bubble().expect("a prompt is shown");
+        fn button(window: &BrowserWindow, answer: Answer) -> gtk::Button {
+            let bubble = window.address_bar().prompt().expect("a prompt is shown");
             let button = widgets::<gtk::Button>(bubble.upcast_ref()).into_iter().find(|b| b.label().as_deref() == Some(answer.label()));
-            button.expect("the prompt offers the answer").emit_clicked();
+            button.expect("the prompt offers the answer")
+        }
+
+        /// Clicks `answer` once the prompt takes clicks.
+        fn press(window: &BrowserWindow, answer: Answer) {
+            settle(PROMPT_GUARD);
+            button(window, answer).emit_clicked();
+        }
+
+        /// A click in the window, outside the prompt, as its click gesture sees it.
+        fn click_in_window(window: &BrowserWindow) {
+            let controllers = window.observe_controllers();
+            let clicks = (0..controllers.n_items())
+                .filter_map(|i| controllers.item(i).and_downcast::<gtk::GestureClick>())
+                .find(|g| g.propagation_phase() == gtk::PropagationPhase::Capture && g.button() == 0)
+                .expect("the window watches clicks");
+            clicks.emit_by_name::<()>("released", &[&1i32, &10.0f64, &10.0f64]);
         }
 
         #[gtk::test]
@@ -762,6 +802,102 @@ mod tests {
         }
 
         #[gtk::test]
+        fn the_prompt_leaves_the_keyboard_where_it_was_and_ignores_early_clicks() {
+            let (server, window) = setup();
+            let tab = open(&window, &server.url("/"), Focus::Foreground);
+            window.address_bar().focus_for_typing();
+            wait_until("the address bar to take the focus", || {
+                gtk::prelude::RootExt::focus(&window).is_some_and(|f| f.is_ancestor(window.address_bar()))
+            });
+            run(&tab, MICROPHONE);
+            wait_until("the prompt", || prompt(&window).is_some());
+            settle(std::time::Duration::from_millis(100));
+            let focus_in_bar = gtk::prelude::RootExt::focus(&window).is_some_and(|f| f.is_ancestor(window.address_bar()));
+            let autohide = window.address_bar().prompt().is_some_and(|p| p.is_autohide());
+            button(&window, Answer::AllowWhileVisiting).emit_clicked();
+            let after_early_click = (waiting(&tab), prompt(&window).is_some());
+            press(&window, Answer::AllowThisTime);
+            wait_until("the microphone to open", || title(&tab) == "microphone:ok");
+            window.destroy();
+
+            assert!(focus_in_bar, "typing goes on in the address bar");
+            assert!(!autohide, "the prompt takes no grab");
+            assert_eq!(after_early_click, (1, true), "a click right as the prompt shows does not answer it");
+        }
+
+        #[gtk::test]
+        fn another_bubble_or_a_tab_switch_withdraws_the_prompt_and_a_click_on_the_page_dismisses_it() {
+            let (server, window) = setup();
+            let tab = open(&window, &server.url("/asking"), Focus::Foreground);
+            let other = open(&window, &server.url("/other"), Focus::Background);
+            run(&tab, MICROPHONE);
+            wait_until("the prompt", || prompt(&window).is_some());
+
+            window.show_site_info();
+            let site_info = window.address_bar().bubble().expect("site info opens");
+            let under_site_info = (prompt(&window), waiting(&tab));
+            site_info.popdown();
+            wait_until("the prompt to come back", || prompt(&window).is_some());
+
+            click_in_window(&window);
+            window.select_tab(&other);
+            wait_until("the click to be handled", || !glib::MainContext::default().pending());
+            let after_switching = (prompt(&window), waiting(&tab));
+            window.select_tab(&tab);
+            let back = prompt(&window);
+
+            click_in_window(&window);
+            wait_until("the dismissed request to fail", || title(&tab) == "microphone:NotAllowedError");
+            let after_click = (prompt(&window), waiting(&tab));
+
+            run(&tab, MICROPHONE);
+            wait_until("the next prompt", || prompt(&window).is_some());
+            window.address_bar().prompt().expect("a prompt is shown").popdown();
+            wait_until("the closed prompt to count as Not now", || waiting(&tab) == 0);
+            window.destroy();
+
+            assert_eq!(under_site_info, (None, 1), "site info stays open while the request waits");
+            assert_eq!(after_switching, (None, 1), "a click that switches tabs withdraws the prompt");
+            assert_eq!(back.as_deref(), Some("Use your microphone?"));
+            assert_eq!(after_click, (None, 0), "a click on the page is Not now");
+        }
+
+        #[gtk::test]
+        fn a_kept_answer_settles_the_same_prompt_in_another_window() {
+            let (server, window) = setup();
+            let other_window = BrowserWindow::new(window.browser());
+            other_window.present();
+            let first = open(&window, &server.url("/one"), Focus::Foreground);
+            let second = open(&other_window, &server.url("/two"), Focus::Foreground);
+            run(&first, MICROPHONE);
+            run(&second, MICROPHONE);
+            wait_until("a prompt in each window", || prompt(&window).is_some() && prompt(&other_window).is_some());
+            press(&other_window, Answer::AllowWhileVisiting);
+            wait_until("both pages to get the microphone", || title(&first) == "microphone:ok" && title(&second) == "microphone:ok");
+            let left = prompt(&window);
+            let origin = Origin::parse(&server.url("/")).expect("an http origin");
+            window.browser().core().borrow_mut().site_permissions().reset_site(&origin).unwrap();
+            window.destroy();
+            other_window.destroy();
+            assert_eq!(left, None);
+        }
+
+        #[gtk::test]
+        fn a_prompt_waits_out_fullscreen() {
+            let (server, window) = setup();
+            let tab = open(&window, &server.url("/"), Focus::Foreground);
+            window.fullscreen();
+            wait_until("fullscreen", || window.is_fullscreen());
+            run(&tab, MICROPHONE);
+            wait_until("the request", || waiting(&tab) == 1);
+            let while_fullscreen = prompt(&window);
+            window.unfullscreen();
+            wait_until("the prompt after fullscreen", || prompt(&window).is_some());
+            window.destroy();
+            assert_eq!(while_fullscreen, None, "the address bar is hidden");
+        }
+
+        #[gtk::test]
         fn a_kept_answer_decides_the_next_request_and_leaving_the_site_denies() {
             let (server, window) = setup();
             let other = Server::start("127.0.0.2", |_| Reply::Page("Elsewhere"));
@@ -803,11 +939,7 @@ mod tests {
                 origin
             });
             enforce(window.browser());
-            let permission = |url: &str| {
-                let tab = open(&window, url, Focus::Foreground);
-                run(&tab, "document.title = Notification.permission");
-                title(&tab)
-            };
+            let permission = |url: &str| run(&open(&window, url, Focus::Foreground), "Notification.permission");
             let seen = (permission(&allowed.url("/")), permission(&blocked.url("/")));
             for origin in &origins {
                 window.browser().core().borrow_mut().site_permissions().reset_site(origin).unwrap();

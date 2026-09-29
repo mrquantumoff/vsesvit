@@ -387,11 +387,28 @@ impl BrowserWindow {
             move |_| window.focus_page()
         ));
 
+        ui.address.connect_bubble_changed(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_| window.sync_permission_prompt()
+        ));
+        let clicks = gtk::GestureClick::builder()
+            .button(0)
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        clicks.connect_released(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _, _, _| window.clicked_while_prompting()
+        ));
+        self.add_controller(clicks);
+
         self.connect_fullscreened_notify(|window| {
             window
                 .ui()
                 .toolbar
                 .set_reveal_top_bars(!window.is_fullscreen());
+            window.sync_permission_prompt();
         });
     }
 
@@ -541,13 +558,18 @@ impl BrowserWindow {
     }
 
     /// Shows the selected tab's oldest waiting permission prompt, unless it is on screen.
-    /// Other tabs' prompts wait until their tab is selected, so one shows at a time.
+    /// Other tabs' prompts wait until their tab is selected, so one shows at a time, and none
+    /// shows while another bubble is open from the address bar or the window is fullscreen
+    /// (the bar is hidden then). Called whenever any of that may have changed.
     pub(crate) fn sync_permission_prompt(&self) {
         let imp = self.imp();
         let tab = self.selected_tab();
-        let next = tab.as_ref().and_then(|tab| permissions::next_prompt(self.browser(), tab));
-        let shown = imp.prompt.borrow().as_ref().map(|p| p.request.clone());
-        if shown.is_some() && shown == next.as_ref().map(|n| n.request.clone()) {
+        let hidden = self.ui().address.bubble().is_some() || self.is_fullscreen();
+        let next = tab.as_ref().filter(|_| !hidden).and_then(|tab| permissions::next_prompt(self.browser(), tab));
+        let on_screen = imp.prompt.borrow().as_ref().is_some_and(|shown| {
+            next.as_ref().is_some_and(|next| shown.request == next.request && shown.asked == next.asked)
+        });
+        if on_screen {
             return;
         }
         if let Some(withdrawn) = imp.prompt.take() {
@@ -565,23 +587,29 @@ impl BrowserWindow {
                 move |answer| window.answer_permission_prompt(&request, answer)
             ),
         );
-        // Closing the bubble any other way (Escape, a click elsewhere) is "Not now".
+        // A close the window did not make (Escape in the bubble, or a click elsewhere that
+        // left the tab and the address bar as they were) is "Not now".
         popover.connect_closed(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            #[strong]
-            request,
-            move |_| {
-                let request = request.clone();
+            move |popover| {
+                let dismissed = {
+                    let mut prompt = window.imp().prompt.borrow_mut();
+                    if prompt.as_ref().is_some_and(|p| p.popover == *popover) { prompt.take() } else { None }
+                };
+                let Some(dismissed) = dismissed else { return };
+                if let Some(tab) = dismissed.tab.upgrade() {
+                    permissions::answer(window.browser(), &tab, &dismissed.request, &dismissed.asked, Answer::Dismiss);
+                }
                 glib::idle_add_local_once(glib::clone!(
                     #[weak]
                     window,
-                    move || window.answer_permission_prompt(&request, Answer::Dismiss)
+                    move || permissions::enforce(window.browser())
                 ));
             }
         ));
         imp.prompt.replace(Some(ShownPrompt { popover: popover.clone(), tab: tab.downgrade(), request, asked: next.asked }));
-        self.ui().address.show_popover(&popover, Anchor::Security);
+        self.ui().address.show_prompt(&popover);
     }
 
     /// Answers the prompt on screen, if it is still the one for `request`, and shows the next.
@@ -595,7 +623,34 @@ impl BrowserWindow {
         if let Some(tab) = shown.tab.upgrade() {
             permissions::answer(self.browser(), &tab, request, &shown.asked, answer);
         }
-        self.sync_permission_prompt();
+        permissions::enforce(self.browser());
+    }
+
+    /// A click in the window while a prompt shows. Once the click has done what it does,
+    /// the prompt is dismissed if it is still on screen: a tab switch or another bubble
+    /// from the address bar withdraws it instead, to come back later.
+    fn clicked_while_prompting(&self) {
+        let Some(popover) = self.imp().prompt.borrow().as_ref().map(|p| p.popover.clone()) else { return };
+        let tab = self.selected_tab();
+        glib::idle_add_local_once(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move || {
+                let still_shown = window.imp().prompt.borrow().as_ref().is_some_and(|p| p.popover == popover);
+                if still_shown && window.selected_tab() == tab && window.ui().address.bubble().is_none() {
+                    popover.popdown();
+                }
+            }
+        ));
+    }
+
+    /// The in-use icon and tooltip on `tab`'s tab, if it shows one.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn tab_indicator(&self, tab: &Tab) -> Option<(String, String)> {
+        let page = self.page_of(tab)?;
+        let icon = page.indicator_icon().and_downcast::<gio::ThemedIcon>()?;
+        let name = icon.names().first().map(|n| n.to_string()).unwrap_or_default();
+        Some((name, page.indicator_tooltip().to_string()))
     }
 
     // Extension actions.
