@@ -968,10 +968,10 @@ impl Browser {
         self.core(|p| p.prefs().get(&keys::UPDATES_CHANNEL))
     }
 
-    /// Checks the new channel at once, unless a check, a download or a ready update is under way.
+    /// Drops what the old channel found, a ready update included, and checks the new one.
     pub fn set_updates_channel(&self, channel: UpdateChannel) {
         self.write_pref(&keys::UPDATES_CHANNEL, &channel);
-        self.check_for_updates();
+        updates::switch_channel(self);
     }
 
     // ---- extensions ----

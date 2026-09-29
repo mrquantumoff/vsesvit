@@ -7,7 +7,7 @@
 //! block, so they run on worker threads (`exec::background`) and their results are applied
 //! on the UI thread.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::{Rc, Weak};
@@ -193,6 +193,19 @@ impl<D> State<D> {
         }
     }
 
+    /// Another channel was picked: what the old one found is dropped, a ready update included
+    /// (the next check deletes its file). An install already under way goes on.
+    fn switch_channel(self) -> Self {
+        match self {
+            Self::Checking { .. }
+            | Self::Downloading { .. }
+            | Self::Ready { .. }
+            | Self::UpToDate
+            | Self::Failed { .. } => Self::Idle,
+            state @ (Self::Idle | Self::Installing { .. } | Self::Disabled(_)) => state,
+        }
+    }
+
     /// `Ready` becomes `Installing` and hands over the download, once.
     pub fn begin_install(&mut self) -> Option<D> {
         let Self::Ready { version, .. } = self else {
@@ -312,6 +325,9 @@ pub(crate) struct Updates {
     setup: Option<Setup>,
     /// Called after every change of `state`, while their owners (an open Settings) keep them.
     listeners: RefCell<Vec<Weak<dyn Fn()>>>,
+    /// Counts channel switches. A check applies its results only while this is the count it
+    /// started with, so a check or download for the old channel cannot land after a switch.
+    channel_switches: Cell<u64>,
 }
 
 struct Setup {
@@ -330,6 +346,7 @@ impl Updates {
                     state: RefCell::new(State::Idle),
                     setup: Some(setup),
                     listeners: RefCell::default(),
+                    channel_switches: Cell::default(),
                 }
             }
             Err(reason) => Self::disabled(reason),
@@ -342,6 +359,7 @@ impl Updates {
             state: RefCell::new(State::Disabled(reason)),
             setup: None,
             listeners: RefCell::default(),
+            channel_switches: Cell::default(),
         }
     }
 
@@ -418,6 +436,19 @@ fn apply(browser: &Browser, event: Event<Downloaded>) {
     browser.update_state_changed();
 }
 
+/// Forgets the old channel's check, download or ready update, then checks the new channel.
+pub(crate) fn switch_channel(browser: &Browser) {
+    let updates = browser.updates();
+    updates
+        .channel_switches
+        .set(updates.channel_switches.get() + 1);
+    updates
+        .state
+        .replace_with(|state| std::mem::replace(state, State::Idle).switch_channel());
+    browser.update_state_changed();
+    browser.check_for_updates();
+}
+
 /// Checks `FIRST_CHECK` after the first window shows, then every `CHECK_INTERVAL` while
 /// `updates.automatic` is on.
 pub(crate) async fn schedule(browser: Weak<Browser>) {
@@ -446,7 +477,7 @@ pub(crate) async fn schedule(browser: Weak<Browser>) {
 
 /// Checks, and downloads a newer version into the updates folder, replacing what is there.
 pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
-    let Some((updater, dir, channel)) = browser.upgrade().and_then(|b| {
+    let Some((updater, dir, channel, switches)) = browser.upgrade().and_then(|b| {
         let updates = b.updates();
         let setup = updates.setup.as_ref()?;
         if !updates.state.borrow().can_check() {
@@ -456,6 +487,7 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
             setup.updater.clone(),
             setup.dir.clone(),
             b.updates_channel(),
+            updates.channel_switches.get(),
         );
         apply(&b, Event::Check(trigger));
         Some(jobs)
@@ -472,24 +504,26 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
                 "updates: Vsesvit {} is out, but this installation does not update itself",
                 release.version
             );
-            with(&browser, |b| apply(b, Event::UpToDate));
+            with(&browser, switches, |b| apply(b, Event::UpToDate));
             return;
         }
         Ok(None) => {
             log::info!("updates: Vsesvit {} is current", env!("CARGO_PKG_VERSION"));
             exec::background(move || remove_stale(&dir, None)).await;
-            with(&browser, |b| apply(b, Event::UpToDate));
+            with(&browser, switches, |b| apply(b, Event::UpToDate));
             return;
         }
         Err(e) => {
             log::warn!("updates: check failed: {e}");
-            with(&browser, |b| apply(b, Event::Failed(e.to_string())));
+            with(&browser, switches, |b| {
+                apply(b, Event::Failed(e.to_string()))
+            });
             return;
         }
     };
     let version = update.release.version.clone();
     log::info!("updates: downloading Vsesvit {version}");
-    with(&browser, |b| apply(b, Event::Found(version)));
+    with(&browser, switches, |b| apply(b, Event::Found(version)));
 
     let queue = exec::dispatcher();
     let downloaded = exec::background(move || {
@@ -501,7 +535,9 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
             }
             if let Some(queue) = &queue {
                 exec::post(queue, move || {
-                    if let Some(b) = browser::current() {
+                    if let Some(b) = browser::current()
+                        && b.updates().channel_switches.get() == switches
+                    {
                         apply(&b, Event::Progress { received, total });
                     }
                 });
@@ -512,17 +548,22 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
     match downloaded {
         Ok(update) => {
             log::info!("updates: {} is ready", update.path().display());
-            with(&browser, |b| apply(b, Event::Downloaded(update)));
+            with(&browser, switches, |b| apply(b, Event::Downloaded(update)));
         }
         Err(e) => {
             log::warn!("updates: download failed: {e}");
-            with(&browser, |b| apply(b, Event::Failed(e.to_string())));
+            with(&browser, switches, |b| {
+                apply(b, Event::Failed(e.to_string()))
+            });
         }
     }
 }
 
-fn with(browser: &Weak<Browser>, f: impl FnOnce(&Browser)) {
-    if let Some(browser) = browser.upgrade() {
+/// Runs `f` unless the browser is gone or the channel has switched since the check began.
+fn with(browser: &Weak<Browser>, switches: u64, f: impl FnOnce(&Browser)) {
+    if let Some(browser) = browser.upgrade()
+        && browser.updates().channel_switches.get() == switches
+    {
         f(&browser);
     }
 }
@@ -947,6 +988,58 @@ mod tests {
             error: "late".into(),
         };
         assert_eq!(ready().next(install_failed), ready());
+    }
+
+    #[test]
+    fn switching_channel_drops_what_the_old_one_found() {
+        let found = [
+            S::Checking {
+                trigger: Trigger::Scheduled,
+            },
+            S::Downloading {
+                trigger: Trigger::User,
+                version: v("0.2.0"),
+                received: 1,
+                total: None,
+            },
+            S::Ready {
+                version: v("0.2.0"),
+                update: "setup.exe",
+                error: None,
+            },
+            S::Ready {
+                version: v("0.2.0"),
+                update: "setup.exe",
+                error: Some("the installer did not start".into()),
+            },
+            S::UpToDate,
+            S::Failed {
+                trigger: Trigger::User,
+                error: "boom".into(),
+            },
+        ];
+        for state in found {
+            let switched = state.switch_channel();
+            assert_eq!(switched, S::Idle);
+            assert!(switched.can_check(), "the new channel is checked at once");
+        }
+        let mut switched = S::Ready {
+            version: v("0.2.0"),
+            update: "setup.exe",
+            error: None,
+        }
+        .switch_channel();
+        assert_eq!(switched.begin_install(), None, "quitting installs nothing");
+    }
+
+    #[test]
+    fn switching_channel_leaves_a_started_install_alone() {
+        let installing = || S::Installing {
+            version: v("0.2.0"),
+        };
+        assert_eq!(installing().switch_channel(), installing());
+        let disabled = || S::Disabled("unpackaged".into());
+        assert_eq!(disabled().switch_channel(), disabled());
     }
 
     #[test]
