@@ -92,6 +92,8 @@ pub(crate) struct Meta {
     pub device: DeviceId,
     pub clock_last: Hlc,
     pub next_seq: u64,
+    /// This call inserted the rows: the profile did not exist before.
+    pub created: bool,
 }
 
 fn meta_get(conn: &Connection, key: &str) -> Result<Option<i64>, rusqlite::Error> {
@@ -110,6 +112,7 @@ pub(crate) fn load_or_init_meta(
             device: DeviceId(device as u64),
             clock_last: Hlc(clock_last as u64),
             next_seq: (next_seq as u64).max(1),
+            created: false,
         });
     }
     let device = match new_device {
@@ -126,7 +129,7 @@ pub(crate) fn load_or_init_meta(
         tx.execute("INSERT INTO meta (key, value) VALUES (?1, ?2)", params![key, value])?;
     }
     tx.commit()?;
-    Ok(Meta { device, clock_last: Hlc::ZERO, next_seq: 1 })
+    Ok(Meta { device, clock_last: Hlc::ZERO, next_seq: 1, created: true })
 }
 
 /// The only way core writes. One transaction, at most one stamp, at most one seq.

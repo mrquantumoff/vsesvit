@@ -27,6 +27,7 @@
 //! | [`history`]      | page records (grow-only visit sets) + deletion directives             |
 //! | [`import`]       | bookmarks from other browsers: HTML export, Chromium, Firefox         |
 //! | [`new_tab`]      | the new tab page: search box + most visited sites, as HTML            |
+//! | [`onboarding`]   | the first-run welcome: when to show it, recommended extensions        |
 //! | [`permissions`]  | site permissions: stored choices, one-time grants, the prompt         |
 //! | [`zoom`]         | page zoom per site (LOCAL)                                            |
 //! | [`session`]      | this device's windows/tabs (restore) = its published "tabs" record    |
@@ -53,6 +54,7 @@ pub mod favicons;
 pub mod history;
 pub mod import;
 pub mod new_tab;
+pub mod onboarding;
 pub mod permissions;
 pub mod prefs;
 pub mod search;
@@ -88,6 +90,7 @@ pub struct Profile {
     /// bookmarks-bar paint, so reads never touch SQLite.
     pub(crate) bookmarks: bookmarks::Model,
     pub(crate) chrome_version: String,
+    created: bool,
     /// Exclusive OS lock (`std::fs::File::try_lock`) on `<root>/LOCK`. The OS releases it
     /// when the process dies, so a crash never leaves a stale lock.
     _lock: std::fs::File,
@@ -203,6 +206,7 @@ impl Profile {
             next_seq: meta.next_seq,
             bookmarks: bookmarks::Model::new(records),
             chrome_version: opts.chrome_version,
+            created: meta.created,
             _lock: lock,
             _not_send: PhantomData,
         };
@@ -213,6 +217,12 @@ impl Profile {
 
     pub fn paths(&self) -> &ProfilePaths {
         &self.paths
+    }
+
+    /// True when this [`Profile::open`] created the profile, false on every later open.
+    /// A profile made by a build older than this API reads as not new.
+    pub fn is_new(&self) -> bool {
+        self.created
     }
 
     pub fn device_id(&self) -> DeviceId {

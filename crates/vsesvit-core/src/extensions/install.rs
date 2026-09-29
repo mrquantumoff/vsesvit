@@ -104,6 +104,13 @@ impl InstallSource {
         }
     }
 
+    pub fn web_store(store: CrxStore, id: ExtensionId) -> InstallSource {
+        match store {
+            CrxStore::ChromeWebStore => InstallSource::ChromeWebStore { id },
+            CrxStore::EdgeAddons => InstallSource::EdgeAddons { id },
+        }
+    }
+
     /// From a file picker or drag-and-drop.
     pub fn from_path(path: &Path) -> Result<InstallSource, SourceParseError> {
         if path.as_os_str().is_empty() {
@@ -208,10 +215,7 @@ fn crx_store_id_after(segments: &[&str], prefix: &[&str], store: CrxStore) -> Re
     let rest = segments.strip_prefix(prefix).ok_or(SourceParseError::Unrecognized)?;
     let id =
         rest.iter().take(2).find_map(|s| ExtensionId::parse(s).ok().filter(ExtensionId::is_chrome_style)).ok_or(SourceParseError::BadId)?;
-    Ok(match store {
-        CrxStore::ChromeWebStore => InstallSource::ChromeWebStore { id },
-        CrxStore::EdgeAddons => InstallSource::EdgeAddons { id },
-    })
+    Ok(InstallSource::web_store(store, id))
 }
 
 fn is_amo_slug(s: &str) -> bool {

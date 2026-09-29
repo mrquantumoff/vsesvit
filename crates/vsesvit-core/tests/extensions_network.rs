@@ -7,8 +7,9 @@
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
-use vsesvit_core::extensions::crx::{self, CWS_PUBLISHER_KEY_SHA256, EDGE_PUBLISHER_KEY_SHA256};
+use vsesvit_core::extensions::crx::{self, CWS_PUBLISHER_KEY_SHA256, CrxStore, EDGE_PUBLISHER_KEY_SHA256};
 use vsesvit_core::extensions::{DEFAULT_CHROME_VERSION, ExtensionId, InstallPhase, InstallSource, Verification};
+use vsesvit_core::onboarding::{RECOMMENDED_EXTENSIONS, Recommended};
 use vsesvit_core::{OpenOptions, Profile};
 
 const UBO_LITE: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
@@ -71,6 +72,7 @@ fn installs_ublock_origin_lite_from_the_chrome_web_store() {
     let job = p.extensions().prepare_install(InstallSource::parse(UBO_LITE).unwrap()).unwrap();
     let mut last_download = None;
     let mut phases = Vec::new();
+    assert_eq!(recommended("uBlock Origin Lite").install_source(), InstallSource::parse(UBO_LITE).unwrap());
     let staged = job
         .run(&mut |phase| match phase {
             InstallPhase::Downloading { .. } => last_download = Some(phase),
@@ -128,4 +130,39 @@ fn installs_ublock_origin_from_amo() {
     println!("installed {} {} as {}; verification = {:?}", ext.manifest.name, ext.version, ext.id.as_str(), ext.verification);
     assert_eq!(ext.id.as_str(), "uBlock0@raymondhill.net");
     assert_eq!(ext.verification, Verification::AmoHash);
+}
+
+fn recommended(name: &str) -> &'static Recommended {
+    RECOMMENDED_EXTENSIONS.iter().find(|r| r.name == name).unwrap()
+}
+
+/// Installs a welcome-flow recommendation from the table's own source.
+fn install_recommended(name: &str) {
+    let r = recommended(name);
+    let t = TempDir::new();
+    let mut p = Profile::open(&t.0.join("profile"), OpenOptions::default()).unwrap();
+    let staged = p.extensions().prepare_install(r.install_source()).unwrap().run(&mut |_| {}).unwrap();
+    let ext = p.extensions().commit(staged).unwrap().unwrap();
+    println!("installed {} {} into {}; verification = {:?}", ext.manifest.name, ext.version, ext.dir.display(), ext.verification);
+
+    assert_eq!(ext.id, r.id());
+    let expected = match r.store {
+        CrxStore::ChromeWebStore => Verification::ChromeWebStore { publisher_verified: true },
+        CrxStore::EdgeAddons => Verification::EdgeAddons,
+    };
+    assert_eq!(ext.verification, expected);
+    assert_eq!(ext.manifest.key_id(), Some(r.id()), "the injected key keeps the store id");
+    assert!(ext.enabled);
+}
+
+#[test]
+#[ignore = "downloads Bitwarden from its recommended store"]
+fn installs_recommended_bitwarden() {
+    install_recommended("Bitwarden");
+}
+
+#[test]
+#[ignore = "downloads Proton Pass from its recommended store"]
+fn installs_recommended_proton_pass() {
+    install_recommended("Proton Pass");
 }

@@ -99,6 +99,9 @@ pub mod keys {
     /// Local: a folder on this device's disk. `None` = the platform's Downloads folder, which
     /// only the shell knows.
     pub const DOWNLOADS_DIR: Pref<Option<PathBuf>> = Pref { key: "downloads.directory", scope: Scope::Local, default: || None };
+    /// Local: the welcome flow ran on this device; another device's run says nothing
+    /// about this one. See [`crate::onboarding`].
+    pub const ONBOARDING_DONE: Pref<bool> = Pref { key: "onboarding.done", scope: Scope::Local, default: || false };
     /// Whether each download opens a save dialog instead of going straight to [`DOWNLOADS_DIR`].
     pub const DOWNLOADS_ASK: Pref<bool> = Pref { key: "downloads.ask", scope: Scope::Synced, default: || false };
 }
