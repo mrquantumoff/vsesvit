@@ -25,6 +25,13 @@ const STARTUP_SWITCHES: [(&Pref<bool>, &str); 2] = [
     (&keys::HARDWARE_ACCELERATION, "--disable-gpu"),
 ];
 
+/// Browser arguments for scripted runs (`--self-test`, `--ui-smoke`): a fake camera and
+/// microphone, so pages can capture on machines without them, and the screen picker choosing
+/// the whole screen by itself. Permission requests still reach the shell (unlike with
+/// `--use-fake-ui-for-media-stream`).
+pub(crate) const SCRIPTED_ARGUMENTS: &str = "--use-fake-device-for-media-stream \
+    --auto-select-desktop-capture-source=\"Entire screen\"";
+
 /// The browser arguments for the startup preferences that are off.
 pub(crate) fn browser_arguments(mut enabled: impl FnMut(&Pref<bool>) -> bool) -> String {
     STARTUP_SWITCHES

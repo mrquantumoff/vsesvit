@@ -172,6 +172,10 @@ impl TabHeader {
         }
     }
 
+    pub fn capture_shown(&self) -> bool {
+        xaml::is_visible(&self.capture)
+    }
+
     fn show_capture(&self, capturing: Capturing) {
         let glyph = capture_glyph(capturing);
         let _ = xaml::set_visible(&self.capture, glyph.is_some());

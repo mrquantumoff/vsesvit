@@ -228,6 +228,7 @@ Microsoft.Web.WebView2.Core.CoreWebView2PermissionState
 Microsoft.Web.WebView2.Core.ICoreWebView2_27::ScreenCaptureStarting
 Microsoft.Web.WebView2.Core.ICoreWebView2ScreenCaptureStartingEventArgs::{put_Cancel, put_Handled, GetDeferral, get_OriginalSourceFrameInfo}
 Microsoft.Web.WebView2.Core.ICoreWebView2FrameInfo::get_Source
+Microsoft.UI.Xaml.Controls.IInfoBar::{get_IsOpen, get_Title}
 
 // ---- dates ----
 Windows.Globalization.DateTimeFormatting.DateTimeFormatter::CreateDateTimeFormatter

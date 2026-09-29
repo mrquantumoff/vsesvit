@@ -50,6 +50,8 @@ pub(crate) trait TabStrip {
     fn order(&self) -> Vec<TabId>;
     fn update(&self, tab: TabId, look: &TabLook);
     fn clear(&self) -> Result<()>;
+    /// Whether the tab's row shows its in-use icon.
+    fn capture_shown(&self, tab: TabId) -> bool;
 }
 
 /// One tab's entry in a list: its XAML item and the header drawn in it.
@@ -94,6 +96,13 @@ impl Rows {
             .iter()
             .find(|r| r.tab == tab)
             .map(|r| r.pinned.get())
+    }
+
+    fn capture_shown(&self, tab: TabId) -> bool {
+        self.0
+            .borrow()
+            .iter()
+            .any(|r| r.tab == tab && r.header.capture_shown())
     }
 
     fn with_header(&self, tab: TabId, f: impl FnOnce(&TabHeader)) {
@@ -327,6 +336,10 @@ impl TabStrip for TopStrip {
 
     fn clear(&self) -> Result<()> {
         self.rows.clear(&self.view.TabItems()?)
+    }
+
+    fn capture_shown(&self, tab: TabId) -> bool {
+        self.rows.capture_shown(tab)
     }
 }
 
@@ -679,5 +692,9 @@ impl TabStrip for SidePane {
 
     fn clear(&self) -> Result<()> {
         self.rows.clear(&self.items()?)
+    }
+
+    fn capture_shown(&self, tab: TabId) -> bool {
+        self.rows.capture_shown(tab)
     }
 }

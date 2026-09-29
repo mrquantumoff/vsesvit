@@ -145,7 +145,12 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         mut profile,
         profile_open_ms,
     } = launch;
-    let arguments = engine::browser_arguments(|pref| profile.prefs().get(pref));
+    let mut arguments = engine::browser_arguments(|pref| profile.prefs().get(pref));
+    if !config.mode.is_interactive() {
+        arguments = format!("{arguments} {}", engine::SCRIPTED_ARGUMENTS)
+            .trim()
+            .to_owned();
+    }
     let engine = Engine::create(&profile.paths().engine_data, &arguments).await?;
     let page_script = Rc::new(shortcuts::PageScript::new(&secret()));
     let prefs = WindowPrefs {

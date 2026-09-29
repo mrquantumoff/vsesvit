@@ -447,3 +447,48 @@ fn reset_site(window: &Weak<BrowserWindow>, tab: &Weak<Tab>, origin: &Origin) {
     permissions::stop_captures(&browser, origin, &stored);
     BrowserWindow::refill_site_permissions(window, tab);
 }
+
+/// What scripted runs read back and press.
+impl BrowserWindow {
+    /// How many permission prompts this window has shown.
+    pub fn permission_prompts_shown(&self) -> u64 {
+        self.permissions.prompts_shown.get()
+    }
+
+    /// The permission prompt while it is open.
+    pub fn permission_prompt(&self) -> Option<FrameworkElement> {
+        let prompt = self.permissions.prompt.borrow();
+        let flyout = &prompt.as_ref()?.flyout;
+        let open = flyout
+            .cast::<FlyoutBase>()
+            .and_then(|f| f.IsOpen())
+            .unwrap_or(false);
+        open.then(|| flyout.Content().ok()?.cast().ok()).flatten()
+    }
+
+    /// What the address bar's capture button says, while it shows.
+    pub fn capture_button_shown(&self) -> Option<String> {
+        xaml::is_visible(&self.ui.capture_button)
+            .then(|| self.active_tab()?.permissions().capturing().description())
+            .flatten()
+    }
+
+    /// The screen sharing bar's title, while it is open.
+    pub fn share_bar_shown(&self) -> Option<String> {
+        let bar = &self.ui.share_bar;
+        bar.IsOpen()
+            .unwrap_or(false)
+            .then(|| bar.Title().ok().map(|t| t.to_string()))
+            .flatten()
+    }
+
+    /// The sharing bar's "Stop sharing".
+    pub fn stop_sharing_button(&self) -> Button {
+        self.ui.share_stop.clone()
+    }
+
+    /// Whether the tab's entry in the tab list shows its in-use icon.
+    pub fn tab_capture_shown(&self, tab: TabId) -> bool {
+        self.strip().capture_shown(tab)
+    }
+}
