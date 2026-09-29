@@ -125,7 +125,7 @@ jobs:
 
   flatpak:
     needs: plan
-    if: needs.plan.outputs.skip != 'true'
+    if: needs.plan.outputs.skip != 'true' && needs.plan.outputs.channel != 'nightly'
     runs-on: ubuntu-latest
     steps:
       - name: Flatpak tooling
@@ -149,6 +149,13 @@ jobs:
 
   release:
     needs: [plan, windows, linux, flatpak]
+    # Nightlies omit Flatpak; all required builds must still succeed.
+    if: >-
+      always() && !cancelled() &&
+      needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' &&
+      needs.windows.result == 'success' && needs.linux.result == 'success' &&
+      (needs.flatpak.result == 'success' ||
+       (needs.plan.outputs.channel == 'nightly' && needs.flatpak.result == 'skipped'))
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.plan.outputs.version }}
