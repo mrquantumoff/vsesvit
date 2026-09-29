@@ -133,6 +133,8 @@ pub(crate) struct BrowserWindow {
     tabs: RefCell<Vec<Rc<Tab>>>,
     /// The user typed into the address box since it last showed the page URL.
     address_edited: Cell<bool>,
+    /// What the shell last put in the address box, which is never the user's typing.
+    address_written: RefCell<String>,
     /// The suggestion list's labels and the URL each one opens.
     suggestions: RefCell<Vec<(String, String)>>,
     /// The tab the toolbar currently shows.
@@ -198,6 +200,7 @@ impl BrowserWindow {
             tabs_position: Cell::new(prefs.tabs),
             tabs: RefCell::new(Vec::new()),
             address_edited: Cell::new(false),
+            address_written: RefCell::new(String::new()),
             suggestions: RefCell::new(Vec::new()),
             shown_tab: Cell::new(None),
             split: Cell::new(None),
@@ -524,6 +527,7 @@ impl BrowserWindow {
         if !self.address_edited.get() {
             let shown = self.address_shown(&state.url);
             if self.ui.address.Text().is_ok_and(|t| t != shown) {
+                self.address_written.replace(shown.clone());
                 let _ = self.ui.address.SetText(&shown);
             }
         }
@@ -995,8 +999,17 @@ impl BrowserWindow {
     }
 
     /// Anything that opens over the address box, or takes the focus from it, closes its list.
+    /// The list is emptied too: a focused box with suggestions opens it again by itself, and
+    /// only typing should.
     pub(super) fn close_suggestions(&self) {
         let _ = self.ui.address.SetIsSuggestionListOpen(false);
+        self.suggestions.borrow_mut().clear();
+        let empty = windows_collections::IVector::<IInspectable>::from(Vec::<Option<IInspectable>>::new());
+        let _ = self
+            .ui
+            .address
+            .cast::<ItemsControl>()
+            .and_then(|list| list.SetItemsSource(&empty));
     }
 
     pub fn suggestions_open(&self) -> bool {
@@ -1012,10 +1025,10 @@ impl BrowserWindow {
             .collect()
     }
 
-    /// The box's `TextChanged` says `UserInput` for some of the shell's own URL updates too, but
-    /// only a focused box can be typed in.
+    /// The box's `TextChanged` says `UserInput` for some of the shell's own URL updates too:
+    /// only a focused box can be typed in, and typing changes what the shell wrote.
     fn address_edited_by_user(&self) {
-        if !self.address_focused.get() {
+        if !self.address_focused.get() || self.address_text() == *self.address_written.borrow() {
             return;
         }
         self.address_edited.set(true);
