@@ -17,6 +17,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -26,6 +27,11 @@ use vsesvit_core::address::simplified_url;
 
 use crate::tab::display_uri;
 use crate::zoom;
+
+/// Where the load line starts, so a navigation shows at once.
+const PROGRESS_START: f64 = 0.08;
+/// How long the full load line stays after the load completed.
+const PROGRESS_HOLD: Duration = Duration::from_millis(200);
 
 /// Room between a button over the entry and the icon next to it.
 const ICON_GAP: i32 = 2;
@@ -119,6 +125,8 @@ mod imp {
         pub(super) security: Cell<Security>,
         pub(super) updating: Cell<bool>,
         pub(super) popover_width: Cell<i32>,
+        /// Hides the full load line after a load completed.
+        pub(super) progress_hide: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -191,6 +199,7 @@ impl AddressBar {
         let imp = self.imp();
         let entry = &imp.entry;
         entry.set_hexpand(true);
+        entry.add_css_class("address-entry");
         entry.set_input_purpose(gtk::InputPurpose::Url);
         entry.set_input_hints(gtk::InputHints::NO_SPELLCHECK);
         entry.set_placeholder_text(Some("Enter address"));
@@ -397,8 +406,48 @@ impl AddressBar {
         self.submit();
     }
 
+    /// Shows a load at `fraction`, which never moves back while the same load shows.
     pub(crate) fn set_progress(&self, fraction: f64) {
-        self.imp().entry.set_progress_fraction(fraction);
+        let imp = self.imp();
+        let shown = match imp.progress_hide.take() {
+            Some(pending) => {
+                pending.remove();
+                0.0
+            }
+            None => imp.entry.progress_fraction(),
+        };
+        imp.entry
+            .set_progress_fraction(fraction.max(shown).max(PROGRESS_START));
+    }
+
+    pub(crate) fn progress(&self) -> f64 {
+        self.imp().entry.progress_fraction()
+    }
+
+    /// The shown load completed: the line fills, then goes.
+    pub(crate) fn finish_progress(&self) {
+        let imp = self.imp();
+        if imp.entry.progress_fraction() == 0.0 || imp.progress_hide.borrow().is_some() {
+            return;
+        }
+        imp.entry.set_progress_fraction(1.0);
+        let bar = self.downgrade();
+        let pending = glib::timeout_add_local_once(PROGRESS_HOLD, move || {
+            if let Some(bar) = bar.upgrade() {
+                bar.imp().progress_hide.take();
+                bar.imp().entry.set_progress_fraction(0.0);
+            }
+        });
+        imp.progress_hide.replace(Some(pending));
+    }
+
+    /// Hides the load line at once, as for another tab.
+    pub(crate) fn clear_progress(&self) {
+        let imp = self.imp();
+        if let Some(pending) = imp.progress_hide.take() {
+            pending.remove();
+        }
+        imp.entry.set_progress_fraction(0.0);
     }
 
     /// The connection state of the shown URI. It is hidden while the user edits the text.

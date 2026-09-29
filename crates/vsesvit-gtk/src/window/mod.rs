@@ -940,6 +940,7 @@ impl BrowserWindow {
             return;
         };
         imp.chrome_tab.set(Some(&tab));
+        ui.address.clear_progress();
         let typed = tab.take_typed();
         let editing = typed.is_some();
         ui.address.restore(typed, tab.committed_uri().as_deref());
@@ -996,11 +997,11 @@ impl BrowserWindow {
             reload.set_action_name(Some("win.reload"));
             reload.set_tooltip_text(Some("Reload"));
         }
-        self.ui().address.set_progress(if loading {
-            web_view.estimated_load_progress()
+        if loading {
+            self.ui().address.set_progress(web_view.estimated_load_progress());
         } else {
-            0.0
-        });
+            self.ui().address.finish_progress();
+        }
     }
 
     fn sync_zoom(&self, tab: &Tab) {

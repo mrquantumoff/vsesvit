@@ -77,6 +77,15 @@ pub(crate) const CSS: &str = "
 .bookmarks-bar .bookmarks-chevron { padding: 2px 8px; font-weight: bold; }
 popover.bookmark-menu > contents { padding: 4px; }
 .bookmark-menu-row { padding: 4px 8px; min-height: 24px; font-weight: normal; }
+entry.address-entry > progress { margin: 0 10px 1px; }
+entry.address-entry > progress > trough > progress {
+  min-height: 2px;
+  border: none;
+  border-radius: 1px;
+  box-shadow: none;
+  background-color: transparent;
+  background-image: linear-gradient(to right, alpha(@window_fg_color, 0), @window_fg_color);
+}
 .address-zoom { min-height: 20px; min-width: 0; padding: 0 6px; font-size: 0.85em; border-radius: 10px; }
 .tab-sidebar { background-color: @sidebar_bg_color; }
 .tab-sidebar listview { background: transparent; }

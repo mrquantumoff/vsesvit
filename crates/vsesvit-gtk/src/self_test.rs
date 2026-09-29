@@ -647,6 +647,38 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    // The page waits on an image from a listener that never answers, until the listener closes.
+    ctx.check("address_progress", CHECK_TIMEOUT, |last| async move {
+        let stall = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        let port = stall.local_addr().map_err(|e| e.to_string())?.port();
+        let page = format!("data:text/html,<title>Slow page</title><h1>Slow page</h1><img src='http://127.0.0.1:{port}/stall.png'>");
+        let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let tab = window.open_tab(Some(&page), None, Focus::Foreground);
+        let bar = window.address_bar();
+        wait_for(&last, || match tab.display_title() {
+            title if title == "Slow page" => Ok(()),
+            title => Err(format!("the slow page is titled {title:?}")),
+        })
+        .await;
+        glib::timeout_future(Duration::from_millis(1000)).await;
+        let during = (tab.web_view().is_loading(), bar.progress());
+        let shot = crate::screenshot::save_png(window, &ctx.out_dir.join("address-progress.png")).await;
+        drop(stall);
+        wait_for(&last, || match (tab.web_view().is_loading(), bar.progress()) {
+            (false, 0.0) => Ok(()),
+            now => Err(format!("after the image failed, (loading, line) = {now:?}")),
+        })
+        .await;
+        window.close_tab(&tab);
+        window.select_tab(&first);
+        shot.map_err(|e| e.to_string())?;
+        if !(during.0 && during.1 > 0.0 && during.1 < 1.0) {
+            return Err(format!("while the page loaded, (loading, line) = {during:?}"));
+        }
+        Ok(format!("while the page loaded the line was at {:.2} (address-progress.png); it went once the load ended", during.1))
+    })
+    .await;
+
     ctx.check("settings", CHECK_TIMEOUT, |last| async move {
         let settings = browser.engine().settings();
         let engine = (
