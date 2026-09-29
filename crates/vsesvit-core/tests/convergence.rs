@@ -41,6 +41,7 @@ use vsesvit_core::crdt::{DeviceId, Extra, Hlc, JsonText, Lattice, Lww, Record, S
 use vsesvit_core::ext_storage::{Area, SyncItemRecord};
 use vsesvit_core::extensions::{ExtensionId, ExtensionRecord, StoreRef, DEFAULT_CHROME_VERSION};
 use vsesvit_core::history::{DeletionDirective, PageRecord, Transition, Visit};
+use vsesvit_core::permissions::{Origin, Permission, Setting, SitePermissionRecord};
 use vsesvit_core::prefs::{keys, PrefRecord, Theme};
 use vsesvit_core::search::{EngineFields, EngineRecord, SearchEngineId, UrlTemplate};
 use vsesvit_core::session::{DeviceSessionRecord, SessionSnapshot};
@@ -193,6 +194,8 @@ enum Op {
     SetTheme { theme: u8 },
     StorageSet { key: u8, value: u8 },
     StorageRemove { key: u8 },
+    SetPermission { site: u8, permission: u8, setting: u8 },
+    ResetSite { site: u8 },
 }
 
 #[derive(Clone, Debug)]
@@ -213,6 +216,10 @@ struct Expect {
 
 fn url(n: u8) -> Url {
     Url::parse(&format!("https://site{}.example/", n % 6)).unwrap()
+}
+
+fn origin(n: u8) -> Origin {
+    Origin::of(&url(n)).unwrap()
 }
 
 fn ext() -> ExtensionId {
@@ -303,6 +310,16 @@ fn run_op(p: &mut Profile, op: &Op, expect: &mut Expect) {
         Op::StorageRemove { key } => {
             p.ext_storage().remove(&ext(), Area::Sync, &[format!("k{}", key % 4)]).unwrap();
         }
+        Op::SetPermission { site, permission, setting } => {
+            let permission = Permission::ALL[*permission as usize % Permission::ALL.len()];
+            let setting = [None, Some(Setting::Allow), Some(Setting::Block)][*setting as usize % 3];
+            // AlwaysAsks (an Allow of screen sharing) is an expected refusal. Anything else is a bug.
+            match p.site_permissions().set(&origin(site % 3), permission, setting) {
+                Ok(()) | Err(vsesvit_core::Error::AlwaysAsks(_)) => {}
+                Err(e) => panic!("set failed: {e}"),
+            }
+        }
+        Op::ResetSite { site } => p.site_permissions().reset_site(&origin(site % 3)).unwrap(),
     }
 }
 
@@ -370,6 +387,8 @@ fn op() -> impl Strategy<Value = Op> {
         1 => any::<u8>().prop_map(|theme| Op::SetTheme { theme }),
         1 => (any::<u8>(), any::<u8>()).prop_map(|(key, value)| Op::StorageSet { key, value }),
         1 => any::<u8>().prop_map(|key| Op::StorageRemove { key }),
+        2 => (any::<u8>(), any::<u8>(), any::<u8>()).prop_map(|(site, permission, setting)| Op::SetPermission { site, permission, setting }),
+        1 => any::<u8>().prop_map(|site| Op::ResetSite { site }),
     ]
 }
 
@@ -567,6 +586,11 @@ fn pref_record() -> impl Strategy<Value = PrefRecord> {
     (stamp(), json_value()).prop_map(|(at, v)| PrefRecord { key: "theme".to_owned(), value: Lww::new(v, at) })
 }
 
+fn site_permission_record() -> impl Strategy<Value = SitePermissionRecord> {
+    let setting = prop::option::of(prop::sample::select(vec![Setting::Allow, Setting::Block]));
+    (stamp(), setting).prop_map(|(at, s)| SitePermissionRecord { origin: origin(0), permission: Permission::Camera, setting: Lww::new(s, at) })
+}
+
 fn engine_record() -> impl Strategy<Value = EngineRecord> {
     (prop::option::weighted(0.3, stamp()), stamp(), 0u8..3, stamp(), prop::option::of(0u8..2), stamp(), 0u8..2, stamp(), extra()).prop_map(
         |(deleted, n_at, n, k_at, k, s_at, s, g_at, extra)| {
@@ -597,6 +621,7 @@ proptest! {
         (ia, ib, ic) in (storage_record(), storage_record(), storage_record()),
         (ra, rb, rc) in (pref_record(), pref_record(), pref_record()),
         (ea, eb, ec) in (engine_record(), engine_record(), engine_record()),
+        (qa, qb, qc) in (site_permission_record(), site_permission_record(), site_permission_record()),
     ) {
         check_laws(a, b, c)?;
         check_laws(ua, ub, uc)?;
@@ -607,6 +632,7 @@ proptest! {
         check_laws(ia, ib, ic)?;
         check_laws(ra, rb, rc)?;
         check_laws(ea, eb, ec)?;
+        check_laws(qa, qb, qc)?;
     }
 
     /// The stored form of a page is a deterministic function of the union, whatever the

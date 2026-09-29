@@ -36,6 +36,7 @@ use crate::db::Tx;
 use crate::ext_storage::{StorageChange, StorageTable, SyncItemRecord};
 use crate::extensions::{ExtensionId, ExtensionsTable};
 use crate::history::{DeletionDirective, DeletionsTable, PagesTable};
+use crate::permissions::SitePermissionsTable;
 use crate::prefs::{PrefRecord, PrefsTable};
 use crate::search::EnginesTable;
 use crate::session::SessionsTable;
@@ -55,6 +56,7 @@ pub enum Kind {
     Prefs = 7,
     SearchEngines = 8,
     // 9 = ReadingList (retired before release; never reuse), 10 = Passwords, 11 = Autofill: reserved (DESIGN.md "Passwords and autofill").
+    SitePermissions = 12,
 }
 
 impl Kind {
@@ -67,6 +69,7 @@ impl Kind {
         Kind::ExtStorageSync,
         Kind::Prefs,
         Kind::SearchEngines,
+        Kind::SitePermissions,
     ];
 
     pub fn code(self) -> u8 {
@@ -94,6 +97,7 @@ impl Kind {
 /// | ExtStorageSync   | `{ext}:{sha256(key)[..32]}`         | `ext_storage::SyncItemRecord`           |
 /// | Prefs            | pref key                            | `prefs::PrefRecord`                     |
 /// | SearchEngines    | engine id                           | `search::EngineRecord`                  |
+/// | SitePermissions  | `{permission key}\|{origin}`        | `permissions::SitePermissionRecord`     |
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireRecord {
     pub kind: Kind,
@@ -144,6 +148,7 @@ pub struct Changed {
     pub ext_storage: Vec<(ExtensionId, Vec<StorageChange>)>,
     pub prefs: Vec<String>,
     pub search_engines: bool,
+    pub site_permissions: bool,
 }
 
 pub struct SyncStore<'p> {
@@ -168,6 +173,7 @@ impl SyncStore<'_> {
             Kind::ExtStorageSync => batch::<StorageTable>(conn, since, limit),
             Kind::Prefs => batch::<PrefsTable>(conn, since, limit),
             Kind::SearchEngines => batch::<EnginesTable>(conn, since, limit),
+            Kind::SitePermissions => batch::<SitePermissionsTable>(conn, since, limit),
         }
     }
 
@@ -224,7 +230,7 @@ impl SyncStore<'_> {
 // ---------------------------------------------------------------------------
 
 /// The per-kind glue between a typed record and its table. Internal: it exists so
-/// `apply_one` and `changes_since` are written once rather than eight times. It is not
+/// `apply_one` and `changes_since` are written once rather than once per kind. It is not
 /// an extension point.
 pub(crate) trait SyncTable {
     const KIND: Kind;
@@ -354,6 +360,11 @@ fn apply_wire(tx: &mut Tx<'_>, wire: &WireRecord, report: &mut ApplyReport, effe
         Kind::SearchEngines => {
             if apply_typed::<EnginesTable>(tx, wire, report)?.is_some() {
                 report.changed.search_engines = true;
+            }
+        }
+        Kind::SitePermissions => {
+            if apply_typed::<SitePermissionsTable>(tx, wire, report)?.is_some() {
+                report.changed.site_permissions = true;
             }
         }
     }

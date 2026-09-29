@@ -153,7 +153,7 @@ fn a_v1_profile_gains_the_favicon_table() {
     let (p, dir) = open();
     drop(p);
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
-    conn.execute_batch("DROP TABLE favicons; DROP TABLE favicon_failures; DROP TABLE downloads; PRAGMA user_version = 1;").unwrap();
+    conn.execute_batch("DROP TABLE favicons; DROP TABLE favicon_failures; DROP TABLE downloads; DROP TABLE site_permissions; PRAGMA user_version = 1;").unwrap();
     drop(conn);
 
     let mut p = Profile::open(&dir.0, OpenOptions::default()).unwrap();
@@ -161,5 +161,5 @@ fn a_v1_profile_gains_the_favicon_table() {
     assert!(p.favicons().record(&url("https://a.example/"), b"a").unwrap());
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 }

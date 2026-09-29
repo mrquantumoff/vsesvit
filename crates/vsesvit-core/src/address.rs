@@ -19,9 +19,13 @@ pub fn readable_url(url: &str) -> String {
         (Some(_), Some(span)) => span,
         _ => return decode_escapes(serialized),
     };
-    let host = &serialized[host_start..host_end];
-    let readable_host = host.split('.').map(readable_label).collect::<Vec<_>>().join(".");
-    format!("{}{}{}", &serialized[..host_start], readable_host, decode_escapes(&serialized[host_end..]))
+    let host = readable_host(&serialized[host_start..host_end]);
+    format!("{}{}{}", &serialized[..host_start], host, decode_escapes(&serialized[host_end..]))
+}
+
+/// A serialized host with its punycode labels decoded where that is safe (see [`readable_url`]).
+pub(crate) fn readable_host(host: &str) -> String {
+    host.split('.').map(readable_label).collect::<Vec<_>>().join(".")
 }
 
 /// Where the host sits in the serialized URL.

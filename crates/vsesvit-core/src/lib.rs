@@ -27,6 +27,7 @@
 //! | [`history`]      | page records (grow-only visit sets) + deletion directives             |
 //! | [`import`]       | bookmarks from other browsers: HTML export, Chromium, Firefox         |
 //! | [`new_tab`]      | the new tab page: search box + most visited sites, as HTML            |
+//! | [`permissions`]  | site permissions: stored choices, one-time grants, the prompt         |
 //! | [`session`]      | this device's windows/tabs (restore) = its published "tabs" record    |
 //! | [`prefs`]        | typed preferences                                                    |
 //! | [`search`]       | search engines, omnibox resolve + suggest                             |
@@ -51,6 +52,7 @@ pub mod favicons;
 pub mod history;
 pub mod import;
 pub mod new_tab;
+pub mod permissions;
 pub mod prefs;
 pub mod search;
 pub mod session;
@@ -244,6 +246,10 @@ impl Profile {
         prefs::Prefs { p: self }
     }
 
+    pub fn site_permissions(&mut self) -> permissions::SitePermissions<'_> {
+        permissions::SitePermissions { p: self }
+    }
+
     pub fn search_engines(&mut self) -> search::SearchEngines<'_> {
         search::SearchEngines { p: self }
     }
@@ -317,4 +323,6 @@ pub enum Error {
     Install(#[from] extensions::InstallError),
     #[error("no such item")]
     NotFound,
+    #[error("{} is asked for every time", .0.label())]
+    AlwaysAsks(permissions::Permission),
 }

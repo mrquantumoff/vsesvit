@@ -10,6 +10,7 @@ use vsesvit_core::crdt::{DeviceId, Extra, Hlc, JsonText, Lww, Record, Stamp};
 use vsesvit_core::ext_storage::SyncItemRecord;
 use vsesvit_core::extensions::{ExtensionId, ExtensionRecord, StoreRef};
 use vsesvit_core::history::{DeletionDirective, PageRecord, Transition, Visit};
+use vsesvit_core::permissions::{Origin, Permission, Setting, SitePermissionRecord};
 use vsesvit_core::prefs::PrefRecord;
 use vsesvit_core::search::{EngineFields, EngineRecord, SearchEngineId, UrlTemplate};
 use vsesvit_core::session::{DeviceSessionRecord, SessionSnapshot};
@@ -180,6 +181,15 @@ fn other_records_follow_the_rule() {
     let v = serde_json::to_value(&s).unwrap();
     assert_wire_rule(&v, &["device"]);
     assert_eq!(serde_json::from_value::<DeviceSessionRecord>(v).unwrap(), s);
+
+    let origin = Origin::parse("https://meet.example.com").unwrap();
+    let perm = SitePermissionRecord { origin, permission: Permission::ScreenShare, setting: Lww::new(Some(Setting::Block), stamp(5)) };
+    let v = serde_json::to_value(&perm).unwrap();
+    assert_wire_rule(&v, &["origin", "permission"]);
+    assert_eq!(v["origin"], "https://meet.example.com");
+    assert_eq!(v["permission"], "screen_share");
+    assert_eq!(v["setting"]["v"], "block");
+    assert_eq!(serde_json::from_value::<SitePermissionRecord>(v).unwrap(), perm);
 }
 
 /// `Lww<Option<JsonText>>` (prefs, `storage.sync` items) has two states that a bare JSON
