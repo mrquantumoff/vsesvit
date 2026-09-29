@@ -1,7 +1,7 @@
 //! The vertical tab list shown in the split view's sidebar: a `GtkListView` over
 //! `AdwTabView`'s page model, so it is always in step with the tabs and selecting a row
-//! selects the page. Each row shows the favicon (or a spinner while loading), the title
-//! and a close button; rows can be dragged to reorder, and a middle click closes a tab.
+//! selects the page. Each row shows the favicon (or a spinner while loading), the title,
+//! the in-use icon while the page captures, and a close button; rows can be dragged to reorder, and a middle click closes a tab.
 
 use std::cell::RefCell;
 
@@ -93,6 +93,7 @@ mod imp {
         pub(super) icon: gtk::Image,
         pub(super) spinner: adw::Spinner,
         pub(super) title: gtk::Label,
+        pub(super) indicator: gtk::Image,
         pub(super) close: gtk::Button,
         pub(super) bindings: RefCell<Vec<glib::Binding>>,
     }
@@ -144,6 +145,8 @@ impl TabRow {
         imp.title.set_xalign(0.0);
         imp.title.set_hexpand(true);
         imp.title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        imp.indicator.set_pixel_size(16);
+        imp.indicator.add_css_class("tab-indicator");
         imp.close.set_icon_name("window-close-symbolic");
         imp.close.set_tooltip_text(Some("Close Tab"));
         imp.close.set_valign(gtk::Align::Center);
@@ -158,6 +161,7 @@ impl TabRow {
         self.append(&imp.icon);
         self.append(&imp.spinner);
         self.append(&imp.title);
+        self.append(&imp.indicator);
         self.append(&imp.close);
 
         let middle_click = gtk::GestureClick::builder()
@@ -221,6 +225,16 @@ impl TabRow {
                 .build(),
             page.bind_property("loading", &imp.icon, "visible")
                 .invert_boolean()
+                .sync_create()
+                .build(),
+            page.bind_property("indicator-icon", &imp.indicator, "gicon")
+                .sync_create()
+                .build(),
+            page.bind_property("indicator-icon", &imp.indicator, "visible")
+                .transform_to(|_, icon: Option<gio::Icon>| Some(icon.is_some()))
+                .sync_create()
+                .build(),
+            page.bind_property("indicator-tooltip", &imp.indicator, "tooltip-text")
                 .sync_create()
                 .build(),
         ];

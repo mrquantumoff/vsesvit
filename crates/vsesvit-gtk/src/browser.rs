@@ -31,7 +31,7 @@ use crate::profile::{self, Core};
 use crate::tab::{Commit, Tab};
 use crate::updates::Updates;
 use crate::window::{BrowserWindow, Focus};
-use crate::{favicons, omnibox, session};
+use crate::{favicons, omnibox, permissions, session};
 
 const CLOSED_TABS_KEPT: usize = 25;
 /// How many sites one background favicon fetch looks up.
@@ -115,7 +115,9 @@ impl Browser {
                 }
             }
         });
-        Browser(inner)
+        let browser = Browser(inner);
+        permissions::seed_notifications(&browser);
+        browser
     }
 
     /// Applies the profile's preferences and brings the extension runtime in line with the
@@ -287,6 +289,7 @@ impl Browser {
     // Tabs.
 
     pub(crate) fn tab_closed(&self, tab: &Tab, position: i32) {
+        permissions::closed(tab);
         self.runtime().tab_closed(tab.id());
         self.schedule_session_save();
         let Some(uri) = tab.committed_uri().filter(|uri| uri != "about:blank") else {
@@ -302,6 +305,7 @@ impl Browser {
 
     /// A tab that goes away with its window, without being closed one by one.
     pub(crate) fn tab_discarded(&self, tab: &Tab) {
+        permissions::closed(tab);
         self.runtime().tab_closed(tab.id());
     }
 
@@ -661,6 +665,9 @@ impl Browser {
         }
         for (ext, changes) in &changed.ext_storage {
             self.runtime().storage_sync_changed(ext, changes);
+        }
+        if changed.site_permissions {
+            permissions::enforce(self);
         }
         if !changed.prefs.is_empty() {
             self.apply_theme();

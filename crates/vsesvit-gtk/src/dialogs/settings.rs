@@ -1,8 +1,8 @@
 //! The Settings dialog, bound to core's preferences, in the same four pages as on
 //! Windows: General (startup, downloads, scrolling and the GPU, updates, the profile
 //! folder), Appearance (theme, tabs, bars and buttons), Search (the engine, the address
-//! bar and what it suggests) and Privacy (pop-ups, browsing data). Every change applies at
-//! once, in every window.
+//! bar and what it suggests) and Privacy (pop-ups, site permissions, browsing data). Every
+//! change applies at once, in every window.
 //!
 //! WebKitGTK keeps no passwords and fills no forms, so `autofill.*` has no rows here.
 
@@ -10,11 +10,13 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+use vsesvit_core::permissions::{Origin, Permission, Setting, SiteSetting};
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, keys};
 use vsesvit_core::search::SearchEngine;
 
 use super::confirm;
 use crate::browser::Browser;
+use crate::permissions;
 use crate::session::now_ms;
 use crate::window::BrowserWindow;
 
@@ -230,7 +232,115 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
         .description("History, cookies and cached files")
         .build();
     data.add(&clear);
-    page("privacy", "Privacy", "security-high-symbolic", &[popups, data])
+
+    let site_permissions = adw::ActionRow::builder()
+        .title("Site Permissions")
+        .subtitle("Camera, microphone, location, notifications and more")
+        .activatable(true)
+        .build();
+    site_permissions.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    site_permissions.connect_activated(glib::clone!(
+        #[strong(rename_to = browser)]
+        window.browser(),
+        move |row| {
+            if let Some(dialog) = row.ancestor(adw::PreferencesDialog::static_type()).and_downcast::<adw::PreferencesDialog>() {
+                dialog.push_subpage(&site_permissions_page(&browser));
+            }
+        }
+    ));
+    let permissions = group("Permissions");
+    permissions.add(&site_permissions);
+    page("privacy", "Privacy", "security-high-symbolic", &[popups, permissions, data])
+}
+
+/// Every stored site setting, by site, each with its choice and a way back to asking.
+fn site_permissions_page(browser: &Browser) -> adw::NavigationPage {
+    let content = adw::Bin::new();
+    fill_site_permissions(&content, browser);
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+    toolbar.set_content(Some(&content));
+    adw::NavigationPage::builder().title("Site Permissions").tag("site-permissions").child(&toolbar).build()
+}
+
+fn fill_site_permissions(content: &adw::Bin, browser: &Browser) {
+    let settings = browser.core().borrow_mut().site_permissions().all();
+    if settings.is_empty() {
+        let empty = adw::StatusPage::builder()
+            .icon_name("security-high-symbolic")
+            .title("No Site Permissions")
+            .description("Sites you allow or block show here.")
+            .build();
+        content.set_child(Some(&empty));
+        return;
+    }
+    let page = adw::PreferencesPage::new();
+    for site in settings.chunk_by(|a, b| a.origin == b.origin) {
+        let group = group(&site[0].origin.host_for_display());
+        for setting in site {
+            group.add(&site_setting_row(content, browser, setting));
+        }
+        page.add(&group);
+    }
+    content.set_child(Some(&page));
+}
+
+fn site_setting_row(content: &adw::Bin, browser: &Browser, setting: &SiteSetting) -> adw::ComboRow {
+    let choices: Vec<Setting> = [Setting::Allow, Setting::Block]
+        .into_iter()
+        .filter(|s| *s == Setting::Block || setting.permission.remembers_allow())
+        .collect();
+    let names: Vec<&str> = choices.iter().map(|s| if *s == Setting::Allow { "Allow" } else { "Block" }).collect();
+    let row = adw::ComboRow::builder()
+        .title(setting.permission.label())
+        .model(&gtk::StringList::new(&names))
+        .selected(choices.iter().position(|s| *s == setting.setting).and_then(|i| u32::try_from(i).ok()).unwrap_or(0))
+        .build();
+    let (origin, permission) = (setting.origin.clone(), setting.permission);
+    row.connect_selected_notify(glib::clone!(
+        #[weak]
+        content,
+        #[strong]
+        browser,
+        #[strong]
+        origin,
+        move |row| {
+            if let Some(&chosen) = choices.get(row.selected() as usize) {
+                change_site_setting(&content, &browser, &origin, permission, Some(chosen));
+            }
+        }
+    ));
+    let remove = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Remove")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    remove.connect_clicked(glib::clone!(
+        #[weak]
+        content,
+        #[strong]
+        browser,
+        move |_| change_site_setting(&content, &browser, &origin, permission, None)
+    ));
+    row.add_suffix(&remove);
+    row
+}
+
+/// `None` goes back to asking. The list is rebuilt once the row that changed has finished
+/// emitting.
+fn change_site_setting(content: &adw::Bin, browser: &Browser, origin: &Origin, permission: Permission, setting: Option<Setting>) {
+    if let Err(e) = browser.core().borrow_mut().site_permissions().set(origin, permission, setting) {
+        log::warn!("site permissions: {e}");
+    }
+    permissions::enforce(browser);
+    glib::idle_add_local_once(glib::clone!(
+        #[weak]
+        content,
+        #[strong]
+        browser,
+        move || fill_site_permissions(&content, &browser)
+    ));
 }
 
 fn startup_row(browser: &Browser) -> adw::ComboRow {

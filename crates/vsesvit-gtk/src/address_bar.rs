@@ -7,8 +7,9 @@
 //! a suggestion selected, and `cancelled` when Escape gives up editing.
 //!
 //! Inside the entry, the page's security is at the start and the bookmark star at the end;
-//! clicking the star runs `win.bookmark-page`. When the page is zoomed, its zoom level sits
-//! before the star and opens Chrome's zoom bubble. The bubbles these open are anchored to
+//! clicking the star runs `win.bookmark-page`. While the page uses the camera, microphone or
+//! screen, a button after the security icon says so and opens the site information. When the
+//! page is zoomed, its zoom level sits before the star and opens Chrome's zoom bubble. The bubbles these open are anchored to
 //! them through [`AddressBar::show_popover`]. The text is centered while the entry rests,
 //! and starts at the left while the user is in it.
 
@@ -25,8 +26,8 @@ use vsesvit_core::address::simplified_url;
 use crate::tab::display_uri;
 use crate::zoom;
 
-/// Room between the zoom level and the star.
-const ZOOM_GAP: i32 = 2;
+/// Room between a button over the entry and the icon next to it.
+const ICON_GAP: i32 = 2;
 
 /// What a bubble from the address bar points at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +97,9 @@ mod imp {
         /// Holds the entry, with the zoom level over it.
         pub(super) overlay: gtk::Overlay,
         pub(super) zoom: gtk::Button,
+        /// What the page captures; shown while it captures and the user is not editing.
+        pub(super) in_use: gtk::Button,
+        pub(super) capturing: Cell<bool>,
         /// The zoom bubble's level, while it is open.
         pub(super) zoom_label: glib::WeakRef<gtk::Label>,
         /// The bubble open from the security icon, the zoom level or the star.
@@ -200,15 +204,30 @@ impl AddressBar {
             self,
             move |_| bar.show_zoom_bubble()
         ));
+        let in_use = &imp.in_use;
+        in_use.add_css_class("flat");
+        in_use.add_css_class("address-in-use");
+        in_use.set_valign(gtk::Align::Center);
+        in_use.set_action_name(Some("win.show-site-info"));
+        in_use.set_visible(false);
         let overlay = &imp.overlay;
         overlay.set_child(Some(entry));
         overlay.add_overlay(zoom);
+        overlay.add_overlay(in_use);
         overlay.connect_get_child_position(glib::clone!(
             #[weak]
             entry,
+            #[weak]
+            in_use,
             #[upgrade_or]
             None,
-            move |_, child| Some(before_star(&entry, child))
+            move |_, child| {
+                if child == in_use.upcast_ref::<gtk::Widget>() {
+                    Some(after_security(&entry, child))
+                } else {
+                    Some(before_star(&entry, child))
+                }
+            }
         ));
         self.set_child(Some(overlay));
         self.set_starred(false);
@@ -397,6 +416,30 @@ impl AddressBar {
         };
         imp.entry.set_primary_icon_name(icon);
         imp.entry.set_primary_icon_tooltip_text(tooltip);
+        self.show_in_use();
+    }
+
+    /// The in-use icon and its tooltip while the page captures, from
+    /// [`crate::permissions::indicator`].
+    pub(crate) fn set_in_use(&self, indicator: Option<(&str, String)>) {
+        let imp = self.imp();
+        imp.capturing.set(indicator.is_some());
+        if let Some((icon, tooltip)) = indicator {
+            imp.in_use.set_icon_name(icon);
+            imp.in_use.set_tooltip_text(Some(&tooltip));
+        }
+        self.show_in_use();
+    }
+
+    fn show_in_use(&self) {
+        let imp = self.imp();
+        let shown = imp.capturing.get() && !imp.editing.get();
+        imp.in_use.set_visible(shown);
+        // The text starts after the button rather than run under it.
+        let reserve = if shown { imp.in_use.measure(gtk::Orientation::Horizontal, -1).1 + ICON_GAP } else { 0 };
+        if let Some(text) = imp.entry.delegate() {
+            text.set_margin_start(reserve);
+        }
     }
 
     /// Whether the shown page is bookmarked, as the star at the entry's end.
@@ -419,7 +462,7 @@ impl AddressBar {
         imp.zoom.set_label(&percent);
         imp.zoom.set_visible(zoomed);
         // The text stops short of the zoom level rather than run under it.
-        let reserve = if zoomed { imp.zoom.measure(gtk::Orientation::Horizontal, -1).1 + ZOOM_GAP } else { 0 };
+        let reserve = if zoomed { imp.zoom.measure(gtk::Orientation::Horizontal, -1).1 + ICON_GAP } else { 0 };
         if let Some(text) = imp.entry.delegate() {
             text.set_margin_end(reserve);
         }
@@ -484,6 +527,19 @@ impl AddressBar {
     #[cfg(feature = "self-test")]
     pub(crate) fn click_security(&self) {
         self.imp().entry.emit_by_name::<()>("icon-release", &[&gtk::EntryIconPosition::Primary]);
+    }
+
+    /// The in-use button's tooltip, once it is laid out.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn shown_in_use(&self) -> Option<String> {
+        let in_use = &self.imp().in_use;
+        (in_use.is_mapped() && in_use.width() > 0).then(|| in_use.tooltip_text().unwrap_or_default().into())
+    }
+
+    /// Clicks the in-use button, as the user would.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn click_in_use(&self) {
+        self.imp().in_use.emit_clicked();
     }
 
     /// Clicks the zoom level, as the user would.
@@ -656,9 +712,23 @@ fn before_star(entry: &gtk::Entry, child: &gtk::Widget) -> gdk::Rectangle {
     let (_, height, ..) = child.measure(gtk::Orientation::Vertical, -1);
     let star = entry.icon_area(gtk::EntryIconPosition::Secondary);
     let x = if entry.direction() == gtk::TextDirection::Rtl {
-        star.x() + star.width() + ZOOM_GAP
+        star.x() + star.width() + ICON_GAP
     } else {
-        star.x() - width - ZOOM_GAP
+        star.x() - width - ICON_GAP
+    };
+    gdk::Rectangle::new(x, (entry.height() - height) / 2, width, height)
+}
+
+/// Where the in-use button goes in the entry: just after the security icon, vertically
+/// centered.
+fn after_security(entry: &gtk::Entry, child: &gtk::Widget) -> gdk::Rectangle {
+    let (_, width, ..) = child.measure(gtk::Orientation::Horizontal, -1);
+    let (_, height, ..) = child.measure(gtk::Orientation::Vertical, -1);
+    let security = entry.icon_area(gtk::EntryIconPosition::Primary);
+    let x = if entry.direction() == gtk::TextDirection::Rtl {
+        security.x() - width - ICON_GAP
+    } else {
+        security.x() + security.width() + ICON_GAP
     };
     gdk::Rectangle::new(x, (entry.height() - height) / 2, width, height)
 }

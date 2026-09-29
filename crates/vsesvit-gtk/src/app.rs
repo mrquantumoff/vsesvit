@@ -423,6 +423,7 @@ fn apply_sync_file(browser: &Browser, path: &Path) -> Result<String, String> {
             "ext_storage_sync" => Kind::ExtStorageSync,
             "prefs" => Kind::Prefs,
             "search_engines" => Kind::SearchEngines,
+            "site_permissions" => Kind::SitePermissions,
             other => return Err(format!("unknown record kind {other:?}")),
         };
         let id = entry.get("id").and_then(|i| i.as_str()).ok_or("a record has no id")?.to_owned();

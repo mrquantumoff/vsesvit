@@ -19,6 +19,7 @@ use vsesvit_core::bookmarks::BookmarkNode;
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::new_tab;
+use vsesvit_core::permissions::{Answer, Permission};
 use vsesvit_core::prefs::TabsPosition;
 use webkit::prelude::*;
 
@@ -27,6 +28,7 @@ use crate::bookmark_editor;
 use crate::bookmarks_bar::BookmarksBar;
 use crate::browser::{Browser, ClosedTab};
 use crate::find_bar::FindBar;
+use crate::permissions;
 use crate::session;
 use crate::site_info;
 use crate::tab::{Tab, TabChange};
@@ -75,6 +77,14 @@ struct Ui {
     update_banner: adw::Banner,
 }
 
+/// The permission prompt on screen, for the selected tab's oldest waiting request.
+struct ShownPrompt {
+    popover: gtk::Popover,
+    tab: glib::WeakRef<Tab>,
+    request: webkit::PermissionRequest,
+    asked: Vec<Permission>,
+}
+
 mod imp {
     use super::*;
 
@@ -89,6 +99,7 @@ mod imp {
         /// The tab the header currently reflects, to save its unsubmitted address text on switch.
         pub(super) chrome_tab: glib::WeakRef<Tab>,
         pub(super) closing: Cell<bool>,
+        pub(super) prompt: RefCell<Option<ShownPrompt>>,
     }
 
     #[glib::object_subclass]
@@ -524,8 +535,67 @@ impl BrowserWindow {
     /// The connection popover of the selected tab's page, on the security icon.
     pub(crate) fn show_site_info(&self) {
         let Some(tab) = self.selected_tab() else { return };
-        let popover = site_info::popover(&site_info::Connection::of(&tab));
+        let permissions = permissions::site_info_section(self.browser(), &tab);
+        let popover = site_info::popover(&site_info::Connection::of(&tab), permissions.as_ref());
         self.ui().address.show_popover(&popover, Anchor::Security);
+    }
+
+    /// Shows the selected tab's oldest waiting permission prompt, unless it is on screen.
+    /// Other tabs' prompts wait until their tab is selected, so one shows at a time.
+    pub(crate) fn sync_permission_prompt(&self) {
+        let imp = self.imp();
+        let tab = self.selected_tab();
+        let next = tab.as_ref().and_then(|tab| permissions::next_prompt(self.browser(), tab));
+        let shown = imp.prompt.borrow().as_ref().map(|p| p.request.clone());
+        if shown.is_some() && shown == next.as_ref().map(|n| n.request.clone()) {
+            return;
+        }
+        if let Some(withdrawn) = imp.prompt.take() {
+            withdrawn.popover.popdown();
+        }
+        let (Some(tab), Some(next)) = (tab, next) else { return };
+        let request = next.request.clone();
+        let popover = permissions::prompt_popover(
+            &next.prompt,
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                #[strong]
+                request,
+                move |answer| window.answer_permission_prompt(&request, answer)
+            ),
+        );
+        // Closing the bubble any other way (Escape, a click elsewhere) is "Not now".
+        popover.connect_closed(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            #[strong]
+            request,
+            move |_| {
+                let request = request.clone();
+                glib::idle_add_local_once(glib::clone!(
+                    #[weak]
+                    window,
+                    move || window.answer_permission_prompt(&request, Answer::Dismiss)
+                ));
+            }
+        ));
+        imp.prompt.replace(Some(ShownPrompt { popover: popover.clone(), tab: tab.downgrade(), request, asked: next.asked }));
+        self.ui().address.show_popover(&popover, Anchor::Security);
+    }
+
+    /// Answers the prompt on screen, if it is still the one for `request`, and shows the next.
+    fn answer_permission_prompt(&self, request: &webkit::PermissionRequest, answer: Answer) {
+        let shown = {
+            let mut prompt = self.imp().prompt.borrow_mut();
+            if prompt.as_ref().is_some_and(|p| p.request == *request) { prompt.take() } else { None }
+        };
+        let Some(shown) = shown else { return };
+        shown.popover.popdown();
+        if let Some(tab) = shown.tab.upgrade() {
+            permissions::answer(self.browser(), &tab, request, &shown.asked, answer);
+        }
+        self.sync_permission_prompt();
     }
 
     // Extension actions.
@@ -787,6 +857,13 @@ impl BrowserWindow {
                 }
                 if selected {
                     self.sync_star();
+                    self.sync_permission_prompt();
+                }
+            }
+            TabChange::Capture => {
+                sync_indicator(&page, tab);
+                if selected {
+                    self.ui().address.set_in_use(permissions::indicator(tab.capturing()));
                 }
             }
             TabChange::History if selected => self.sync_history(tab),
@@ -804,6 +881,7 @@ impl BrowserWindow {
         }
         let Some(tab) = self.selected_tab() else {
             imp.chrome_tab.set(None);
+            self.sync_permission_prompt();
             return;
         };
         imp.chrome_tab.set(Some(&tab));
@@ -817,6 +895,7 @@ impl BrowserWindow {
         self.sync_loading(&tab);
         self.sync_zoom(&tab);
         self.sync_star();
+        ui.address.set_in_use(permissions::indicator(tab.capturing()));
         tab.mark_active(session::now_ms());
         self.browser().tab_activated(&tab);
         if editing || tab.is_blank() {
@@ -824,6 +903,7 @@ impl BrowserWindow {
         } else {
             tab.web_view().grab_focus();
         }
+        self.sync_permission_prompt();
     }
 
     fn sync_page(&self, page: &adw::TabPage) {
@@ -833,6 +913,7 @@ impl BrowserWindow {
         page.set_title(&tab.display_title());
         page.set_icon(tab.web_view().favicon().as_ref());
         page.set_loading(tab.web_view().is_loading());
+        sync_indicator(page, &tab);
     }
 
     fn sync_location(&self, tab: &Tab) {
@@ -876,6 +957,20 @@ impl BrowserWindow {
     fn set_action_enabled(&self, name: &str, enabled: bool) {
         if let Some(action) = self.lookup_action(name).and_downcast::<gio::SimpleAction>() {
             action.set_enabled(enabled);
+        }
+    }
+}
+
+/// The tab's in-use icon, while it captures.
+fn sync_indicator(page: &adw::TabPage, tab: &Tab) {
+    match permissions::indicator(tab.capturing()) {
+        Some((icon, tooltip)) => {
+            page.set_indicator_icon(Some(&gio::ThemedIcon::new(icon)));
+            page.set_indicator_tooltip(&tooltip);
+        }
+        None => {
+            page.set_indicator_icon(None::<&gio::Icon>);
+            page.set_indicator_tooltip("");
         }
     }
 }

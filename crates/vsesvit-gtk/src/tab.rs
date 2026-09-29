@@ -11,6 +11,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, glib};
 use vsesvit_core::history::Transition;
+use vsesvit_core::permissions::Capturing;
 use vsesvit_core::session::TabId as SessionTabId;
 use vsesvit_webext::TabId;
 use webkit::prelude::*;
@@ -18,7 +19,7 @@ use webkit::prelude::*;
 use crate::address_bar::Security;
 use crate::browser::Browser;
 use crate::error_page;
-use crate::permissions;
+use crate::permissions::{self, TabPermissions};
 use crate::window::{BrowserWindow, Focus};
 
 /// Something about a tab the window may need to show.
@@ -32,6 +33,8 @@ pub(crate) enum TabChange {
     History,
     Zoom,
     Find(FindResult),
+    /// Camera, microphone or screen capture started or stopped.
+    Capture,
 }
 
 /// What a committed main-frame navigation was.
@@ -79,6 +82,9 @@ mod imp {
         /// (typed in the address bar, chosen from bookmarks); otherwise it is a link.
         pub(super) pending_transition: Cell<Option<Transition>>,
         pub(super) link_preview: gtk::Label,
+        /// Over the page while it shares the screen.
+        pub(super) sharing: adw::Banner,
+        pub(super) permissions: RefCell<TabPermissions>,
         pub(super) load: Cell<LoadPhase>,
         pub(super) committed_uri: RefCell<Option<String>>,
         pub(super) error_page_pending: Cell<Option<ErrorPage>>,
@@ -140,7 +146,17 @@ impl Tab {
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&web_view));
         overlay.add_overlay(preview);
-        tab.set_child(Some(&overlay));
+        let sharing = &imp.sharing;
+        sharing.set_button_label(Some("Stop sharing"));
+        sharing.connect_button_clicked(glib::clone!(
+            #[weak]
+            web_view,
+            move |_| web_view.set_display_capture_state(webkit::MediaCaptureState::None)
+        ));
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.append(sharing);
+        content.append(&overlay);
+        tab.set_child(Some(&content));
 
         imp.web_view.set(web_view).expect("wrap runs once");
         tab.connect_web_view();
@@ -184,6 +200,26 @@ impl Tab {
     /// The window holding this tab, if it is in one.
     pub(crate) fn window(&self) -> Option<BrowserWindow> {
         self.root().and_downcast()
+    }
+
+    /// Its one-time grants and the permission requests waiting for the user.
+    pub(crate) fn permissions(&self) -> &RefCell<TabPermissions> {
+        &self.imp().permissions
+    }
+
+    /// What the page captures right now.
+    pub(crate) fn capturing(&self) -> Capturing {
+        permissions::capturing(self.web_view())
+    }
+
+    fn capture_changed(&self) {
+        let sharing = &self.imp().sharing;
+        let screen = self.capturing().screen;
+        if screen {
+            sharing.set_title(&permissions::sharing_title(self.committed_uri().as_deref()));
+        }
+        sharing.set_revealed(screen);
+        self.notify(TabChange::Capture);
     }
 
     pub(crate) fn load(&self, uri: &str) {
@@ -300,6 +336,16 @@ impl Tab {
         web_view.connect_is_loading_notify(notify_on(TabChange::Loading));
         web_view.connect_estimated_load_progress_notify(notify_on(TabChange::Progress));
         web_view.connect_zoom_level_notify(notify_on(TabChange::Zoom));
+        let capture_changed = || {
+            glib::clone!(
+                #[weak(rename_to = tab)]
+                self,
+                move |_: &webkit::WebView| tab.capture_changed()
+            )
+        };
+        web_view.connect_camera_capture_state_notify(capture_changed());
+        web_view.connect_microphone_capture_state_notify(capture_changed());
+        web_view.connect_display_capture_state_notify(capture_changed());
 
         web_view.connect_load_changed(glib::clone!(
             #[weak(rename_to = tab)]
@@ -393,6 +439,26 @@ impl Tab {
             false,
             move |_, request| permissions::handle(&tab, request)
         ));
+        web_view.connect_query_permission_state(glib::clone!(
+            #[weak(rename_to = tab)]
+            self,
+            #[upgrade_or]
+            false,
+            move |_, query| permissions::query(&tab, query)
+        ));
+        web_view.connect_show_notification(glib::clone!(
+            #[weak(rename_to = tab)]
+            self,
+            #[upgrade_or]
+            false,
+            move |_, notification| {
+                if permissions::notification_allowed(&tab) {
+                    return false;
+                }
+                notification.close();
+                true
+            }
+        ));
         web_view.connect_mouse_target_changed(glib::clone!(
             #[weak(rename_to = tab)]
             self,
@@ -442,6 +508,7 @@ impl Tab {
                 };
                 imp.committed_uri
                     .replace(self.web_view().uri().map(String::from));
+                permissions::committed(self);
                 self.notify(TabChange::Committed(commit));
             }
             webkit::LoadEvent::Finished => imp.load.set(LoadPhase::Idle),
@@ -471,6 +538,7 @@ impl Tab {
             return;
         }
         imp.committed_uri.replace(Some(uri));
+        permissions::committed(self);
         self.notify(TabChange::Committed(Commit::SameDocument));
     }
 
