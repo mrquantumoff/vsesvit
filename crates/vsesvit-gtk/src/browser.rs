@@ -19,7 +19,7 @@ use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::extensions::{ExtensionId, toolbar};
 use vsesvit_core::history::Transition;
 use vsesvit_core::onboarding;
-use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, keys};
+use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::sync::Changed;
 use vsesvit_core::{Profile, Url};
 use vsesvit_webext::{Runtime, TabHost, TabId, TabInfo};
@@ -90,6 +90,7 @@ impl Browser {
         let engine = Engine::new(&mut core.borrow_mut());
         let downloads = Downloads::new(app, core.clone(), engine.session(), profile::downloads_dir());
         let updates_automatic = core.borrow_mut().prefs().get(&keys::UPDATES_AUTOMATIC);
+        let updates_channel = core.borrow_mut().prefs().get(&keys::UPDATES_CHANNEL);
         let welcome = !crate::SCRIPTED.get() && onboarding::should_show(&mut core.borrow_mut());
         let inner = Rc::new_cyclic(|weak: &Weak<Inner>| {
             let host: Rc<dyn TabHost> = Rc::new(Host(weak.clone()));
@@ -108,7 +109,7 @@ impl Browser {
                 shut_down: Cell::new(false),
                 favicon_fetch: Cell::new(FetchState::Idle),
                 bookmark_views: RefCell::new(Vec::new()),
-                updates: Updates::new(app, updates_automatic),
+                updates: Updates::new(app, updates_automatic, updates_channel),
                 welcome: Cell::new(welcome),
             }
         });
@@ -684,6 +685,22 @@ impl Browser {
         self.set_switch(&keys::UPDATES_AUTOMATIC, automatic);
         if let Some(updates) = &self.0.updates {
             updates.set_automatic(automatic);
+        }
+    }
+
+    /// The Settings choice of `updates.channel`, a local preference: writes it and checks the
+    /// new channel, even with automatic updates off, because the user just asked for it.
+    pub(crate) fn set_updates_channel(&self, channel: UpdateChannel) {
+        let set = self
+            .core()
+            .borrow_mut()
+            .prefs()
+            .set(&keys::UPDATES_CHANNEL, &channel);
+        if let Err(e) = set {
+            log::warn!("prefs: {e}");
+        }
+        if let Some(updates) = &self.0.updates {
+            updates.set_channel(channel);
         }
     }
 

@@ -1,6 +1,6 @@
-//! Self-updates (docs/design/packaging.md). The application owns one [`Lifecycle`]: a timer and
-//! the banner's button feed it events, and checks, downloads and installs run on a worker
-//! thread whose results come back to the UI thread as more events.
+//! Self-updates (docs/design/packaging.md). The application owns one [`Lifecycle`]: a timer,
+//! Settings and the banner's button feed it events, and checks, downloads and installs run on a
+//! worker thread whose results come back to the UI thread as more events.
 
 pub(crate) mod headless;
 mod lifecycle;
@@ -24,11 +24,14 @@ use vsesvit_update::{
 };
 
 use crate::window::BrowserWindow;
-pub(crate) use lifecycle::Banner;
+pub(crate) use lifecycle::{Banner, Status, StatusButton};
 use lifecycle::{Effect, Event, Lifecycle, State};
 
 const FIRST_CHECK_DELAY_SECS: u32 = 30;
 const CHECK_INTERVAL_SECS: u32 = 24 * 60 * 60;
+
+/// Called with the status after every step, and dropped once it returns false.
+type StatusWatcher = Box<dyn Fn(&Status) -> bool>;
 
 #[derive(Clone)]
 pub(crate) struct Updates(Rc<Inner>);
@@ -43,6 +46,8 @@ struct Inner {
     program: PathBuf,
     lifecycle: RefCell<Lifecycle<Downloaded>>,
     automatic: Cell<bool>,
+    channel: Cell<UpdateChannel>,
+    status_watchers: RefCell<Vec<StatusWatcher>>,
     window_seen: Cell<bool>,
     timer: RefCell<Option<glib::SourceId>>,
     restart: Cell<bool>,
@@ -51,7 +56,11 @@ struct Inner {
 impl Updates {
     /// `None` when this copy does not update itself (unpackaged, Flatpak, or a build without an
     /// updater key); that is logged once.
-    pub(crate) fn new(app: &adw::Application, automatic: bool) -> Option<Updates> {
+    pub(crate) fn new(
+        app: &adw::Application,
+        automatic: bool,
+        channel: UpdateChannel,
+    ) -> Option<Updates> {
         let installation = Installation::detect();
         let started = if installation.self_updates() {
             Config::builtin()
@@ -75,12 +84,15 @@ impl Updates {
             app: app.clone(),
             updater: Arc::new(updater),
             lifecycle: RefCell::new(Lifecycle::new(
+                current_version(),
                 installation.format() == Some(Format::AppImage),
             )),
             installation,
             dir: download_dir(),
             program,
             automatic: Cell::new(automatic),
+            channel: Cell::new(channel),
+            status_watchers: RefCell::default(),
             window_seen: Cell::new(false),
             timer: RefCell::default(),
             restart: Cell::new(false),
@@ -102,6 +114,26 @@ impl Updates {
             self.cancel_timer();
         } else if self.0.window_seen.get() && self.0.timer.borrow().is_none() {
             self.schedule();
+        }
+    }
+
+    /// Checks `channel` from now on, dropping an update from the old channel that has not
+    /// started installing.
+    pub(crate) fn set_channel(&self, channel: UpdateChannel) {
+        self.0.channel.set(channel);
+        self.dispatch(Event::ChannelChanged);
+    }
+
+    /// A check the user asked for, which runs even with automatic updates off.
+    pub(crate) fn check(&self) {
+        self.dispatch(Event::Check);
+    }
+
+    /// Calls `show` with the status now and after every change, until it returns false. `show`
+    /// holds its widgets weakly, so it returns false once they are gone.
+    pub(crate) fn watch_status(&self, show: impl Fn(&Status) -> bool + 'static) {
+        if show(&self.0.lifecycle.borrow().status()) {
+            self.0.status_watchers.borrow_mut().push(Box::new(show));
         }
     }
 
@@ -162,17 +194,21 @@ impl Updates {
 
     fn dispatch(&self, event: Event<Downloaded>) {
         let effect = self.0.lifecycle.borrow_mut().step(event);
-        let (banner, disabled) = {
+        let (banner, status, disabled) = {
             let lifecycle = self.0.lifecycle.borrow();
             let disabled = match lifecycle.state() {
                 State::Disabled(reason) => Some(reason.clone()),
                 _ => None,
             };
-            (lifecycle.banner(), disabled)
+            (lifecycle.banner(), lifecycle.status(), disabled)
         };
         for window in self.windows() {
             window.set_update_banner(banner.as_ref());
         }
+        self.0
+            .status_watchers
+            .borrow_mut()
+            .retain(|show| show(&status));
         if let Some(reason) = disabled {
             log::info!("{}", Error::Disabled(reason));
             self.cancel_timer();
@@ -181,8 +217,9 @@ impl Updates {
             None => {}
             Some(Effect::Check) => {
                 let (updater, dir) = (self.0.updater.clone(), self.0.dir.clone());
+                let channel = self.0.channel.get();
                 self.spawn(move |send| {
-                    if let Err(e) = check_and_download(&updater, &dir, send) {
+                    if let Err(e) = check_and_download(&updater, channel, &dir, send) {
                         send(Event::Failed(e));
                     }
                 });
@@ -257,11 +294,12 @@ impl Updates {
 
 fn check_and_download(
     updater: &Updater,
+    channel: UpdateChannel,
     dir: &Path,
     send: &dyn Fn(Event<Downloaded>),
 ) -> Result<(), Error> {
     fs::create_dir_all(dir)?;
-    let available = updater.check(UpdateChannel::of_build().name())?;
+    let available = updater.check(channel.name())?;
     remove_stale_downloads(dir, available.as_ref().map(|a| &a.release().version))?;
     let Some(available) = available else {
         send(Event::UpToDate);

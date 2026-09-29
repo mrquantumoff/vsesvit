@@ -11,13 +11,14 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::permissions::{Origin, Permission, Setting, SiteSetting};
-use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, keys};
+use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::search::SearchEngine;
 
 use super::confirm;
 use crate::browser::Browser;
 use crate::permissions;
 use crate::session::now_ms;
+use crate::updates::{Status, StatusButton, Updates};
 use crate::window::BrowserWindow;
 
 const STARTUPS: [(Startup, &str); 3] = [
@@ -36,6 +37,13 @@ const THEMES: [(Theme, &str); 3] = [
     (Theme::System, "Follow the system"),
     (Theme::Light, "Light"),
     (Theme::Dark, "Dark"),
+];
+
+const CHANNELS: [(UpdateChannel, &str); 4] = [
+    (UpdateChannel::Stable, "Stable"),
+    (UpdateChannel::Beta, "Beta"),
+    (UpdateChannel::Weekly, "Weekly"),
+    (UpdateChannel::Nightly, "Nightly"),
 ];
 
 pub(crate) fn present(window: &BrowserWindow) {
@@ -101,19 +109,95 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
         &keys::HARDWARE_ACCELERATION,
         Browser::set_engine_switch,
     ));
-    // Only for a copy that updates itself; a package from a distribution or Flatpak has no switch.
-    if browser.updates().is_some() {
-        system.add(&pref_switch_row(
+    system.add(&profile_folder_row(browser));
+
+    let mut groups = vec![startup, downloads, system];
+    // Only for a copy that updates itself; a package from a distribution or Flatpak has no group.
+    if let Some(updates) = browser.updates() {
+        let group = group("Updates");
+        group.add(&update_status_row(updates));
+        group.add(&update_channel_row(browser));
+        group.add(&pref_switch_row(
             browser,
             "Automatic Updates",
             Some("Download new versions of Vsesvit in the background"),
             &keys::UPDATES_AUTOMATIC,
             |b, _, on| b.set_updates_automatic(on),
         ));
+        groups.push(group);
     }
-    system.add(&profile_folder_row(browser));
+    page("general", "General", "preferences-system-symbolic", &groups)
+}
 
-    page("general", "General", "preferences-system-symbolic", &[startup, downloads, system])
+/// What the updater is doing, kept current while the dialog is open, with a button to check
+/// or, once the banner offers one, the banner's own button.
+fn update_status_row(updates: &Updates) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .subtitle(format!("Version {}", env!("CARGO_PKG_VERSION")))
+        .use_markup(false)
+        .build();
+    let check = gtk::Button::builder()
+        .label("Check for Updates")
+        .valign(gtk::Align::Center)
+        .build();
+    let update = gtk::Button::builder()
+        .action_name("app.update")
+        .valign(gtk::Align::Center)
+        .build();
+    check.connect_clicked(glib::clone!(
+        #[strong]
+        updates,
+        move |_| updates.check()
+    ));
+    row.add_suffix(&check);
+    row.add_suffix(&update);
+    updates.watch_status(glib::clone!(
+        #[weak]
+        row,
+        #[weak]
+        check,
+        #[weak]
+        update,
+        #[upgrade_or]
+        false,
+        move |status: &Status| {
+            row.set_title(&status.title);
+            match status.button {
+                StatusButton::Check { enabled } => check.set_sensitive(enabled),
+                StatusButton::Update(label) => update.set_label(label),
+            }
+            let offers_update = matches!(status.button, StatusButton::Update(_));
+            check.set_visible(!offers_update);
+            update.set_visible(offers_update);
+            true
+        }
+    ));
+    row
+}
+
+fn update_channel_row(browser: &Browser) -> adw::ComboRow {
+    let names: Vec<&str> = CHANNELS.iter().map(|(_, name)| *name).collect();
+    let current = browser
+        .core()
+        .borrow_mut()
+        .prefs()
+        .get(&keys::UPDATES_CHANNEL);
+    let row = adw::ComboRow::builder()
+        .title("Update Channel")
+        .subtitle("Vsesvit moves to a steadier channel once that channel has a version newer than this one.")
+        .model(&gtk::StringList::new(&names))
+        .selected(index_of(&CHANNELS, &current))
+        .build();
+    row.connect_selected_notify(glib::clone!(
+        #[strong]
+        browser,
+        move |row| {
+            if let Some((channel, _)) = CHANNELS.get(row.selected() as usize) {
+                browser.set_updates_channel(*channel);
+            }
+        }
+    ));
+    row
 }
 
 fn appearance_page(browser: &Browser) -> adw::PreferencesPage {
