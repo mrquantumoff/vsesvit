@@ -175,6 +175,67 @@ pub(crate) fn open_in_shell(target: &OsStr) {
     }
 }
 
+/// Where Vsesvit stands as the browser Windows opens links with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DefaultBrowser {
+    Vsesvit,
+    Other,
+    /// Windows does not know Vsesvit as a browser: this copy was not installed by the
+    /// installer, which registers it.
+    Unregistered,
+}
+
+/// The names `packaging/windows/installer.nsi` registers Vsesvit under.
+const REGISTERED_NAME: &str = "Vsesvit";
+const PROG_ID: &str = "VsesvitHTML";
+
+pub(crate) fn default_browser() -> DefaultBrowser {
+    if user_registry_string(r"Software\RegisteredApplications", REGISTERED_NAME).is_none() {
+        return DefaultBrowser::Unregistered;
+    }
+    let choice = user_registry_string(
+        r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+        "ProgId",
+    );
+    if choice.as_deref() == Some(PROG_ID) {
+        DefaultBrowser::Vsesvit
+    } else {
+        DefaultBrowser::Other
+    }
+}
+
+/// Windows Settings' page for Vsesvit's default apps. Windows keeps the choice itself to the
+/// user; no app may make itself the default.
+pub(crate) fn open_default_apps_settings() {
+    open_in_shell(format!("ms-settings:defaultapps?registeredAppUser={REGISTERED_NAME}").as_ref());
+}
+
+/// A string value under `HKEY_CURRENT_USER`.
+fn user_registry_string(key: &str, value: &str) -> Option<String> {
+    let (key, value) = (HSTRING::from(key), HSTRING::from(value));
+    let read = |data: *mut u16, bytes: &mut u32| unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            RRF_RT_REG_SZ as u32,
+            std::ptr::null_mut(),
+            data.cast(),
+            bytes,
+        )
+    };
+    let mut bytes = 0;
+    if read(std::ptr::null_mut(), &mut bytes) != 0 {
+        return None;
+    }
+    let mut buffer = vec![0u16; (bytes as usize).div_ceil(2)];
+    if read(buffer.as_mut_ptr(), &mut bytes) != 0 {
+        return None;
+    }
+    let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+    Some(String::from_utf16_lossy(&buffer[..end]))
+}
+
 /// Opens File Explorer on the folder that holds `file`, with `file` selected.
 pub(crate) fn show_in_folder(file: &Path) {
     // Explorer reads its own command line: the path is quoted inside the one argument.

@@ -16,7 +16,7 @@ use crate::bindings::*;
 use crate::layout::StripKind;
 use crate::tab::TabId;
 use crate::tab_header::{TabHeader, TabLook};
-use crate::xaml;
+use crate::{anim, exec, xaml};
 
 /// What a list reports to its window.
 pub(crate) struct StripEvents {
@@ -117,21 +117,42 @@ impl Rows {
         }
     }
 
+    /// Puts `row` at `index` among the rows, before any leaving row that follows them.
     fn insert(&self, items: &IVector<IInspectable>, index: u32, row: Row) -> Result<()> {
+        let at = self.position(items, index);
         let item = row.item.clone();
         self.0.borrow_mut().push(row);
-        items.InsertAt(index.min(items.Size()?), &item)
+        items.InsertAt(at, &item)
     }
 
-    fn remove(&self, items: &IVector<IInspectable>, tab: TabId) -> Result<()> {
-        if let Some(item) = self.item_of(tab) {
-            let mut index = 0;
-            if items.IndexOf(&item, &mut index)? {
-                items.RemoveAt(index)?;
+    /// Where the `index`th row is in `items`, which may still hold rows on their way out.
+    fn position(&self, items: &IVector<IInspectable>, index: u32) -> u32 {
+        let size = items.Size().unwrap_or(0);
+        if size as usize == self.0.borrow().len() {
+            return index.min(size);
+        }
+        let mut rows = 0;
+        for at in 0..size {
+            if items
+                .GetAt(at)
+                .ok()
+                .and_then(|item| self.tab_of(&item))
+                .is_some()
+            {
+                if rows == index {
+                    return at;
+                }
+                rows += 1;
             }
         }
+        size
+    }
+
+    /// Forgets the tab's row and hands back its item, still in the list.
+    fn take(&self, tab: TabId) -> Option<IInspectable> {
+        let item = self.item_of(tab);
         self.0.borrow_mut().retain(|r| r.tab != tab);
-        Ok(())
+        item
     }
 
     fn order(&self, items: &IVector<IInspectable>) -> Vec<TabId> {
@@ -146,6 +167,14 @@ impl Rows {
         self.0.borrow_mut().clear();
         items.Clear()
     }
+}
+
+fn remove_item(items: &IVector<IInspectable>, item: &IInspectable) -> Result<()> {
+    let mut index = 0;
+    if items.IndexOf(item, &mut index)? {
+        items.RemoveAt(index)?;
+    }
+    Ok(())
 }
 
 /// The speaker and the context menu of a tab's header; `menu_owner` is what right-clicks open
@@ -290,7 +319,9 @@ impl TabStrip for TopStrip {
     }
 
     fn remove(&self, tab: TabId) -> Result<()> {
-        self.rows.remove(&self.view.TabItems()?, tab)?;
+        if let Some(item) = self.rows.take(tab) {
+            remove_item(&self.view.TabItems()?, &item)?;
+        }
         self.fit_widths();
         Ok(())
     }
@@ -346,7 +377,8 @@ impl TabStrip for TopStrip {
 // ---- the vertical pane ----
 
 const PANE_XAML: &str = r#"
-<Grid {ns} Width="240" RowSpacing="2" Padding="4,4,4,4" Background="Transparent">
+<Grid {ns} x:Name="Pane" Width="240" RowSpacing="2" Padding="4,4,4,4" Background="Transparent">
+  <Grid.Resources>{width_tween}</Grid.Resources>
   <Grid.RowDefinitions>
     <RowDefinition Height="Auto"/>
     <RowDefinition Height="Auto"/>
@@ -367,8 +399,8 @@ const PANE_XAML: &str = r#"
   </Button>
   <ListView x:Name="TabList" Grid.Row="2" SelectionMode="Single" CanReorderItems="True"
             CanDragItems="True" AllowDrop="True" AutomationProperties.Name="Tabs">
-    <!-- The default transitions without AddDelete: a tab moved by pinning is removed and
-         inserted at once, and its row would stay faded out. -->
+    <!-- The default transitions without AddDelete, which would fade a pinned tab out and in
+         again for most of a second: rows animate their own coming and going (`Row`). -->
     <ListView.ItemContainerTransitions>
       <TransitionCollection>
         <ContentThemeTransition/>
@@ -379,7 +411,7 @@ const PANE_XAML: &str = r#"
     <ListView.ItemContainerStyle>
       <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
         <Setter Property="Padding" Value="10,0,4,0"/>
-        <Setter Property="MinHeight" Value="36"/>
+        <Setter Property="MinHeight" Value="0"/>
         <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
       </Style>
     </ListView.ItemContainerStyle>
@@ -391,6 +423,19 @@ const PANE_XAML: &str = r#"
   <Border x:Name="GripLeft" Grid.RowSpan="4" Width="6" Margin="-4,-4,0,-4" HorizontalAlignment="Left"
           Background="Transparent" Visibility="Collapsed" AutomationProperties.Name="Resize the tab list"/>
 </Grid>"#;
+
+/// A tab's row in the pane, around its header: it comes in from the side and folds away when
+/// its tab closes (`SidePane::depart`).
+fn row_markup() -> String {
+    format!(
+        r#"<Grid {{ns}} x:Name="Row" MinHeight="36" Background="Transparent">
+  {transitions}
+  <Grid.Resources>{fold}</Grid.Resources>
+</Grid>"#,
+        transitions = anim::implicit("Grid", anim::ROW),
+        fold = anim::Tween::markup("Fold", "Row", "Height", anim::ROW),
+    )
+}
 
 /// The widths a dragged pane stays between.
 pub(crate) const PANE_WIDTHS: (f64, f64) = (180.0, 480.0);
@@ -405,6 +450,7 @@ pub(crate) enum PaneSide {
 
 pub(crate) struct SidePane {
     root: FrameworkElement,
+    width_tween: anim::Tween,
     list: ListView,
     toggle: Button,
     new_tab_text: UIElement,
@@ -423,8 +469,13 @@ pub(crate) struct SidePane {
 
 impl SidePane {
     pub fn new(events: &Events) -> Result<Rc<Self>> {
-        let root: FrameworkElement = xaml::load(PANE_XAML)?;
+        let root: FrameworkElement = xaml::load(&PANE_XAML.replacen(
+            "{width_tween}",
+            &anim::Tween::markup("PaneWidth", "Pane", "Width", anim::PANE),
+            1,
+        ))?;
         let this = Rc::new(Self {
+            width_tween: anim::Tween::find(&root, "PaneWidth")?,
             list: xaml::find(&root, "TabList")?,
             toggle: xaml::find(&root, "PaneToggle")?,
             new_tab_text: xaml::find(&root, "PaneNewTabText")?,
@@ -520,6 +571,7 @@ impl SidePane {
         let width = width.clamp(PANE_WIDTHS.0, PANE_WIDTHS.1).round();
         self.width.set(width);
         if !self.compact.get() {
+            self.width_tween.stop();
             let _ = self.root.SetWidth(width);
         }
     }
@@ -578,11 +630,22 @@ impl SidePane {
         &self.root
     }
 
+    /// Every row in the list with its tab, `None` for a row on its way out; for scripted runs.
+    pub fn rows(&self) -> Vec<(Option<TabId>, FrameworkElement)> {
+        let Ok(items) = self.items() else {
+            return Vec::new();
+        };
+        (&items)
+            .into_iter()
+            .filter_map(|item| Some((self.rows.tab_of(&item), item.cast().ok()?)))
+            .collect()
+    }
+
     pub fn is_compact(&self) -> bool {
         self.compact.get()
     }
 
-    /// Collapsed, the pane is a column of favicons.
+    /// Collapsed, the pane is a column of favicons. Once shown, it narrows and widens in place.
     pub fn set_compact(&self, compact: bool) {
         self.compact.set(compact);
         let width = if compact {
@@ -590,7 +653,11 @@ impl SidePane {
         } else {
             self.width.get()
         };
+        let shown = self.root.ActualWidth().unwrap_or(0.0);
         let _ = self.root.SetWidth(width);
+        if shown > 0.0 {
+            let _ = self.width_tween.run(shown, width);
+        }
         self.show_grip();
         let _ = xaml::set_visible(&self.new_tab_text, !compact);
         let tip = if compact {
@@ -608,6 +675,29 @@ impl SidePane {
 
     fn items(&self) -> Result<IVector<IInspectable>> {
         self.list.cast::<ItemsControl>()?.Items()?.cast()
+    }
+
+    /// A row that is no longer a tab fades and folds away, then leaves the list.
+    fn depart(&self, item: IInspectable) -> Result<()> {
+        let items = self.items()?;
+        let row: FrameworkElement = item.cast()?;
+        let height = row.ActualHeight()?;
+        if !anim::enabled() || height <= 0.0 {
+            return remove_item(&items, &item);
+        }
+        let element = row.cast::<UIElement>()?;
+        element.SetIsHitTestVisible(false)?;
+        element.SetOpacity(0.0)?;
+        row.SetMinHeight(0.0)?;
+        row.SetHeight(0.0)?;
+        anim::Tween::find(&row, "Fold")?.run(height, 0.0)?;
+        exec::spawn(async move {
+            exec::sleep(anim::ROW).await;
+            if let Err(e) = remove_item(&items, &item) {
+                log::warn!("removing a closed tab's row: {e}");
+            }
+        });
+        Ok(())
     }
 
     fn wire_row(&self, tab: TabId, header: &TabHeader) -> Result<()> {
@@ -645,18 +735,27 @@ impl TabStrip for SidePane {
         header.apply(look);
         header.set_compact(self.compact.get());
         self.wire_row(tab, &header)?;
-        // The header itself is the item; the list wraps it in a container.
+        let item: FrameworkElement = xaml::load(&row_markup())?;
+        item.cast::<Panel>()?
+            .Children()?
+            .Append(&header.root().cast::<UIElement>()?)?;
+        anim::rest_on_load(&item)?;
+        anim::prepare_entrance(&item.cast()?, -anim::SLIDE)?;
         let row = Row {
             tab,
-            item: header.root().cast()?,
+            item: item.cast()?,
             header,
             pinned: Cell::new(look.pinned),
         };
         self.rows.insert(&self.items()?, index, row)
     }
 
+    /// The tab is gone from `order` at once; only its row takes a moment to leave.
     fn remove(&self, tab: TabId) -> Result<()> {
-        self.rows.remove(&self.items()?, tab)
+        match self.rows.take(tab) {
+            Some(item) => self.depart(item),
+            None => Ok(()),
+        }
     }
 
     fn select(&self, tab: TabId) -> Result<()> {
@@ -672,12 +771,16 @@ impl TabStrip for SidePane {
     }
 
     fn selected_index(&self) -> Option<u32> {
-        u32::try_from(self.selector().ok()?.SelectedIndex().ok()?).ok()
+        let selected = self.selected()?;
+        let index = self.order().iter().position(|t| *t == selected)?;
+        u32::try_from(index).ok()
     }
 
     fn select_index(&self, index: u32) -> Result<()> {
-        self.selector()?
-            .SetSelectedIndex(i32::try_from(index).unwrap_or(i32::MAX))
+        match self.order().get(index as usize) {
+            Some(tab) => self.select(*tab),
+            None => Ok(()),
+        }
     }
 
     fn order(&self) -> Vec<TabId> {

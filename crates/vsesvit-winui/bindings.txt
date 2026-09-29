@@ -169,12 +169,24 @@ Microsoft.UI.Xaml.Media.Imaging.IBitmapImage::put_UriSource
 Windows.Foundation.Uri::CreateUri
 Microsoft.UI.Xaml.Media.Imaging.IBitmapSource::SetSourceAsync
 
+// ---- animation (transitions are declared in markup; these drive them from code) ----
+Microsoft.UI.Xaml.IUIElement::{get_Opacity, put_Opacity, put_Translation, put_IsHitTestVisible}
+Windows.Foundation.Numerics.Vector3
+Microsoft.UI.Xaml.IFrameworkElement::{Loaded, put_MinHeight}
+Microsoft.UI.Xaml.Media.Animation.Storyboard
+Microsoft.UI.Xaml.Media.Animation.IStoryboard::{Begin, Stop}
+Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+Microsoft.UI.Xaml.Media.Animation.IDoubleAnimation::{put_From, put_To}
+Windows.Win32.SystemParametersInfoW
+Windows.Win32.SPI_GETCLIENTAREAANIMATION
+
 // ---- automation (scripted runs invoke buttons without OS input) ----
 Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer::CreatePeerForElement
 Microsoft.UI.Xaml.Automation.Peers.AutomationPeer
 Microsoft.UI.Xaml.Automation.Peers.IAutomationPeer::GetPattern
 Microsoft.UI.Xaml.Automation.Peers.PatternInterface
 Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider::Invoke
+Microsoft.UI.Xaml.Automation.AutomationProperties::SetName
 
 // ---- WebView2 control ----
 Microsoft.UI.Xaml.Controls.WebView2::CreateInstance
@@ -380,6 +392,9 @@ Windows.Win32.ICON_BIG
 Windows.Win32.GetSystemMetrics
 Windows.Win32.SM_CXSMICON
 Windows.Win32.SM_CYSMICON
+Windows.Win32.RegGetValueW
+Windows.Win32.HKEY_CURRENT_USER
+Windows.Win32.RRF_RT_REG_SZ
 
 // ---- classes used as typed handles (minimal mode emits only what is named) ----
 Microsoft.UI.Xaml.Controls.Panel

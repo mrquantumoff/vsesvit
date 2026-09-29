@@ -145,6 +145,7 @@ impl BrowserWindow {
             ("MenuDownloads", MenuAction::Show(Dialog::Downloads)),
             ("MenuExtensions", MenuAction::Show(Dialog::Extensions)),
             ("MenuSettings", MenuAction::Show(Dialog::Settings)),
+            ("MenuWelcome", MenuAction::Show(Dialog::Welcome)),
             ("MenuAbout", MenuAction::Show(Dialog::About)),
         ];
         for (name, action) in menu {

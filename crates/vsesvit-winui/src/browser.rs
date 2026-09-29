@@ -17,11 +17,12 @@ use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::session::SessionSnapshot;
-use vsesvit_core::{Profile, Url};
+use vsesvit_core::{Profile, Url, onboarding};
 
 use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
 use crate::bookmarks_bar::{self, BarItem};
 use crate::config::{Config, Mode};
+use crate::dialogs::Dialog;
 use crate::downloads::Downloads;
 use crate::engine::{self, Engine};
 use crate::extensions::ExtensionHost;
@@ -39,6 +40,7 @@ const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 const SUGGESTIONS: usize = 8;
 /// Bookmarked pages whose icons one preload round fetches.
 const FAVICON_BATCH: usize = 24;
+const WELCOME_WAIT: Duration = Duration::from_secs(10);
 
 /// Whether the vertical tab list is collapsed to favicons. Per device: it depends on the
 /// screen, so it does not sync.
@@ -146,6 +148,8 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         mut profile,
         profile_open_ms,
     } = launch;
+    // Read before anything can end this first session: the next launch is no first run.
+    let welcome = config.mode == Mode::Browse && onboarding::should_show(&mut profile);
     let mut arguments = engine::browser_arguments(|pref| profile.prefs().get(pref));
     if !config.mode.is_interactive() {
         arguments = format!("{arguments} {}", engine::SCRIPTED_ARGUMENTS)
@@ -206,6 +210,9 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
     for window in &plan {
         browser.open_window(window, show)?;
     }
+    if welcome && let Some(window) = browser.windows().into_iter().next() {
+        exec::spawn(show_welcome(window));
+    }
     exec::spawn(browser.clone().start_extensions());
     crate::permissions::mirror(&browser);
     if browser.config.mode.is_interactive() {
@@ -238,6 +245,20 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         exec::spawn(updates::schedule(Rc::downgrade(&browser)));
     }
     Ok(())
+}
+
+/// The welcome over the first window, once that window can hold a dialog.
+async fn show_welcome(window: Rc<BrowserWindow>) {
+    let ready = exec::wait_for(WELCOME_WAIT, Duration::from_millis(50), || {
+        window.xaml_root().ok()
+    })
+    .await;
+    if ready.is_none() {
+        log::warn!("the first window never got a XAML root; no welcome");
+        return;
+    }
+    log::info!("first run: showing the welcome");
+    window.show_dialog(Dialog::Welcome);
 }
 
 /// The running browser, for work posted to the UI thread from a worker thread.

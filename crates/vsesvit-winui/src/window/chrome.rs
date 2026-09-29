@@ -247,6 +247,9 @@ const WINDOW_XAML: &str = r#"
           <MenuFlyoutItem x:Name="MenuSettings" Text="Settings">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE713;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
+          <MenuFlyoutItem x:Name="MenuWelcome" Text="Welcome">
+            <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE82F;"/></MenuFlyoutItem.Icon>
+          </MenuFlyoutItem>
           <MenuFlyoutItem x:Name="MenuAbout" Text="About Vsesvit">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE946;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>

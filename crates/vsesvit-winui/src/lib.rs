@@ -16,6 +16,7 @@
 //! | `layout`          | tab list placement and reading it back from geometry (pure)         |
 //! | `strip`           | the two tab lists: `TabView` strip and the vertical pane            |
 //! | `tab`, `tab_header` | one tab's `WebView2` and state; its row in a tab list             |
+//! | `anim`            | durations and easing, the "Animation effects" setting, tweens       |
 //! | `permissions`, `capturing` | site permission requests and prompts; what a page captures |
 //! | `bookmarks_bar`   | bookmarks bar buttons and folder menus                              |
 //! | `popup`           | extension action buttons and their popup flyout                     |
@@ -37,6 +38,7 @@
     )
 )]
 
+mod anim;
 mod app;
 #[cfg(feature = "self-test")]
 mod automation;

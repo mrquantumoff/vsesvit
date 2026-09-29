@@ -190,6 +190,11 @@ impl BrowserWindow {
         self.side.is_compact()
     }
 
+    /// The vertical pane's rows, for scripted runs (see `SidePane::rows`).
+    pub fn pane_rows(&self) -> Vec<(Option<TabId>, FrameworkElement)> {
+        self.side.rows()
+    }
+
     /// The horizontal strip's tab widths in display order, for scripted runs.
     pub fn top_tab_widths(&self) -> Vec<(TabId, f64)> {
         self.top.widths()

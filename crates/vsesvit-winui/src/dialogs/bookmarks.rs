@@ -599,7 +599,11 @@ impl Editor {
             .and_then(|i| usize::try_from(i).ok());
         match index.and_then(|i| self.import_choices.get(i)) {
             Some(ImportChoice::Browser(found)) => {
-                self.import_source(&found.folder_title(), &found.name, &found.source);
+                self.import_source(
+                    found.folder_title(),
+                    found.name.clone(),
+                    found.source.clone(),
+                );
             }
             Some(ImportChoice::File) => self.import_file(),
             None => {}
@@ -625,7 +629,11 @@ impl Editor {
                         || path.display().to_string(),
                         |n| n.to_string_lossy().into_owned(),
                     );
-                    me.import_source(import::FILE_FOLDER_TITLE, &name, &Source::File(path));
+                    me.import_source(
+                        import::FILE_FOLDER_TITLE.to_owned(),
+                        name,
+                        Source::File(path),
+                    );
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -637,25 +645,42 @@ impl Editor {
         });
     }
 
-    /// Reads `source` and adds it to the bookmarks bar as the folder `folder`.
-    fn import_source(&self, folder: &str, from: &str, source: &Source) {
+    fn import_source(self: &Rc<Self>, folder: String, from: String, source: Source) {
         let Some(browser) = self.browser() else {
             return;
         };
-        let text = match source.read() {
-            Err(e) => format!("Could not read {from}: {e}"),
-            Ok(items) => match browser.core(|p| p.bookmarks().import_folder(folder, items)) {
-                Ok(0) => format!("No bookmarks found in {from}."),
-                Ok(n) => format!(
-                    "Imported {n} items from {from} into \u{201C}{folder}\u{201D} on the bookmarks bar."
-                ),
-                Err(e) => format!("Not imported: {e}"),
-            },
-        };
-        browser.bookmarks_changed();
-        self.render();
-        let _ = self.status.SetText(&text);
+        let _ = self
+            .status
+            .SetText(&format!("Importing from {from}\u{2026}"));
+        let me = self.clone();
+        exec::spawn(async move {
+            let text = import_bookmarks(&browser, &folder, &from, source).await;
+            me.render();
+            let _ = me.status.SetText(&text);
+        });
     }
+}
+
+/// Reads `source` (named `from`) on a worker thread and adds it to the bookmarks bar as the
+/// folder `folder`; what happened, in words.
+pub(crate) async fn import_bookmarks(
+    browser: &Browser,
+    folder: &str,
+    from: &str,
+    source: Source,
+) -> String {
+    let text = match exec::background(move || source.read().map_err(|e| e.to_string())).await {
+        Err(e) => format!("Could not read {from}: {e}"),
+        Ok(items) => match browser.core(|p| p.bookmarks().import_folder(folder, items)) {
+            Ok(0) => format!("No bookmarks found in {from}."),
+            Ok(n) => format!(
+                "Imported {n} items from {from} into \u{201C}{folder}\u{201D} on the bookmarks bar."
+            ),
+            Err(e) => format!("Not imported: {e}"),
+        },
+    };
+    browser.bookmarks_changed();
+    text
 }
 
 /// A bookmark and its descendants, read from core in one borrow.

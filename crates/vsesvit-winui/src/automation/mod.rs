@@ -21,10 +21,12 @@ use windows_core::Interface;
 mod bookmark_steps;
 mod connection_steps;
 mod dialog_steps;
+mod motion_steps;
 mod permission_steps;
 mod progress_steps;
 mod tab_steps;
 mod toolbar_steps;
+mod welcome_steps;
 
 use crate::bindings::*;
 use crate::bookmarks_bar::BarItem;
@@ -633,7 +635,11 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
         .await;
     }
     browser.set_tab_pane_collapsed(true);
-    exec::sleep(Duration::from_millis(400)).await;
+    exec::wait_for(STEP_TIMEOUT, Duration::from_millis(50), || {
+        let (pane, _, _) = window.layout_geometry();
+        pane.is_some_and(|p| p.width <= 49.0).then_some(())
+    })
+    .await;
     shoot(&window, out_dir, "12-collapsed-pane", steps, |w| {
         let (pane, _, _) = w.layout_geometry();
         json!({
@@ -674,6 +680,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     progress_steps::run(&window, out_dir, steps).await?;
     connection_steps::run(&window, &server, out_dir, steps).await?;
     tab_steps::run(&window, &server, out_dir, steps).await?;
+    motion_steps::run(&window, out_dir, steps).await?;
     permission_steps::run(browser, &window, &server, out_dir, steps).await?;
 
     let count = window.show_suggestions("fixture");
@@ -703,6 +710,9 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     }
     if let Err(e) = dialog_steps::history(browser, &window, out_dir, &page2, steps).await {
         dialog_steps::failed(steps, "17-history-dialog", &e);
+    }
+    if let Err(e) = welcome_steps::run(&window, out_dir, steps).await {
+        dialog_steps::failed(steps, "25-welcome", &e);
     }
 
     match window.open_extension_popup(testkit::PROBE_ID, Activation::Keep) {

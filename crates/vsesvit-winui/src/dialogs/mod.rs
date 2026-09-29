@@ -1,5 +1,5 @@
-//! The Bookmarks, History, Downloads, Extensions, Settings and About dialogs, all on
-//! vsesvit-core data.
+//! The Bookmarks, History, Downloads, Extensions, Settings and About dialogs and the welcome,
+//! all on vsesvit-core data.
 //!
 //! Each dialog is a `ContentDialog` built from markup, filled and wired by its module. Scripted
 //! runs never show the modal dialog (showing it moves keyboard focus); `preview` puts the same
@@ -7,12 +7,15 @@
 
 mod about;
 mod bookmarks;
+mod default_browser;
 mod downloads;
 mod extensions;
 mod history;
 mod settings;
 mod site_permissions;
+mod welcome;
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use vsesvit_core::prefs::Theme;
@@ -23,6 +26,12 @@ use crate::window::{Backdrop, BrowserWindow};
 use crate::xaml;
 
 pub(crate) use settings::CATEGORIES as SETTINGS_CATEGORIES;
+#[cfg(feature = "self-test")]
+pub(crate) use {
+    bookmarks::import_bookmarks,
+    default_browser::describe as describe_default_browser,
+    welcome::{PAGES as WELCOME_PAGES, Page as WelcomePage},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dialog {
@@ -32,33 +41,50 @@ pub(crate) enum Dialog {
     Extensions,
     Settings,
     About,
+    Welcome,
 }
 
 impl Dialog {
-    pub fn title(self) -> &'static str {
+    /// The title over the dialog. The welcome has none: its pages have headings.
+    fn heading(self) -> Option<&'static str> {
         match self {
-            Self::Bookmarks => "Bookmarks",
-            Self::History => "History",
-            Self::Downloads => "Downloads",
-            Self::Extensions => "Extensions",
-            Self::Settings => "Settings",
-            Self::About => "About Vsesvit",
+            Self::Bookmarks => Some("Bookmarks"),
+            Self::History => Some("History"),
+            Self::Downloads => Some("Downloads"),
+            Self::Extensions => Some("Extensions"),
+            Self::Settings => Some("Settings"),
+            Self::About => Some("About Vsesvit"),
+            Self::Welcome => None,
         }
     }
 
-    fn body(self) -> &'static str {
+    fn body(self) -> Cow<'static, str> {
         match self {
-            Self::Bookmarks => bookmarks::MARKUP,
-            Self::History => history::MARKUP,
-            Self::Downloads => downloads::MARKUP,
-            Self::Extensions => extensions::MARKUP,
-            Self::Settings => settings::MARKUP,
-            Self::About => about::MARKUP,
+            Self::Bookmarks => bookmarks::MARKUP.into(),
+            Self::History => history::MARKUP.into(),
+            Self::Downloads => downloads::MARKUP.into(),
+            Self::Extensions => extensions::MARKUP.into(),
+            Self::Settings => settings::MARKUP
+                .replacen("{default_browser}", default_browser::MARKUP, 1)
+                .into(),
+            Self::About => about::MARKUP.into(),
+            Self::Welcome => welcome::MARKUP.into(),
+        }
+    }
+
+    /// The title and the Close button, as attributes. The welcome's own buttons go from page to
+    /// page and close it on the last.
+    fn head(self) -> String {
+        match self.heading() {
+            Some(title) => {
+                format!(r#"Title="{title}" CloseButtonText="Close" DefaultButton="Close""#)
+            }
+            None => String::new(),
         }
     }
 }
 
-const DIALOG_OPEN: &str = r#"<ContentDialog {ns} Title="TITLE" CloseButtonText="Close" DefaultButton="Close"
+const DIALOG_OPEN: &str = r#"<ContentDialog {ns} HEAD
     Style="{StaticResource DefaultContentDialogStyle}"BACKGROUND>
   <ContentDialog.Resources>
     <x:Double x:Key="ContentDialogMaxWidth">900</x:Double>
@@ -74,7 +100,7 @@ fn markup(dialog: Dialog, backdrop: Backdrop) -> String {
     format!(
         "{}{}\n</ContentDialog>",
         DIALOG_OPEN
-            .replacen("TITLE", dialog.title(), 1)
+            .replacen("HEAD", &dialog.head(), 1)
             .replacen("BACKGROUND", background, 1),
         dialog.body()
     )
@@ -121,6 +147,7 @@ pub(crate) fn build(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Built> {
         Dialog::Extensions => extensions::wire(&root, &browser, window)?,
         Dialog::Settings => settings::wire(&root, &browser, window)?,
         Dialog::About => about::fill(&root, &browser)?,
+        Dialog::Welcome => welcome::wire(&root, &browser, window)?,
     };
     Ok(Built {
         dialog,
@@ -165,7 +192,7 @@ pub(crate) fn preview(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Previe
     let content = built.dialog.cast::<IContentControl>()?;
     let body: UIElement = content.Content()?.cast()?;
     content.SetContent(None::<&IInspectable>)?;
-    window.set_overlay(Some((built.kind.title(), &body)))?;
+    window.set_overlay(Some((built.kind.heading().unwrap_or_default(), &body)))?;
     Ok(Preview {
         window: window.clone(),
         body,

@@ -30,11 +30,13 @@ windows_core::link!("kernel32.dll" "system" fn LoadLibraryExW(lplibfilename : wi
 windows_core::link!("kernel32.dll" "system" fn LocalFree(hmem : HLOCAL) -> HLOCAL);
 windows_core::link!("user32.dll" "system" fn MessageBoxW(hwnd : HWND, lptext : windows_core::PCWSTR, lpcaption : windows_core::PCWSTR, utype : u32) -> i32);
 windows_core::link!("user32.dll" "system" fn PostMessageW(hwnd : HWND, msg : u32, wparam : WPARAM, lparam : LPARAM) -> windows_core::BOOL);
+windows_core::link!("advapi32.dll" "system" fn RegGetValueW(hkey : HKEY, lpsubkey : windows_core::PCWSTR, lpvalue : windows_core::PCWSTR, dwflags : u32, pdwtype : *mut u32, pvdata : *mut core::ffi::c_void, pcbdata : *mut u32) -> LSTATUS);
 windows_core::link!("shell32.dll" "system" fn SHGetKnownFolderPath(rfid : *const KNOWNFOLDERID, dwflags : u32, htoken : HANDLE, ppszpath : *mut windows_core::PWSTR) -> windows_core::HRESULT);
 windows_core::link!("user32.dll" "system" fn SendInput(cinputs : u32, pinputs : *const INPUT, cbsize : i32) -> u32);
 windows_core::link!("user32.dll" "system" fn SendMessageW(hwnd : HWND, msg : u32, wparam : WPARAM, lparam : LPARAM) -> LRESULT);
 windows_core::link!("user32.dll" "system" fn SetProcessDpiAwarenessContext(value : DPI_AWARENESS_CONTEXT) -> windows_core::BOOL);
 windows_core::link!("shell32.dll" "system" fn ShellExecuteW(hwnd : HWND, lpoperation : windows_core::PCWSTR, lpfile : windows_core::PCWSTR, lpparameters : windows_core::PCWSTR, lpdirectory : windows_core::PCWSTR, nshowcmd : i32) -> HINSTANCE);
+windows_core::link!("user32.dll" "system" fn SystemParametersInfoW(uiaction : u32, uiparam : u32, pvparam : *mut core::ffi::c_void, fwinini : u32) -> windows_core::BOOL);
 windows_core::link!("api-ms-win-appmodel-runtime-l1-1-5.dll" "system" fn TryCreatePackageDependency(user : PSID, packagefamilyname : windows_core::PCWSTR, minversion : PACKAGE_VERSION, packagedependencyprocessorarchitectures : PackageDependencyProcessorArchitectures, lifetimekind : PackageDependencyLifetimeKind, lifetimeartifact : windows_core::PCWSTR, options : CreatePackageDependencyOptions, packagedependencyid : *mut windows_core::PWSTR) -> windows_core::HRESULT);
 pub const ATTACH_PARENT_PROCESS: u32 = 4294967295;
 pub type AddPackageDependencyOptions = u32;
@@ -532,6 +534,60 @@ impl windows_core::RuntimeName for AutomationPeer {
 }
 unsafe impl Send for AutomationPeer {}
 unsafe impl Sync for AutomationPeer {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutomationProperties(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    AutomationProperties,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl AutomationProperties {
+    pub fn SetName<P0>(element: P0, value: &str) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<DependencyObject>,
+    {
+        Self::IAutomationPropertiesStatics(|this| unsafe {
+            (windows_core::Interface::vtable(this).SetName)(
+                windows_core::Interface::as_raw(this),
+                element.param().abi(),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(value)),
+            )
+            .ok()
+        })
+    }
+    fn IAutomationPropertiesStatics<
+        R,
+        F: FnOnce(&IAutomationPropertiesStatics) -> windows_core::Result<R>,
+    >(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<
+            AutomationProperties,
+            IAutomationPropertiesStatics,
+        > = windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for AutomationProperties {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IAutomationProperties>();
+}
+unsafe impl windows_core::Interface for AutomationProperties {
+    type Vtable = <IAutomationProperties as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IAutomationProperties as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for AutomationProperties {
+    type Target = IAutomationProperties;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for AutomationProperties {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Automation.AutomationProperties";
+}
+unsafe impl Send for AutomationProperties {}
+unsafe impl Sync for AutomationProperties {}
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BitmapAlphaMode(pub i32);
@@ -2926,6 +2982,34 @@ impl windows_core::RuntimeType for DisplayAreaFallback {
 }
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoubleAnimation(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    DoubleAnimation,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(DoubleAnimation, Timeline, DependencyObject);
+impl windows_core::RuntimeType for DoubleAnimation {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IDoubleAnimation>();
+}
+unsafe impl windows_core::Interface for DoubleAnimation {
+    type Vtable = <IDoubleAnimation as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IDoubleAnimation as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for DoubleAnimation {
+    type Target = IDoubleAnimation;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for DoubleAnimation {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Media.Animation.DoubleAnimation";
+}
+unsafe impl Send for DoubleAnimation {}
+unsafe impl Sync for DoubleAnimation {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DragItemsCompletedEventArgs(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     DragItemsCompletedEventArgs,
@@ -3783,6 +3867,8 @@ pub struct HARDWAREINPUT {
 pub type HCERTSTORE = *mut core::ffi::c_void;
 pub type HCRYPTPROV_LEGACY = usize;
 pub type HINSTANCE = *mut core::ffi::c_void;
+pub type HKEY = *mut core::ffi::c_void;
+pub const HKEY_CURRENT_USER: HKEY = -2147483647 as _;
 pub type HLOCAL = HANDLE;
 pub type HMODULE = HINSTANCE;
 pub type HWND = *mut core::ffi::c_void;
@@ -4656,6 +4742,63 @@ pub struct IAutomationPeer_Vtbl {
         *mut core::ffi::c_void,
         PatternInterface,
         *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IAutomationProperties,
+    IAutomationProperties_Vtbl,
+    0x525c6a71_dd8a_52a0_977b_db1b02f8e896
+);
+impl windows_core::RuntimeType for IAutomationProperties {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IAutomationProperties_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    IAutomationPropertiesStatics,
+    IAutomationPropertiesStatics_Vtbl,
+    0xb1e3e0f3_112f_5966_87dc_7862d4ad50e5
+);
+impl windows_core::RuntimeType for IAutomationPropertiesStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IAutomationPropertiesStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    AcceleratorKeyProperty: usize,
+    GetAcceleratorKey: usize,
+    SetAcceleratorKey: usize,
+    AccessKeyProperty: usize,
+    GetAccessKey: usize,
+    SetAccessKey: usize,
+    AutomationIdProperty: usize,
+    GetAutomationId: usize,
+    SetAutomationId: usize,
+    HelpTextProperty: usize,
+    GetHelpText: usize,
+    SetHelpText: usize,
+    IsRequiredForFormProperty: usize,
+    GetIsRequiredForForm: usize,
+    SetIsRequiredForForm: usize,
+    ItemStatusProperty: usize,
+    GetItemStatus: usize,
+    SetItemStatus: usize,
+    ItemTypeProperty: usize,
+    GetItemType: usize,
+    SetItemType: usize,
+    LabeledByProperty: usize,
+    GetLabeledBy: usize,
+    SetLabeledBy: usize,
+    NameProperty: usize,
+    GetName: usize,
+    pub SetName: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
@@ -8745,6 +8888,51 @@ pub struct IDisplayAreaStatics_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    IDoubleAnimation,
+    IDoubleAnimation_Vtbl,
+    0x651ec97e_e483_5985_aa0b_49cfb07432dd
+);
+impl windows_core::RuntimeType for IDoubleAnimation {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IDoubleAnimation {
+    pub fn SetFrom(&self, value: Option<f64>) -> windows_core::Result<()> {
+        let value__ = value.map(<windows_reference::IReference<f64> as From<_>>::from);
+        unsafe {
+            (windows_core::Interface::vtable(self).SetFrom)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Param::param(value__.as_ref()).abi(),
+            )
+            .ok()
+        }
+    }
+    pub fn SetTo(&self, value: Option<f64>) -> windows_core::Result<()> {
+        let value__ = value.map(<windows_reference::IReference<f64> as From<_>>::from);
+        unsafe {
+            (windows_core::Interface::vtable(self).SetTo)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Param::param(value__.as_ref()).abi(),
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct IDoubleAnimation_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    From: usize,
+    pub SetFrom: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    To: usize,
+    pub SetTo: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     IDragItemsCompletedEventArgs,
     IDragItemsCompletedEventArgs_Vtbl,
     0xc0138552_f467_5c3e_8af4_593607762844
@@ -9480,6 +9668,15 @@ impl IFrameworkElement {
             .ok()
         }
     }
+    pub fn SetMinHeight(&self, value: f64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetMinHeight)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
     pub fn Name(&self) -> windows_core::Result<String> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -9500,6 +9697,33 @@ impl IFrameworkElement {
                 value,
             )
             .ok()
+        }
+    }
+    pub fn Loaded<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<windows_core::IInspectable>, windows_core::Ref<RoutedEventArgs>)
+            + 'static,
+    {
+        let handler: RoutedEventHandler = {
+            let com = windows_core::imp::DelegateBox::<RoutedEventHandler, F>::new(
+                &RoutedEventHandlerBox::<F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).Loaded)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveLoaded,
+            ))
         }
     }
     pub fn SizeChanged<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
@@ -9598,7 +9822,8 @@ pub struct IFrameworkElement_Vtbl {
     pub SetMaxWidth:
         unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
     MinHeight: usize,
-    SetMinHeight: usize,
+    pub SetMinHeight:
+        unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
     MaxHeight: usize,
     SetMaxHeight: usize,
     HorizontalAlignment: usize,
@@ -9639,8 +9864,13 @@ pub struct IFrameworkElement_Vtbl {
         unsafe extern "system" fn(*mut core::ffi::c_void, ElementTheme) -> windows_core::HRESULT,
     IsLoaded: usize,
     ActualTheme: usize,
-    Loaded: usize,
-    RemoveLoaded: usize,
+    pub Loaded: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveLoaded:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     Unloaded: usize,
     RemoveUnloaded: usize,
     DataContextChanged: usize,
@@ -12074,6 +12304,36 @@ pub struct ISoftwareBitmapStatics_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    IStoryboard,
+    IStoryboard_Vtbl,
+    0x04d41bb3_8721_519e_8e53_fb8b34920305
+);
+impl windows_core::RuntimeType for IStoryboard {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IStoryboard {
+    pub fn Stop(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Stop)(windows_core::Interface::as_raw(self)).ok()
+        }
+    }
+    pub fn Begin(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Begin)(windows_core::Interface::as_raw(self))
+                .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct IStoryboard_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    Children: usize,
+    Seek: usize,
+    pub Stop: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+    pub Begin: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ISystemBackdrop,
     ISystemBackdrop_Vtbl,
     0x5aeed5c4_37ac_5852_b73f_1b76ebc3205f
@@ -12666,6 +12926,19 @@ impl windows_core::RuntimeType for ITextChangedEventArgs {
 }
 #[repr(C)]
 pub struct ITextChangedEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    ITimeline,
+    ITimeline_Vtbl,
+    0xd0f9b330_cc2a_5b05_9786_2da4c6584581
+);
+impl windows_core::RuntimeType for ITimeline {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct ITimeline_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
@@ -13317,6 +13590,34 @@ impl IUIElement {
             .map(|| result__)
         }
     }
+    pub fn Opacity(&self) -> windows_core::Result<f64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Opacity)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetOpacity(&self, value: f64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetOpacity)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn SetIsHitTestVisible(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetIsHitTestVisible)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
     pub fn Visibility(&self) -> windows_core::Result<Visibility> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -13376,6 +13677,15 @@ impl IUIElement {
     ) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SetKeyboardAcceleratorPlacementMode)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn SetTranslation(&self, value: Vector3) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetTranslation)(
                 windows_core::Interface::as_raw(self),
                 value,
             )
@@ -13738,8 +14048,9 @@ pub struct IUIElement_Vtbl {
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut Size) -> windows_core::HRESULT,
     AllowDrop: usize,
     SetAllowDrop: usize,
-    Opacity: usize,
-    SetOpacity: usize,
+    pub Opacity:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    pub SetOpacity: unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
     Clip: usize,
     SetClip: usize,
     RenderTransform: usize,
@@ -13751,7 +14062,8 @@ pub struct IUIElement_Vtbl {
     RenderTransformOrigin: usize,
     SetRenderTransformOrigin: usize,
     IsHitTestVisible: usize,
-    SetIsHitTestVisible: usize,
+    pub SetIsHitTestVisible:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
     pub Visibility:
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut Visibility) -> windows_core::HRESULT,
     pub SetVisibility:
@@ -13834,7 +14146,8 @@ pub struct IUIElement_Vtbl {
     OpacityTransition: usize,
     SetOpacityTransition: usize,
     Translation: usize,
-    SetTranslation: usize,
+    pub SetTranslation:
+        unsafe extern "system" fn(*mut core::ffi::c_void, Vector3) -> windows_core::HRESULT,
     TranslationTransition: usize,
     SetTranslationTransition: usize,
     Rotation: usize,
@@ -15505,6 +15818,7 @@ pub type LPARAM = isize;
 pub type LRESULT = isize;
 pub const LR_DEFAULTSIZE: i32 = 64;
 pub const LR_SHARED: i32 = 32768;
+pub type LSTATUS = i32;
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchActivatedEventArgs(windows_core::IUnknown);
@@ -16506,6 +16820,7 @@ pub struct RECT {
     pub right: i32,
     pub bottom: i32,
 }
+pub const RRF_RT_REG_SZ: i32 = 2;
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RangeBase(windows_core::IUnknown);
@@ -16662,6 +16977,7 @@ impl<
 }
 pub const SM_CXSMICON: i32 = 49;
 pub const SM_CYSMICON: i32 = 50;
+pub const SPI_GETCLIENTAREAANIMATION: i32 = 4162;
 pub const STATEREPOSITORY_E_DEPENDENCY_NOT_RESOLVED: windows_core::HRESULT =
     windows_core::HRESULT(0x80670016_u32 as _);
 pub const SW_SHOWNORMAL: i32 = 1;
@@ -17038,6 +17354,34 @@ unsafe impl Send for SoftwareBitmap {}
 unsafe impl Sync for SoftwareBitmap {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Storyboard(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    Storyboard,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(Storyboard, Timeline, DependencyObject);
+impl windows_core::RuntimeType for Storyboard {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IStoryboard>();
+}
+unsafe impl windows_core::Interface for Storyboard {
+    type Vtable = <IStoryboard as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IStoryboard as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for Storyboard {
+    type Target = IStoryboard;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for Storyboard {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Media.Animation.Storyboard";
+}
+unsafe impl Send for Storyboard {}
+unsafe impl Sync for Storyboard {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemBackdrop(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     SystemBackdrop,
@@ -17345,6 +17689,34 @@ impl<
         }
     }
 }
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Timeline(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    Timeline,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+windows_core::imp::required_hierarchy!(Timeline, DependencyObject);
+impl windows_core::RuntimeType for Timeline {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ITimeline>();
+}
+unsafe impl windows_core::Interface for Timeline {
+    type Vtable = <ITimeline as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <ITimeline as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for Timeline {
+    type Target = ITimeline;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for Timeline {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Media.Animation.Timeline";
+}
+unsafe impl Send for Timeline {}
+unsafe impl Sync for Timeline {}
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TitleBarTheme(pub i32);
@@ -17918,6 +18290,21 @@ impl windows_core::RuntimeName for Uri {
 }
 unsafe impl Send for Uri {}
 unsafe impl Sync for Uri {}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Vector3 {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+impl windows_core::imp::TypeKind for Vector3 {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for Vector3 {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"struct(Windows.Foundation.Numerics.Vector3;f4;f4;f4)",
+    );
+}
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VirtualKey(pub i32);

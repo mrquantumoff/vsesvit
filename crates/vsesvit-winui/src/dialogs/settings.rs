@@ -45,6 +45,10 @@ pub(super) const MARKUP: &str = r#"
           </StackPanel>
           <ToggleSwitch x:Name="DownloadsAsk" Header="Ask where to save each file"/>
         </StackPanel>
+        <StackPanel Spacing="8">
+          <TextBlock Text="Default browser" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+          {default_browser}
+        </StackPanel>
         <StackPanel Spacing="12">
           <TextBlock Text="System" Style="{StaticResource BodyStrongTextBlockStyle}"/>
           <StackPanel Spacing="4">
@@ -384,9 +388,10 @@ pub(super) fn wire(
         browser.profile_dir().display()
     ))?;
 
+    let default_browser = super::default_browser::wire(root)?;
     let w = weak;
     Ok(Wired {
-        _alive: vec![updates],
+        _alive: vec![default_browser, updates],
         on_close: Some(Box::new(move || {
             let Some(b) = w.upgrade() else { return };
             let text = homepage.Text().unwrap_or_default();

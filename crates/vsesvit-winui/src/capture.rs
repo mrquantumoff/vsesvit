@@ -30,6 +30,29 @@ pub(crate) struct WindowShot {
     pub width: u32,
     pub height: u32,
     pub flat: bool,
+    /// Premultiplied BGRA, `width` by `height`.
+    pixels: Vec<u8>,
+}
+
+impl WindowShot {
+    /// The spread of brightness inside a rectangle of physical pixels (0 for one flat color),
+    /// or `None` if it is not all inside the shot.
+    pub fn contrast(&self, x: u32, y: u32, width: u32, height: u32) -> Option<u8> {
+        if width == 0 || height == 0 || x + width > self.width || y + height > self.height {
+            return None;
+        }
+        let (mut low, mut high) = (u8::MAX, u8::MIN);
+        for row in y..y + height {
+            for column in x..x + width {
+                let at = ((row * self.width + column) * 4) as usize;
+                let [b, g, r] = [self.pixels[at], self.pixels[at + 1], self.pixels[at + 2]];
+                let luma = ((u32::from(r) * 3 + u32::from(g) * 6 + u32::from(b)) / 10) as u8;
+                low = low.min(luma);
+                high = high.max(luma);
+            }
+        }
+        Some(high - low)
+    }
 }
 
 pub(crate) async fn window_png(hwnd: HWND) -> Result<WindowShot> {
@@ -48,6 +71,7 @@ pub(crate) async fn window_png(hwnd: HWND) -> Result<WindowShot> {
         width: shot.width,
         height: shot.height,
         flat,
+        pixels: shot.pixels,
     })
 }
 
