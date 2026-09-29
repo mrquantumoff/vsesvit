@@ -326,6 +326,11 @@ impl Browser {
     /// Every committed main-frame navigation records a visit (not for an error page).
     pub(crate) fn navigation_committed(&self, tab: &Tab, uri: &str, commit: Commit) {
         let transition = tab.take_pending_transition().unwrap_or(Transition::Link);
+        if commit != Commit::SameDocument
+            && let Ok(url) = Url::parse(uri)
+        {
+            self.show_at_site_zoom(tab, &url);
+        }
         if commit != Commit::ErrorPage
             && let Ok(url) = Url::parse(uri)
         {
@@ -336,6 +341,35 @@ impl Browser {
         }
         self.runtime().tab_updated(tab.id());
         self.schedule_session_save();
+    }
+
+    /// WebKit keeps a view's zoom from page to page, so a new document is shown at the level
+    /// remembered for its site (100% for a site with none) instead of the previous page's.
+    fn show_at_site_zoom(&self, tab: &Tab, url: &Url) {
+        let level = match self.core().borrow_mut().site_zoom().get(url) {
+            Ok(level) => level,
+            Err(e) => {
+                log::warn!("site zoom: {e}");
+                return;
+            }
+        };
+        let web_view = tab.web_view();
+        // Setting it notifies `zoom_changed`, which must not find the profile borrowed.
+        if (web_view.zoom_level() - level).abs() > f64::EPSILON {
+            web_view.set_zoom_level(level);
+        }
+    }
+
+    /// The tab's zoom changed, by the user or by [`Browser::show_at_site_zoom`]: remember it
+    /// for the site the tab is on.
+    pub(crate) fn zoom_changed(&self, tab: &Tab) {
+        let Some(url) = tab.committed_uri().and_then(|uri| Url::parse(&uri).ok()) else {
+            return;
+        };
+        let level = tab.web_view().zoom_level();
+        if let Err(e) = self.core().borrow_mut().site_zoom().set(&url, level) {
+            log::warn!("site zoom: {e}");
+        }
     }
 
     /// Titles arrive after the commit, and are written to history under the committed URI,

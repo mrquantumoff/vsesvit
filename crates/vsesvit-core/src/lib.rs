@@ -28,6 +28,7 @@
 //! | [`import`]       | bookmarks from other browsers: HTML export, Chromium, Firefox         |
 //! | [`new_tab`]      | the new tab page: search box + most visited sites, as HTML            |
 //! | [`permissions`]  | site permissions: stored choices, one-time grants, the prompt         |
+//! | [`zoom`]         | page zoom per site (LOCAL)                                            |
 //! | [`session`]      | this device's windows/tabs (restore) = its published "tabs" record    |
 //! | [`prefs`]        | typed preferences                                                    |
 //! | [`search`]       | search engines, omnibox resolve + suggest                             |
@@ -59,6 +60,7 @@ pub mod session;
 pub mod sync;
 #[cfg(feature = "testkit")]
 pub mod testkit;
+pub mod zoom;
 
 pub use url::Url;
 
@@ -248,6 +250,10 @@ impl Profile {
 
     pub fn site_permissions(&mut self) -> permissions::SitePermissions<'_> {
         permissions::SitePermissions { p: self }
+    }
+
+    pub fn site_zoom(&mut self) -> zoom::SiteZoom<'_> {
+        zoom::SiteZoom { p: self }
     }
 
     pub fn search_engines(&mut self) -> search::SearchEngines<'_> {

@@ -922,9 +922,14 @@ impl BrowserWindow {
                 }
             }
             TabChange::History if selected => self.sync_history(tab),
-            TabChange::Zoom if selected => self.sync_zoom(tab),
+            TabChange::Zoom => {
+                self.browser().zoom_changed(tab);
+                if selected {
+                    self.sync_zoom(tab);
+                }
+            }
             TabChange::Find(result) if selected => self.ui().find_bar.show_result(result),
-            TabChange::Progress | TabChange::History | TabChange::Zoom | TabChange::Find(_) => {}
+            TabChange::Progress | TabChange::History | TabChange::Find(_) => {}
         }
     }
 

@@ -869,6 +869,47 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("zoom_is_remembered_per_site", CHECK_TIMEOUT, |last| async move {
+        let load = |url: &vsesvit_core::Url| window.address_bar().submit_text(url.as_str());
+        let here = ctx.server.url("/index.html");
+        let mut elsewhere = here.clone();
+        elsewhere.set_host(Some("localhost")).map_err(|e| e.to_string())?;
+        let shown = || window.selected_tab().map(|tab| tab.web_view().zoom_level());
+        let at = |url: &vsesvit_core::Url, level: f64| {
+            let committed = window.selected_tab().and_then(|tab| tab.committed_uri()).unwrap_or_default();
+            if committed == url.as_str() && shown() == Some(level) {
+                Ok(())
+            } else {
+                Err(format!("{committed} at {:?}, wanted {url} at {level}", shown()))
+            }
+        };
+
+        load(&here);
+        wait_for(&last, || at(&here, 1.0)).await;
+        gio::prelude::ActionGroupExt::activate_action(window, "zoom-in", None);
+        gio::prelude::ActionGroupExt::activate_action(window, "zoom-in", None);
+        wait_for(&last, || at(&here, 1.25)).await;
+
+        let other_page = ctx.server.url("/page2.html");
+        load(&other_page);
+        wait_for(&last, || at(&other_page, 1.25)).await;
+        load(&elsewhere);
+        wait_for(&last, || at(&elsewhere, 1.0)).await;
+        load(&here);
+        wait_for(&last, || at(&here, 1.25)).await;
+
+        let stored = browser.core().borrow_mut().site_zoom().get(&here).map_err(|e| e.to_string())?;
+        gio::prelude::ActionGroupExt::activate_action(window, "zoom-reset", None);
+        wait_for(&last, || at(&here, 1.0)).await;
+        let forgotten = browser.core().borrow_mut().site_zoom().get(&here).map_err(|e| e.to_string())?;
+        if stored == 1.25 && forgotten == 1.0 {
+            Ok("125% followed the site to another page and came back to it, another host stayed at 100%; reset forgot it".to_owned())
+        } else {
+            Err(format!("stored {stored} after zooming, {forgotten} after reset"))
+        }
+    })
+    .await;
+
     ctx.check("connection_info", if ctx.network { NETWORK_TIMEOUT } else { CHECK_TIMEOUT }, |last| async move {
         let address = window.address_bar();
         let open = |file: &'static str| async move {
