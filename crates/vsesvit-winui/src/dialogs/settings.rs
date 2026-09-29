@@ -4,13 +4,14 @@
 
 use std::rc::Rc;
 
-use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, keys};
+use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::search::{SearchEngineId, classify_url};
 use windows_core::{Interface, Result};
 
 use super::{Wired, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
+use crate::updates::StatusButton;
 use crate::window::{Backdrop, BrowserWindow};
 use crate::{exec, pickers, xaml};
 
@@ -58,14 +59,29 @@ pub(super) const MARKUP: &str = r#"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        Text="Takes effect when you restart Vsesvit."/>
           </StackPanel>
+          <TextBlock x:Name="ProfilePath" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                     Foreground="{ThemeResource TextFillColorSecondaryBrush}" IsTextSelectionEnabled="True"/>
+        </StackPanel>
+        <StackPanel Spacing="12">
+          <TextBlock Text="Updates" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+          <StackPanel Spacing="4">
+            <TextBlock x:Name="UpdatesStatus" TextWrapping="Wrap"/>
+            <TextBlock x:Name="UpdatesVersion" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" IsTextSelectionEnabled="True"/>
+            <Button x:Name="UpdatesButton" Margin="0,4,0,0"/>
+          </StackPanel>
+          <StackPanel Spacing="4">
+            <ComboBox x:Name="UpdatesChannel" Header="Update channel" MinWidth="320"/>
+            <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="Vsesvit moves to a steadier channel once that channel has a version newer than this one."/>
+          </StackPanel>
           <StackPanel Spacing="4">
             <ToggleSwitch x:Name="UpdatesAutomatic" Header="Download and install updates automatically"/>
             <TextBlock x:Name="UpdatesUnavailable" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        Text="This copy of Vsesvit was not installed with the Vsesvit installer, so it does not update itself."/>
           </StackPanel>
-          <TextBlock x:Name="ProfilePath" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
-                     Foreground="{ThemeResource TextFillColorSecondaryBrush}" IsTextSelectionEnabled="True"/>
         </StackPanel>
       </StackPanel>
     </ScrollViewer>
@@ -211,6 +227,13 @@ const THEMES: [(Theme, &str); 3] = [
     (Theme::Dark, "Dark"),
 ];
 
+const CHANNELS: [(UpdateChannel, &str); 4] = [
+    (UpdateChannel::Stable, "Stable"),
+    (UpdateChannel::Beta, "Beta"),
+    (UpdateChannel::Weekly, "Weekly, built every Monday"),
+    (UpdateChannel::Nightly, "Nightly, built every day"),
+];
+
 /// What follows once a switch's preference is written.
 type Written = fn(&Browser);
 
@@ -350,17 +373,7 @@ pub(super) fn wire(
         switch(root, browser, name, on, set)?;
     }
 
-    let self_updating = !browser.updates().is_disabled();
-    let updates = switch(
-        root,
-        browser,
-        "UpdatesAutomatic",
-        self_updating && browser.updates_automatic(),
-        Browser::set_updates_automatic,
-    )?;
-    updates.cast::<Control>()?.SetIsEnabled(self_updating)?;
-    let unavailable: UIElement = xaml::find(root, "UpdatesUnavailable")?;
-    xaml::set_visible(&unavailable, !self_updating)?;
+    let updates = wire_updates(root, browser)?;
 
     let homepage: TextBox = xaml::find(root, "Homepage")?;
     let stored = browser.core(|p| p.prefs().get(&keys::HOMEPAGE));
@@ -373,7 +386,7 @@ pub(super) fn wire(
 
     let w = weak;
     Ok(Wired {
-        _alive: Vec::new(),
+        _alive: vec![updates],
         on_close: Some(Box::new(move || {
             let Some(b) = w.upgrade() else { return };
             let text = homepage.Text().unwrap_or_default();
@@ -446,6 +459,64 @@ fn switch(
         })?
         .forget();
     Ok(switch)
+}
+
+/// The Updates group. Its status line and button follow the update state while the dialog is
+/// open; the returned listener is what keeps them following, so the dialog must keep it.
+fn wire_updates(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Rc<dyn std::any::Any>> {
+    let self_updating = !browser.updates().is_disabled();
+    let automatic = switch(
+        root,
+        browser,
+        "UpdatesAutomatic",
+        self_updating && browser.updates_automatic(),
+        Browser::set_updates_automatic,
+    )?;
+    automatic.cast::<Control>()?.SetIsEnabled(self_updating)?;
+    let unavailable: UIElement = xaml::find(root, "UpdatesUnavailable")?;
+    xaml::set_visible(&unavailable, !self_updating)?;
+
+    let channel: ComboBox = xaml::find(root, "UpdatesChannel")?;
+    let w = Rc::downgrade(browser);
+    choices(
+        &channel,
+        &CHANNELS,
+        browser.updates_channel(),
+        move |channel| {
+            if let Some(b) = w.upgrade() {
+                b.set_updates_channel(channel);
+            }
+        },
+    )?;
+    channel.cast::<Control>()?.SetIsEnabled(self_updating)?;
+
+    xaml::find::<TextBlock>(root, "UpdatesVersion")?
+        .SetText(&format!("Version {}", env!("CARGO_PKG_VERSION")))?;
+    let text: TextBlock = xaml::find(root, "UpdatesStatus")?;
+    let button: Button = xaml::find(root, "UpdatesButton")?;
+    let w = Rc::downgrade(browser);
+    on_click(&button, move || {
+        let Some(b) = w.upgrade() else { return };
+        match b.updates().status().button {
+            StatusButton::Check { .. } => b.check_for_updates(),
+            StatusButton::Banner(action) => b.update_action(action),
+        }
+    })?;
+    let w = Rc::downgrade(browser);
+    let show: Rc<dyn Fn()> = Rc::new(move || {
+        let Some(b) = w.upgrade() else { return };
+        let status = b.updates().status();
+        let _ = text.SetText(status.text.as_deref().unwrap_or_default());
+        let _ = xaml::set_visible(&text, status.text.is_some());
+        let _ = xaml::boxed(status.button.label())
+            .and_then(|label| button.cast::<IContentControl>()?.SetContent(&label));
+        let _ = button
+            .cast::<Control>()
+            .and_then(|c| c.SetIsEnabled(status.button.is_enabled()));
+    });
+    show();
+    browser.updates().on_change(&show);
+    Ok(Rc::new(show))
 }
 
 /// Clear browsing data: the button's flyout asks first (no second dialog can open over this
@@ -625,6 +696,11 @@ fn choices<T: Clone + PartialEq + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_update_channel_has_a_label() {
+        assert_eq!(CHANNELS.map(|(channel, _)| channel), UpdateChannel::ALL);
+    }
 
     #[test]
     fn homepage_is_empty_or_an_address() {

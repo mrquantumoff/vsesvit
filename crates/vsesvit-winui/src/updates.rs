@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +39,7 @@ pub(crate) enum Trigger {
 /// `D` is the verified download; tests use a stand-in, since only the updater makes one.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum State<D> {
+    /// Not checked since launch.
     Idle,
     Checking {
         trigger: Trigger,
@@ -58,6 +59,7 @@ pub(crate) enum State<D> {
     Installing {
         version: Version,
     },
+    UpToDate,
     /// Leads back to `Checking` on the next check.
     Failed {
         trigger: Trigger,
@@ -114,16 +116,48 @@ impl Action {
     }
 }
 
+/// What the Updates group in Settings shows. Unlike the update bar, it shows every state,
+/// scheduled checks included, since the user went looking.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Status {
+    /// `None` when this copy never updates itself; Settings says why instead.
+    pub text: Option<String>,
+    pub button: StatusButton,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StatusButton {
+    /// "Check for updates", greyed out while a check cannot start.
+    Check { enabled: bool },
+    /// The update bar's button, doing what it does there.
+    Banner(Action),
+}
+
+impl StatusButton {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Check { .. } => "Check for updates",
+            Self::Banner(action) => action.label(),
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::Check { enabled: false })
+    }
+}
+
 impl<D> State<D> {
     fn can_check(&self) -> bool {
-        matches!(self, Self::Idle | Self::Failed { .. })
+        matches!(self, Self::Idle | Self::UpToDate | Self::Failed { .. })
     }
 
     /// Events that do not fit the current state are stale results and change nothing.
     pub fn next(self, event: Event<D>) -> Self {
         match (self, event) {
-            (Self::Idle | Self::Failed { .. }, Event::Check(trigger)) => Self::Checking { trigger },
-            (Self::Checking { .. }, Event::UpToDate) => Self::Idle,
+            (Self::Idle | Self::UpToDate | Self::Failed { .. }, Event::Check(trigger)) => {
+                Self::Checking { trigger }
+            }
+            (Self::Checking { .. }, Event::UpToDate) => Self::UpToDate,
             (Self::Checking { trigger }, Event::Found(version)) => Self::Downloading {
                 trigger,
                 version,
@@ -214,10 +248,7 @@ impl<D> State<D> {
                 total,
             } => Some(info(
                 format!("Downloading Vsesvit {version}"),
-                match total {
-                    Some(total) if *total > 0 => format!("{}%", received * 100 / total),
-                    _ => String::new(),
-                },
+                percent(*received, *total).map_or_else(String::new, |p| format!("{p}%")),
                 None,
             )),
             Self::Failed {
@@ -232,6 +263,46 @@ impl<D> State<D> {
             _ => None,
         }
     }
+
+    pub fn status(&self) -> Status {
+        let text = match self {
+            Self::Idle => Some(format!("Vsesvit {}", env!("CARGO_PKG_VERSION"))),
+            Self::Checking { .. } => Some("Checking for updates…".into()),
+            Self::UpToDate => Some("Vsesvit is up to date".into()),
+            Self::Downloading {
+                version,
+                received,
+                total,
+                ..
+            } => Some(match percent(*received, *total) {
+                Some(p) => format!("Downloading Vsesvit {version}… {p}%"),
+                None => format!("Downloading Vsesvit {version}…"),
+            }),
+            Self::Ready {
+                version,
+                error: None,
+                ..
+            } => Some(format!("Vsesvit {version} is ready")),
+            Self::Ready {
+                error: Some(error), ..
+            } => Some(format!("Vsesvit could not update: {error}")),
+            Self::Installing { .. } => Some("Restarting…".into()),
+            Self::Failed { error, .. } => Some(format!("Could not check for updates: {error}")),
+            Self::Disabled(_) => None,
+        };
+        let button = match self {
+            Self::Ready { .. } => StatusButton::Banner(Action::Restart),
+            _ => StatusButton::Check {
+                enabled: self.can_check(),
+            },
+        };
+        Status { text, button }
+    }
+}
+
+/// How much of a download has arrived, once its size is known.
+fn percent(received: u64, total: Option<u64>) -> Option<u64> {
+    total.filter(|t| *t > 0).map(|t| received * 100 / t)
 }
 
 /// The app's updater: the state machine plus what it needs to act. `setup` is `None` exactly
@@ -239,6 +310,8 @@ impl<D> State<D> {
 pub(crate) struct Updates {
     state: RefCell<State<Downloaded>>,
     setup: Option<Setup>,
+    /// Called after every change of `state`, while their owners (an open Settings) keep them.
+    listeners: RefCell<Vec<Weak<dyn Fn()>>>,
 }
 
 struct Setup {
@@ -256,6 +329,7 @@ impl Updates {
                 Self {
                     state: RefCell::new(State::Idle),
                     setup: Some(setup),
+                    listeners: RefCell::default(),
                 }
             }
             Err(reason) => Self::disabled(reason),
@@ -267,6 +341,7 @@ impl Updates {
         Self {
             state: RefCell::new(State::Disabled(reason)),
             setup: None,
+            listeners: RefCell::default(),
         }
     }
 
@@ -276,6 +351,27 @@ impl Updates {
 
     pub fn banner(&self) -> Option<Banner> {
         self.state.borrow().banner()
+    }
+
+    pub fn status(&self) -> Status {
+        self.state.borrow().status()
+    }
+
+    /// Calls `listener` after every change of the update state, while the caller keeps it.
+    pub fn on_change(&self, listener: &Rc<dyn Fn()>) {
+        self.listeners.borrow_mut().push(Rc::downgrade(listener));
+    }
+
+    /// Collected first, so a listener can read the state or add a listener.
+    pub fn changed(&self) {
+        let live: Vec<Rc<dyn Fn()>> = {
+            let mut listeners = self.listeners.borrow_mut();
+            listeners.retain(|l| l.strong_count() > 0);
+            listeners.iter().filter_map(Weak::upgrade).collect()
+        };
+        for listener in live {
+            listener();
+        }
     }
 
     fn begin_install(&self) -> Option<(Installation, Downloaded)> {
@@ -350,20 +446,24 @@ pub(crate) async fn schedule(browser: Weak<Browser>) {
 
 /// Checks, and downloads a newer version into the updates folder, replacing what is there.
 pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
-    let Some((updater, dir)) = browser.upgrade().and_then(|b| {
+    let Some((updater, dir, channel)) = browser.upgrade().and_then(|b| {
         let updates = b.updates();
         let setup = updates.setup.as_ref()?;
         if !updates.state.borrow().can_check() {
             return None;
         }
-        let jobs = (setup.updater.clone(), setup.dir.clone());
+        let jobs = (
+            setup.updater.clone(),
+            setup.dir.clone(),
+            b.updates_channel(),
+        );
         apply(&b, Event::Check(trigger));
         Some(jobs)
     }) else {
         return;
     };
 
-    let checked = exec::background(move || updater.check(UpdateChannel::of_build().name())).await;
+    let checked = exec::background(move || updater.check(channel.name())).await;
     let update = match checked {
         Ok(Some(Available::Update(update))) => update,
         Ok(Some(Available::NotInstallable(release))) => {
@@ -395,7 +495,7 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
     let downloaded = exec::background(move || {
         let mut shown = None;
         download(&update, &dir, |received, total| {
-            let percent = total.filter(|t| *t > 0).map(|t| received * 100 / t);
+            let percent = percent(received, total);
             if shown.replace(percent) == Some(percent) {
                 return;
             }
@@ -634,10 +734,95 @@ mod tests {
     }
 
     #[test]
-    fn up_to_date_goes_back_to_idle() {
-        let state = run(S::Idle, [Event::Check(Trigger::Scheduled), Event::UpToDate]);
-        assert_eq!(state, S::Idle);
-        assert!(state.can_check());
+    fn up_to_date_is_silent_and_checks_again() {
+        let state = run(S::Idle, [Event::Check(Trigger::User), Event::UpToDate]);
+        assert_eq!(state, S::UpToDate);
+        assert_eq!(state.banner(), None);
+        assert_eq!(
+            state.next(Event::Check(Trigger::Scheduled)),
+            S::Checking {
+                trigger: Trigger::Scheduled
+            }
+        );
+    }
+
+    #[test]
+    fn settings_shows_every_state() {
+        let check = StatusButton::Check { enabled: true };
+        let busy = StatusButton::Check { enabled: false };
+        let restart = StatusButton::Banner(Action::Restart);
+        let downloading = |total| S::Downloading {
+            trigger: Trigger::Scheduled,
+            version: v("0.2.0"),
+            received: 1,
+            total,
+        };
+        let ready = |error: Option<&str>| S::Ready {
+            version: v("0.2.0"),
+            update: "setup.exe",
+            error: error.map(Into::into),
+        };
+        let current = format!("Vsesvit {}", env!("CARGO_PKG_VERSION"));
+        for (state, text, button) in [
+            (S::Idle, Some(current.as_str()), check),
+            (
+                S::Checking {
+                    trigger: Trigger::Scheduled,
+                },
+                Some("Checking for updates…"),
+                busy,
+            ),
+            (S::UpToDate, Some("Vsesvit is up to date"), check),
+            (downloading(None), Some("Downloading Vsesvit 0.2.0…"), busy),
+            (
+                downloading(Some(4)),
+                Some("Downloading Vsesvit 0.2.0… 25%"),
+                busy,
+            ),
+            (ready(None), Some("Vsesvit 0.2.0 is ready"), restart),
+            (
+                ready(Some("the installer did not start")),
+                Some("Vsesvit could not update: the installer did not start"),
+                restart,
+            ),
+            (
+                S::Installing {
+                    version: v("0.2.0"),
+                },
+                Some("Restarting…"),
+                busy,
+            ),
+            (
+                S::Failed {
+                    trigger: Trigger::Scheduled,
+                    error: "network: offline".into(),
+                },
+                Some("Could not check for updates: network: offline"),
+                check,
+            ),
+            (S::Disabled("unpackaged".into()), None, busy),
+        ] {
+            let status = state.status();
+            assert_eq!(status.text.as_deref(), text, "{state:?}");
+            assert_eq!(status.button, button, "{state:?}");
+            assert_eq!(status.button.is_enabled(), button != busy, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn the_settings_button_is_the_bars_restart_when_an_update_is_ready() {
+        let ready = S::Ready {
+            version: v("0.2.0"),
+            update: "setup.exe",
+            error: None,
+        };
+        let button = ready.status().button;
+        assert_eq!(
+            button,
+            StatusButton::Banner(ready.banner().unwrap().action.unwrap())
+        );
+        assert_eq!(button.label(), "Restart to update");
+        assert_eq!(S::Idle.status().button.label(), "Check for updates");
     }
 
     #[test]
@@ -740,6 +925,7 @@ mod tests {
             S::Idle
         );
         assert_eq!(S::Idle.next(Event::Downloaded("x")), S::Idle);
+        assert_eq!(S::UpToDate.next(Event::UpToDate), S::UpToDate);
         let checking = S::Checking {
             trigger: Trigger::Scheduled,
         };
@@ -775,6 +961,21 @@ mod tests {
             assert_eq!(disabled().next(event), disabled());
         }
         assert_eq!(disabled().banner(), None);
+        assert!(!disabled().status().button.is_enabled());
+    }
+
+    #[test]
+    fn listeners_hear_changes_only_while_kept() {
+        let updates = Updates::disabled("unpackaged".into());
+        let heard = Rc::new(std::cell::Cell::new(0));
+        let h = heard.clone();
+        let listener: Rc<dyn Fn()> = Rc::new(move || h.set(h.get() + 1));
+        updates.on_change(&listener);
+        updates.changed();
+        drop(listener);
+        updates.changed();
+        assert_eq!(heard.get(), 1);
+        assert!(updates.listeners.borrow().is_empty());
     }
 
     #[test]

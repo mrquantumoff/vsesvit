@@ -15,7 +15,7 @@ use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
 use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
-use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, keys};
+use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::{Profile, Url};
 
@@ -927,20 +927,26 @@ impl Browser {
         &self.updates
     }
 
-    /// Shows the update state in every window's update bar.
+    /// Shows the update state in every window's update bar and in an open Settings.
     pub fn update_state_changed(&self) {
         let banner = self.updates.banner();
         for window in self.windows() {
             window.show_update(banner.as_ref());
         }
+        self.updates.changed();
     }
 
     /// The update bar's button.
     pub fn update_action(&self, action: Action) {
         match action {
             Action::Restart => updates::restart(self),
-            Action::Retry => exec::spawn(updates::check(self.me.clone(), Trigger::User)),
+            Action::Retry => self.check_for_updates(),
         }
+    }
+
+    /// A check the user asked for, whose progress and failure every window shows.
+    pub fn check_for_updates(&self) {
+        exec::spawn(updates::check(self.me.clone(), Trigger::User));
     }
 
     /// Whether this installation checks for and downloads updates on its own (`updates.automatic`,
@@ -954,6 +960,18 @@ impl Browser {
         if on {
             exec::spawn(updates::check(self.me.clone(), Trigger::Scheduled));
         }
+    }
+
+    /// Which releases this installation updates to (`updates.channel`, a device-local
+    /// preference), read at each check.
+    pub fn updates_channel(&self) -> UpdateChannel {
+        self.core(|p| p.prefs().get(&keys::UPDATES_CHANNEL))
+    }
+
+    /// Checks the new channel at once, unless a check, a download or a ready update is under way.
+    pub fn set_updates_channel(&self, channel: UpdateChannel) {
+        self.write_pref(&keys::UPDATES_CHANNEL, &channel);
+        self.check_for_updates();
     }
 
     // ---- extensions ----
