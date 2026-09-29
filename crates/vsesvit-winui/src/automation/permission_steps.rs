@@ -50,6 +50,27 @@ async fn page_value(tab: &Tab, expression: &str) -> Option<String> {
     None
 }
 
+/// A screenshot of what these steps show, which the address box's suggestion list must not
+/// cover.
+async fn shoot_clear(
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    name: &str,
+    steps: &mut Vec<Value>,
+    check: impl FnOnce(&BrowserWindow) -> Value,
+) {
+    shoot(window, out_dir, name, steps, |w| {
+        let mut step = check(w);
+        let open = w.suggestions_open();
+        step["suggestions_open"] = json!(open);
+        if open {
+            step["ok"] = json!(false);
+        }
+        step
+    })
+    .await;
+}
+
 async fn wait_prompt(window: &BrowserWindow) -> Option<FrameworkElement> {
     let prompt = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
         window.permission_prompt()
@@ -112,7 +133,7 @@ pub(super) async fn run(
     eval(&tab, ASK_NOTIFICATIONS).await?;
     let prompt = wait_prompt(window).await.ok_or("no notification prompt")?;
     let heading = text_of(&prompt, "PromptHeading");
-    shoot(
+    shoot_clear(
         window,
         out_dir,
         "24a-permission-prompt",
@@ -145,7 +166,7 @@ pub(super) async fn run(
 
     let popup = open_site_info(window).await?;
     let row = in_popup::<UIElement>(&popup, "PermissionRowNotifications").is_ok();
-    shoot(
+    shoot_clear(
         window,
         out_dir,
         "24d-site-info-permissions",
@@ -226,7 +247,7 @@ async fn camera(
             .filter(|_| window.tab_capture_shown(tab.id))
     })
     .await;
-    shoot(window, out_dir, "24f-camera-and-microphone-in-use", steps, |_| {
+    shoot_clear(window, out_dir, "24f-camera-and-microphone-in-use", steps, |_| {
         json!({
             "heading": heading,
             "page": result,
@@ -243,7 +264,7 @@ async fn camera(
         in_popup::<UIElement>(&popup, "PermissionStopCamera").is_ok(),
         in_popup::<UIElement>(&popup, "PermissionStopMicrophone").is_ok(),
     );
-    shoot(window, out_dir, "24g-site-info-in-use", steps, |_| {
+    shoot_clear(window, out_dir, "24g-site-info-in-use", steps, |_| {
         json!({ "stop_camera": camera, "stop_microphone": microphone, "ok": camera && microphone })
     })
     .await;
@@ -260,7 +281,7 @@ async fn camera(
     })
     .await;
     let ended = page_value(tab, "String(window.__ended)").await;
-    shoot(window, out_dir, "24h-stop-ends-the-capture", steps, |_| {
+    shoot_clear(window, out_dir, "24h-stop-ends-the-capture", steps, |_| {
         json!({ "ended_events": ended, "indicators_gone": gone.is_some(), "ok": ended.as_deref() == Some("2") && gone.is_some() })
     })
     .await;
@@ -285,7 +306,7 @@ async fn screen_share(
     .await;
     exec::sleep(Duration::from_millis(500)).await;
     let tab_icon = window.tab_capture_shown(tab.id);
-    shoot(window, out_dir, "24k-sharing-the-screen", steps, |_| {
+    shoot_clear(window, out_dir, "24k-sharing-the-screen", steps, |_| {
         json!({
             "page": result,
             "bar": bar,
@@ -341,7 +362,7 @@ async fn background_tab(
     ));
     let prompt = wait_prompt(window).await;
     let heading = prompt.as_ref().map(|p| text_of(p, "PromptHeading"));
-    shoot(
+    shoot_clear(
         window,
         out_dir,
         "24m-background-request-waits-for-its-tab",
@@ -397,7 +418,7 @@ async fn settings(
     let listed = ["SiteChoice0notifications", "SiteChoice0screen_share"]
         .iter()
         .all(|name| preview.find::<UIElement>(name).is_ok());
-    shoot(
+    shoot_clear(
         window,
         out_dir,
         "24j-settings-site-permissions",

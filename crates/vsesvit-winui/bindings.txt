@@ -96,6 +96,7 @@ Microsoft.UI.Xaml.Controls.Primitives.IButtonBase::Click
 Microsoft.UI.Xaml.Controls.Primitives.IToggleButton::{get_IsChecked, put_IsChecked}
 Microsoft.UI.Xaml.Controls.IFontIcon::{get_Glyph, put_Glyph}
 Microsoft.UI.Xaml.Controls.IAutoSuggestBox::{get_Text, put_Text, TextChanged, QuerySubmitted, put_IsSuggestionListOpen}
+Microsoft.UI.Xaml.Controls.IAutoSuggestBox::get_IsSuggestionListOpen
 Microsoft.UI.Xaml.Controls.IAutoSuggestBoxTextChangedEventArgs::get_Reason
 Microsoft.UI.Xaml.Controls.AutoSuggestionBoxTextChangeReason
 Microsoft.UI.Xaml.Controls.IAutoSuggestBoxQuerySubmittedEventArgs::{get_QueryText, get_ChosenSuggestion}

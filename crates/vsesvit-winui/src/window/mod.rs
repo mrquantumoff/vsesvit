@@ -570,6 +570,17 @@ impl BrowserWindow {
     /// simplified one again, unless the user typed something.
     pub(super) fn address_focus_changed(&self, focused: bool) {
         self.address_focused.set(focused);
+        if !focused {
+            // Focus moving into the box's own suggestion list leaves and returns within a turn.
+            let me = self.me.clone();
+            exec::spawn(async move {
+                with(&me, |w| {
+                    if !w.address_focused.get() {
+                        w.close_suggestions();
+                    }
+                });
+            });
+        }
         self.refresh_chrome();
         let _ = xaml::set_visible(&self.ui.address_focus_ring, focused);
         let text_box = self
@@ -980,6 +991,15 @@ impl BrowserWindow {
         count
     }
 
+    /// Anything that opens over the address box, or takes the focus from it, closes its list.
+    pub(super) fn close_suggestions(&self) {
+        let _ = self.ui.address.SetIsSuggestionListOpen(false);
+    }
+
+    pub fn suggestions_open(&self) -> bool {
+        self.ui.address.IsSuggestionListOpen().unwrap_or(false)
+    }
+
     /// The labels the suggestion list currently holds.
     pub fn suggestion_labels(&self) -> Vec<String> {
         self.suggestions
@@ -989,7 +1009,12 @@ impl BrowserWindow {
             .collect()
     }
 
+    /// The box's `TextChanged` says `UserInput` for some of the shell's own URL updates too, but
+    /// only a focused box can be typed in.
     fn address_edited_by_user(&self) {
+        if !self.address_focused.get() {
+            return;
+        }
         self.address_edited.set(true);
         let text = self.address_text();
         self.show_suggestions(&text);
