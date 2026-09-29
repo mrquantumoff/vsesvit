@@ -1,5 +1,6 @@
-//! The window's sidebar player: which tab it follows, what it shows, and moving that tab's web
-//! view into the picture-in-picture box while the tab is not on screen.
+//! The window's sidebar player: which tab it follows, what it shows, and what its
+//! picture-in-picture box shows while the tab is not on screen: the tab's own web view
+//! presenting its video, or for sound alone the page's artwork.
 //!
 //! The player follows the tab that started playing sound last, until the tab closes or shows a
 //! page with nothing to play. Its web view goes into the box only while the vertical pane is
@@ -19,13 +20,21 @@ use crate::media::{MediaAction, Playback};
 use crate::player::PlayerLook;
 use crate::tab::{Tab, TabId};
 
+/// What the picture-in-picture box shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Pip {
+    /// The tab's web view, which shows only its playing video.
+    Video(TabId),
+    /// The artwork of what a page without video plays.
+    Artwork(String),
+}
+
 #[derive(Default)]
 pub(super) struct MediaState {
     /// The tab the player follows.
     tab: Cell<Option<TabId>>,
     playback: RefCell<Option<Playback>>,
-    /// The tab whose web view is in the picture-in-picture box.
-    pip: Cell<Option<TabId>>,
+    pip: RefCell<Option<Pip>>,
     /// Counts playback queries, so only the latest answer is shown.
     query: Cell<u64>,
 }
@@ -93,31 +102,40 @@ impl BrowserWindow {
         self.update_pip();
     }
 
-    /// Moves the followed tab's web view into the picture-in-picture box, or back to the page
-    /// grid, as the window's state asks.
+    /// Fills the picture-in-picture box as the window's state asks, moving the followed tab's
+    /// web view into it or back to the page grid.
     pub(super) fn update_pip(&self) {
         let wanted = self.pip_wanted();
-        let current = self.media.pip.get();
+        let current = self.media.pip.borrow().clone();
         if wanted == current {
             return;
         }
-        if let Some(id) = current {
-            self.release_pip(id);
+        match current {
+            Some(Pip::Video(id)) => self.release_pip(id),
+            Some(Pip::Artwork(_)) => self.player.set_artwork(None),
+            None => {}
         }
-        if let Some(id) = wanted
-            && let Err(e) = self.attach_pip(id)
-        {
-            log::warn!("picture in picture: {e}");
-            self.release_pip(id);
+        *self.media.pip.borrow_mut() = wanted.clone();
+        match &wanted {
+            Some(Pip::Video(id)) => {
+                if let Err(e) = self.attach_pip(*id) {
+                    log::warn!("picture in picture: {e}");
+                    self.release_pip(*id);
+                    *self.media.pip.borrow_mut() = None;
+                }
+            }
+            Some(Pip::Artwork(url)) => self.player.set_artwork(Some(url)),
+            None => {}
         }
+        self.player.set_pip_visible(self.media.pip.borrow().is_some());
         self.place_views(self.active_tab().map(|t| t.id));
     }
 
     pub(super) fn in_pip(&self, id: TabId) -> bool {
-        self.media.pip.get() == Some(id)
+        *self.media.pip.borrow() == Some(Pip::Video(id))
     }
 
-    fn pip_wanted(&self) -> Option<TabId> {
+    fn pip_wanted(&self) -> Option<Pip> {
         let id = self.media.tab.get()?;
         let pane = StripKind::of(self.tabs_position.get()) == StripKind::Side
             && !self.side.is_compact()
@@ -128,30 +146,34 @@ impl BrowserWindow {
                 .split
                 .get()
                 .is_some_and(|s| s.has(id) && active.is_some_and(|a| s.has(a)));
-        let video = self.media.playback.borrow().as_ref().is_some_and(|p| p.video);
+        let content = match self.media.playback.borrow().as_ref() {
+            Some(playback) if playback.video => Some(Pip::Video(id)),
+            Some(playback) if !playback.artwork.is_empty() => {
+                Some(Pip::Artwork(playback.artwork.clone()))
+            }
+            _ => None,
+        };
         // The free space counts the box while it is shown, so both states agree on the room.
         let block = self.player.pip_block();
-        let shown = if self.media.pip.get().is_some() {
+        let shown = if self.media.pip.borrow().is_some() {
             block
         } else {
             0.0
         };
         let room = self.side.free_height() + shown >= block;
-        (pane && !on_screen && video && room).then_some(id)
+        content.filter(|_| pane && !on_screen && room)
     }
 
     fn attach_pip(&self, id: TabId) -> Result<()> {
         let tab = self.tab(id).ok_or_else(windows_core::Error::empty)?;
         let view = tab.view().cast::<UIElement>()?;
         remove_child(&self.ui.pages, &view)?;
-        self.media.pip.set(Some(id));
         if let Ok(element) = view.cast::<FrameworkElement>() {
             Grid::SetColumn(&element, 0)?;
             Grid::SetColumnSpan(&element, 1)?;
         }
         self.player.pip_host().Children()?.InsertAt(0, &view)?;
         view.SetVisibility(Visibility::Visible)?;
-        self.player.set_pip_visible(true);
         exec::spawn(async move {
             if !tab.present_pip(true).await {
                 log::debug!("tab {}: no video to show in picture in picture", tab.id);
@@ -161,8 +183,6 @@ impl BrowserWindow {
     }
 
     fn release_pip(&self, id: TabId) {
-        self.media.pip.set(None);
-        self.player.set_pip_visible(false);
         let Some(tab) = self.tab(id) else { return };
         let moved = tab.view().cast::<UIElement>().and_then(|view| {
             remove_child(self.player.pip_host(), &view)?;
@@ -181,9 +201,18 @@ impl BrowserWindow {
     pub(super) fn media_tab_closing(&self, id: TabId) {
         if self.in_pip(id) {
             self.release_pip(id);
+            *self.media.pip.borrow_mut() = None;
+            self.player.set_pip_visible(false);
         }
         if self.media.tab.get() == Some(id) {
-            self.media.tab.set(None);
+            // Another tab still playing takes over.
+            let playing = self
+                .tabs
+                .borrow()
+                .iter()
+                .find(|t| t.id != id && t.state().audible)
+                .map(|t| t.id);
+            self.media.tab.set(playing);
             *self.media.playback.borrow_mut() = None;
         }
     }
@@ -221,8 +250,20 @@ impl BrowserWindow {
         self.media.tab.get()
     }
 
+    /// The tab whose web view is in the picture-in-picture box, for scripted runs.
     pub fn pip_tab(&self) -> Option<TabId> {
-        self.media.pip.get()
+        match *self.media.pip.borrow() {
+            Some(Pip::Video(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The artwork the picture-in-picture box shows, for scripted runs.
+    pub fn pip_artwork(&self) -> Option<String> {
+        match &*self.media.pip.borrow() {
+            Some(Pip::Artwork(url)) => Some(url.clone()),
+            _ => None,
+        }
     }
 
     pub fn player_shown(&self) -> bool {

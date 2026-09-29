@@ -36,6 +36,9 @@ pub(crate) struct Playback {
     /// The page handles "previous track" / "next track".
     pub previous: bool,
     pub next: bool,
+    /// The media session's largest artwork, an http(s) address; empty without one.
+    #[serde(default)]
+    pub artwork: String,
 }
 
 pub(crate) const STATE_SCRIPT: &str =
@@ -63,7 +66,7 @@ mod tests {
 
     #[test]
     fn state_parses_or_is_none() {
-        let json = r#"{"playing":true,"title":"T","artist":"A","video":true,"previous":false,"next":true}"#;
+        let json = r#"{"playing":true,"title":"T","artist":"A","video":true,"previous":false,"next":true,"artwork":"https://a.test/art.png"}"#;
         assert_eq!(
             parse_state(json),
             Some(Playback {
@@ -73,6 +76,7 @@ mod tests {
                 video: true,
                 previous: false,
                 next: true,
+                artwork: "https://a.test/art.png".into(),
             })
         );
         assert_eq!(parse_state("null"), None);

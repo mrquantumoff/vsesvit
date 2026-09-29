@@ -1,7 +1,7 @@
 //! The media player at the foot of the vertical tab pane: the tab that played sound last, its
 //! track, play/pause, previous/next and mute, and above them a picture-in-picture box that holds
-//! the tab's own web view while another tab is selected. Collapsed, the pane keeps only
-//! play/pause.
+//! the tab's own web view while another tab is selected, or for sound alone the page's artwork.
+//! Collapsed, the pane keeps only play/pause.
 
 use windows_core::{Interface, Result};
 
@@ -35,6 +35,7 @@ const PLAYER_XAML: &str = r#"
 <StackPanel {ns} Padding="0,6,0,0">
   <Grid x:Name="PipHost" Height="130" Margin="0,0,0,6" CornerRadius="6" Background="Black"
         Visibility="Collapsed">
+    <Image x:Name="Artwork" Stretch="Uniform" Visibility="Collapsed"/>
     <Border x:Name="PipShield" Background="Transparent" ToolTipService.ToolTip="Go to tab"
             AutomationProperties.Name="Picture in picture"/>
   </Grid>
@@ -86,6 +87,7 @@ const PLAYER_XAML: &str = r#"
 pub(crate) struct Player {
     root: FrameworkElement,
     pip_host: Panel,
+    artwork: Image,
     media_tab: UIElement,
     glyph: UIElement,
     icon: Image,
@@ -104,6 +106,7 @@ impl Player {
         let root: FrameworkElement = xaml::load(PLAYER_XAML)?;
         let this = Self {
             pip_host: xaml::find(&root, "PipHost")?,
+            artwork: xaml::find(&root, "Artwork")?,
             media_tab: xaml::find(&root, "MediaTab")?,
             glyph: xaml::find(&root, "MediaGlyph")?,
             icon: xaml::find(&root, "MediaIcon")?,
@@ -161,6 +164,17 @@ impl Player {
     pub fn pip_block(&self) -> f64 {
         let width = self.root.ActualWidth().unwrap_or(0.0);
         pip_height(width) + PIP_GAP
+    }
+
+    /// Shows the artwork at `url` in the picture-in-picture box, or none.
+    pub fn set_artwork(&self, url: Option<&str>) {
+        let source = url.and_then(|url| {
+            let image = BitmapImage::new().ok()?;
+            image.SetUriSource(&Uri::CreateUri(url).ok()?).ok()?;
+            image.cast::<ImageSource>().ok()
+        });
+        let _ = self.artwork.SetSource(source.as_ref());
+        let _ = xaml::set_visible(&self.artwork, source.is_some());
     }
 
     pub fn set_pip_visible(&self, visible: bool) {

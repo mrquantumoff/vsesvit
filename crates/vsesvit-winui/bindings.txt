@@ -164,6 +164,8 @@ Windows.System.VirtualKey
 Windows.System.VirtualKeyModifiers
 Microsoft.UI.Xaml.Media.ImageSource
 Microsoft.UI.Xaml.Media.Imaging.BitmapImage::CreateInstance
+Microsoft.UI.Xaml.Media.Imaging.IBitmapImage::put_UriSource
+Windows.Foundation.Uri::CreateUri
 Microsoft.UI.Xaml.Media.Imaging.IBitmapSource::SetSourceAsync
 
 // ---- automation (scripted runs invoke buttons without OS input) ----

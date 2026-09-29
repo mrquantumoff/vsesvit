@@ -24,8 +24,15 @@ use crate::window::{BrowserWindow, TabAction};
 use crate::{exec, xaml};
 
 /// A canvas animation and a quiet tone as one media stream in a `<video>`; `start()` plays it.
+/// Like a video site, the video sits below a header, inside a transformed and clipped player,
+/// which moves elsewhere in the page when the page is narrow.
 pub(super) const MEDIA_PAGE: &str = "data:text/html,<title>Media</title>\
-<body style='margin:0;background:rgb(10,20,40)'><video id=v width=320 height=180></video><script>\
+<body style='margin:0;background:rgb(10,20,40);color:white;font:24px sans-serif'>\
+<header style='height:120px'>Site header</header><div style='transform:translateZ(0);overflow:hidden;\
+margin-left:60px;width:640px;height:360px'><video id=v width=640 height=360></video></div>\
+<p>Comments and more videos</p><aside id=narrow></aside><script>\
+const player=document.getElementById('v').parentElement;\
+addEventListener('resize',()=>{if(innerWidth<500)document.getElementById('narrow').appendChild(player)});\
 const c=document.createElement('canvas');c.width=320;c.height=180;const g=c.getContext('2d');let f=0;\
 setInterval(()=>{f++;g.fillStyle='rgb('+(f*5%256)+',90,160)';g.fillRect(0,0,320,180);\
 g.fillStyle='white';g.font='64px sans-serif';g.fillText(f,40,120)},33);\
@@ -38,8 +45,13 @@ v.srcObject=s;await v.play();return 'playing'};</script></body>";
 
 /// Opens the media page in a background tab, muted, and plays it.
 pub(super) async fn open_media(window: &Rc<BrowserWindow>) -> Result<Rc<Tab>, String> {
+    open_playing(window, MEDIA_PAGE).await
+}
+
+/// Opens `page` in a background tab, muted, and calls its `start()`.
+async fn open_playing(window: &Rc<BrowserWindow>, page: &str) -> Result<Rc<Tab>, String> {
     let media = window
-        .open_url_tab(MEDIA_PAGE, false)
+        .open_url_tab(page, false)
         .map_err(|e| e.to_string())?;
     wait_loaded(&media).await?;
     media.set_muted(true);
@@ -267,6 +279,54 @@ pub(super) async fn run(
     Ok(())
 }
 
+/// A page that plays sound alone shows its artwork in the box instead of the page.
+async fn audio_steps(
+    window: &Rc<BrowserWindow>,
+    first: &Rc<Tab>,
+    media: &Rc<Tab>,
+    out_dir: &Path,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    const ARTWORK: &str = "https://vsesvit.test/cover.png";
+    let page = format!(
+        "data:text/html,<title>Audio</title><audio id=a></audio><script>\
+         navigator.mediaSession.metadata=new MediaMetadata({{title:'Smoke song',\
+         artwork:[{{src:'{ARTWORK}',sizes:'512x512'}}]}});\
+         window.start=async()=>{{const c=new AudioContext();const o=c.createOscillator();\
+         const n=c.createGain();n.gain.value=0.01;const d=c.createMediaStreamDestination();\
+         o.connect(n).connect(d);o.start();const a=document.getElementById('a');\
+         a.srcObject=d.stream;await a.play();return 'playing'}};</script>"
+    );
+    let audio = open_playing(window, &page).await?;
+    select(window, first);
+    let artwork = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        window.pip_artwork().filter(|url| url == ARTWORK)
+    })
+    .await;
+    shoot(window, out_dir, "37b-sound-alone-shows-artwork", steps, |w| {
+        json!({
+            "followed": w.media_tab(),
+            "artwork": w.pip_artwork(),
+            "page_in_box": w.pip_tab(),
+            "ok": w.media_tab() == Some(audio.id) && artwork.is_some() && w.pip_tab().is_none()
+                && !xaml::is_visible(audio.view()),
+        })
+    })
+    .await;
+    window.close_tab(audio.id);
+    let back = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        (window.pip_tab() == Some(media.id)).then_some(())
+    })
+    .await
+    .is_some();
+    steps.push(json!({
+        "name": "37c-the-still-playing-tab-takes-over",
+        "followed": window.media_tab(),
+        "ok": back && window.media_tab() == Some(media.id),
+    }));
+    Ok(())
+}
+
 async fn player_steps(
     window: &Rc<BrowserWindow>,
     first: &Rc<Tab>,
@@ -280,14 +340,33 @@ async fn player_steps(
     })
     .await
     .is_some();
-    exec::sleep(Duration::from_millis(700)).await;
+    // Past the page's own resize handling, which moves the player.
+    exec::sleep(Duration::from_millis(1200)).await;
+    let video = media
+        .eval(
+            "(() => { const v = document.getElementById('v'); const r = v.getBoundingClientRect(); \
+             const moved = document.getElementById('narrow').contains(v) ? 1 : 0; \
+             return [r.x, r.y, r.width, r.height, innerWidth, innerHeight, moved]; })()",
+        )
+        .await
+        .ok()
+        .and_then(|json| serde_json::from_str::<[f64; 7]>(&json).ok());
+    // Only the video shows: it covers the whole (small) page, also after the page moved it.
+    let video_only = video.is_some_and(|[x, y, w, h, vw, vh, moved]| {
+        x.abs() < 1.0
+            && y.abs() < 1.0
+            && (w - vw).abs() < 1.0
+            && (h - vh).abs() < 1.0
+            && moved == 1.0
+    });
     shoot(window, out_dir, "37-sidebar-player-pip", steps, |w| {
         json!({
             "followed": w.media_tab(),
             "pip": w.pip_tab(),
             "player": w.player_shown(),
+            "video_rect_and_viewport": video,
             "ok": in_pip && w.media_tab() == Some(media.id) && w.player_shown()
-                && xaml::is_visible(media.view()),
+                && xaml::is_visible(media.view()) && video_only,
         })
     })
     .await;
@@ -348,6 +427,8 @@ async fn player_steps(
     }));
 
     let browser = window.browser().ok_or("no browser")?;
+    audio_steps(window, first, media, out_dir, steps).await?;
+
     select(window, first);
     browser.set_tab_pane_width(360);
     exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {

@@ -2,7 +2,9 @@
 // the page gives `navigator.mediaSession`, so the sidebar player can skip tracks, and exposes
 // `__vsesvitMedia` for the shell's `ExecuteScript` calls: the page's playback state, its
 // play/pause and track actions, and the picture-in-picture presentation, which shows the playing
-// video over the whole (small) page while the tab is in the sidebar.
+// video over the whole (small) page while the tab is in the sidebar. Sites rearrange their
+// layout for the small page and may move or replace the video, which ends its presentation, so
+// while it is wanted it is checked and shown again.
 (() => {
   if (window.__vsesvitMedia || window !== window.top) return;
   const handlers = new Map();
@@ -39,7 +41,20 @@
       border: 0 !important; transform: none !important; object-fit: contain !important; background: black !important;
     }
     html:has(video[data-vsesvit-pip]) { overflow: hidden !important; }`);
+  // The largest artwork of the media session, as an absolute http(s) address.
+  const artwork = (meta) => {
+    const size = (a) => Math.max(0, ...String(a.sizes || "").split(/\s+/).map((s) => parseInt(s, 10) || 0));
+    const best = Array.from((meta && meta.artwork) || []).sort((a, b) => size(b) - size(a))[0];
+    try {
+      const url = best && new URL(best.src, location.href);
+      return url && (url.protocol === "https:" || url.protocol === "http:") ? url.href : "";
+    } catch (e) {
+      return "";
+    }
+  };
   let shown = null;
+  let wanted = false;
+  let checking = 0;
   const hide = () => {
     if (!shown) return;
     const video = shown;
@@ -60,6 +75,7 @@
         video: m instanceof HTMLVideoElement && m.videoWidth > 0,
         previous: handlers.has("previoustrack"),
         next: handlers.has("nexttrack"),
+        artwork: artwork(meta),
       };
     },
     act(action) {
@@ -74,17 +90,35 @@
       call(action);
     },
     pip(on) {
+      wanted = on;
+      clearInterval(checking);
       hide();
       if (!on) return false;
-      const video = current();
-      if (!(video instanceof HTMLVideoElement) || !video.videoWidth || video.hasAttribute("popover")) return false;
-      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-      video.setAttribute("data-vsesvit-pip", "");
-      video.setAttribute("popover", "manual");
-      try { video.showPopover(); } catch (e) { hide(); return false; }
-      shown = video;
-      return true;
+      checking = setInterval(keep, 500);
+      return show();
     },
   };
+  const show = () => {
+    const video = current();
+    if (!(video instanceof HTMLVideoElement) || !video.videoWidth || video.hasAttribute("popover")) return false;
+    if (!document.adoptedStyleSheets.includes(sheet)) document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    video.setAttribute("data-vsesvit-pip", "");
+    video.setAttribute("popover", "manual");
+    try { video.showPopover(); } catch (e) { hide(); return false; }
+    shown = video;
+    return true;
+  };
+  // Shows the playing video again if the page moved it (which closes a popover), replaced it,
+  // or dropped the style sheet.
+  const keep = () => {
+    if (!wanted) return;
+    const video = current();
+    const intact = shown && shown === video && shown.isConnected && shown.matches(":popover-open")
+      && document.adoptedStyleSheets.includes(sheet);
+    if (intact) return;
+    hide();
+    show();
+  };
+  addEventListener("resize", () => { if (wanted) setTimeout(keep, 50); });
   Object.defineProperty(window, "__vsesvitMedia", { value: Object.freeze(api) });
 })();

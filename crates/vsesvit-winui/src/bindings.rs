@@ -4510,9 +4510,30 @@ impl windows_core::RuntimeType for IBitmapImage {
     const SIGNATURE: windows_core::imp::ConstBuffer =
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
+impl IBitmapImage {
+    pub fn SetUriSource<P0>(&self, value: P0) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<Uri>,
+    {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetUriSource)(
+                windows_core::Interface::as_raw(self),
+                value.param().abi(),
+            )
+            .ok()
+        }
+    }
+}
 #[repr(C)]
 pub struct IBitmapImage_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+    CreateOptions: usize,
+    SetCreateOptions: usize,
+    UriSource: usize,
+    pub SetUriSource: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IBitmapSource,
@@ -13266,6 +13287,37 @@ pub struct IUIElementProtected_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    IUriRuntimeClass,
+    IUriRuntimeClass_Vtbl,
+    0x9e365e57_48b2_4160_956f_c7385120bbfc
+);
+impl windows_core::RuntimeType for IUriRuntimeClass {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IUriRuntimeClass_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    IUriRuntimeClassFactory,
+    IUriRuntimeClassFactory_Vtbl,
+    0x44a9796f_723e_4fdf_a218_033e75b0c084
+);
+impl windows_core::RuntimeType for IUriRuntimeClassFactory {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IUriRuntimeClassFactory_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub CreateUri: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     IVisualTreeHelper,
     IVisualTreeHelper_Vtbl,
     0x5f69ac1e_6504_5e3f_a11c_87684c1db814
@@ -17036,6 +17088,52 @@ impl windows_core::RuntimeName for UIElementCollection {
 }
 unsafe impl Send for UIElementCollection {}
 unsafe impl Sync for UIElementCollection {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Uri(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(Uri, windows_core::IUnknown, windows_core::IInspectable);
+impl Uri {
+    pub fn CreateUri(uri: &str) -> windows_core::Result<Self> {
+        Self::IUriRuntimeClassFactory(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateUri)(
+                windows_core::Interface::as_raw(this),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(uri)),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IUriRuntimeClassFactory<
+        R,
+        F: FnOnce(&IUriRuntimeClassFactory) -> windows_core::Result<R>,
+    >(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<Uri, IUriRuntimeClassFactory> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for Uri {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IUriRuntimeClass>();
+}
+unsafe impl windows_core::Interface for Uri {
+    type Vtable = <IUriRuntimeClass as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IUriRuntimeClass as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for Uri {
+    type Target = IUriRuntimeClass;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for Uri {
+    const NAME: &'static str = "Windows.Foundation.Uri";
+}
+unsafe impl Send for Uri {}
+unsafe impl Sync for Uri {}
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VirtualKey(pub i32);

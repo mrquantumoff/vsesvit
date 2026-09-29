@@ -419,7 +419,7 @@ impl BrowserWindow {
         self.tabs.borrow_mut().retain(|t| t.id != tab.id);
         self.forget_split_of(tab.id);
         self.sync_selection();
-        self.show_media();
+        self.refresh_media();
         Ok(())
     }
 
