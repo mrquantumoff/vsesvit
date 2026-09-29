@@ -3,11 +3,18 @@
 //! address bar's capture button and the screen sharing bar).
 //!
 //! One prompt shows at a time, for the selected tab; whoever takes it out of `PermissionUi`
-//! decides what became of it, so a prompt hidden because its tab lost the selection is not
-//! mistaken for one the user dismissed.
+//! decides what became of it. As in Chrome, a request is never denied because the user did
+//! something else: a prompt that goes because its tab lost the selection, or because the
+//! site-info popup opened, is withdrawn and comes back; only Esc, "Not now" or a click elsewhere
+//! that leaves its tab selected dismiss it.
+//!
+//! The prompt takes the keyboard focus on its heading, never on an answer, and ignores answers
+//! for a moment after it shows or changes, so a key press or click meant for something else
+//! cannot answer it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
+use std::time::{Duration, Instant};
 
 use vsesvit_core::permissions::{Answer, Origin, Permission, Prompt, Setting};
 use windows_core::{Interface, Result};
@@ -19,10 +26,21 @@ use crate::permissions::{self, Choice, Row};
 use crate::tab::{Tab, TabId};
 use crate::{connection, exec, xaml};
 
+/// Answers this soon after a prompt shows or changes were aimed at something else (Chrome's
+/// input guard).
+const INPUT_GUARD: Duration = Duration::from_millis(500);
+
+/// A click that closes the prompt may be the press of a tab switch or of the site-info
+/// button; both take the prompt before this passes.
+const CLOSE_GRACE: Duration = Duration::from_millis(250);
+
 struct ShownPrompt {
+    /// Every shown prompt has its own, so a late event of a closed one is told apart.
     id: u64,
     tab: TabId,
     flyout: Flyout,
+    /// When it showed, or last changed.
+    since: Instant,
 }
 
 #[derive(Default)]
@@ -54,9 +72,13 @@ fn prompt_markup(prompt: &Prompt) -> String {
             )
         })
         .collect();
+    // The heading is the first thing that takes the focus, so the flyout never puts it on an
+    // answer.
     format!(
         r#"<StackPanel {{ns}} Width="320" Spacing="12">
-             <TextBlock x:Name="PromptHeading" Text="{}" TextWrapping="Wrap" Style="{{StaticResource BodyStrongTextBlockStyle}}"/>
+             <ContentControl x:Name="PromptFocus" IsTabStop="True" HorizontalContentAlignment="Stretch">
+               <TextBlock x:Name="PromptHeading" Text="{}" TextWrapping="Wrap" Style="{{StaticResource BodyStrongTextBlockStyle}}"/>
+             </ContentControl>
              <TextBlock Text="{}" TextWrapping="Wrap"/>
              <StackPanel Spacing="8">{buttons}</StackPanel>
            </StackPanel>"#,
@@ -145,22 +167,19 @@ impl BrowserWindow {
 
     /// Shows the prompt of the selected tab's first waiting requests, or updates the shown one
     /// when a request joined it. A prompt of another tab goes back to waiting until its tab is
-    /// selected again.
+    /// selected again, and none shows over the site-info popup.
     pub fn show_permission_prompt(&self) {
         let active = self.active_tab();
         let shown = self.permissions.prompt.borrow().as_ref().map(|p| p.tab);
-        if shown.is_some()
-            && shown != active.as_ref().map(|t| t.id)
-            && let Some(shown) = self.permissions.prompt.take()
-        {
-            if let Some(tab) = self.tab(shown.tab) {
-                tab.permissions().prompt_hidden();
-            }
-            hide(&shown.flyout);
+        if shown.is_some() && shown != active.as_ref().map(|t| t.id) {
+            self.withdraw_prompt();
         }
         let (Some(tab), Some(browser)) = (active, self.browser()) else {
             return;
         };
+        if self.connection_popup().is_some() {
+            return;
+        }
         let next = tab.permissions().next_prompt(&browser);
         tab.watch_capture();
         let shown = self
@@ -179,7 +198,12 @@ impl BrowserWindow {
             }
             (Some((prompt, _)), Some((id, flyout))) => self
                 .prompt_content(id, &prompt)
-                .and_then(|content| flyout.SetContent(&content.cast::<UIElement>()?)),
+                .and_then(|content| flyout.SetContent(&content.cast::<UIElement>()?))
+                .map(|()| {
+                    if let Some(shown) = self.permissions.prompt.borrow_mut().as_mut() {
+                        shown.since = Instant::now();
+                    }
+                }),
             (Some((prompt, _)), None) => self.open_prompt(tab.id, &prompt).map(|shown| {
                 *self.permissions.prompt.borrow_mut() = Some(shown);
             }),
@@ -199,7 +223,7 @@ impl BrowserWindow {
         for &answer in &prompt.answers {
             let button: Button = xaml::find(&content, &format!("Answer{answer:?}"))?;
             let w = self.me.clone();
-            click(&button, move || with(&w, |w| w.prompt_answered(id, answer)))?;
+            click(&button, move || with(&w, |w| w.prompt_button(id, answer)))?;
         }
         Ok(content)
     }
@@ -210,29 +234,64 @@ impl BrowserWindow {
         let content = self.prompt_content(id, prompt)?;
         self.close_suggestions();
         let flyout = connection::flyout(&content)?;
+        let base = flyout.cast::<FlyoutBase>()?;
+        // Clicks on the tabs and the address bar reach them while the prompt is open.
+        base.SetOverlayInputPassThroughElement(&self.ui.root.cast::<DependencyObject>()?)?;
         let w = self.me.clone();
-        flyout
-            .cast::<FlyoutBase>()?
-            .Closed(move |_, _| with(&w, |w| w.prompt_answered(id, Answer::Dismiss)))?
-            .forget();
+        base.Closed(move |_, _| {
+            let (w, closed) = (w.clone(), Instant::now());
+            exec::spawn(async move {
+                exec::sleep(CLOSE_GRACE).await;
+                with(&w, |w| w.prompt_closed(id, closed));
+            });
+        })?
+        .forget();
         let options = FlyoutShowOptions::new()?;
         options.SetShowMode(if self.is_foreground() {
             FlyoutShowMode::Standard
         } else {
             FlyoutShowMode::Transient
         })?;
-        flyout
-            .cast::<FlyoutBase>()?
-            .ShowAtWithOptions(&self.ui.site_button.cast::<FrameworkElement>()?, &options)?;
-        Ok(ShownPrompt { id, tab, flyout })
+        base.ShowAtWithOptions(&self.ui.site_button.cast::<FrameworkElement>()?, &options)?;
+        Ok(ShownPrompt {
+            id,
+            tab,
+            flyout,
+            since: Instant::now(),
+        })
     }
 
-    /// A button of prompt `id`, or its light dismiss (`Answer::Dismiss`).
-    fn prompt_answered(&self, id: u64, answer: Answer) {
-        let current = self.permissions.prompt.borrow().as_ref().map(|p| p.id);
-        if current != Some(id) {
+    /// An answer button of prompt `id`; ignored within the input guard.
+    fn prompt_button(&self, id: u64, answer: Answer) {
+        let guarded = match self.permissions.prompt.borrow().as_ref() {
+            Some(shown) if shown.id == id => shown.since.elapsed() < INPUT_GUARD,
+            _ => return,
+        };
+        if guarded {
+            log::info!("permission prompt: {answer:?} ignored, too soon after the prompt showed");
             return;
         }
+        self.settle_prompt(answer);
+    }
+
+    /// Prompt `id` closed at `closed` without a button, and the grace passed: Esc or a click
+    /// elsewhere dismiss it if its tab is still the one shown. A close within the input guard
+    /// withdraws it instead, to show again.
+    fn prompt_closed(&self, id: u64, closed: Instant) {
+        let (tab, since) = match self.permissions.prompt.borrow().as_ref() {
+            Some(shown) if shown.id == id => (shown.tab, shown.since),
+            _ => return,
+        };
+        let selected = self.active_tab().is_some_and(|t| t.id == tab);
+        if selected && closed.duration_since(since) >= INPUT_GUARD {
+            self.settle_prompt(Answer::Dismiss);
+        } else {
+            self.withdraw_prompt();
+            self.show_next_prompt();
+        }
+    }
+
+    fn settle_prompt(&self, answer: Answer) {
         let Some(shown) = self.permissions.prompt.take() else {
             return;
         };
@@ -243,6 +302,28 @@ impl BrowserWindow {
             tab.watch_capture();
         }
         self.show_next_prompt();
+    }
+
+    /// Hides the prompt and keeps its requests waiting.
+    fn withdraw_prompt(&self) {
+        if let Some(shown) = self.permissions.prompt.take() {
+            if let Some(tab) = self.tab(shown.tab) {
+                tab.permissions().prompt_hidden();
+            }
+            hide(&shown.flyout);
+        }
+    }
+
+    /// The site-info popup is about to show as `flyout`: the prompt makes way for it and
+    /// comes back when it closes.
+    pub(super) fn prompt_yields_to(&self, flyout: &Flyout) -> Result<()> {
+        self.withdraw_prompt();
+        let w = self.me.clone();
+        flyout
+            .cast::<FlyoutBase>()?
+            .Closed(move |_, _| with(&w, BrowserWindow::show_next_prompt))?
+            .forget();
+        Ok(())
     }
 
     /// The tab's shown prompt no longer has requests (it navigated away).
@@ -484,6 +565,25 @@ impl BrowserWindow {
             .unwrap_or(false)
             .then(|| bar.Title().ok().map(|t| t.to_string()))
             .flatten()
+    }
+
+    /// Closes the prompt's flyout as Esc or a click elsewhere does, leaving what that means to
+    /// the prompt.
+    pub fn close_prompt_flyout(&self) {
+        if let Some(shown) = self.permissions.prompt.borrow().as_ref() {
+            hide(&shown.flyout);
+        }
+    }
+
+    pub fn in_foreground(&self) -> bool {
+        self.is_foreground()
+    }
+
+    /// The `x:Name` of the element with the keyboard focus.
+    pub fn focused_name(&self) -> Option<String> {
+        let focused = FocusManager::GetFocusedElementWithRoot(&self.xaml_root().ok()?).ok()?;
+        let name = focused.cast::<FrameworkElement>().ok()?.Name().ok()?;
+        Some(name.to_string())
     }
 
     /// Fills the address box's suggestion list for `text` and opens it, as typing does.

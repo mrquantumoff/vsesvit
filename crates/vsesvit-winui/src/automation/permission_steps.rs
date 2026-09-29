@@ -73,9 +73,12 @@ async fn shoot_clear(
 
 /// The address box's suggestion list open, as typing leaves it; whether it is.
 async fn open_list(window: &BrowserWindow) -> bool {
-    window.open_suggestions("fixture");
-    exec::sleep(Duration::from_millis(300)).await;
-    window.suggestions_open()
+    exec::wait_for(Duration::from_secs(3), Duration::from_millis(300), || {
+        window.open_suggestions("fixture");
+        window.suggestions_open().then_some(())
+    })
+    .await
+    .is_some()
 }
 
 async fn wait_prompt(window: &BrowserWindow) -> Option<FrameworkElement> {
@@ -227,6 +230,7 @@ pub(super) async fn run(
         .map_err(|e| e.to_string())?;
     screen_share(window, &tab, out_dir, steps).await?;
     background_tab(window, server, out_dir, steps).await?;
+    prompt_rules(browser, window, server, out_dir, steps).await?;
     browser
         .core(|c| c.site_permissions().reset_site(&origin))
         .map_err(|e| e.to_string())?;
@@ -398,6 +402,195 @@ async fn background_tab(
     }));
     window.close_tab(tab.id);
     Ok(())
+}
+
+const ASK_LOCATION_WATCHED: &str = "window.__geo = ''; navigator.geolocation.getCurrentPosition(\
+    () => window.__geo = 'ok', e => window.__geo = 'err' + e.code); 0";
+
+fn select_tab(window: &BrowserWindow, tab: &Tab) -> Result<(), String> {
+    let index = window
+        .tabs_in_order()
+        .iter()
+        .position(|t| t.id == tab.id)
+        .ok_or("the tab is gone")?;
+    window.run(Command::SelectTab(
+        u8::try_from(index).map_err(|e| e.to_string())?,
+    ));
+    Ok(())
+}
+
+/// The prompt as soon as it shows, before its input guard ends.
+async fn first_sight_of_prompt(window: &BrowserWindow) -> Result<FrameworkElement, String> {
+    exec::wait_for(STEP_TIMEOUT, Duration::from_millis(10), || {
+        window.permission_prompt()
+    })
+    .await
+    .ok_or("no location prompt".into())
+}
+
+/// Chrome's rules for what ends a prompt: an answer pressed right after it shows is ignored;
+/// a tab switch or the site-info popup only withdraw it, and it comes back, also when the old
+/// flyout's close arrives late; a click elsewhere on its tab dismisses it.
+async fn prompt_rules(
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    server: &FixtureServer,
+    out_dir: &Path,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let origin = Origin::parse(&server.origin()).ok_or("no fixture origin")?;
+    let location = || browser.core(|c| c.site_permissions().get(&origin, Permission::Location));
+    let other = window.active_tab().ok_or("no tab")?;
+    let tab = window
+        .open_url_tab(server.url("/page2.html").as_str(), true)
+        .map_err(|e| e.to_string())?;
+    wait_loaded(&tab).await?;
+    let waiting = || async { eval(&tab, "window.__geo").await.is_ok_and(|v| v == "\"\"") };
+
+    eval(&tab, ASK_LOCATION_WATCHED).await?;
+    let prompt = first_sight_of_prompt(window).await?;
+    let seen = Instant::now();
+    let pressed = exec::wait_for(
+        Duration::from_millis(400),
+        Duration::from_millis(10),
+        || {
+            answer(&prompt, "AnswerAllowWhileVisiting")
+                .ok()
+                .map(|()| seen.elapsed().as_millis())
+        },
+    )
+    .await;
+    exec::sleep(Duration::from_millis(700)).await;
+    steps.push(json!({
+        "name": "24o-an-answer-right-after-the-prompt-shows-is-ignored",
+        "pressed_after_ms": pressed,
+        "stored": format!("{:?}", location()),
+        "ok": pressed.is_some() && location().is_none() && window.permission_prompt().is_some()
+            && waiting().await,
+    }));
+
+    if std::env::var("VSESVIT_SMOKE_KEYBOARD").as_deref() == Ok("1") {
+        steps.push(keyboard_guard(window, &tab, &location).await);
+    }
+
+    select_tab(window, &other)?;
+    exec::sleep(Duration::from_millis(100)).await;
+    let withdrawn = window.permission_prompt().is_none();
+    select_tab(window, &tab)?;
+    let back = wait_prompt(window).await.is_some();
+    exec::sleep(Duration::from_millis(500)).await;
+    steps.push(json!({
+        "name": "24p-a-tab-switch-withdraws-the-prompt-and-it-comes-back",
+        "withdrawn": withdrawn,
+        "back": back,
+        "ok": withdrawn && back && window.permission_prompt().is_some() && waiting().await,
+    }));
+
+    window.show_connection().map_err(|e| e.to_string())?;
+    exec::sleep(Duration::from_millis(600)).await;
+    let (popup, withdrawn) = (
+        window.connection_popup().is_some(),
+        window.permission_prompt().is_none(),
+    );
+    shoot_clear(
+        window,
+        out_dir,
+        "24q-site-info-over-a-waiting-prompt",
+        steps,
+        |_| json!({ "popup": popup, "prompt_withdrawn": withdrawn, "ok": popup && withdrawn }),
+    )
+    .await;
+    window.hide_connection();
+    let back = wait_prompt(window).await.is_some();
+    steps.push(json!({
+        "name": "24q2-the-prompt-comes-back-when-site-info-closes",
+        "ok": back && waiting().await,
+    }));
+
+    window.close_prompt_flyout();
+    let denied = page_value(&tab, "window.__geo").await;
+    steps.push(json!({
+        "name": "24r-a-click-elsewhere-on-its-tab-dismisses-the-prompt",
+        "page": denied,
+        "ok": denied.as_deref() == Some("err1") && location().is_none()
+            && window.permission_prompt().is_none(),
+    }));
+    window.close_tab(tab.id);
+    Ok(())
+}
+
+/// Enter and Space pressed on the keyboard while the prompt shows, first within its input
+/// guard and then after it, answer nothing: the focus is on its heading. Real key presses need
+/// the window in the foreground, so this only runs with `VSESVIT_SMOKE_KEYBOARD=1`, and only
+/// sends them while this window is the foreground one.
+async fn keyboard_guard(
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    location: &dyn Fn() -> Option<Setting>,
+) -> Value {
+    const VK_RETURN: u16 = 0x0D;
+    const VK_SPACE: u16 = 0x20;
+    let name = "24o2-enter-and-space-on-the-prompt-answer-nothing";
+    window.close_prompt_flyout();
+    exec::sleep(Duration::from_millis(600)).await;
+    window.activate();
+    let foreground = exec::wait_for(Duration::from_secs(3), Duration::from_millis(50), || {
+        window.in_foreground().then_some(())
+    })
+    .await;
+    if foreground.is_none() {
+        return json!({ "name": name, "skipped": "the window could not come to the foreground", "ok": true });
+    }
+    if let Err(e) = eval(tab, ASK_LOCATION_WATCHED).await {
+        return json!({ "name": name, "error": e, "ok": false });
+    }
+    if first_sight_of_prompt(window).await.is_err() {
+        return json!({ "name": name, "error": "no prompt", "ok": false });
+    }
+    let mut sent = Vec::new();
+    for pause in [0, 700] {
+        exec::sleep(Duration::from_millis(pause)).await;
+        let ours = window.in_foreground();
+        if ours {
+            send_keys(&[VK_RETURN, VK_SPACE]);
+        }
+        sent.push(ours);
+    }
+    exec::sleep(Duration::from_millis(500)).await;
+    let focused = window.focused_name();
+    let still_open = window.permission_prompt().is_some();
+    json!({
+        "name": name,
+        "keys_sent": sent,
+        "focused": focused,
+        "stored": format!("{:?}", location()),
+        "ok": sent == [true, true] && still_open && location().is_none()
+            && focused.as_deref() == Some("PromptFocus"),
+    })
+}
+
+fn send_keys(keys: &[u16]) {
+    let key = |vk: u16, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD as u32,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                dwFlags: if up { KEYEVENTF_KEYUP as u32 } else { 0 },
+                ..KEYBDINPUT::default()
+            },
+        },
+    };
+    let inputs: Vec<INPUT> = keys
+        .iter()
+        .flat_map(|&vk| [key(vk, false), key(vk, true)])
+        .collect();
+    unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            size_of::<INPUT>() as i32,
+        )
+    };
 }
 
 /// The Settings page lists the fixture site's blocked notifications and screen sharing.

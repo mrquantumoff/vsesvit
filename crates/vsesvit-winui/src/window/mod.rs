@@ -684,6 +684,7 @@ impl BrowserWindow {
             })?;
         }
         let flyout = connection::flyout(&content)?;
+        self.prompt_yields_to(&flyout)?;
         let options = FlyoutShowOptions::new()?;
         options.SetShowMode(if self.is_foreground() {
             FlyoutShowMode::Standard
