@@ -13,9 +13,13 @@ const WINDOW_XAML: &str = r#"
     <ResourceDictionary.ThemeDictionaries>
       <ResourceDictionary x:Key="Light">
         <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="SubtleFillColorSecondaryBrush"/>
+        <Color x:Key="AddressProgressTail">#00000000</Color>
+        <Color x:Key="AddressProgressHead">#E4000000</Color>
       </ResourceDictionary>
       <ResourceDictionary x:Key="Default">
         <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="SubtleFillColorSecondaryBrush"/>
+        <Color x:Key="AddressProgressTail">#00FFFFFF</Color>
+        <Color x:Key="AddressProgressHead">#FFFFFFFF</Color>
       </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
     <Style x:Key="ToolbarButton" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
@@ -168,6 +172,18 @@ const WINDOW_XAML: &str = r#"
                     ToolTipService.ToolTip="Bookmark this page (Ctrl+D)" AutomationProperties.Name="Bookmark this page">
         <FontIcon x:Name="StarGlyph" Glyph="&#xE734;" FontSize="14"/>
       </ToggleButton>
+      <!-- The page's load progress, a line along the bottom that fades in from its start. -->
+      <Grid x:Name="AddressProgressTrack" Grid.ColumnSpan="5" Margin="10,0" Height="2"
+            VerticalAlignment="Bottom" IsHitTestVisible="False">
+        <Border x:Name="AddressProgress" HorizontalAlignment="Left" CornerRadius="1" Visibility="Collapsed">
+          <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+              <GradientStop Offset="0" Color="{ThemeResource AddressProgressTail}"/>
+              <GradientStop Offset="1" Color="{ThemeResource AddressProgressHead}"/>
+            </LinearGradientBrush>
+          </Border.Background>
+        </Border>
+      </Grid>
       <Border x:Name="AddressFocusRing" Grid.ColumnSpan="5" CornerRadius="8" BorderThickness="2" Margin="-1"
               BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" IsHitTestVisible="False"
               Visibility="Collapsed"/>
@@ -322,6 +338,8 @@ pub(super) struct Chrome {
     pub(super) address: AutoSuggestBox,
     pub(super) address_pill: FrameworkElement,
     pub(super) address_focus_ring: UIElement,
+    pub(super) address_progress_track: FrameworkElement,
+    pub(super) address_progress: FrameworkElement,
     pub(super) site_button: Button,
     pub(super) site_icon: FontIcon,
     pub(super) zoom_chip: Button,
@@ -369,6 +387,8 @@ impl Chrome {
             address: xaml::find(&root, "Address")?,
             address_pill: xaml::find(&root, "AddressPill")?,
             address_focus_ring: xaml::find(&root, "AddressFocusRing")?,
+            address_progress_track: xaml::find(&root, "AddressProgressTrack")?,
+            address_progress: xaml::find(&root, "AddressProgress")?,
             site_button: xaml::find(&root, "SiteButton")?,
             site_icon: xaml::find(&root, "SiteIcon")?,
             zoom_chip: xaml::find(&root, "ZoomChip")?,

@@ -21,6 +21,7 @@ use windows_core::Interface;
 mod bookmark_steps;
 mod connection_steps;
 mod dialog_steps;
+mod progress_steps;
 mod tab_steps;
 mod toolbar_steps;
 
@@ -669,6 +670,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     }));
 
     zoom_steps(&window, &first, out_dir, steps).await?;
+    progress_steps::run(&window, out_dir, steps).await?;
     connection_steps::run(&window, &server, out_dir, steps).await?;
     tab_steps::run(&window, &server, out_dir, steps).await?;
 
@@ -1037,7 +1039,7 @@ async fn wait_for_tab_count(window: &Rc<BrowserWindow>, count: usize) -> Result<
 pub(super) async fn wait_loaded(tab: &Rc<Tab>) -> Result<(), String> {
     exec::wait_for(LOAD_TIMEOUT, Duration::from_millis(100), || {
         let state = tab.state();
-        (tab.is_ready() && !state.loading && !state.url.is_empty()).then_some(())
+        (tab.is_ready() && !state.loading() && !state.url.is_empty()).then_some(())
     })
     .await
     .ok_or_else(|| format!("tab {} did not finish loading: {:?}", tab.id, tab.state()))?;
@@ -1049,7 +1051,7 @@ pub(super) async fn wait_loaded(tab: &Rc<Tab>) -> Result<(), String> {
 async fn wait_title(tab: &Rc<Tab>, title: &str) -> Result<(), String> {
     exec::wait_for(LOAD_TIMEOUT, Duration::from_millis(100), || {
         let state = tab.state();
-        (state.title == title && !state.loading).then_some(())
+        (state.title == title && !state.loading()).then_some(())
     })
     .await
     .ok_or_else(|| format!("tab {} never showed {title:?}: {:?}", tab.id, tab.state()))?;

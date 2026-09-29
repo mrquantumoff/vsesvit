@@ -237,9 +237,9 @@ async fn checks(
             let s = tab.state();
             p.observe(format!(
                 "url={} title={:?} loading={}",
-                s.url, s.title, s.loading
+                s.url, s.title, s.loading()
             ));
-            (s.url == index.as_str() && s.title == FIXTURE_TITLE && !s.loading).then_some(s)
+            (s.url == index.as_str() && s.title == FIXTURE_TITLE && !s.loading()).then_some(s)
         })
         .await;
         Ok(format!("title={} url={}", state.title, state.url))
@@ -337,7 +337,7 @@ async fn checks(
         until(p, |p| {
             let s = second.state();
             p.observe(format!("second tab url={} title={:?}", s.url, s.title));
-            (s.title == PAGE2_TITLE && !s.loading).then_some(())
+            (s.title == PAGE2_TITLE && !s.loading()).then_some(())
         })
         .await;
         let opened = window.tab_count();
@@ -631,9 +631,9 @@ async fn wait_ready(tab: &Rc<Tab>, probe: &Probe) {
             "tab ready={} url={:?} loading={}",
             tab.is_ready(),
             s.url,
-            s.loading
+            s.loading()
         ));
-        (tab.is_ready() && !s.loading && !s.url.is_empty()).then_some(())
+        (tab.is_ready() && !s.loading() && !s.url.is_empty()).then_some(())
     })
     .await;
 }

@@ -229,7 +229,7 @@ async fn home_button(
     window.go_home();
     let went = until(|| (tab.state().url == page2.as_str()).then_some(())).await;
     tab.go_back();
-    let returned = until(|| (tab.state().url == was && !tab.state().loading).then_some(())).await;
+    let returned = until(|| (tab.state().url == was && !tab.state().loading()).then_some(())).await;
     if let Err(e) = browser.core(|p| p.prefs().reset(&keys::HOMEPAGE)) {
         log::warn!("home page: {e}");
     }

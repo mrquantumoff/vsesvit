@@ -71,12 +71,23 @@ impl Autofill {
     }
 }
 
+/// How far the tab's current navigation has got.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Load {
+    #[default]
+    Idle,
+    /// The navigation was requested; nothing of the new page has arrived.
+    Started,
+    /// The new document is arriving.
+    Committed,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TabState {
     /// The committed URL; empty until the first commit.
     pub url: String,
     pub title: String,
-    pub loading: bool,
+    pub load: Load,
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub starred: bool,
@@ -85,6 +96,12 @@ pub(crate) struct TabState {
     /// The engine reports the page audible (it holds this a moment after the sound stops).
     pub audible: bool,
     pub muted: bool,
+}
+
+impl TabState {
+    pub fn loading(&self) -> bool {
+        self.load != Load::Idle
+    }
 }
 
 pub(crate) struct Tab {
@@ -150,7 +167,7 @@ impl Tab {
         TabLook {
             title: state.title.clone(),
             favicon: self.favicon.borrow().clone(),
-            loading: state.loading,
+            loading: state.loading(),
             audio: Audio::of(state.audible, state.muted),
             pinned: self.pinned.get(),
         }
@@ -401,7 +418,7 @@ impl Tab {
 
     pub fn reload_or_stop(&self) {
         let Some(core) = self.core.get() else { return };
-        let loading = self.state.borrow().loading;
+        let loading = self.state.borrow().loading();
         if loading {
             let _ = core.Stop();
         } else {
@@ -525,12 +542,13 @@ impl Tab {
             self,
             |tab, args: &CoreWebView2NavigationStartingEventArgs| {
                 *tab.requested.borrow_mut() = args.Uri().unwrap_or_default();
-                tab.state.borrow_mut().loading = true;
+                tab.state.borrow_mut().load = Load::Started;
                 tab.notify();
             },
         ))?
         .forget();
         core.ContentLoading(on(self, |tab, _: &CoreWebView2ContentLoadingEventArgs| {
+            tab.state.borrow_mut().load = Load::Committed;
             tab.committed(CommitKind::NewDocument);
         }))?
         .forget();
@@ -560,7 +578,7 @@ impl Tab {
                         args.WebErrorStatus().map(|s| s.0).unwrap_or(-1)
                     );
                 }
-                tab.state.borrow_mut().loading = false;
+                tab.state.borrow_mut().load = Load::Idle;
                 tab.refresh_history();
                 tab.notify();
             },

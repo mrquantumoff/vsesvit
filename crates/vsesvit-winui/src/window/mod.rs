@@ -9,6 +9,7 @@
 
 mod chrome;
 mod media;
+mod progress;
 mod tab_actions;
 mod tab_layout;
 mod tab_menu;
@@ -126,6 +127,7 @@ pub(crate) struct BrowserWindow {
     side: Rc<SidePane>,
     player: Player,
     media: media::MediaState,
+    progress: progress::Progress,
     tabs_position: Cell<TabsPosition>,
     tabs: RefCell<Vec<Rc<Tab>>>,
     /// The user typed into the address box since it last showed the page URL.
@@ -190,6 +192,7 @@ impl BrowserWindow {
             side,
             player,
             media: media::MediaState::default(),
+            progress: progress::Progress::default(),
             tabs_position: Cell::new(prefs.tabs),
             tabs: RefCell::new(Vec::new()),
             address_edited: Cell::new(false),
@@ -506,7 +509,7 @@ impl BrowserWindow {
         let state = self.active_tab().map(|t| t.state()).unwrap_or_default();
         let _ = self.ui.back.SetIsEnabled(state.can_go_back);
         let _ = self.ui.forward.SetIsEnabled(state.can_go_forward);
-        let (glyph, tip) = if state.loading {
+        let (glyph, tip) = if state.loading() {
             ("\u{E711}", "Stop")
         } else {
             ("\u{E72C}", "Refresh (Ctrl+R)")
@@ -519,6 +522,7 @@ impl BrowserWindow {
                 let _ = self.ui.address.SetText(&shown);
             }
         }
+        self.show_progress();
         self.show_star(state.starred);
         self.show_site(&state.url);
         self.show_zoom(state.zoom);
