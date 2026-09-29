@@ -10,7 +10,7 @@
 //! ```ignore
 //! let installation = Installation::detect();
 //! let updater = Updater::new(Config::builtin()?, current_version, installation.clone())?;
-//! let available = updater.check()?;
+//! let available = updater.check("stable")?;
 //! remove_stale_downloads(&cache_dir, available.as_ref().map(|a| &a.release().version))?;
 //! if let Some(Available::Update(update)) = available {
 //!     let downloaded = update.download(&cache_dir, |received, total| { /* progress */ })?;

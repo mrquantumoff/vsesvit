@@ -13,8 +13,8 @@ pub struct Config {
     /// Base64 of a minisign public key file, as `tauri signer generate` prints it. Empty turns
     /// the updater off.
     pub pubkey: String,
-    /// Tried in order. May hold `{{current_version}}`, `{{target}}`, `{{arch}}` and
-    /// `{{bundle_type}}`.
+    /// Tried in order. May hold `{{channel}}`, `{{current_version}}`, `{{target}}`, `{{arch}}`
+    /// and `{{bundle_type}}`.
     pub endpoints: Vec<Url>,
     pub windows_install_mode: WindowsInstallMode,
     /// Refuse plain-http endpoints and redirects. Tauri's `dangerousInsecureTransportProtocol`,

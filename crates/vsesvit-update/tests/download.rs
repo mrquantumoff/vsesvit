@@ -28,7 +28,7 @@ impl Release {
     fn update(&self, installation: Installation) -> Update {
         let config = config(self.signer.pubkey(), vec![self.server.url("/update")]);
         let updater = Updater::new(config, Version::new(0, 1, 0), installation).unwrap();
-        updater.check().unwrap().expect("the release is newer").into_update().unwrap()
+        updater.check("stable").unwrap().expect("the release is newer").into_update().unwrap()
     }
 }
 

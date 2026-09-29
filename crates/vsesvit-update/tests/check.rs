@@ -26,7 +26,7 @@ fn dynamic(version: &str) -> String {
 }
 
 fn check(updater: &Updater) -> Option<Update> {
-    updater.check().expect("check succeeds").map(|available| available.into_update().expect("installable"))
+    updater.check("stable").expect("check succeeds").map(|available| available.into_update().expect("installable"))
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn dynamic_format_offers_a_newer_release() {
 #[test]
 fn build_metadata_in_the_current_version_is_percent_encoded() {
     let server = Server::start();
-    let _ = updater(vec![templated(&server)], "1.0.0+nightly.3", Installation::Unpackaged).check();
+    let _ = updater(vec![templated(&server)], "1.0.0+nightly.3", Installation::Unpackaged).check("stable");
     assert_eq!(
         server.requests()[0].target,
         format!("/u/{TARGET}/{ARCH}/1.0.0%2Bnightly.3?variant=unknown"),
@@ -94,7 +94,7 @@ fn static_format_falls_back_to_the_plain_key() {
 fn static_format_without_a_matching_key_names_the_keys_tried() {
     let server = Server::start();
     server.route("/latest.json", 200, static_manifest(&["plan9-mips"]));
-    let err = updater(vec![server.url("/latest.json")], "1.0.0", Installation::Rpm).check().unwrap_err();
+    let err = updater(vec![server.url("/latest.json")], "1.0.0", Installation::Rpm).check("stable").unwrap_err();
     let Error::NoArtifactForTarget(keys) = err else { panic!("expected NoArtifactForTarget, got {err:?}") };
     assert_eq!(keys, [format!("{TARGET}-{ARCH}-rpm"), format!("{TARGET}-{ARCH}")]);
 }
@@ -122,10 +122,11 @@ fn quadrant_database_row_is_accepted_verbatim() {
   "version_id": "0b1c1a8e-5d4f-4f7e-9d59-3f0a3c6d1e2b",
   "platform_variation": "deb"
 }"#;
-    server.route(&format!("/api/any/vsesvit/updates/stable/{TARGET}/{ARCH}/0.1.0"), 200, row);
+    server.route(&format!("/api/any/vsesvit/updates/nightly/{TARGET}/{ARCH}/0.1.0"), 200, row);
     let endpoint = server
-        .url("/api/any/vsesvit/updates/stable/{{target}}/{{arch}}/{{current_version}}?variant={{bundle_type}}");
-    let update = check(&updater(vec![endpoint], "0.1.0", Installation::Deb)).expect("0.2.0 is newer");
+        .url("/api/any/vsesvit/updates/{{channel}}/{{target}}/{{arch}}/{{current_version}}?variant={{bundle_type}}");
+    let available = updater(vec![endpoint], "0.1.0", Installation::Deb).check("nightly").expect("check succeeds");
+    let update = available.expect("0.2.0 is newer").into_update().expect("installable");
     assert_eq!(update.release.version, Version::new(0, 2, 0));
     assert_eq!(update.signature, "dW50cnVzdGVkIGNvbW1lbnQ=");
     assert!(update.url.as_str().ends_with("Vsesvit_0.2.0_amd64.deb"));
@@ -167,14 +168,14 @@ fn a_failing_endpoint_falls_through_to_the_next() {
 fn when_every_endpoint_fails_the_last_error_is_returned() {
     let server = Server::start();
     server.route("/broken", 503, "down");
-    let err = updater(vec![dead_url(), server.url("/broken")], "1.0.0", Installation::Deb).check().unwrap_err();
+    let err = updater(vec![dead_url(), server.url("/broken")], "1.0.0", Installation::Deb).check("stable").unwrap_err();
     assert!(matches!(err, Error::Http(503)), "{err:?}");
 
-    let err = updater(vec![server.url("/broken"), dead_url()], "1.0.0", Installation::Deb).check().unwrap_err();
+    let err = updater(vec![server.url("/broken"), dead_url()], "1.0.0", Installation::Deb).check("stable").unwrap_err();
     assert!(matches!(err, Error::Network(_)), "{err:?}");
 
     server.route("/garbage", 200, r#"{"version": "not semver", "url": "https://dl.test/a", "signature": "s"}"#);
-    let err = updater(vec![server.url("/garbage")], "1.0.0", Installation::Deb).check().unwrap_err();
+    let err = updater(vec![server.url("/garbage")], "1.0.0", Installation::Deb).check("stable").unwrap_err();
     assert!(matches!(err, Error::BadResponse(_)), "{err:?}");
 }
 
@@ -194,7 +195,7 @@ fn installations_that_do_not_update_themselves_see_the_release_without_an_artifa
     let server = Server::start();
     server.route("/u", 200, static_manifest(&[&format!("{TARGET}-{ARCH}-deb"), &format!("{TARGET}-{ARCH}-appimage")]));
     for installation in [Installation::Unpackaged, Installation::Flatpak] {
-        let available = updater(vec![server.url("/u")], "1.0.0", installation.clone()).check().unwrap();
+        let available = updater(vec![server.url("/u")], "1.0.0", installation.clone()).check("stable").unwrap();
         let Some(Available::NotInstallable(release)) = available else {
             panic!("{installation:?}: expected a release it cannot install, got {available:?}")
         };
@@ -223,7 +224,7 @@ fn plain_http_is_refused_when_https_only() {
     server.route("/u", 200, dynamic("9.0.0"));
     let mut config = config(support::Signer::new().pubkey(), vec![server.url("/u")]);
     config.https_only = true;
-    let err = Updater::new(config, Version::new(1, 0, 0), Installation::Deb).unwrap().check().unwrap_err();
+    let err = Updater::new(config, Version::new(1, 0, 0), Installation::Deb).unwrap().check("stable").unwrap_err();
     assert!(matches!(err, Error::Network(_)), "{err:?}");
     assert!(server.requests().is_empty(), "nothing was sent over plain http");
 }

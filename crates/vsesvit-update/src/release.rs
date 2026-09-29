@@ -33,15 +33,20 @@ pub(crate) struct Artifact {
 }
 
 /// Fills in an endpoint. `Url` percent-encodes braces in the path but not in the query, so both
-/// spellings of each placeholder are replaced.
-pub(crate) fn endpoint_url(template: &Url, current: &Version, variant: Option<&str>) -> String {
+/// spellings of each placeholder are replaced. `{{channel}}` is Vsesvit's own: Tauri has no
+/// channels.
+pub(crate) fn endpoint_url(template: &Url, channel: &str, current: &Version, variant: Option<&str>) -> String {
     // Tauri percent-encodes the version with CONTROLS + '+'; semver has no control characters.
     let version = current.to_string().replace('+', "%2B");
     let bundle_type = variant.unwrap_or(UNKNOWN_BUNDLE_TYPE);
     let mut url = template.to_string();
-    for (name, value) in
-        [("current_version", version.as_str()), ("target", TARGET), ("arch", ARCH), ("bundle_type", bundle_type)]
-    {
+    for (name, value) in [
+        ("channel", channel),
+        ("current_version", version.as_str()),
+        ("target", TARGET),
+        ("arch", ARCH),
+        ("bundle_type", bundle_type),
+    ] {
         url = url.replace(&format!("%7B%7B{name}%7D%7D"), value).replace(&format!("{{{{{name}}}}}"), value);
     }
     url
@@ -130,15 +135,15 @@ mod tests {
     #[test]
     fn templating_replaces_raw_and_percent_encoded_placeholders() {
         let template = Url::parse(
-            "https://u.test/{{target}}/{{arch}}/{{current_version}}/{{bundle_type}}?v={{current_version}}&t={{target}}&a={{arch}}&b={{bundle_type}}",
+            "https://u.test/{{channel}}/{{target}}/{{arch}}/{{current_version}}/{{bundle_type}}?c={{channel}}&v={{current_version}}&t={{target}}&a={{arch}}&b={{bundle_type}}",
         )
         .unwrap();
         assert!(template.as_str().contains("%7B%7Btarget%7D%7D"), "the path form is percent-encoded: {template}");
-        let url = endpoint_url(&template, &Version::parse("1.2.3-beta.1+build.7").unwrap(), Some("deb"));
+        let url = endpoint_url(&template, "beta", &Version::parse("1.2.3-beta.1+build.7").unwrap(), Some("deb"));
         assert_eq!(
             url,
             format!(
-                "https://u.test/{TARGET}/{ARCH}/1.2.3-beta.1%2Bbuild.7/deb?v=1.2.3-beta.1%2Bbuild.7&t={TARGET}&a={ARCH}&b=deb"
+                "https://u.test/beta/{TARGET}/{ARCH}/1.2.3-beta.1%2Bbuild.7/deb?c=beta&v=1.2.3-beta.1%2Bbuild.7&t={TARGET}&a={ARCH}&b=deb"
             )
         );
     }
@@ -146,7 +151,7 @@ mod tests {
     #[test]
     fn unpackaged_bundle_type_is_unknown() {
         let template = Url::parse("https://u.test/x?variant={{bundle_type}}").unwrap();
-        assert_eq!(endpoint_url(&template, &Version::new(1, 0, 0), None), "https://u.test/x?variant=unknown");
+        assert_eq!(endpoint_url(&template, "stable", &Version::new(1, 0, 0), None), "https://u.test/x?variant=unknown");
     }
 
     #[test]

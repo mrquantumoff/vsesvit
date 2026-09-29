@@ -60,6 +60,48 @@ pub enum Startup {
     NewTab,
 }
 
+/// Which releases an installation updates to (docs/design/packaging.md, "Releasing"), from the
+/// steadiest to the newest.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    Stable,
+    Beta,
+    Weekly,
+    Nightly,
+}
+
+impl UpdateChannel {
+    pub const ALL: [UpdateChannel; 4] = [Self::Stable, Self::Beta, Self::Weekly, Self::Nightly];
+
+    /// The update server's name for it, which fills `{{channel}}` in an update endpoint.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+            Self::Weekly => "weekly",
+            Self::Nightly => "nightly",
+        }
+    }
+
+    /// The channel `version` was released on: the first field of its prerelease, or stable
+    /// without one. `None` for a prerelease no channel is named after.
+    pub fn of_version(version: &str) -> Option<UpdateChannel> {
+        let version = version.split_once('+').map_or(version, |(v, _)| v);
+        let Some((_, prerelease)) = version.split_once('-') else {
+            return Some(Self::Stable);
+        };
+        let name = prerelease.split('.').next().unwrap_or_default();
+        Self::ALL.into_iter().find(|channel| channel.name() == name)
+    }
+
+    /// The channel this build was released on, which an installation follows until the user
+    /// picks another. A local build with an unnamed prerelease follows stable.
+    pub fn of_build() -> UpdateChannel {
+        Self::of_version(env!("CARGO_PKG_VERSION")).unwrap_or(Self::Stable)
+    }
+}
+
 pub mod keys {
     use super::*;
 
@@ -96,6 +138,10 @@ pub mod keys {
     /// Local: whether an installation checks for and downloads updates is a property of that
     /// installation, not of the user's other devices.
     pub const UPDATES_AUTOMATIC: Pref<bool> = Pref { key: "updates.automatic", scope: Scope::Local, default: || true };
+    /// Local, like [`UPDATES_AUTOMATIC`]. Unset, an installation follows the channel its build
+    /// was released on.
+    pub const UPDATES_CHANNEL: Pref<UpdateChannel> =
+        Pref { key: "updates.channel", scope: Scope::Local, default: UpdateChannel::of_build };
     /// Local: a folder on this device's disk. `None` = the platform's Downloads folder, which
     /// only the shell knows.
     pub const DOWNLOADS_DIR: Pref<Option<PathBuf>> = Pref { key: "downloads.directory", scope: Scope::Local, default: || None };
@@ -227,5 +273,31 @@ impl SyncTable for PrefsTable {
     fn changed_since(conn: &rusqlite::Connection, since: Seq, limit: usize) -> Result<(Vec<(Seq, PrefRecord)>, bool), Error> {
         let (rows, more) = changed_rows(conn, "prefs", COLUMNS, "synced = 1", since, limit, row_record)?;
         Ok((rows.into_iter().map(|(s, (r, _))| (s, r)).collect(), more))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_version_names_its_channel() {
+        for (version, channel) in [
+            ("0.2.0", Some(UpdateChannel::Stable)),
+            ("0.2.0+build.4", Some(UpdateChannel::Stable)),
+            ("0.2.0-beta.1", Some(UpdateChannel::Beta)),
+            ("0.1.1-weekly.20260928.5", Some(UpdateChannel::Weekly)),
+            ("0.1.1-nightly.20260929.8+abc", Some(UpdateChannel::Nightly)),
+            ("0.2.0-rc.1", None),
+        ] {
+            assert_eq!(UpdateChannel::of_version(version), channel, "{version}");
+        }
+    }
+
+    #[test]
+    fn channels_round_trip_as_their_names() {
+        for channel in UpdateChannel::ALL {
+            assert_eq!(serde_json::to_value(channel).unwrap(), channel.name());
+        }
     }
 }

@@ -84,7 +84,6 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VSESVIT_UPDATER_ENDPOINTS: ${{ env.UPDATE_SERVER }}/updates/${{ needs.plan.outputs.channel }}/{{target}}/{{arch}}/{{current_version}}?variant={{bundle_type}}
         run: cargo xtask package nsis --sign
       - uses: actions/upload-artifact@v4
         with:
@@ -117,7 +116,6 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VSESVIT_UPDATER_ENDPOINTS: ${{ env.UPDATE_SERVER }}/updates/${{ needs.plan.outputs.channel }}/{{target}}/{{arch}}/{{current_version}}?variant={{bundle_type}}
         run: cargo xtask package deb rpm pacman appimage --sign
       - uses: actions/upload-artifact@v4
         with:

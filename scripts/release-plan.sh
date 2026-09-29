@@ -45,6 +45,10 @@ case "$EVENT" in
     if [[ "$channel" == nightly || "$channel" == weekly ]]; then
       echo "tag $REF_NAME: $channel builds come from the schedule or 'Run workflow', not from tags" >&2; exit 1
     fi
+    # The browser offers exactly stable, beta, weekly and nightly (UpdateChannel in vsesvit-core).
+    if [[ "$channel" != stable && "$channel" != beta ]]; then
+      echo "tag $REF_NAME: a prerelease tag is vX.Y.Z-beta[.<fields>]; no browser follows a '$channel' channel" >&2; exit 1
+    fi
     tag="$REF_NAME"
     ;;
   schedule | workflow_dispatch)

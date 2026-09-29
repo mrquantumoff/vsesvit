@@ -17,6 +17,7 @@ use futures_util::StreamExt;
 use gtk::gio::ActionEntry;
 use gtk::glib;
 use semver::Version;
+use vsesvit_core::prefs::UpdateChannel;
 use vsesvit_update::{
     Config, DisabledReason, Downloaded, Error, Format, Installation, Updater,
     remove_stale_downloads,
@@ -260,7 +261,7 @@ fn check_and_download(
     send: &dyn Fn(Event<Downloaded>),
 ) -> Result<(), Error> {
     fs::create_dir_all(dir)?;
-    let available = updater.check()?;
+    let available = updater.check(UpdateChannel::of_build().name())?;
     remove_stale_downloads(dir, available.as_ref().map(|a| &a.release().version))?;
     let Some(available) = available else {
         send(Event::UpToDate);

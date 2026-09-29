@@ -19,7 +19,7 @@ fn downloaded(format: Format, as_installation: Installation, dir: &Path) -> (Dow
     server.route("/artifact", 200, bytes);
     server.route("/update", 200, body.to_string());
     let updater = Updater::new(config(signer.pubkey(), vec![server.url("/update")]), Version::new(0, 1, 0), as_installation);
-    let update = updater.unwrap().check().unwrap().unwrap().into_update().unwrap();
+    let update = updater.unwrap().check("stable").unwrap().unwrap().into_update().unwrap();
     (update.download(dir, |_, _| {}).unwrap(), server)
 }
 

@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use semver::Version;
 use serde_json::{Value, json};
+use vsesvit_core::prefs::UpdateChannel;
 use vsesvit_update::{
     Available, Config, Downloaded, Installation, Installed, Release, Update, Updater,
     remove_stale_downloads,
@@ -362,7 +363,7 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
         return;
     };
 
-    let checked = exec::background(move || updater.check()).await;
+    let checked = exec::background(move || updater.check(UpdateChannel::of_build().name())).await;
     let update = match checked {
         Ok(Some(Available::Update(update))) => update,
         Ok(Some(Available::NotInstallable(release))) => {
@@ -527,10 +528,11 @@ pub(crate) fn run_command(command: UpdateCommand) -> ExitCode {
     }
 }
 
+/// Opens no profile, so it follows the channel this build was released on, not `updates.channel`.
 fn check_now(installation: &Installation) -> Result<Option<Available>, String> {
     Config::builtin()
         .and_then(|config| Updater::new(config, current_version(), installation.clone()))
-        .and_then(|updater| updater.check())
+        .and_then(|updater| updater.check(UpdateChannel::of_build().name()))
         .map_err(|e| e.to_string())
 }
 

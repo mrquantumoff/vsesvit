@@ -1,12 +1,14 @@
 //! `--check-for-updates` and `--update`: the updater without a window or a display, for scripts
 //! and the packaging end-to-end test. Each prints one JSON line on stdout, or `{"error": ...}`
-//! and exits 1. Neither reads `updates.automatic`.
+//! and exits 1. Neither opens a profile, so neither reads `updates.automatic`, and both follow
+//! the channel this build was released on rather than `updates.channel`.
 
 use std::fs;
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
 use time::format_description::well_known::Rfc3339;
+use vsesvit_core::prefs::UpdateChannel;
 use vsesvit_update::{
     Available, Config, Error, Installation, Installed, Release, Update, Updater,
     remove_stale_downloads,
@@ -18,7 +20,7 @@ pub(crate) fn check() -> ExitCode {
     let installation = Installation::detect();
     finish(
         updater(&installation)
-            .and_then(|updater| updater.check())
+            .and_then(|updater| updater.check(UpdateChannel::of_build().name()))
             .map(|available| {
                 let release = available.as_ref().map(Available::release);
                 report(&installation, "available", release.map(release_json))
@@ -30,7 +32,8 @@ pub(crate) fn check() -> ExitCode {
 pub(crate) fn update() -> ExitCode {
     let installation = Installation::detect();
     let result = (|| {
-        let Some(available) = updater(&installation)?.check()? else {
+        let Some(available) = updater(&installation)?.check(UpdateChannel::of_build().name())?
+        else {
             return Ok(report(&installation, "installed", None));
         };
         let update = available.into_update()?;

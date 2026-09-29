@@ -1,7 +1,7 @@
 {
   "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0REQ1Q0VEQzk0RkQ2NjEKUldSaDFrL0o3VnpkUkc4ekR0dmxOV25QcTdDdm5SZnlxejh2Qk1XbjA1UjFvZFI2RHlPbVN5N0cK",
   "endpoints": [
-    "https://api.usequadrant.dev/api/any/vsesvit/updates/stable/{{target}}/{{arch}}/{{current_version}}?variant={{bundle_type}}"
+    "https://api.usequadrant.dev/api/any/vsesvit/updates/{{channel}}/{{target}}/{{arch}}/{{current_version}}?variant={{bundle_type}}"
   ],
   "windows": {
     "installMode": "passive"

@@ -86,12 +86,13 @@ impl Updater {
         })
     }
 
-    /// Asks each endpoint in turn until one answers. `Ok(None)` when the answering endpoint has
-    /// nothing newer. When every endpoint fails, returns the last failure.
-    pub fn check(&self) -> Result<Option<Available>, Error> {
+    /// Asks each endpoint in turn until one answers, filling `{{channel}}` with `channel`.
+    /// `Ok(None)` when the answering endpoint has nothing newer. When every endpoint fails,
+    /// returns the last failure.
+    pub fn check(&self, channel: &str) -> Result<Option<Available>, Error> {
         let mut last_error = None;
         for template in &self.endpoints {
-            let url = release::endpoint_url(template, &self.current_version, self.installation.variant());
+            let url = release::endpoint_url(template, channel, &self.current_version, self.installation.variant());
             match self.fetch(&url) {
                 Ok(None) => return Ok(None),
                 Ok(Some(manifest)) => return self.offer(manifest),
