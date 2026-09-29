@@ -298,6 +298,11 @@ async fn other_tabs_settle(
         .map_err(|e| e.to_string())?;
     window.close_tab(front.id);
     window.close_tab(behind.id);
+    // The history steps count the visits the other steps make.
+    let visited = vsesvit_core::Url::parse(&url).map_err(|e| e.to_string())?;
+    browser
+        .core(|c| c.history().delete_url(&visited))
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
