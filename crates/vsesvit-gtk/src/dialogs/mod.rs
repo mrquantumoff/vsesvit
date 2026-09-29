@@ -1,5 +1,5 @@
 //! Dialogs opened from the primary menu, all on core data: Bookmarks, History, Downloads,
-//! Extensions and Settings, plus About and the keyboard shortcuts.
+//! Extensions and Settings, plus About, the keyboard shortcuts and the first-run welcome.
 
 pub(crate) mod about;
 pub(crate) mod bookmarks;
@@ -8,6 +8,7 @@ pub(crate) mod extensions;
 pub(crate) mod history;
 pub(crate) mod settings;
 pub(crate) mod shortcuts;
+pub(crate) mod welcome;
 
 use adw::prelude::*;
 use gtk::glib;

@@ -714,6 +714,16 @@ impl BrowserWindow {
 
     // Tabs.
 
+    #[cfg(any(test, feature = "self-test"))]
+    pub(crate) fn tab_list(&self) -> &TabList {
+        &self.ui().tab_list
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn tab_row_opacity(&self, tab: &Tab) -> Option<f64> {
+        self.ui().tab_list.row_opacity(&self.page_of(tab)?)
+    }
+
     pub(crate) fn tabs(&self) -> Vec<Tab> {
         let view = &self.ui().tab_view;
         (0..view.n_pages())
@@ -1049,6 +1059,35 @@ mod tests {
     use super::*;
     use crate::test_support::{Reply, Server, browser, wait_until};
     use vsesvit_core::prefs::keys;
+
+    #[gtk::test]
+    fn tab_rows_follow_the_pages_and_only_animate_on_screen() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let view = window.ui().tab_view.clone();
+        let list = window.tab_list();
+        let pages = |view: &adw::TabView| (0..view.n_pages()).map(|i| view.nth_page(i)).collect::<Vec<_>>();
+        for _ in 0..3 {
+            window.open_tab(None, None, Focus::Foreground);
+        }
+        assert_eq!(list.row_counts(), (3, 0, true), "rows added before the window shows are simply there");
+        window.close_tab(&window.tabs()[0]);
+        assert_eq!(list.row_counts(), (2, 0, true), "an unshown row leaves at once");
+
+        window.present();
+        wait_until("the tab list on screen", || list.widget().is_mapped());
+        window.open_tab(None, None, Focus::Foreground);
+        let reordered = view.nth_page(2);
+        view.reorder_page(&reordered, 0);
+        assert_eq!(list.shown_pages(), pages(&view), "a reorder moves the row");
+        let closing = view.nth_page(1);
+        view.close_page(&closing);
+        assert_eq!(view.n_pages(), 2, "the page goes at once");
+        assert_eq!(list.row_counts().0, 2);
+        wait_until("the rows to settle", || list.row_counts() == (2, 0, true));
+        assert_eq!(list.shown_pages(), pages(&view));
+        window.close();
+    }
 
     #[gtk::test]
     fn the_home_button_follows_the_setting_and_opens_the_homepage_in_the_selected_tab() {

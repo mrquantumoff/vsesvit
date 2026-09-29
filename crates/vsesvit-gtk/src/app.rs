@@ -21,6 +21,7 @@ use vsesvit_core::{OpenError, OpenOptions, Profile};
 use crate::browser::Browser;
 use crate::cli::{self, Command};
 use crate::profile::ProfileLocation;
+use crate::window::BrowserWindow;
 use crate::{dialogs, location};
 
 /// Accelerators for actions; the shortcuts dialog reads them back from the actions.
@@ -88,8 +89,8 @@ entry.address-entry > progress > trough > progress {
 }
 .address-zoom { min-height: 20px; min-width: 0; padding: 0 6px; font-size: 0.85em; border-radius: 10px; }
 .tab-sidebar { background-color: @sidebar_bg_color; }
-.tab-sidebar listview { background: transparent; }
-.tab-sidebar row { padding: 0; }
+.tab-sidebar list { background: transparent; }
+.tab-sidebar row { padding: 0; min-height: 0; }
 .tab-row { padding: 4px 6px 4px 10px; min-height: 30px; }
 .tab-row .tab-close { min-width: 22px; min-height: 22px; padding: 0; opacity: 0.6; }
 .tab-row .tab-close:hover { opacity: 1; }
@@ -296,6 +297,13 @@ fn install_actions(app: &adw::Application, slot: &Slot) {
                 }
             })
             .build(),
+        ActionEntry::builder("welcome")
+            .activate(|app: &adw::Application, _, _| {
+                if let Some(window) = app.active_window().and_downcast::<BrowserWindow>() {
+                    dialogs::welcome::present(&window);
+                }
+            })
+            .build(),
         ActionEntry::builder("shortcuts")
             .activate(|app: &adw::Application, _, _| {
                 if let Some(window) = app.active_window() {
@@ -468,7 +476,6 @@ fn load_css() {
 mod tests {
     use super::*;
     use crate::test_support::{registered_app, scratch_dir};
-    use crate::window::BrowserWindow;
 
     const CHILD: &str = "app::tests::releasing_the_profile_frees_its_lock";
 
@@ -511,6 +518,8 @@ mod tests {
         dialogs::bookmarks::present(&window);
         close_dialog(&window);
         dialogs::downloads::present(&window);
+        close_dialog(&window);
+        dialogs::welcome::present(&window);
         close_dialog(&window);
         dialogs::extensions::present(&window);
         let slot: Slot = Rc::new(RefCell::new(Some(browser)));

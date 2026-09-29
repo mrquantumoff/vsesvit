@@ -17,7 +17,7 @@ use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
-use vsesvit_core::prefs::{TabsPosition, keys};
+use vsesvit_core::prefs::{TabsPosition, Theme, keys};
 use vsesvit_core::search::NavTarget;
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::{OpenOptions, Profile};
@@ -31,6 +31,8 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 /// The Web Store install downloads about 10 MB; it gets longer than the default.
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL: Duration = Duration::from_millis(50);
+/// The welcome check captures each page twice, in light and dark.
+const WELCOME_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a popover gets to open and draw before it is captured.
 const POPOVER_SETTLE: Duration = Duration::from_millis(400);
 /// uBlock Origin Lite.
@@ -448,6 +450,68 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         })
         .await;
         Ok("second tab opened, switched back, closed; one tab remains on index.html".to_owned())
+    })
+    .await;
+
+    ctx.check("tab_animation", CHECK_TIMEOUT, |last| async move {
+        let (list, observed) = (window.tab_list(), &last);
+        let settled = move || {
+            wait_for(observed, move || match list.row_counts() {
+                (live, 0, true) if live == window.tabs().len() => Ok(()),
+                (live, leaving, settled) => Err(format!("{live} rows for {} tabs, {leaving} leaving, settled={settled}", window.tabs().len())),
+            })
+        };
+        let animations = gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations());
+        settled().await;
+        let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let before = window.tabs().len();
+
+        let tab = window.open_tab(Some(page2_url.as_str()), None, Focus::Foreground);
+        let opened = (window.tabs().len(), list.row_counts().0, window.tab_row_opacity(&tab));
+        settled().await;
+        let shown = window.tab_row_opacity(&tab);
+        wait_for(&last, || match tab.committed_uri() {
+            Some(uri) if uri == page2_url.as_str() => Ok(()),
+            uri => Err(format!("the new tab is at {uri:?}")),
+        })
+        .await;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("tab-opened.png")).await.map_err(|e| e.to_string())?;
+
+        window.select_tab(&first);
+        window.close_tab(&tab);
+        let (tabs_at_close, (live_at_close, leaving_at_close, _)) = (window.tabs().len(), list.row_counts());
+        browser.reopen_closed_tab(window);
+        let reopened = window.selected_tab().filter(|t| *t != first).ok_or_else(|| "reopening selected no tab".to_owned())?;
+        let tabs_reopened = window.tabs().len();
+        wait_for(&last, || match reopened.committed_uri() {
+            Some(uri) if uri == page2_url.as_str() => Ok(()),
+            uri => Err(format!("the reopened tab is at {uri:?}")),
+        })
+        .await;
+        window.select_tab(&first);
+        window.close_tab(&reopened);
+        let tabs_after = window.tabs().len();
+        settled().await;
+        let rows_after = list.row_counts().0;
+
+        let detail = format!(
+            "animations enabled={animations}; opening: tabs {before} -> {}, rows {}, the new row's opacity {:?} at once and {shown:?} settled (tab-opened.png); closing: tabs {tabs_at_close} and rows {live_at_close} at once, {leaving_at_close} row leaving; reopening gave {tabs_reopened} tabs on page2.html; closed again: {tabs_after} tabs, {rows_after} rows, all opaque",
+            opened.0, opened.1, opened.2
+        );
+        let grows = !animations || opened.2.is_some_and(|o| o < 1.0);
+        let leaves = leaving_at_close == usize::from(animations);
+        let ok = opened.0 == before + 1
+            && opened.1 == before + 1
+            && grows
+            && shown == Some(1.0)
+            && tabs_at_close == before
+            && live_at_close == before
+            && leaves
+            && tabs_reopened == before + 1
+            && tabs_after == before
+            && rows_after == before;
+        if ok { Ok(detail) } else { Err(detail) }
     })
     .await;
 
@@ -1143,6 +1207,136 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             && camera_stored == Some(Setting::Block)
             && microphone_on;
         if ok { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
+    ctx.check("welcome", if ctx.network { WELCOME_TIMEOUT + NETWORK_TIMEOUT } else { WELCOME_TIMEOUT }, |last| async move {
+        use crate::dialogs::welcome::{STEPS, Step};
+        let theme = browser.theme();
+        let engines = browser.core().borrow_mut().search_engines().list().map_err(|e| e.to_string())?;
+        let engine_before = browser.core().borrow_mut().search_engines().default_engine().map_err(|e| e.to_string())?;
+        let found = vsesvit_core::import::installed_browsers();
+        browser.core().borrow_mut().prefs().reset(&keys::ONBOARDING_DONE).map_err(|e| e.to_string())?;
+        let dialog = crate::dialogs::welcome::present(window);
+        let _cleanup = Cleanup(|| {
+            if window.visible_dialog().as_ref() == Some(&dialog) {
+                dialog.force_close();
+            }
+            browser.set_theme(theme);
+            if let Err(e) = browser.core().borrow_mut().search_engines().set_default(&engine_before.id) {
+                log::warn!("search engines: {e}");
+            }
+        });
+        let carousel = find::<adw::Carousel>(dialog.upcast_ref(), |_| true).ok_or_else(|| "the welcome has no carousel".to_owned())?;
+        let (carousel, observed) = (&carousel, &last);
+        let at = move |index: usize| {
+            wait_for(observed, move || match carousel.position() {
+                p if (p - index as f64).abs() < 1e-3 => Ok(()),
+                p => Err(format!("the carousel is at {p}, waiting for page {index}")),
+            })
+        };
+        let click = |label: &str| button_labelled(dialog.upcast_ref(), label).filter(|b| b.is_mapped()).ok_or_else(|| format!("no {label:?} button")).map(|b| b.emit_clicked());
+        let mut notes = Vec::new();
+        for (index, step) in STEPS.into_iter().enumerate() {
+            at(index).await;
+            let page = carousel.nth_page(index as u32);
+            match step {
+                Step::Search => {
+                    let checks = all::<gtk::CheckButton>(&page);
+                    let checked: Vec<String> = checks
+                        .iter()
+                        .filter(|c| c.is_active())
+                        .filter_map(|c| c.ancestor(adw::ActionRow::static_type()).and_downcast::<adw::ActionRow>())
+                        .map(|r| r.title().to_string())
+                        .collect();
+                    if checks.len() != engines.len() || checked != [engine_before.name.clone()] {
+                        return Err(format!("{} engine rows for {} engines, checked {checked:?}, default {}", checks.len(), engines.len(), engine_before.name));
+                    }
+                    let other = engines.iter().find(|e| e.id != engine_before.id).ok_or_else(|| "only one search engine".to_owned())?;
+                    let row = find::<adw::ActionRow>(&page, |r| r.title() == other.name).ok_or_else(|| format!("no row for {}", other.name))?;
+                    ActionRowExt::activate(&row);
+                    wait_for(&last, || match browser.core().borrow_mut().search_engines().default_engine() {
+                        Ok(now) if now.id == other.id => Ok(()),
+                        now => Err(format!("after choosing {}, the default is {:?}", other.name, now.map(|e| e.name))),
+                    })
+                    .await;
+                    notes.push(format!("{} engine rows, {} checked; choosing {} made it core's default", checks.len(), engine_before.name, other.name));
+                }
+                Step::Import => {
+                    wait_for(&last, || match find::<adw::ActionRow>(&page, |r| r.title() == "Looking for other browsers…") {
+                        Some(_) => Err("still looking for other browsers".to_owned()),
+                        None => Ok(()),
+                    })
+                    .await;
+                    let imports = count::<gtk::Button>(&page, |b| b.label().as_deref() == Some("Import"));
+                    let none = find::<adw::ActionRow>(&page, |r| r.title() == "No other browsers found").is_some();
+                    let file = button_labelled(&page, "Choose File…").is_some();
+                    if imports != found.len() || none != found.is_empty() || !file {
+                        return Err(format!("{imports} Import buttons for {} browsers found, \"No other browsers found\" shown={none}, Choose File… shown={file}", found.len()));
+                    }
+                    notes.push(format!("{} browsers to import from, and Choose File…", found.len()));
+                }
+                Step::Extensions => {
+                    let mut rows = Vec::new();
+                    for recommended in vsesvit_core::onboarding::RECOMMENDED_EXTENSIONS {
+                        let row = find::<adw::ActionRow>(&page, |r| r.title() == recommended.name).ok_or_else(|| format!("no row for {}", recommended.name))?;
+                        let ready = button_labelled(row.upcast_ref(), "Install").is_some_and(|b| b.is_mapped());
+                        let installed = find::<gtk::Label>(row.upcast_ref(), |l| l.label() == "Installed" && l.is_mapped()).is_some();
+                        if ready == installed {
+                            return Err(format!("{}: Install shown={ready}, Installed shown={installed}", recommended.name));
+                        }
+                        rows.push(format!("{} ({})", recommended.name, if ready { "Install" } else { "Installed" }));
+                    }
+                    notes.push(rows.join(", "));
+                    if ctx.network {
+                        let recommended = vsesvit_core::onboarding::RECOMMENDED_EXTENSIONS.iter().find(|r| r.name == "Bitwarden").ok_or_else(|| "Bitwarden is not recommended".to_owned())?;
+                        let row = find::<adw::ActionRow>(&page, |r| r.title() == recommended.name).ok_or_else(|| "no Bitwarden row".to_owned())?;
+                        button_labelled(row.upcast_ref(), "Install").ok_or_else(|| "no Install on the Bitwarden row".to_owned())?.emit_clicked();
+                        wait_for(&last, || {
+                            let installed = find::<gtk::Label>(row.upcast_ref(), |l| l.label() == "Installed" && l.is_mapped()).is_some();
+                            let stored = browser.core().borrow_mut().extensions().get(&recommended.id()).ok().flatten().is_some();
+                            match (installed, stored, row.has_css_class("error")) {
+                                (true, true, false) => Ok(()),
+                                (_, _, true) => Err(format!("the install failed: {:?}", row.subtitle())),
+                                now => Err(format!("(Installed shown, in the profile, error) = {now:?}")),
+                            }
+                        })
+                        .await;
+                        notes.push("Install on Bitwarden installed it from the Web Store".to_owned());
+                    }
+                }
+                Step::DefaultBrowser => {
+                    let heading = page.downcast_ref::<adw::StatusPage>().map(|p| (p.title(), p.description().unwrap_or_default())).unwrap_or_default();
+                    let status = find::<gtk::Label>(&page, |l| {
+                        l.wraps() && !l.label().is_empty() && l.label() != heading.0 && l.label() != heading.1 && !l.has_css_class("error")
+                    })
+                        .map(|l| l.label().to_string())
+                        .ok_or_else(|| "the page shows no status".to_owned())?;
+                    let button = button_labelled(&page, "Make Vsesvit the Default Browser").is_some_and(|b| b.is_visible());
+                    notes.push(format!("default browser: {status:?}, button shown={button}"));
+                }
+                Step::Welcome | Step::Done => {}
+            }
+            glib::timeout_future(POPOVER_SETTLE).await;
+            let name = step.name();
+            crate::screenshot::save_png(window, &ctx.out_dir.join(format!("welcome-{name}.png"))).await.map_err(|e| e.to_string())?;
+            browser.set_theme(Theme::Dark);
+            glib::timeout_future(POPOVER_SETTLE).await;
+            crate::screenshot::save_png(window, &ctx.out_dir.join(format!("welcome-{name}-dark.png"))).await.map_err(|e| e.to_string())?;
+            browser.set_theme(theme);
+            if step == Step::Import {
+                click("Back")?;
+                at(index - 1).await;
+                click(STEPS[index - 1].next_label())?;
+                at(index).await;
+                notes.push("Back and Next returned to the import page".to_owned());
+            }
+            click(step.next_label())?;
+        }
+        wait_for(&last, || if window.visible_dialog().is_none() { Ok(()) } else { Err("the welcome is still open".to_owned()) }).await;
+        let done = browser.core().borrow_mut().prefs().get(&keys::ONBOARDING_DONE);
+        let detail = format!("{}; Start Browsing closed it, onboarding.done={done}; welcome-*.png in light and dark", notes.join("; "));
+        if done { Ok(detail) } else { Err(detail) }
     })
     .await;
 

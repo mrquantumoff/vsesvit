@@ -18,6 +18,7 @@ use vsesvit_core::import::{self, Source};
 use super::{LibraryDialog, confirm, prompt_choice, prompt_text};
 use crate::bookmark_drag::{self, Zone};
 use crate::bookmark_editor::{self, Subject};
+use crate::browser::Browser;
 use crate::favicons;
 use crate::profile::Core;
 use crate::tab::display_uri;
@@ -50,6 +51,62 @@ struct Entry {
 
 pub(crate) fn present(window: &BrowserWindow) {
     build(window).ui.dialog.present(Some(window));
+}
+
+/// Bookmarks to bring in from another browser's profile or a file, into a new folder on
+/// the bookmarks bar.
+#[derive(Clone)]
+pub(crate) struct Import {
+    pub(crate) folder: String,
+    /// The browser profile or file name, for messages.
+    pub(crate) from: String,
+    source: Source,
+}
+
+impl From<import::Found> for Import {
+    fn from(found: import::Found) -> Self {
+        Import { folder: found.folder_title(), from: found.name, source: found.source }
+    }
+}
+
+impl Import {
+    pub(crate) fn file(path: PathBuf) -> Self {
+        let from = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        Import { folder: import::FILE_FOLDER_TITLE.to_owned(), from, source: Source::File(path) }
+    }
+
+    /// Reads the source on a worker thread, then adds what it holds. How many items were
+    /// added, or the message for the user.
+    pub(crate) async fn run(self, browser: Browser) -> Result<usize, String> {
+        let Import { folder, from, source } = self;
+        let items = match gio::spawn_blocking(move || source.read()).await {
+            Ok(Ok(items)) => items,
+            Ok(Err(e)) => return Err(format!("Could not read {from}: {e}")),
+            Err(_) => return Err(format!("Could not read {from}")),
+        };
+        let added = browser.core().borrow_mut().bookmarks().import_folder(&folder, items);
+        browser.bookmarks_changed();
+        added.map_err(|e| format!("Bookmarks: {e}"))
+    }
+}
+
+pub(crate) async fn pick_bookmarks_file(parent: Option<&BrowserWindow>) -> Option<PathBuf> {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Bookmarks (.html, .json)"));
+    for suffix in ["html", "htm", "json"] {
+        filter.add_suffix(suffix);
+    }
+    // Chromium's own file has no extension.
+    filter.add_pattern("Bookmarks");
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    let chooser = gtk::FileDialog::builder()
+        .title("Import Bookmarks File")
+        .modal(true)
+        .filters(&filters)
+        .default_filter(&filter)
+        .build();
+    chooser.open_future(parent).await.ok()?.path()
 }
 
 fn build(window: &BrowserWindow) -> Rc<State> {
@@ -311,49 +368,20 @@ impl State {
         else {
             return;
         };
-        let (folder, from, source) = match found.into_iter().nth(index as usize) {
-            Some(f) => (f.folder_title(), f.name, f.source),
+        let import = match found.into_iter().nth(index as usize) {
+            Some(found) => Import::from(found),
             None => {
-                let Some(path) = self.pick_file().await else { return };
-                let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                (import::FILE_FOLDER_TITLE.to_owned(), name, Source::File(path))
+                let Some(path) = pick_bookmarks_file(self.window.upgrade().as_ref()).await else { return };
+                Import::file(path)
             }
         };
-        let items = match source.read() {
-            Ok(items) => items,
-            Err(e) => {
-                self.ui.toast(&format!("Could not read {from}: {e}"));
-                return;
-            }
-        };
-        let Some(core) = self.core() else { return };
-        let result = core.borrow_mut().bookmarks().import_folder(&folder, items);
-        match result {
+        let Some(window) = self.window.upgrade() else { return };
+        let (folder, from) = (import.folder.clone(), import.from.clone());
+        match import.run(window.browser().clone()).await {
             Ok(0) => self.ui.toast(&format!("No bookmarks found in {from}")),
             Ok(n) => self.ui.toast(&format!("Imported {n} items from {from} into “{folder}”")),
-            Err(e) => self.ui.toast(&format!("Bookmarks: {e}")),
+            Err(e) => self.ui.toast(&e),
         }
-        self.changed();
-    }
-
-    async fn pick_file(&self) -> Option<PathBuf> {
-        let filter = gtk::FileFilter::new();
-        filter.set_name(Some("Bookmarks (.html, .json)"));
-        for suffix in ["html", "htm", "json"] {
-            filter.add_suffix(suffix);
-        }
-        // Chromium's own file has no extension.
-        filter.add_pattern("Bookmarks");
-        let filters = gio::ListStore::new::<gtk::FileFilter>();
-        filters.append(&filter);
-        let chooser = gtk::FileDialog::builder()
-            .title("Import Bookmarks File")
-            .modal(true)
-            .filters(&filters)
-            .default_filter(&filter)
-            .build();
-        let window = self.window.upgrade();
-        chooser.open_future(window.as_ref()).await.ok()?.path()
     }
 
     /// Into the selected folder, or next to the selected bookmark; the bar when nothing is selected.

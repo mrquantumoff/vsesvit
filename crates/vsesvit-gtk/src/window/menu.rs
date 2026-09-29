@@ -27,6 +27,7 @@ pub(super) fn main_menu() -> (gtk::MenuButton, gtk::Button) {
     let app = gio::Menu::new();
     app.append(Some("_Settings"), Some("win.show-settings"));
     app.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
+    app.append(Some("_Welcome"), Some("app.welcome"));
     app.append(Some("_About Vsesvit"), Some("app.about"));
 
     let menu = gio::Menu::new();

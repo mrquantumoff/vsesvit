@@ -20,6 +20,7 @@ mod extensions;
 mod favicons;
 mod find_bar;
 mod location;
+mod motion;
 mod omnibox;
 mod permissions;
 mod profile;

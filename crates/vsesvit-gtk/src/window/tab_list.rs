@@ -1,52 +1,88 @@
-//! The vertical tab list shown in the split view's sidebar: a `GtkListView` over
-//! `AdwTabView`'s page model, so it is always in step with the tabs and selecting a row
-//! selects the page. Each row shows the favicon (or a spinner while loading), the title,
-//! the in-use icon while the page captures, and a close button; rows can be dragged to reorder, and a middle click closes a tab.
+//! The vertical tab list shown in the split view's sidebar: a row per page of the
+//! `AdwTabView`, kept in step with its page model, and selecting a row selects the page.
+//! Each row shows the favicon (or a spinner while loading), the title, the in-use icon
+//! while the page captures, and a close button; rows can be dragged to reorder, and a
+//! middle click closes a tab.
+//!
+//! A `GtkListBox` rather than a `GtkListView`, because the list owns its rows: a new tab's
+//! row grows in, and a closed tab's row shrinks out after its page is gone. The tab view
+//! closes pages at once, so the tab count and the closed-tab stack never wait on the
+//! animation; only the leaving row outlives its page, and it takes no input.
 
 use std::cell::RefCell;
+use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use crate::motion;
+
 pub(crate) struct TabList {
     root: gtk::Box,
+    /// Owned here; the signal handlers that update it hold it weakly.
+    #[cfg_attr(not(any(test, feature = "self-test")), allow(dead_code))]
+    rows: Rc<Rows>,
+}
+
+struct Rows {
+    view: glib::WeakRef<adw::TabView>,
+    /// Held because the tab view keeps only a weak reference to its page model.
+    pages: gtk::SelectionModel,
+    list: gtk::ListBox,
+    /// One per page, in the view's order.
+    live: RefCell<Vec<Slot>>,
+    /// Rows of closed pages, until they have shrunk away.
+    leaving: RefCell<Vec<Slot>>,
+}
+
+/// A page's row in the list box: the row, the revealer that grows and shrinks it, and
+/// the animation fading it while it does.
+#[derive(Clone)]
+struct Slot(Rc<SlotInner>);
+
+struct SlotInner {
+    row: gtk::ListBoxRow,
+    revealer: gtk::Revealer,
+    tab: TabRow,
+    fade: RefCell<Option<adw::TimedAnimation>>,
 }
 
 impl TabList {
     pub(crate) fn new(view: &adw::TabView) -> Self {
-        let factory = gtk::SignalListItemFactory::new();
-        factory.connect_setup(glib::clone!(
-            #[weak]
-            view,
-            move |_, item| {
-                if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
-                    item.set_child(Some(&TabRow::new(&view)));
-                }
-            }
-        ));
-        factory.connect_bind(|_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-            if let (Some(row), Some(page)) = (
-                item.child().and_downcast::<TabRow>(),
-                item.item().and_downcast::<adw::TabPage>(),
-            ) {
-                row.bind(&page);
+        let list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(["navigation-sidebar"])
+            .vexpand(true)
+            .valign(gtk::Align::Start)
+            .build();
+        let rows = Rc::new(Rows {
+            view: view.downgrade(),
+            pages: view.pages(),
+            list: list.clone(),
+            live: RefCell::new(Vec::new()),
+            leaving: RefCell::new(Vec::new()),
+        });
+        let weak = Rc::downgrade(&rows);
+        rows.pages.connect_items_changed(move |_, position, removed, added| {
+            if let Some(rows) = weak.upgrade() {
+                rows.items_changed(position, removed, added);
             }
         });
-        factory.connect_unbind(|_, item| {
-            if let Some(row) = item
-                .downcast_ref::<gtk::ListItem>()
-                .and_then(|item| item.child())
-                .and_downcast::<TabRow>()
-            {
-                row.unbind();
+        let weak = Rc::downgrade(&rows);
+        view.connect_selected_page_notify(move |_| {
+            if let Some(rows) = weak.upgrade() {
+                rows.sync_selection();
             }
         });
+        let weak = Rc::downgrade(&rows);
+        list.connect_row_selected(move |_, row| {
+            if let (Some(rows), Some(row)) = (weak.upgrade(), row) {
+                rows.row_selected(row);
+            }
+        });
+        rows.items_changed(0, 0, rows.pages.n_items());
 
-        let list = gtk::ListView::new(Some(view.pages()), Some(factory));
-        list.add_css_class("navigation-sidebar");
-        list.set_vexpand(true);
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -75,11 +111,214 @@ impl TabList {
         root.append(&scroller);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         root.append(&new_tab);
-        TabList { root }
+        TabList { root, rows }
     }
 
     pub(crate) fn widget(&self) -> &gtk::Box {
         &self.root
+    }
+
+    /// The rows the list shows now, `(live, leaving)`, and whether every live row has
+    /// finished growing in and nothing is still shrinking out.
+    #[cfg(any(test, feature = "self-test"))]
+    pub(crate) fn row_counts(&self) -> (usize, usize, bool) {
+        let live = self.rows.live.borrow();
+        let leaving = self.rows.leaving.borrow().len();
+        let settled = leaving == 0
+            && live.iter().all(|slot| {
+                slot.0.revealer.is_child_revealed() && slot.0.revealer.opacity() >= 1.0
+            });
+        (live.len(), leaving, settled)
+    }
+
+    /// The pages of the rows in the order the list box shows them, leaving rows included.
+    #[cfg(test)]
+    pub(crate) fn shown_pages(&self) -> Vec<adw::TabPage> {
+        let mut pages = Vec::new();
+        let mut child = self.rows.list.first_child();
+        while let Some(row) = child {
+            if let Some(tab) = row.first_child().and_then(|revealer| revealer.first_child()).and_downcast::<TabRow>() {
+                pages.extend(tab.page());
+            }
+            child = row.next_sibling();
+        }
+        pages
+    }
+
+    /// The opacity of the row showing `page`, while it grows in or is shown.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn row_opacity(&self, page: &adw::TabPage) -> Option<f64> {
+        self.rows
+            .live
+            .borrow()
+            .iter()
+            .find(|slot| slot.page().as_ref() == Some(page))
+            .map(|slot| slot.0.revealer.opacity())
+    }
+}
+
+impl Rows {
+    /// Mirrors a change of the page model. A page that is removed and added back in the
+    /// same change (a reorder) keeps its row, unanimated; rows grow in only while the list
+    /// is on screen, so a restored session's tabs are simply there.
+    fn items_changed(self: &Rc<Self>, position: u32, removed: u32, added: u32) {
+        let Some(view) = self.view.upgrade() else { return };
+        let animate = self.list.is_mapped();
+        let at = position as usize;
+        let mut gone: Vec<Slot> = self
+            .live
+            .borrow_mut()
+            .drain(at..at + removed as usize)
+            .collect();
+        let mut fresh = Vec::with_capacity(added as usize);
+        let mut entering = Vec::new();
+        for i in position..position + added {
+            let Some(page) = self.pages.item(i).and_downcast::<adw::TabPage>() else {
+                continue;
+            };
+            let slot = match gone.iter().position(|slot| slot.page().as_ref() == Some(&page)) {
+                Some(kept) => gone.remove(kept),
+                None => {
+                    let slot = Slot::new(&view, &page, animate);
+                    entering.push(slot.clone());
+                    slot
+                }
+            };
+            fresh.push(slot);
+        }
+        // The list box emits `row-selected` while rows move, so no borrow is held here.
+        for slot in &fresh {
+            if slot.0.row.parent().is_some() {
+                self.list.remove(&slot.0.row);
+            }
+        }
+        let next = self.live.borrow().get(at).map(|slot| slot.0.row.clone());
+        let mut index = next.map_or(-1, |row| row.index());
+        for slot in &fresh {
+            self.list.insert(&slot.0.row, index);
+            if index >= 0 {
+                index += 1;
+            }
+        }
+        self.live.borrow_mut().splice(at..at, fresh);
+        if animate {
+            for slot in entering {
+                slot.enter();
+            }
+        }
+        for slot in gone {
+            self.leave(slot);
+        }
+        self.sync_selection();
+    }
+
+    fn leave(self: &Rc<Self>, slot: Slot) {
+        let row = &slot.0.row;
+        if self.list.selected_row().as_ref() == Some(row) {
+            self.list.unselect_row(row);
+        }
+        row.set_selectable(false);
+        row.set_activatable(false);
+        row.set_can_target(false);
+        row.set_can_focus(false);
+        self.leaving.borrow_mut().push(slot.clone());
+        let weak: Weak<Self> = Rc::downgrade(self);
+        let done = {
+            let slot = slot.clone();
+            move || {
+                if let Some(rows) = weak.upgrade() {
+                    rows.leaving.borrow_mut().retain(|s| !Rc::ptr_eq(&s.0, &slot.0));
+                    if slot.0.row.parent().is_some() {
+                        rows.list.remove(&slot.0.row);
+                    }
+                }
+                slot.0.tab.unbind();
+            }
+        };
+        slot.0.revealer.set_reveal_child(false);
+        slot.animate(0.0, done);
+    }
+
+    fn sync_selection(&self) {
+        let selected = self.view.upgrade().and_then(|view| view.selected_page());
+        let row = selected.and_then(|page| {
+            self.live
+                .borrow()
+                .iter()
+                .find(|slot| slot.page().as_ref() == Some(&page))
+                .map(|slot| slot.0.row.clone())
+        });
+        match row {
+            Some(row) if self.list.selected_row().as_ref() != Some(&row) => {
+                self.list.select_row(Some(&row));
+            }
+            Some(_) => {}
+            None => self.list.unselect_all(),
+        }
+    }
+
+    fn row_selected(&self, row: &gtk::ListBoxRow) {
+        let page = self
+            .live
+            .borrow()
+            .iter()
+            .find(|slot| slot.0.row == *row)
+            .and_then(Slot::page);
+        if let (Some(view), Some(page)) = (self.view.upgrade(), page)
+            && view.selected_page().as_ref() != Some(&page)
+        {
+            view.set_selected_page(&page);
+        }
+    }
+}
+
+impl Slot {
+    /// Starts collapsed and transparent when it is to grow in.
+    fn new(view: &adw::TabView, page: &adw::TabPage, collapsed: bool) -> Self {
+        let tab = TabRow::new(view);
+        tab.bind(page);
+        let revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(motion::TAB_ROW_MS)
+            .reveal_child(!collapsed)
+            .child(&tab)
+            .build();
+        if collapsed {
+            revealer.set_opacity(0.0);
+        }
+        let row = gtk::ListBoxRow::builder().child(&revealer).build();
+        Slot(Rc::new(SlotInner {
+            row,
+            revealer,
+            tab,
+            fade: RefCell::new(None),
+        }))
+    }
+
+    fn page(&self) -> Option<adw::TabPage> {
+        self.0.tab.page()
+    }
+
+    fn enter(&self) {
+        self.0.revealer.set_reveal_child(true);
+        self.animate(1.0, || {});
+    }
+
+    /// Fades the revealer, which stays mapped while its child is hidden, from wherever an
+    /// earlier fade left it.
+    fn animate(&self, to: f64, done: impl Fn() + 'static) {
+        if let Some(earlier) = self.0.fade.take() {
+            earlier.pause();
+        }
+        let weak = Rc::downgrade(&self.0);
+        let animation = motion::fade(&self.0.revealer, to, motion::TAB_ROW_MS, move || {
+            if let Some(inner) = weak.upgrade() {
+                inner.fade.take();
+            }
+            done();
+        });
+        self.0.fade.replace(Some(animation.clone()));
+        animation.play();
     }
 }
 

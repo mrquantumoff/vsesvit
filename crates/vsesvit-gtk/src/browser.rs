@@ -18,6 +18,7 @@ use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::extensions::{ExtensionId, toolbar};
 use vsesvit_core::history::Transition;
+use vsesvit_core::onboarding;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, keys};
 use vsesvit_core::sync::Changed;
 use vsesvit_core::{Profile, Url};
@@ -31,7 +32,7 @@ use crate::profile::{self, Core};
 use crate::tab::{Commit, Tab};
 use crate::updates::Updates;
 use crate::window::{BrowserWindow, Focus};
-use crate::{favicons, omnibox, permissions, session};
+use crate::{dialogs, favicons, omnibox, permissions, session};
 
 const CLOSED_TABS_KEPT: usize = 25;
 /// How many sites one background favicon fetch looks up.
@@ -61,6 +62,8 @@ pub(crate) struct Inner {
     /// What else shows bookmarks (an open Bookmarks dialog), refreshed with the bars.
     bookmark_views: RefCell<Vec<Weak<dyn Fn()>>>,
     updates: Option<Updates>,
+    /// This run created the profile: the first window opens the welcome, once.
+    welcome: Cell<bool>,
 }
 
 /// The background fetch of bookmarked sites' icons.
@@ -87,6 +90,7 @@ impl Browser {
         let engine = Engine::new(&mut core.borrow_mut());
         let downloads = Downloads::new(app, core.clone(), engine.session(), profile::downloads_dir());
         let updates_automatic = core.borrow_mut().prefs().get(&keys::UPDATES_AUTOMATIC);
+        let welcome = !crate::SCRIPTED.get() && onboarding::should_show(&mut core.borrow_mut());
         let inner = Rc::new_cyclic(|weak: &Weak<Inner>| {
             let host: Rc<dyn TabHost> = Rc::new(Host(weak.clone()));
             let runtime = Runtime::new(core.clone(), engine.session(), host);
@@ -105,6 +109,7 @@ impl Browser {
                 favicon_fetch: Cell::new(FetchState::Idle),
                 bookmark_views: RefCell::new(Vec::new()),
                 updates: Updates::new(app, updates_automatic),
+                welcome: Cell::new(welcome),
             }
         });
         let weak = Rc::downgrade(&inner);
@@ -214,7 +219,8 @@ impl Browser {
     // Windows.
 
     /// The first windows of a run: the previous session, the homepage or a blank tab,
-    /// according to the startup preference, plus any URLs from the command line.
+    /// according to the startup preference, plus any URLs from the command line. On the
+    /// run that created the profile the first window opens the welcome over them.
     pub(crate) fn open_startup_windows(&self, targets: &[Url]) {
         let startup = self.core().borrow_mut().prefs().get(&keys::STARTUP);
         let restored = match startup {
@@ -253,6 +259,11 @@ impl Browser {
                 window.open_tab(Some(target.as_str()), None, focus);
             }
             window.present();
+        }
+        if self.0.welcome.take()
+            && let Some(window) = self.windows().into_iter().next()
+        {
+            dialogs::welcome::present(&window);
         }
     }
 
