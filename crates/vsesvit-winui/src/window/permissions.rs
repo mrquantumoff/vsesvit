@@ -411,6 +411,11 @@ impl BrowserWindow {
             return Ok(());
         };
         let panel: Panel = xaml::find(&popup, "SitePermissions")?;
+        // The refill replaces the focused control when it is one of the section's; focus
+        // left on nothing would take the keyboard out of the popup and close it.
+        let focused = self
+            .focused_name()
+            .filter(|name| name.starts_with("Permission") || name == "ResetPermissions");
         let rows = self.site_rows(tab);
         let children = panel.Children()?;
         children.Clear()?;
@@ -425,6 +430,7 @@ impl BrowserWindow {
             .any(|r| matches!(r.current, Choice::Allow | Choice::Block));
         let section: FrameworkElement = xaml::load(&section_markup(&rows, stored))?;
         children.Append(&section.cast::<UIElement>()?)?;
+        let first = format!("PermissionChoice{:?}", rows[0].permission);
         for row in rows {
             let key = format!("{:?}", row.permission);
             let choice: ComboBox = xaml::find(&section, &format!("PermissionChoice{key}"))?;
@@ -459,7 +465,19 @@ impl BrowserWindow {
             let (w, t) = (self.me.clone(), Rc::downgrade(tab));
             click(&reset, move || reset_site(&w, &t, &origin))?;
         }
+        if let Some(name) = focused
+            && self.is_foreground()
+        {
+            refocus(&section, &name, &first);
+        }
         Ok(())
+    }
+
+    /// The `x:Name` of the element with the keyboard focus.
+    pub fn focused_name(&self) -> Option<String> {
+        let focused = FocusManager::GetFocusedElementWithRoot(&self.xaml_root().ok()?).ok()?;
+        let name = focused.cast::<FrameworkElement>().ok()?.Name().ok()?;
+        Some(name.to_string())
     }
 
     fn refill_site_permissions(window: &Weak<BrowserWindow>, tab: &Weak<Tab>) {
@@ -472,6 +490,20 @@ impl BrowserWindow {
                 log::warn!("site permissions: {e}");
             }
         });
+    }
+}
+
+/// Gives the keyboard focus back to the refilled `section`: to the control named `name`, else,
+/// for a Stop button that went with its capture, to that permission's choice, else to `first`.
+fn refocus(section: &FrameworkElement, name: &str, first: &str) {
+    let choice = name.replacen("PermissionStop", "PermissionChoice", 1);
+    let target = [name, choice.as_str(), first]
+        .into_iter()
+        .find_map(|n| section.FindName(n).and_then(|e| e.cast::<UIElement>()).ok());
+    if let Some(target) = target
+        && let Err(e) = target.Focus(FocusState::Keyboard)
+    {
+        log::warn!("site permissions focus: {e}");
     }
 }
 
@@ -576,13 +608,6 @@ impl BrowserWindow {
 
     pub fn in_foreground(&self) -> bool {
         self.is_foreground()
-    }
-
-    /// The `x:Name` of the element with the keyboard focus.
-    pub fn focused_name(&self) -> Option<String> {
-        let focused = FocusManager::GetFocusedElementWithRoot(&self.xaml_root().ok()?).ok()?;
-        let name = focused.cast::<FrameworkElement>().ok()?.Name().ok()?;
-        Some(name.to_string())
     }
 
     /// The sharing bar's "Stop sharing".
