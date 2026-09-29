@@ -219,6 +219,16 @@ Microsoft.Web.WebView2.Core.ICoreWebView2DownloadOperation::{get_Uri, get_BytesR
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadState
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadInterruptReason
 
+// ---- site permissions ----
+Microsoft.Web.WebView2.Core.ICoreWebView2::PermissionRequested
+Microsoft.Web.WebView2.Core.ICoreWebView2PermissionRequestedEventArgs::{get_Uri, get_PermissionKind, get_IsUserInitiated, get_State, put_State, GetDeferral}
+Microsoft.Web.WebView2.Core.ICoreWebView2PermissionRequestedEventArgs3::put_SavesInProfile
+Microsoft.Web.WebView2.Core.CoreWebView2PermissionKind
+Microsoft.Web.WebView2.Core.CoreWebView2PermissionState
+Microsoft.Web.WebView2.Core.ICoreWebView2_27::ScreenCaptureStarting
+Microsoft.Web.WebView2.Core.ICoreWebView2ScreenCaptureStartingEventArgs::{put_Cancel, put_Handled, GetDeferral, get_OriginalSourceFrameInfo}
+Microsoft.Web.WebView2.Core.ICoreWebView2FrameInfo::get_Source
+
 // ---- dates ----
 Windows.Globalization.DateTimeFormatting.DateTimeFormatter::CreateDateTimeFormatter
 Windows.Globalization.DateTimeFormatting.IDateTimeFormatter::Format

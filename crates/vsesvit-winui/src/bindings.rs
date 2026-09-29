@@ -1663,6 +1663,33 @@ unsafe impl Send for CoreWebView2FindOptions {}
 unsafe impl Sync for CoreWebView2FindOptions {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2FrameInfo(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2FrameInfo,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2FrameInfo {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2FrameInfo>();
+}
+unsafe impl windows_core::Interface for CoreWebView2FrameInfo {
+    type Vtable = <ICoreWebView2FrameInfo as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <ICoreWebView2FrameInfo as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2FrameInfo {
+    type Target = ICoreWebView2FrameInfo;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2FrameInfo {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2FrameInfo";
+}
+unsafe impl Send for CoreWebView2FrameInfo {}
+unsafe impl Sync for CoreWebView2FrameInfo {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWebView2NavigationCompletedEventArgs(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     CoreWebView2NavigationCompletedEventArgs,
@@ -1754,6 +1781,80 @@ impl windows_core::RuntimeName for CoreWebView2NewWindowRequestedEventArgs {
 }
 unsafe impl Send for CoreWebView2NewWindowRequestedEventArgs {}
 unsafe impl Sync for CoreWebView2NewWindowRequestedEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2PermissionKind(pub i32);
+impl CoreWebView2PermissionKind {
+    pub const UnknownPermission: Self = Self(0);
+    pub const Microphone: Self = Self(1);
+    pub const Camera: Self = Self(2);
+    pub const Geolocation: Self = Self(3);
+    pub const Notifications: Self = Self(4);
+    pub const OtherSensors: Self = Self(5);
+    pub const ClipboardRead: Self = Self(6);
+    pub const MultipleAutomaticDownloads: Self = Self(7);
+    pub const FileReadWrite: Self = Self(8);
+    pub const Autoplay: Self = Self(9);
+    pub const LocalFonts: Self = Self(10);
+    pub const MidiSystemExclusiveMessages: Self = Self(11);
+    pub const WindowManagement: Self = Self(12);
+    pub const PersistentStorage: Self = Self(13);
+}
+impl windows_core::imp::TypeKind for CoreWebView2PermissionKind {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2PermissionKind {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2PermissionKind;i4)",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2PermissionRequestedEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2PermissionRequestedEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2PermissionRequestedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::for_class::<
+        Self,
+        ICoreWebView2PermissionRequestedEventArgs,
+    >();
+}
+unsafe impl windows_core::Interface for CoreWebView2PermissionRequestedEventArgs {
+    type Vtable = <ICoreWebView2PermissionRequestedEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2PermissionRequestedEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2PermissionRequestedEventArgs {
+    type Target = ICoreWebView2PermissionRequestedEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2PermissionRequestedEventArgs {
+    const NAME: &'static str =
+        "Microsoft.Web.WebView2.Core.CoreWebView2PermissionRequestedEventArgs";
+}
+unsafe impl Send for CoreWebView2PermissionRequestedEventArgs {}
+unsafe impl Sync for CoreWebView2PermissionRequestedEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2PermissionState(pub i32);
+impl CoreWebView2PermissionState {
+    pub const Default: Self = Self(0);
+    pub const Allow: Self = Self(1);
+    pub const Deny: Self = Self(2);
+}
+impl windows_core::imp::TypeKind for CoreWebView2PermissionState {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2PermissionState {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2PermissionState;i4)",
+    );
+}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWebView2ProcessFailedEventArgs(windows_core::IUnknown);
@@ -1867,6 +1968,37 @@ pub struct CoreWebView2Profile_Manual3_Vtbl {
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2ScreenCaptureStartingEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2ScreenCaptureStartingEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2ScreenCaptureStartingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::for_class::<
+        Self,
+        ICoreWebView2ScreenCaptureStartingEventArgs,
+    >();
+}
+unsafe impl windows_core::Interface for CoreWebView2ScreenCaptureStartingEventArgs {
+    type Vtable = <ICoreWebView2ScreenCaptureStartingEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2ScreenCaptureStartingEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2ScreenCaptureStartingEventArgs {
+    type Target = ICoreWebView2ScreenCaptureStartingEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2ScreenCaptureStartingEventArgs {
+    const NAME: &'static str =
+        "Microsoft.Web.WebView2.Core.CoreWebView2ScreenCaptureStartingEventArgs";
+}
+unsafe impl Send for CoreWebView2ScreenCaptureStartingEventArgs {}
+unsafe impl Sync for CoreWebView2ScreenCaptureStartingEventArgs {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWebView2Settings(windows_core::IUnknown);
@@ -5221,6 +5353,46 @@ impl ICoreWebView2 {
             ))
         }
     }
+    pub fn PermissionRequested<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2>,
+                windows_core::Ref<CoreWebView2PermissionRequestedEventArgs>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2, CoreWebView2PermissionRequestedEventArgs> = {
+            let com =
+                windows_core::imp::DelegateBox::<
+                    TypedEventHandler<CoreWebView2, CoreWebView2PermissionRequestedEventArgs>,
+                    F,
+                >::new(
+                    &TypedEventHandlerBox::<
+                        CoreWebView2,
+                        CoreWebView2PermissionRequestedEventArgs,
+                        F,
+                    >::VTABLE,
+                    handler,
+                );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).PermissionRequested)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemovePermissionRequested,
+            ))
+        }
+    }
     pub fn ProcessFailed<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
     where
         F: Fn(
@@ -5586,8 +5758,13 @@ pub struct ICoreWebView2_Vtbl {
     RemoveFrameNavigationCompleted: usize,
     ScriptDialogOpening: usize,
     RemoveScriptDialogOpening: usize,
-    PermissionRequested: usize,
-    RemovePermissionRequested: usize,
+    pub PermissionRequested: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemovePermissionRequested:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     pub ProcessFailed: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
@@ -6418,6 +6595,39 @@ pub struct ICoreWebView2FindOptions_Vtbl {
         unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2FrameInfo,
+    ICoreWebView2FrameInfo_Vtbl,
+    0xf9b82e06_73f3_513b_bc2c_445ddedba976
+);
+impl windows_core::RuntimeType for ICoreWebView2FrameInfo {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2FrameInfo {
+    pub fn Source(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Source)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2FrameInfo_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    Name: usize,
+    pub Source: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2NavigationCompletedEventArgs,
     ICoreWebView2NavigationCompletedEventArgs_Vtbl,
     0x4865e238_036a_5664_95a3_447ec44cf498
@@ -6579,6 +6789,132 @@ pub struct ICoreWebView2NewWindowRequestedEventArgs_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2PermissionRequestedEventArgs,
+    ICoreWebView2PermissionRequestedEventArgs_Vtbl,
+    0x118bdd9b_cef1_5910_929e_c1a321328239
+);
+impl windows_core::RuntimeType for ICoreWebView2PermissionRequestedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2PermissionRequestedEventArgs {
+    pub fn Uri(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Uri)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn PermissionKind(&self) -> windows_core::Result<CoreWebView2PermissionKind> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PermissionKind)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn IsUserInitiated(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsUserInitiated)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn State(&self) -> windows_core::Result<CoreWebView2PermissionState> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).State)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetState(&self, value: CoreWebView2PermissionState) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetState)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn GetDeferral(&self) -> windows_core::Result<Deferral> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetDeferral)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2PermissionRequestedEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Uri: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub PermissionKind: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut CoreWebView2PermissionKind,
+    ) -> windows_core::HRESULT,
+    pub IsUserInitiated:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    pub State: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut CoreWebView2PermissionState,
+    ) -> windows_core::HRESULT,
+    pub SetState: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        CoreWebView2PermissionState,
+    ) -> windows_core::HRESULT,
+    pub GetDeferral: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2PermissionRequestedEventArgs3,
+    ICoreWebView2PermissionRequestedEventArgs3_Vtbl,
+    0x200e8bcc_bc11_5beb_aa7a_79d4c95d73aa
+);
+impl windows_core::RuntimeType for ICoreWebView2PermissionRequestedEventArgs3 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2PermissionRequestedEventArgs3 {
+    pub fn SetSavesInProfile(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetSavesInProfile)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2PermissionRequestedEventArgs3_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    SavesInProfile: usize,
+    pub SetSavesInProfile:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2ProcessFailedEventArgs,
     ICoreWebView2ProcessFailedEventArgs_Vtbl,
     0x25a8f8c9_d944_539d_afa3_24172b48ef47
@@ -6684,6 +7020,72 @@ pub struct ICoreWebView2Profile7_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
     pub AddBrowserExtensionAsync: unsafe extern "system" fn(
         *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2ScreenCaptureStartingEventArgs,
+    ICoreWebView2ScreenCaptureStartingEventArgs_Vtbl,
+    0x35f0e2bb_94b0_5be7_b633_f87244e38bfe
+);
+impl windows_core::RuntimeType for ICoreWebView2ScreenCaptureStartingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2ScreenCaptureStartingEventArgs {
+    pub fn SetCancel(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetCancel)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn SetHandled(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetHandled)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn OriginalSourceFrameInfo(&self) -> windows_core::Result<CoreWebView2FrameInfo> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).OriginalSourceFrameInfo)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn GetDeferral(&self) -> windows_core::Result<Deferral> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetDeferral)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2ScreenCaptureStartingEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    Cancel: usize,
+    pub SetCancel: unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    Handled: usize,
+    pub SetHandled:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    pub OriginalSourceFrameInfo: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub GetDeferral: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
@@ -6949,6 +7351,68 @@ pub struct ICoreWebView2_15_Vtbl {
         CoreWebView2FaviconImageFormat,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2_27,
+    ICoreWebView2_27_Vtbl,
+    0xd964f497_ffdf_5bcd_bf52_ff4585f2ebc2
+);
+impl windows_core::RuntimeType for ICoreWebView2_27 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2_27 {
+    pub fn ScreenCaptureStarting<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2>,
+                windows_core::Ref<CoreWebView2ScreenCaptureStartingEventArgs>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2, CoreWebView2ScreenCaptureStartingEventArgs> = {
+            let com =
+                windows_core::imp::DelegateBox::<
+                    TypedEventHandler<CoreWebView2, CoreWebView2ScreenCaptureStartingEventArgs>,
+                    F,
+                >::new(
+                    &TypedEventHandlerBox::<
+                        CoreWebView2,
+                        CoreWebView2ScreenCaptureStartingEventArgs,
+                        F,
+                    >::VTABLE,
+                    handler,
+                );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).ScreenCaptureStarting)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveScreenCaptureStarting,
+            ))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2_27_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub ScreenCaptureStarting: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveScreenCaptureStarting:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2_28,
