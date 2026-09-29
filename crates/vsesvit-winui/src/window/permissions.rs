@@ -299,7 +299,7 @@ impl BrowserWindow {
         if let (Some(tab), Some(browser)) = (self.tab(shown.tab), self.browser()) {
             log::info!("tab {}: permission prompt answered {answer:?}", tab.id);
             tab.permissions().answer(&browser, answer);
-            tab.watch_capture();
+            permissions::settings_changed(&browser);
         }
         self.show_next_prompt();
     }
@@ -339,7 +339,7 @@ impl BrowserWindow {
     }
 
     /// On the next turn: the flyout that just closed may still be on its way out.
-    fn show_next_prompt(&self) {
+    pub(crate) fn show_next_prompt(&self) {
         let w = self.me.clone();
         exec::spawn(async move { with(&w, BrowserWindow::show_permission_prompt) });
     }
@@ -502,12 +502,10 @@ fn site_choice(
     if choice != Choice::Allow {
         t.permissions().revoke(permission);
     }
-    if choice.setting() == Some(Setting::Block) {
-        match origin {
-            Some(origin) => permissions::stop_captures(&browser, origin, &[permission]),
-            None => t.stop_capture(permission),
-        }
+    if origin.is_none() && choice.setting() == Some(Setting::Block) {
+        t.stop_capture(permission);
     }
+    permissions::settings_changed(&browser);
     BrowserWindow::refill_site_permissions(window, tab);
 }
 
@@ -530,6 +528,7 @@ fn reset_site(window: &Weak<BrowserWindow>, tab: &Weak<Tab>, origin: &Origin) {
         t.permissions().revoke(permission);
     }
     permissions::stop_captures(&browser, origin, &stored);
+    permissions::settings_changed(&browser);
     BrowserWindow::refill_site_permissions(window, tab);
 }
 

@@ -229,6 +229,9 @@ Microsoft.Web.WebView2.Core.CoreWebView2PermissionState
 Microsoft.Web.WebView2.Core.ICoreWebView2_27::ScreenCaptureStarting
 Microsoft.Web.WebView2.Core.ICoreWebView2ScreenCaptureStartingEventArgs::{put_Cancel, put_Handled, GetDeferral, get_OriginalSourceFrameInfo}
 Microsoft.Web.WebView2.Core.ICoreWebView2FrameInfo::get_Source
+Microsoft.Web.WebView2.Core.ICoreWebView2Profile4::SetPermissionStateAsync
+Microsoft.Web.WebView2.Core.CoreWebView2Profile_Manual2::GetNonDefaultPermissionSettingsAsync
+Microsoft.Web.WebView2.Core.ICoreWebView2PermissionSetting::{get_PermissionKind, get_PermissionOrigin, get_PermissionState}
 Microsoft.UI.Xaml.Controls.IInfoBar::{get_IsOpen, get_Title}
 Microsoft.UI.Xaml.Controls.Primitives.IFlyoutBase::put_OverlayInputPassThroughElement
 Microsoft.UI.Xaml.Input.FocusManager::GetFocusedElementWithRoot

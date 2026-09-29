@@ -148,7 +148,7 @@ fn fill(page: &Rc<Page>) -> Result<()> {
 }
 
 /// Stores `setting`; a block, or a removal, ends what the site captures under it.
-fn set(browser: &Browser, origin: &Origin, permission: Permission, setting: Option<Setting>) {
+fn set(browser: &Rc<Browser>, origin: &Origin, permission: Permission, setting: Option<Setting>) {
     if let Err(e) = browser.core(|p| p.site_permissions().set(origin, permission, setting)) {
         log::warn!(
             "site permission {permission:?} for {}: {e}",
@@ -156,9 +156,10 @@ fn set(browser: &Browser, origin: &Origin, permission: Permission, setting: Opti
         );
         return;
     }
-    if setting != Some(Setting::Allow) {
+    if setting.is_none() {
         permissions::stop_captures(browser, origin, &[permission]);
     }
+    permissions::settings_changed(browser);
 }
 
 #[cfg(test)]

@@ -82,13 +82,14 @@ async fn open_list(window: &BrowserWindow) -> bool {
 }
 
 async fn wait_prompt(window: &BrowserWindow) -> Option<FrameworkElement> {
-    let prompt = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+    exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
         window.permission_prompt()
     })
-    .await;
-    // The flyout's opening animation.
+    .await?;
+    // The flyout's opening animation, and its input guard; a request that joins it meanwhile
+    // gives it new content.
     exec::sleep(Duration::from_millis(600)).await;
-    prompt
+    window.permission_prompt()
 }
 
 /// An element of the site-info popup's Permissions section, which has a namescope of its own.
@@ -174,6 +175,7 @@ pub(super) async fn run(
         "prompts": prompted,
         "ok": result.as_deref() == Some("granted") && prompted == 0,
     }));
+    steps.push(engine_state(&tab, "24c2-the-page-reads-granted", ("granted", "granted")).await);
 
     let list = open_list(window).await;
     let popup = open_site_info(window).await?;
@@ -201,6 +203,7 @@ pub(super) async fn run(
         "ok": stored(Permission::Notifications) == Some(Setting::Block)
             && result.as_deref() == Some("denied") && prompted == 0,
     }));
+    steps.push(engine_state(&tab, "24e2-the-page-reads-denied", ("denied", "denied")).await);
 
     camera(window, &tab, out_dir, steps).await?;
 
@@ -231,10 +234,83 @@ pub(super) async fn run(
     screen_share(window, &tab, out_dir, steps).await?;
     background_tab(window, server, out_dir, steps).await?;
     prompt_rules(browser, window, server, out_dir, steps).await?;
+    other_tabs_settle(browser, window, server, steps).await?;
     browser
         .core(|c| c.site_permissions().reset_site(&origin))
         .map_err(|e| e.to_string())?;
+    crate::permissions::settings_changed(browser);
+    steps.push(
+        engine_state(
+            &tab,
+            "24s-a-reset-clears-what-the-page-reads",
+            ("default", "prompt"),
+        )
+        .await,
+    );
     window.close_tab(tab.id);
+    Ok(())
+}
+
+/// What the page reads back, `Notification.permission` and `navigator.permissions.query`,
+/// once it is `want` (the engine's copy is written a moment after the setting).
+async fn engine_state(tab: &Tab, name: &str, want: (&str, &str)) -> Value {
+    const READ: &str = "window.__query = ''; navigator.permissions.query({ name: 'notifications' })\
+        .then(s => window.__query = s.state); Notification.permission";
+    let mut seen = (String::new(), String::new());
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    while Instant::now() < deadline {
+        let permission = eval(tab, READ).await.unwrap_or_default();
+        let query = page_value(tab, "window.__query").await.unwrap_or_default();
+        seen = (permission.trim_matches('"').to_owned(), query);
+        if (seen.0.as_str(), seen.1.as_str()) == want {
+            break;
+        }
+        exec::sleep(Duration::from_millis(200)).await;
+    }
+    json!({
+        "name": name,
+        "notification_permission": seen.0,
+        "permissions_query": seen.1,
+        "ok": (seen.0.as_str(), seen.1.as_str()) == want,
+    })
+}
+
+/// An answer that stores a setting answers the same site's requests waiting in other tabs,
+/// without a prompt of their own. `localhost` is another origin than `127.0.0.1`, with
+/// nothing stored.
+async fn other_tabs_settle(
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    server: &FixtureServer,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let url = format!("http://localhost:{}/page2.html", server.port());
+    let origin = Origin::parse(&url).ok_or("no localhost origin")?;
+    let behind = window
+        .open_url_tab(&url, false)
+        .map_err(|e| e.to_string())?;
+    wait_loaded(&behind).await?;
+    eval(&behind, ASK_NOTIFICATIONS).await?;
+    let front = window.open_url_tab(&url, true).map_err(|e| e.to_string())?;
+    wait_loaded(&front).await?;
+    eval(&front, ASK_NOTIFICATIONS).await?;
+    let prompt = wait_prompt(window).await.ok_or("no notification prompt")?;
+    answer(&prompt, "AnswerAllowWhileVisiting")?;
+    let result = page_value(&behind, "window.__notify").await;
+    let before = window.permission_prompts_shown();
+    select_tab(window, &behind)?;
+    exec::sleep(Duration::from_millis(800)).await;
+    steps.push(json!({
+        "name": "24t-an-answer-settles-the-same-sites-requests-in-other-tabs",
+        "other_tab": result,
+        "prompts_on_selecting_it": window.permission_prompts_shown() - before,
+        "ok": result.as_deref() == Some("granted") && window.permission_prompts_shown() == before,
+    }));
+    browser
+        .core(|c| c.site_permissions().reset_site(&origin))
+        .map_err(|e| e.to_string())?;
+    window.close_tab(front.id);
+    window.close_tab(behind.id);
     Ok(())
 }
 
@@ -299,6 +375,103 @@ async fn camera(
     })
     .await;
     window.hide_connection();
+    exec::sleep(Duration::from_millis(300)).await;
+    block_the_camera(window, tab, steps).await
+}
+
+/// Block chosen for the camera in the site-info popup while both capture stops the camera
+/// and keeps the microphone. The one-time grant still covers the new `getUserMedia`.
+async fn block_the_camera(
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let before = window.permission_prompts_shown();
+    eval(tab, OPEN_CAMERA).await?;
+    let opened = page_value(tab, "window.__gum").await;
+    exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        (window.capture_button_shown().as_deref() == Some("Using your camera and microphone"))
+            .then_some(())
+    })
+    .await;
+    let popup = open_site_info(window).await?;
+    select(&popup, "PermissionChoiceCamera", 3)?;
+    let left = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        window
+            .capture_button_shown()
+            .filter(|d| d == "Using your microphone")
+    })
+    .await;
+    let ended = page_value(tab, "String(window.__ended)").await;
+    steps.push(json!({
+        "name": "24h2-blocking-the-camera-while-in-use-stops-only-the-camera",
+        "opened": opened,
+        "prompts": window.permission_prompts_shown() - before,
+        "still_capturing": left,
+        "ended_events": ended,
+        "ok": opened.as_deref() == Some("ok") && window.permission_prompts_shown() == before
+            && left.is_some() && ended.as_deref() == Some("1"),
+    }));
+    exec::sleep(Duration::from_millis(300)).await;
+    let popup = window
+        .connection_popup()
+        .ok_or("the site-info popup closed")?;
+    super::dialog_steps::invoke(&in_popup::<Button>(&popup, "PermissionStopMicrophone")?)
+        .map_err(|e| e.to_string())?;
+    exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        window.capture_button_shown().is_none().then_some(())
+    })
+    .await;
+    window.hide_connection();
+    exec::sleep(Duration::from_millis(300)).await;
+    allowed_camera_shows(window, tab, steps).await
+}
+
+/// With the camera allowed for the site, the engine may let a page open it without asking the
+/// shell; the in-use indicators show it all the same.
+async fn allowed_camera_shows(
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let popup = open_site_info(window).await?;
+    select(&popup, "PermissionChoiceCamera", 1)?;
+    exec::sleep(Duration::from_millis(300)).await;
+    window.hide_connection();
+    tab.reload();
+    exec::sleep(Duration::from_millis(300)).await;
+    wait_loaded(tab).await?;
+    let before = window.permission_prompts_shown();
+    eval(
+        tab,
+        "window.__gum = ''; navigator.mediaDevices.getUserMedia({ video: true }).then(s => { \
+         window.__stream = s; window.__gum = 'ok'; }, e => window.__gum = e.name); 0",
+    )
+    .await?;
+    let opened = page_value(tab, "window.__gum").await;
+    let indicator = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        window
+            .capture_button_shown()
+            .filter(|d| d == "Using your camera")
+    })
+    .await;
+    steps.push(json!({
+        "name": "24h3-an-allowed-camera-shows-without-a-prompt",
+        "opened": opened,
+        "prompts": window.permission_prompts_shown() - before,
+        "indicator": indicator,
+        "ok": opened.as_deref() == Some("ok") && window.permission_prompts_shown() == before
+            && indicator.is_some(),
+    }));
+    eval(
+        tab,
+        "window.__stream && window.__stream.getTracks().forEach(t => t.stop()); 0",
+    )
+    .await?;
+    exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        window.capture_button_shown().is_none().then_some(())
+    })
+    .await;
     Ok(())
 }
 

@@ -1840,6 +1840,34 @@ impl windows_core::RuntimeName for CoreWebView2PermissionRequestedEventArgs {
 unsafe impl Send for CoreWebView2PermissionRequestedEventArgs {}
 unsafe impl Sync for CoreWebView2PermissionRequestedEventArgs {}
 #[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2PermissionSetting(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2PermissionSetting,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2PermissionSetting {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2PermissionSetting>();
+}
+unsafe impl windows_core::Interface for CoreWebView2PermissionSetting {
+    type Vtable = <ICoreWebView2PermissionSetting as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2PermissionSetting as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2PermissionSetting {
+    type Target = ICoreWebView2PermissionSetting;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2PermissionSetting {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2PermissionSetting";
+}
+unsafe impl Send for CoreWebView2PermissionSetting {}
+unsafe impl Sync for CoreWebView2PermissionSetting {}
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CoreWebView2PermissionState(pub i32);
 impl CoreWebView2PermissionState {
@@ -1933,6 +1961,42 @@ impl windows_core::RuntimeName for CoreWebView2Profile {
 }
 unsafe impl Send for CoreWebView2Profile {}
 unsafe impl Sync for CoreWebView2Profile {}
+windows_core::imp::define_interface!(
+    CoreWebView2Profile_Manual2,
+    CoreWebView2Profile_Manual2_Vtbl,
+    0x6e62815a_6269_5756_92c3_f08afe17649c
+);
+impl windows_core::RuntimeType for CoreWebView2Profile_Manual2 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl CoreWebView2Profile_Manual2 {
+    pub fn GetNonDefaultPermissionSettingsAsync(
+        &self,
+    ) -> windows_core::Result<
+        windows_future::IAsyncOperation<
+            windows_collections::IVectorView<CoreWebView2PermissionSetting>,
+        >,
+    > {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).GetNonDefaultPermissionSettingsAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct CoreWebView2Profile_Manual2_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub GetNonDefaultPermissionSettingsAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    )
+        -> windows_core::HRESULT,
+}
 windows_core::imp::define_interface!(
     CoreWebView2Profile_Manual3,
     CoreWebView2Profile_Manual3_Vtbl,
@@ -6978,6 +7042,66 @@ pub struct ICoreWebView2PermissionRequestedEventArgs3_Vtbl {
         unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2PermissionSetting,
+    ICoreWebView2PermissionSetting_Vtbl,
+    0xb4158d0b_8ef8_575f_8e99_5fe02e8b579e
+);
+impl windows_core::RuntimeType for ICoreWebView2PermissionSetting {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2PermissionSetting {
+    pub fn PermissionKind(&self) -> windows_core::Result<CoreWebView2PermissionKind> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PermissionKind)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn PermissionOrigin(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PermissionOrigin)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn PermissionState(&self) -> windows_core::Result<CoreWebView2PermissionState> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PermissionState)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2PermissionSetting_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub PermissionKind: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut CoreWebView2PermissionKind,
+    ) -> windows_core::HRESULT,
+    pub PermissionOrigin: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub PermissionState: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut CoreWebView2PermissionState,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2ProcessFailedEventArgs,
     ICoreWebView2ProcessFailedEventArgs_Vtbl,
     0x25a8f8c9_d944_539d_afa3_24172b48ef47
@@ -7050,6 +7174,46 @@ pub struct ICoreWebView2Profile2_Vtbl {
     pub ClearBrowsingDataAsync: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         CoreWebView2BrowsingDataKinds,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2Profile4,
+    ICoreWebView2Profile4_Vtbl,
+    0xeeae109a_f641_5a5b_942f_9922594ffb4d
+);
+impl windows_core::RuntimeType for ICoreWebView2Profile4 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2Profile4 {
+    pub fn SetPermissionStateAsync(
+        &self,
+        permissionkind: CoreWebView2PermissionKind,
+        origin: &str,
+        state: CoreWebView2PermissionState,
+    ) -> windows_core::Result<windows_future::IAsyncAction> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).SetPermissionStateAsync)(
+                windows_core::Interface::as_raw(self),
+                permissionkind,
+                core::mem::transmute_copy(&windows_core::HSTRING::from(origin)),
+                state,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2Profile4_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub SetPermissionStateAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        CoreWebView2PermissionKind,
+        *mut core::ffi::c_void,
+        CoreWebView2PermissionState,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }

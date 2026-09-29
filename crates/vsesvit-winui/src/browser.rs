@@ -112,6 +112,7 @@ pub(crate) struct Browser {
     session_final: Cell<bool>,
     profile_open_ms: u128,
     updates: Updates,
+    pub(crate) site_mirror: crate::permissions::EngineMirror,
     me: Weak<Browser>,
 }
 
@@ -187,6 +188,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         session_final: Cell::new(false),
         profile_open_ms,
         updates,
+        site_mirror: crate::permissions::EngineMirror::default(),
         me: me.clone(),
     });
     BROWSER.with_borrow_mut(|b| *b = Some(browser.clone()));
@@ -205,6 +207,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         browser.open_window(window, show)?;
     }
     exec::spawn(browser.clone().start_extensions());
+    crate::permissions::mirror(&browser);
     if browser.config.mode.is_interactive() {
         browser.preload_favicons();
     }

@@ -691,6 +691,11 @@ impl Tab {
         if prompt_gone && let Some(window) = self.window() {
             window.permission_prompt_gone(self.id);
         }
+        if let Some(browser) = self.window().and_then(|w| w.browser()) {
+            self.permissions
+                .refresh_site(&browser, Origin::parse(&url).as_ref());
+            self.watch_capture();
+        }
         let transition = match kind {
             CommitKind::NewDocument => self.transition.take().unwrap_or(Transition::Link),
             CommitKind::SameDocument => Transition::Link,
@@ -844,7 +849,7 @@ impl Tab {
         let origin = Origin::parse(&source);
         if self
             .permissions
-            .blocks_screen_share(&browser, origin.as_ref())
+            .blocks(&browser, origin.as_ref(), Permission::ScreenShare)
         {
             log::info!("tab {}: screen sharing is blocked for {source}", self.id);
             if let Err(e) = args.SetCancel(true) {
