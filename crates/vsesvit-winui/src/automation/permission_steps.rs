@@ -634,6 +634,7 @@ async fn prompt_rules(
 
     if std::env::var("VSESVIT_SMOKE_KEYBOARD").as_deref() == Ok("1") {
         steps.push(keyboard_guard(window, &tab, &location).await);
+        steps.push(typed_list_makes_way(window, &tab).await);
     }
 
     select_tab(window, &other)?;
@@ -694,16 +695,17 @@ async fn keyboard_guard(
     const VK_RETURN: u16 = 0x0D;
     const VK_SPACE: u16 = 0x20;
     let name = "24o2-enter-and-space-on-the-prompt-answer-nothing";
-    window.close_prompt_flyout();
-    exec::sleep(Duration::from_millis(600)).await;
     window.activate();
     let foreground = exec::wait_for(Duration::from_secs(3), Duration::from_millis(50), || {
         window.in_foreground().then_some(())
     })
     .await;
+    // Skipped, the step leaves the waiting prompt as it found it.
     if foreground.is_none() {
         return json!({ "name": name, "skipped": "the window could not come to the foreground", "ok": true });
     }
+    window.close_prompt_flyout();
+    exec::sleep(Duration::from_millis(600)).await;
     if let Err(e) = eval(tab, ASK_LOCATION_WATCHED).await {
         return json!({ "name": name, "error": e, "ok": false });
     }
@@ -729,6 +731,41 @@ async fn keyboard_guard(
         "stored": format!("{:?}", location()),
         "ok": sent == [true, true] && still_open && location().is_none()
             && focused.as_deref() == Some("PromptFocus"),
+    })
+}
+
+/// Typing in the address box opens its suggestion list, and a permission prompt that shows then
+/// closes it. Real key presses, so only with `VSESVIT_SMOKE_KEYBOARD=1` (see `keyboard_guard`).
+async fn typed_list_makes_way(window: &Rc<BrowserWindow>, tab: &Rc<Tab>) -> Value {
+    const TYPED: [u16; 3] = [0x46, 0x49, 0x58];
+    let name = "24o3-a-prompt-closes-the-list-typing-opened";
+    if !window.in_foreground() {
+        return json!({ "name": name, "skipped": "the window is not in the foreground", "ok": true });
+    }
+    window.close_prompt_flyout();
+    exec::sleep(Duration::from_millis(600)).await;
+    window.run(Command::FocusAddress);
+    exec::sleep(Duration::from_millis(300)).await;
+    if !window.in_foreground() {
+        return json!({ "name": name, "error": "the window left the foreground", "ok": false });
+    }
+    send_keys(&TYPED);
+    let opened = exec::wait_for(Duration::from_secs(3), Duration::from_millis(50), || {
+        window.suggestions_open().then_some(())
+    })
+    .await
+    .is_some();
+    if let Err(e) = eval(tab, ASK_LOCATION_WATCHED).await {
+        return json!({ "name": name, "error": e, "ok": false });
+    }
+    let prompt = wait_prompt(window).await.is_some();
+    let closed = !window.suggestions_open();
+    json!({
+        "name": name,
+        "list_opened_by_typing": opened,
+        "prompt": prompt,
+        "list_closed": closed,
+        "ok": opened && prompt && closed,
     })
 }
 
