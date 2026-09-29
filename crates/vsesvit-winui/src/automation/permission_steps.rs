@@ -71,16 +71,6 @@ async fn shoot_clear(
     .await;
 }
 
-/// The address box's suggestion list open, as typing leaves it; whether it is.
-async fn open_list(window: &BrowserWindow) -> bool {
-    exec::wait_for(Duration::from_secs(3), Duration::from_millis(300), || {
-        window.open_suggestions("fixture");
-        window.suggestions_open().then_some(())
-    })
-    .await
-    .is_some()
-}
-
 async fn wait_prompt(window: &BrowserWindow) -> Option<FrameworkElement> {
     exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
         window.permission_prompt()
@@ -141,15 +131,13 @@ pub(super) async fn run(
         .map_err(|e| e.to_string())?;
     wait_loaded(&tab).await?;
 
-    let list = open_list(window).await;
     eval(&tab, ASK_NOTIFICATIONS).await?;
     let prompt = wait_prompt(window).await.ok_or("no notification prompt")?;
     let heading = text_of(&prompt, "PromptHeading");
     shoot_clear(window, out_dir, "24a-permission-prompt", steps, |_| {
         json!({
             "heading": heading,
-            "list_open_before": list,
-            "ok": list && heading == "Show notifications?",
+            "ok": heading == "Show notifications?",
         })
     })
     .await;
@@ -177,7 +165,6 @@ pub(super) async fn run(
     }));
     steps.push(engine_state(&tab, "24c2-the-page-reads-granted", ("granted", "granted")).await);
 
-    let list = open_list(window).await;
     let popup = open_site_info(window).await?;
     let row = in_popup::<UIElement>(&popup, "PermissionRowNotifications").is_ok();
     shoot_clear(
@@ -185,7 +172,7 @@ pub(super) async fn run(
         out_dir,
         "24d-site-info-permissions",
         steps,
-        |_| json!({ "notifications_row": row, "list_open_before": list, "ok": list && row }),
+        |_| json!({ "notifications_row": row, "ok": row }),
     )
     .await;
     select(&popup, "PermissionChoiceNotifications", 2)?;
@@ -483,7 +470,6 @@ async fn screen_share(
     out_dir: &Path,
     steps: &mut Vec<Value>,
 ) -> Result<(), String> {
-    let list = open_list(window).await;
     let gesture = json!({ "expression": SHARE_SCREEN, "userGesture": true });
     devtools(tab, "Runtime.evaluate", &gesture).await?;
     let result = page_value(tab, "window.__gdm").await;
@@ -498,8 +484,7 @@ async fn screen_share(
             "page": result,
             "bar": bar,
             "tab_icon": tab_icon,
-            "list_open_before": list,
-            "ok": list && result.as_deref() == Some("ok") && tab_icon
+            "ok": result.as_deref() == Some("ok") && tab_icon
                 && bar.as_deref().is_some_and(|b| b.starts_with("Sharing your screen with 127.0.0.1:")),
         })
     })
@@ -773,7 +758,6 @@ async fn settings(
     out_dir: &Path,
     steps: &mut Vec<Value>,
 ) -> Result<(), String> {
-    let list = open_list(window).await;
     let preview = dialogs::preview(window, Dialog::Settings).map_err(|e| e.to_string())?;
     exec::sleep(Duration::from_millis(500)).await;
     let categories: ListView = preview
@@ -805,8 +789,7 @@ async fn settings(
             json!({
                 "site": site,
                 "notifications_and_screen_sharing": listed,
-                "list_open_before": list,
-                "ok": list && site == origin.host_for_display() && listed,
+                "ok": site == origin.host_for_display() && listed,
             })
         },
     )

@@ -585,12 +585,6 @@ impl BrowserWindow {
         Some(name.to_string())
     }
 
-    /// Fills the address box's suggestion list for `text` and opens it, as typing does.
-    pub fn open_suggestions(&self, text: &str) {
-        self.show_suggestions(text);
-        let _ = self.ui.address.SetIsSuggestionListOpen(true);
-    }
-
     /// The sharing bar's "Stop sharing".
     pub fn stop_sharing_button(&self) -> Button {
         self.ui.share_stop.clone()
