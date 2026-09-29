@@ -208,6 +208,7 @@ impl BrowserWindow {
         let id = self.permissions.prompts_shown.get() + 1;
         self.permissions.prompts_shown.set(id);
         let content = self.prompt_content(id, prompt)?;
+        self.close_suggestions();
         let flyout = connection::flyout(&content)?;
         let w = self.me.clone();
         flyout
@@ -293,6 +294,9 @@ impl BrowserWindow {
                 .ui
                 .share_bar
                 .SetTitle(&format!("Sharing your screen with {host}"));
+        }
+        if capturing.screen && !self.ui.share_bar.IsOpen().unwrap_or(false) {
+            self.close_suggestions();
         }
         let _ = self.ui.share_bar.SetIsOpen(capturing.screen);
         if let Some(tab) = tab
@@ -480,6 +484,12 @@ impl BrowserWindow {
             .unwrap_or(false)
             .then(|| bar.Title().ok().map(|t| t.to_string()))
             .flatten()
+    }
+
+    /// Fills the address box's suggestion list for `text` and opens it, as typing does.
+    pub fn open_suggestions(&self, text: &str) {
+        self.show_suggestions(text);
+        let _ = self.ui.address.SetIsSuggestionListOpen(true);
     }
 
     /// The sharing bar's "Stop sharing".

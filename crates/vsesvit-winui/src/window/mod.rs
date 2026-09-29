@@ -658,6 +658,7 @@ impl BrowserWindow {
         if omnibox::display_url(&url).is_empty() {
             return Ok(());
         }
+        self.close_suggestions();
         let report = tab
             .security_report()
             .and_then(|json| connection::parse_report(&json));
@@ -840,6 +841,7 @@ impl BrowserWindow {
         if self.dialog_open.replace(true) {
             return;
         }
+        self.close_suggestions();
         let me = self.me();
         exec::spawn(async move {
             if let Err(e) = dialogs::show(&me, dialog).await {
@@ -855,6 +857,7 @@ impl BrowserWindow {
         let children = self.ui.overlay_body.Children()?;
         children.Clear()?;
         if let Some((title, body)) = content {
+            self.close_suggestions();
             self.ui.overlay_title.SetText(title)?;
             children.Append(body)?;
         }
