@@ -30,6 +30,8 @@ WebView2 then loads the directory natively. On Linux, `vsesvit-webext` runs it. 
 
 **Synced data is stored sync-ready from day one.** Bookmarks, history, open tabs, installed extensions, extension `storage.sync`, preferences and search engines live in one SQLite file per profile. Every synced record is a join-semilattice: last-writer-wins registers stamped with a hybrid logical clock, grow-only sets, and terminal tombstones. Every row carries a change sequence number. A future sync engine lists local changes with `changes_since(kind, seq)` and applies remote batches with `apply(records)`, in any order and any number of times. The bookmark tree shown to the user is computed from the merged records by a pure function, so every device shows the same valid tree (no cycles, no orphans) whatever order changes arrived in. A property test runs three simulated devices with skewed clocks through a server that never merges, and checks that they converge. The design came out of a three-way design arena and a cross-judge (`design/core.md`, `design/arena/`).
 
+**Sync signs in with OpenID Connect and keeps a dumb server.** The server (`server/`) stores the last uploaded body of each record per account and never merges, which is the server `sync.rs` was designed for. Every write takes the account's next sequence number, so a download is a cursor over writes. Anyone can host one: SQLite or Postgres through SeaORM, one Docker image, and any OpenID Connect provider with discovery and userinfo. It identifies a user by the userinfo `sub` for their access token. That is the one check all providers answer alike, and Quadrant ID, the default provider, needs it: its access tokens carry the granted scopes in `sub`. The browser asks the server which provider and client to use (`/v1/info`), then signs in with the authorization code flow and PKCE. The provider's page opens in a Vsesvit tab and returns the code to a loopback port the server lists, because Quadrant ID matches redirect ports exactly. The server address is the local pref `sync.server`, by default `https://vsesvit-service.mrquantumoff.dev`. Bodies are opaque to the server, so end-to-end encryption can come later without a server change.
+
 ## Architecture
 
 ```
@@ -40,6 +42,10 @@ crates/
   vsesvit-winui    Windows shell: WinUI 3 + WebView2 (compiles to nothing elsewhere)
   vsesvit-gtk      Linux shell: GTK4 + libadwaita + WebKitGTK (compiles to nothing elsewhere)
   vsesvit-webext   Linux WebExtensions runtime on WebKitGTK; its DNR translator is platform-neutral
+  vsesvit-update   self-updater: the client side of the Tauri updater protocol
+  vsesvit-sync     sync engine: OpenID Connect sign-in and the rounds between a profile and a server
+  vsesvit-sync-proto  the sync server's HTTP API, shared by the engine and the server
+server/            the self-hostable sync server (its own Cargo workspace, SeaORM on SQLite or Postgres)
 ```
 
 Threading model:
@@ -112,7 +118,7 @@ Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (
 5. **Self-tests green on both platforms.**
 6. **Packaging and updates.** An NSIS installer on Windows. deb, rpm, pacman, AppImage and Flatpak on Linux. Every format but Flatpak updates itself through the Tauri updater protocol, so an existing Tauri update server serves Vsesvit (`design/packaging.md`).
 7. **Later.**
-   - Sync engine: an end-to-end encrypted record store and a server. Nothing in core's format changes.
+   - End-to-end encryption of sync records. The server stores bodies it never reads, so only the engine changes.
    - Passwords and autofill: secret-store integration.
    - Extension auto-update.
 

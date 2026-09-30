@@ -1,0 +1,23 @@
+[package]
+name = "vsesvit-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Vsesvit's sync engine: OpenID Connect sign-in and the rounds that move records between a profile and a sync server"
+
+[dependencies]
+vsesvit-core = { workspace = true }
+vsesvit-sync-proto = { path = "../vsesvit-sync-proto" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+log = { workspace = true }
+ureq = { version = "3.4", features = ["json"] }
+base64 = "0.23"
+sha2 = "0.11"
+getrandom = "0.4"
+
+[dev-dependencies]
+vsesvit-core = { workspace = true, features = ["testkit"] }

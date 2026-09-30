@@ -59,6 +59,8 @@ crates/vsesvit-core    profile store, sync-ready data model, omnibox, extension 
 crates/vsesvit-winui   Windows shell (WinUI 3 + WebView2)
 crates/vsesvit-gtk     Linux shell (GTK4 + libadwaita + WebKitGTK)
 crates/vsesvit-webext  WebExtensions runtime for WebKitGTK
+crates/vsesvit-sync    sync engine: OpenID Connect sign-in, rounds between a profile and a server
+server/                self-hostable sync server (Docker image, SQLite or Postgres); see server/README.md
 docs/                  plan, design documents, research notes, design arena record
 ```
 

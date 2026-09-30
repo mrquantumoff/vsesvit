@@ -156,7 +156,13 @@ pub mod keys {
     /// could each take the same chord, and merging per command would give that chord to both.
     /// Last writer wins keeps a keymap one device resolved as a whole.
     pub const SHORTCUTS: Pref<Overrides> = Pref { key: "keyboard.shortcuts", scope: Scope::Synced, default: Overrides::new };
+    /// Local: the sync server this device signs in to, as a base URL. Every device of an account
+    /// names the same one, so there is nothing to sync, and a synced value would move a device
+    /// off its server before it could sign in there.
+    pub const SYNC_SERVER: Pref<String> = Pref { key: "sync.server", scope: Scope::Local, default: || DEFAULT_SYNC_SERVER.to_owned() };
 }
+
+pub const DEFAULT_SYNC_SERVER: &str = "https://vsesvit-service.mrquantumoff.dev";
 
 /// Sync record: one per key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

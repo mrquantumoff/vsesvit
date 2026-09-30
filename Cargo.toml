@@ -14,6 +14,7 @@ vsesvit-webext = { path = "crates/vsesvit-webext" }
 vsesvit-gtk = { path = "crates/vsesvit-gtk" }
 vsesvit-winui = { path = "crates/vsesvit-winui" }
 vsesvit-update = { path = "crates/vsesvit-update" }
+vsesvit-sync = { path = "crates/vsesvit-sync" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
