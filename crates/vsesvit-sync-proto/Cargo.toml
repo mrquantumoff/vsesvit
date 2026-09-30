@@ -1,0 +1,16 @@
+[package]
+name = "vsesvit-sync-proto"
+# No workspace inheritance: the sync server, a separate workspace in server/, builds this crate from a
+# Docker context that holds only server/ and this directory.
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+description = "The wire format between Vsesvit and its sync server"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+base64 = "0.23"
+
+[dev-dependencies]
+serde_json = "1"

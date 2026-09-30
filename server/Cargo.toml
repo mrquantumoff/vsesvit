@@ -1,0 +1,45 @@
+# The sync server is its own workspace: sqlx and the browser's rusqlite link different
+# libsqlite3-sys versions, which one Cargo graph cannot hold.
+[workspace]
+members = [".", "migration"]
+resolver = "3"
+
+[package]
+name = "vsesvit-sync-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+description = "Self-hostable sync server for Vsesvit, signing users in with any OpenID Connect provider"
+publish = false
+
+[dependencies]
+vsesvit-sync-proto = { path = "../crates/vsesvit-sync-proto" }
+migration = { path = "migration" }
+axum = "0.8.9"
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tower-http = { version = "0.7.1", features = ["trace", "limit", "timeout"] }
+sea-orm = { version = "2.0.4", default-features = false, features = [
+    "macros",
+    "runtime-tokio-rustls",
+    "sqlx-sqlite",
+    "sqlx-postgres",
+    "with-chrono",
+] }
+# ring rather than reqwest's default aws-lc-rs, which needs cmake in the image's build stage.
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider", "http2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.23"
+url = "2.5"
+sha2 = "0.11"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+dotenvy = "0.15"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

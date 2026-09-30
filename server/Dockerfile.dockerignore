@@ -1,0 +1,7 @@
+*
+!crates/vsesvit-sync-proto
+!server
+crates/vsesvit-sync-proto/target
+server/target
+server/.env
+server/*.db*

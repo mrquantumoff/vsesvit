@@ -1,4 +1,9 @@
 /target
+/server/target
+# A local sync server's settings and SQLite database.
+/server/.env
+/server/*.db
+/server/*.db-*
 /.audit/scratch/
 *.crx
 !/tests/fixtures/**/*.crx
