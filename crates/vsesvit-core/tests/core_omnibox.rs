@@ -8,7 +8,10 @@ use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::crdt::{DeviceId, TimeSource};
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::keys;
-use vsesvit_core::search::{classify, classify_url, NavTarget, SearchEngine, SearchEngineId, SuggestionSource, UrlTemplate};
+use vsesvit_core::search::{
+    classify, classify_url, ctrl_enter_url, selection_action, NavTarget, SearchEngine, SearchEngineId, Suggestions, SuggestionSource,
+    UrlTemplate,
+};
 use vsesvit_core::{OpenOptions, Profile, Url};
 
 struct TempDir(PathBuf);
@@ -174,7 +177,7 @@ fn suggest_ranks_prefix_then_bookmarks_then_history() {
     p.history().set_title(&other, "rustic things").unwrap();
     p.history().record_visit(&docs, Transition::Link).unwrap();
 
-    let s = p.omnibox().suggest("rust", 8).unwrap();
+    let s = p.omnibox().suggest("rust", 8, false).unwrap().items;
     assert_eq!(s[0].source, SuggestionSource::Search);
     assert!(s[0].title.contains("DuckDuckGo"));
     let urls: Vec<&str> = s[1..].iter().map(|x| x.target.url().as_str()).collect();
@@ -183,18 +186,18 @@ fn suggest_ranks_prefix_then_bookmarks_then_history() {
     assert!(urls.contains(&"https://example.org/rustic"));
     assert_eq!(urls.iter().filter(|u| **u == "https://docs.rs/serde").count(), 0, "no substring match on 'rust'");
 
-    let s = p.omnibox().suggest("serde", 8).unwrap();
+    let s = p.omnibox().suggest("serde", 8, false).unwrap().items;
     assert_eq!(s[0].source, SuggestionSource::Search);
     assert_eq!(s[1].source, SuggestionSource::Bookmark);
     assert_eq!(s[1].title, "Serde docs");
     assert_eq!(s.len(), 2, "the bookmark and the history entry share a url");
 
-    let s = p.omnibox().suggest("docs.rs", 8).unwrap();
+    let s = p.omnibox().suggest("docs.rs", 8, false).unwrap().items;
     assert_eq!(s[0].source, SuggestionSource::Typed);
     assert_eq!(s[0].target.url().as_str(), "https://docs.rs/");
 
-    assert_eq!(p.omnibox().suggest("rust", 1).unwrap().len(), 1);
-    assert!(p.omnibox().suggest("  ", 8).unwrap().is_empty());
+    assert_eq!(p.omnibox().suggest("rust", 1, false).unwrap().items.len(), 1);
+    assert!(p.omnibox().suggest("  ", 8, true).unwrap() == Suggestions::default());
 }
 
 #[test]
@@ -205,7 +208,7 @@ fn suggest_leaves_out_the_sources_turned_off() {
     p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "rust marked", &marked).unwrap();
     p.history().record_visit(&visited, Transition::Typed).unwrap();
     let sources = |p: &mut Profile| -> Vec<SuggestionSource> {
-        p.omnibox().suggest("rust", 8).unwrap().into_iter().map(|s| s.source).collect()
+        p.omnibox().suggest("rust", 8, false).unwrap().items.into_iter().map(|s| s.source).collect()
     };
 
     assert_eq!(sources(&mut p), [SuggestionSource::Search, SuggestionSource::Bookmark, SuggestionSource::History]);
@@ -213,4 +216,169 @@ fn suggest_leaves_out_the_sources_turned_off() {
     assert_eq!(sources(&mut p), [SuggestionSource::Search, SuggestionSource::History]);
     p.prefs().set(&keys::SUGGEST_HISTORY, &false).unwrap();
     assert_eq!(sources(&mut p), [SuggestionSource::Search]);
+}
+
+fn visit(p: &mut Profile, url: &str, title: &str) {
+    let url = Url::parse(url).unwrap();
+    p.history().record_visit(&url, Transition::Typed).unwrap();
+    p.history().set_title(&url, title).unwrap();
+}
+
+/// Suggestions whose inline text, when present, completes `typed` to `items[0].fill`.
+fn suggest(p: &mut Profile, typed: &str, allow_inline: bool) -> Suggestions {
+    let s = p.omnibox().suggest(typed, 8, allow_inline).unwrap();
+    if let Some(inline) = &s.inline {
+        assert_eq!(format!("{typed}{inline}").to_lowercase(), s.items[0].fill.to_lowercase(), "{typed:?}");
+        assert!(s.items[0].fill.ends_with(inline.as_str()), "{typed:?}: the suffix comes from the fill");
+    }
+    s
+}
+
+#[test]
+fn fill_drops_scheme_www_and_a_bare_trailing_slash() {
+    let (mut p, _dir) = open();
+    for url in ["https://www.rust-lang.org/", "https://docs.rs/serde/", "http://example.org/a?b=1", "http://example.org/", "https://example.net/?q=1"] {
+        visit(&mut p, url, "");
+    }
+    let table = [
+        ("rust", "https://www.rust-lang.org/", "rust-lang.org"),
+        ("www.rust", "https://www.rust-lang.org/", "www.rust-lang.org"),
+        ("https://www.rust", "https://www.rust-lang.org/", "https://www.rust-lang.org"),
+        ("HTTPS://rust", "https://www.rust-lang.org/", "https://rust-lang.org"),
+        ("http://rust", "https://www.rust-lang.org/", "rust-lang.org"),
+        ("docs", "https://docs.rs/serde/", "docs.rs/serde/"),
+        ("exam", "http://example.org/a?b=1", "example.org/a?b=1"),
+        ("http://exa", "http://example.org/", "http://example.org"),
+        ("example.n", "https://example.net/?q=1", "example.net/?q=1"),
+    ];
+    for (typed, url, want) in table {
+        let s = suggest(&mut p, typed, false);
+        let row = s.items.iter().find(|r| r.target.url().as_str() == url).unwrap_or_else(|| panic!("{typed:?}: no row for {url}"));
+        assert_eq!(row.fill, want, "{typed:?} -> {url}");
+    }
+
+    let first_fill = |p: &mut Profile, typed: &str| suggest(p, typed, false).items[0].fill.clone();
+    assert_eq!(first_fill(&mut p, "  hello world "), "hello world", "a search row fills the trimmed text");
+    assert_eq!(first_fill(&mut p, "Example.com/Path"), "example.com/Path");
+    assert_eq!(first_fill(&mut p, "HTTPS://EXAMPLE.COM"), "https://example.com");
+    assert_eq!(first_fill(&mut p, "about:blank"), "about:blank");
+}
+
+#[test]
+fn inline_completes_a_host_prefix_to_the_site_root() {
+    let (mut p, _dir) = open();
+    visit(&mut p, "https://github.com/rust-lang/rust", "rust-lang/rust");
+
+    let s = suggest(&mut p, "git", true);
+    assert_eq!(s.inline.as_deref(), Some("hub.com"));
+    assert_eq!(s.items[0].target.url().as_str(), "https://github.com/");
+    assert_eq!(s.items[0].fill, "github.com");
+    assert_eq!(s.items[0].title, "github.com", "an unvisited root is titled by its host");
+    assert_eq!(s.items[0].source, SuggestionSource::Typed, "an unvisited root is no history row");
+    assert_eq!(s.items[1].source, SuggestionSource::Search, "the what-you-typed row comes second");
+    assert_eq!(s.items[2].target.url().as_str(), "https://github.com/rust-lang/rust");
+
+    assert_eq!(suggest(&mut p, "GiT", true).inline.as_deref(), Some("hub.com"), "the typed casing stays the user's");
+    let s = suggest(&mut p, "https://git", true);
+    assert_eq!((s.inline.as_deref(), s.items[0].fill.as_str()), (Some("hub.com"), "https://github.com"));
+
+    let s = p.omnibox().suggest("git", 1, true).unwrap();
+    assert_eq!(s.items.len(), 1);
+    assert_eq!(s.items[0].target.url().as_str(), "https://github.com/");
+}
+
+#[test]
+fn inline_uses_the_visited_root_once() {
+    let (mut p, _dir) = open();
+    visit(&mut p, "https://github.com/rust-lang/rust", "rust-lang/rust");
+    visit(&mut p, "https://github.com/", "GitHub");
+
+    let s = suggest(&mut p, "git", true);
+    assert_eq!(s.inline.as_deref(), Some("hub.com"));
+    assert_eq!(s.items[0].title, "GitHub");
+    assert_eq!(s.items[0].source, SuggestionSource::History);
+    assert_eq!(s.items.iter().filter(|r| r.target.url().as_str() == "https://github.com/").count(), 1);
+}
+
+#[test]
+fn inline_completes_the_url_itself_after_a_slash() {
+    let (mut p, _dir) = open();
+    visit(&mut p, "https://github.com/rust-lang/rust", "rust-lang/rust");
+
+    let s = suggest(&mut p, "github.com/r", true);
+    assert_eq!(s.inline.as_deref(), Some("ust-lang/rust"));
+    assert_eq!(s.items[0].target.url().as_str(), "https://github.com/rust-lang/rust");
+    assert_eq!(s.items[1].source, SuggestionSource::Typed);
+    assert_eq!(s.items[1].target.url().as_str(), "https://github.com/r");
+    assert_eq!(s.items.len(), 2, "the completed row is not repeated");
+}
+
+#[test]
+fn no_inline_without_permission_whitespace_or_a_suffix() {
+    let (mut p, _dir) = open();
+    visit(&mut p, "https://github.com/rust-lang/rust", "rust-lang/rust");
+
+    let s = suggest(&mut p, "git", false);
+    assert_eq!(s.inline, None);
+    assert_eq!(s.items[0].source, SuggestionSource::Search);
+
+    for typed in ["git hub", "git ", " git"] {
+        let s = suggest(&mut p, typed, true);
+        assert_eq!(s.inline, None, "{typed:?}");
+        assert_eq!(s.items[0].source, SuggestionSource::Search, "{typed:?}");
+    }
+
+    let s = suggest(&mut p, "github.com", true);
+    assert_eq!(s.inline, None, "the typed text is already the whole fill");
+    assert_eq!(s.items[0].source, SuggestionSource::Typed);
+    assert_eq!(s.items[0].target.url().as_str(), "https://github.com/");
+
+    assert_eq!(suggest(&mut p, "www.git", true).inline, None, "the fill has no www. to match");
+    assert_eq!(suggest(&mut p, "zzz", true).inline, None);
+}
+
+#[test]
+fn selection_actions() {
+    let ddg = &engines()[0];
+    let long = "a".repeat(60);
+    let fifty = "b".repeat(50);
+    let table = [
+        ("  hello \n  world\t".to_owned(), "Search DuckDuckGo for \u{201c}hello world\u{201d}".to_owned(), "https://duckduckgo.com/?q=hello+world".to_owned()),
+        (long.clone(), format!("Search DuckDuckGo for \u{201c}{}\u{2026}\u{201d}", "a".repeat(50)), format!("https://duckduckgo.com/?q={long}")),
+        (fifty.clone(), format!("Search DuckDuckGo for \u{201c}{fifty}\u{201d}"), format!("https://duckduckgo.com/?q={fifty}")),
+        ("example.com".to_owned(), "Go to example.com".to_owned(), "https://example.com/".to_owned()),
+        (" https://a.test/x ".to_owned(), "Go to https://a.test/x".to_owned(), "https://a.test/x".to_owned()),
+        (
+            "see example.com now".to_owned(),
+            "Search DuckDuckGo for \u{201c}see example.com now\u{201d}".to_owned(),
+            "https://duckduckgo.com/?q=see+example.com+now".to_owned(),
+        ),
+        ("/usr/share".to_owned(), "Search DuckDuckGo for \u{201c}/usr/share\u{201d}".to_owned(), "https://duckduckgo.com/?q=%2Fusr%2Fshare".to_owned()),
+    ];
+    for (text, label, url) in &table {
+        let a = selection_action(text, ddg).unwrap_or_else(|| panic!("{text:?}"));
+        assert_eq!((a.label.as_str(), a.url.as_str()), (label.as_str(), url.as_str()), "{text:?}");
+    }
+    assert_eq!(selection_action(" \n\t", ddg), None);
+    assert_eq!(selection_action("", ddg), None);
+}
+
+#[test]
+fn for_selection_uses_the_default_engine() {
+    let (mut p, _dir) = open();
+    let a = p.omnibox().for_selection("rust  lang").unwrap().unwrap();
+    assert_eq!(a.label, "Search DuckDuckGo for \u{201c}rust lang\u{201d}");
+    assert_eq!(a.url.as_str(), "https://duckduckgo.com/?q=rust+lang");
+    p.search_engines().set_default(&SearchEngineId("builtin:google".to_owned())).unwrap();
+    assert_eq!(p.omnibox().for_selection("rust").unwrap().unwrap().label, "Search Google for \u{201c}rust\u{201d}");
+    assert_eq!(p.omnibox().for_selection("   ").unwrap(), None);
+}
+
+#[test]
+fn ctrl_enter_wraps_a_bare_word() {
+    assert_eq!(ctrl_enter_url("google").map(String::from).as_deref(), Some("https://www.google.com/"));
+    assert_eq!(ctrl_enter_url("  My-Site ").map(String::from).as_deref(), Some("https://www.my-site.com/"));
+    for text in ["a.b", "two words", "http://x", "", "  ", "caf\u{e9}"] {
+        assert_eq!(ctrl_enter_url(text), None, "{text:?}");
+    }
 }

@@ -622,6 +622,136 @@ pub struct Suggestion {
     pub source: SuggestionSource,
     pub title: String,
     pub target: NavTarget,
+    /// What the address box shows while this row is highlighted: the typed text for a search,
+    /// the URL for the rest, without `https://`/`http://` and `www.` unless the typed text has them.
+    pub fill: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Suggestions {
+    /// `items[0]` is the default match: what Enter opens while no other row is highlighted.
+    pub items: Vec<Suggestion>,
+    /// Text to show after what the user typed, selected, so the box reads `items[0].fill`.
+    /// `Some` only when it is non-empty and `allow_inline` was true.
+    pub inline: Option<String>,
+}
+
+/// The item Chrome adds to a page's context menu for selected text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectionAction {
+    /// `Search DuckDuckGo for “text”`, or `Go to example.com` when the selection is an address.
+    pub label: String,
+    pub url: Url,
+}
+
+/// The context menu item for selected `text`: `Go to` when it is one `http(s)` address,
+/// otherwise a search of `default` for the whitespace-collapsed text. None for blank text.
+pub fn selection_action(text: &str, default: &SearchEngine) -> Option<SelectionAction> {
+    selection(text, Some(default))
+}
+
+fn selection(text: &str, default: Option<&SearchEngine>) -> Option<SelectionAction> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    const MAX_CHARS: usize = 50;
+    let shown = match text.char_indices().nth(MAX_CHARS) {
+        Some((cut, _)) => format!("{}\u{2026}", &text[..cut]),
+        None => text.clone(),
+    };
+    if !text.contains(' ')
+        && let Some(NavTarget::Url(url)) = classify_url(&text)
+        && matches!(url.scheme(), "http" | "https")
+    {
+        return Some(SelectionAction { label: format!("Go to {shown}"), url });
+    }
+    let default = default?;
+    let url = default.search_url.expand(&text)?;
+    Some(SelectionAction { label: format!("Search {} for \u{201c}{shown}\u{201d}", default.name), url })
+}
+
+/// Ctrl+Enter in the address box: `www.<text>.com`, as in Chrome, for a single bare word.
+pub fn ctrl_enter_url(text: &str) -> Option<Url> {
+    let word = text.trim();
+    if word.is_empty() || !word.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return None;
+    }
+    Url::parse(&format!("https://www.{word}.com/")).ok()
+}
+
+/// The address box text for `url`: no `http(s)://` or leading `www.` unless `typed` has them,
+/// and no trailing `/` on a bare origin.
+fn fill(url: &Url, typed: &str) -> String {
+    let full = url.as_str();
+    let Some(scheme) = ["https://", "http://"].into_iter().find(|s| full.starts_with(s)) else { return full.to_owned() };
+    let typed = typed.trim().to_lowercase();
+    let rest = &full[scheme.len()..];
+    let typed_rest = typed.split_once("://").map_or(typed.as_str(), |(_, r)| r);
+    let rest = if typed_rest.starts_with("www.") { rest } else { rest.strip_prefix("www.").unwrap_or(rest) };
+    let rest = if url.path() == "/" && url.query().is_none() && url.fragment().is_none() { rest.strip_suffix('/').unwrap_or(rest) } else { rest };
+    let scheme = if typed.starts_with(scheme) { scheme } else { "" };
+    format!("{scheme}{rest}")
+}
+
+/// A bookmark or history row in rank order; `prefix` is whether its url starts with the typed text.
+struct Candidate {
+    prefix: bool,
+    row: Suggestion,
+}
+
+/// Picks the default match over the ranked rows: the inline completion when there is one,
+/// then the what-you-typed row, then the rest.
+fn arrange(text: &str, typed: Option<Suggestion>, ranked: Vec<Candidate>, allow_inline: bool, limit: usize) -> Suggestions {
+    let (lead, inline) = match allow_inline.then(|| completion(text, &ranked)).flatten() {
+        Some((row, inline)) => (Some(row), Some(inline)),
+        None => (None, None),
+    };
+    let lead_target = lead.as_ref().map(|l| l.target.clone());
+    let rest = ranked.into_iter().map(|c| c.row).filter(|r| lead_target.as_ref() != Some(&r.target));
+    let items = lead.into_iter().chain(typed).chain(rest).take(limit).collect();
+    Suggestions { items, inline }
+}
+
+/// The best prefix match, widened to its origin root while the typed text is still a host
+/// prefix, and the suffix that completes `text` to its fill. A root that is no bookmark or
+/// history row of its own reads as a typed address.
+fn completion(text: &str, ranked: &[Candidate]) -> Option<(Suggestion, String)> {
+    if text.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let best = &ranked.iter().find(|c| c.prefix)?.row;
+    let after_scheme = text.split_once("://").map_or(text, |(_, r)| r);
+    let origin = best.target.url().origin();
+    let root = if origin.is_tuple() { Url::parse(&format!("{}/", origin.ascii_serialization())).ok() } else { None };
+    let row = match root {
+        Some(root) if !after_scheme.contains('/') => match ranked.iter().find(|c| c.row.target.url() == &root) {
+            Some(c) => c.row.clone(),
+            None => Suggestion {
+                source: SuggestionSource::Typed,
+                title: root.host_str().unwrap_or_default().to_owned(),
+                fill: fill(&root, text),
+                target: NavTarget::Url(root),
+            },
+        },
+        _ => best.clone(),
+    };
+    let inline = inline_suffix(text, &row.fill)?;
+    Some((row, inline))
+}
+
+/// The rest of `fill` after `typed`, compared case-insensitively char by char. None when
+/// `typed` is not a prefix of `fill` or nothing is left.
+fn inline_suffix(typed: &str, fill: &str) -> Option<String> {
+    let mut rest = fill.char_indices();
+    for t in typed.chars() {
+        let (_, f) = rest.next()?;
+        if !t.to_lowercase().eq(f.to_lowercase()) {
+            return None;
+        }
+    }
+    let suffix = rest.as_str();
+    (!suffix.is_empty()).then(|| suffix.to_owned())
 }
 
 pub struct Omnibox<'p> {
@@ -645,49 +775,63 @@ impl Omnibox<'_> {
     /// user turned them off ([`keys::SUGGEST_BOOKMARKS`], [`keys::SUGGEST_HISTORY`]). Remote
     /// search-engine suggestions are a network call and belong to the shell (it has the
     /// `suggest_url`).
-    pub fn suggest(&mut self, text: &str, limit: usize) -> Result<Vec<Suggestion>, Error> {
-        let text = text.trim();
-        if text.is_empty() || limit == 0 {
-            return Ok(Vec::new());
+    ///
+    /// With `allow_inline`, a host prefix of a visited or bookmarked url completes inline to
+    /// that site's root (`git` -> `github.com`), and text with a `/` to the url itself; the
+    /// completion becomes `items[0]`, ahead of the what-you-typed row.
+    pub fn suggest(&mut self, text: &str, limit: usize, allow_inline: bool) -> Result<Suggestions, Error> {
+        let typed = text.trim();
+        if typed.is_empty() || limit == 0 {
+            return Ok(Suggestions::default());
         }
         let with_bookmarks = self.p.prefs().get(&keys::SUGGEST_BOOKMARKS);
         let with_history = self.p.prefs().get(&keys::SUGGEST_HISTORY);
         let engines = self.p.search_engines().list()?;
-        let mut out = Vec::new();
-        match self.resolve(text)? {
+        let typed_row = match self.resolve(typed)? {
             Some(target @ NavTarget::Url(_)) => {
-                out.push(Suggestion { source: SuggestionSource::Typed, title: target.url().to_string(), target });
+                Some(Suggestion { source: SuggestionSource::Typed, title: target.url().to_string(), fill: fill(target.url(), typed), target })
             }
             Some(target @ NavTarget::Search { .. }) => {
                 let NavTarget::Search { engine, .. } = &target else { unreachable!() };
                 let name = engines.iter().find(|e| &e.id == engine).map(|e| e.name.as_str()).unwrap_or("the web");
-                out.push(Suggestion { source: SuggestionSource::Search, title: format!("Search {name} for \"{text}\""), target });
+                Some(Suggestion { source: SuggestionSource::Search, title: format!("Search {name} for \"{typed}\""), fill: typed.to_owned(), target })
             }
-            None => {}
-        }
-        let typed_key = url_key(&text.to_lowercase());
+            None => None,
+        };
+        let typed_key = url_key(&typed.to_lowercase());
         let mut candidates: Vec<(u8, u8, usize, Suggestion)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        let bookmarks = if with_bookmarks { self.p.bookmarks().search(text, limit) } else { Vec::new() };
+        let bookmarks = if with_bookmarks { self.p.bookmarks().search(typed, limit) } else { Vec::new() };
         for node in bookmarks {
             let Some(url) = node.url else { continue };
             if seen.insert(url.clone()) {
                 let prefix = u8::from(!url_key(url.as_str()).starts_with(&typed_key));
                 let n = candidates.len();
-                candidates.push((prefix, 0, n, Suggestion { source: SuggestionSource::Bookmark, title: node.title, target: NavTarget::Url(url) }));
+                let row = Suggestion { source: SuggestionSource::Bookmark, title: node.title, fill: fill(&url, typed), target: NavTarget::Url(url) };
+                candidates.push((prefix, 0, n, row));
             }
         }
-        let history = if with_history { self.p.history().search(text, limit)? } else { Vec::new() };
+        let history = if with_history { self.p.history().search(typed, limit)? } else { Vec::new() };
         for entry in history {
             if seen.insert(entry.url.clone()) {
                 let prefix = u8::from(!url_key(entry.url.as_str()).starts_with(&typed_key));
                 let n = candidates.len();
                 let title = if entry.title.is_empty() { entry.url.to_string() } else { entry.title };
-                candidates.push((prefix, 1, n, Suggestion { source: SuggestionSource::History, title, target: NavTarget::Url(entry.url) }));
+                let row = Suggestion { source: SuggestionSource::History, title, fill: fill(&entry.url, typed), target: NavTarget::Url(entry.url) };
+                candidates.push((prefix, 1, n, row));
             }
         }
         candidates.sort_by_key(|(prefix, source, n, _)| (*prefix, *source, *n));
-        out.extend(candidates.into_iter().map(|(_, _, _, s)| s).take(limit.saturating_sub(out.len())));
-        Ok(out)
+        let ranked = candidates.into_iter().map(|(prefix, _, _, row)| Candidate { prefix: prefix == 0, row }).collect();
+        Ok(arrange(text, typed_row, ranked, allow_inline, limit))
+    }
+
+    /// The page context menu's item for selected text, or None for blank text.
+    pub fn for_selection(&mut self, text: &str) -> Result<Option<SelectionAction>, Error> {
+        match self.p.search_engines().default_engine() {
+            Ok(default) => Ok(selection(text, Some(&default))),
+            Err(Error::NotFound) => Ok(selection(text, None)),
+            Err(e) => Err(e),
+        }
     }
 }
