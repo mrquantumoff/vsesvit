@@ -19,12 +19,15 @@ use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{TabsPosition, Theme, keys};
 use vsesvit_core::search::NavTarget;
+use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::{OpenOptions, Profile};
 use webkit::prelude::*;
 
 use crate::browser::Browser;
+use crate::dialogs::shortcut_settings;
 use crate::extensions::describe_phase;
+use crate::keymap;
 use crate::window::{Focus, classify_layout};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
@@ -773,7 +776,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             .and_downcast::<adw::PreferencesDialog>()
             .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
         let mut shots = Vec::new();
-        for name in ["general", "appearance", "search", "privacy"] {
+        for name in ["general", "appearance", "search", "privacy", "shortcuts"] {
             dialog.set_visible_page_name(name);
             if dialog.visible_page_name().as_deref() != Some(name) {
                 dialog.close();
@@ -901,6 +904,110 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         gio::prelude::ActionGroupExt::activate_action(window, "toggle-tab-sidebar", None);
         wait_for(&last, || if shown() { Ok(()) } else { Err("the sidebar did not come back".to_owned()) }).await;
         Ok("Ctrl+S is bound to win.toggle-tab-sidebar only; it hid the sidebar (sidebar-hidden.png) and showed it again".to_owned())
+    })
+    .await;
+
+    ctx.check("shortcuts", CHECK_TIMEOUT, |_| async move {
+        let _defaults = Cleanup(|| browser.edit_keymap(Keymap::reset_all));
+        let app = browser.app();
+        // GTK hands accelerators back in its own spelling, so they are compared parsed.
+        let accels = |action: &str| -> Vec<String> { app.accels_for_action(action).iter().map(|a| a.to_string()).collect() };
+        let has = |action: &str, want: &[&str]| {
+            let parse = |accels: &[&str]| accels.iter().map(|a| gtk::accelerator_parse(*a)).collect::<Vec<_>>();
+            let set = accels(action);
+            parse(&set.iter().map(String::as_str).collect::<Vec<_>>()) == parse(want)
+        };
+        let runs = |accel: &str| -> Vec<String> { app.actions_for_accel(accel).iter().map(|a| a.to_string()).collect() };
+        let chord = |text: &str| text.parse::<Chord>().map_err(|e| e.to_string());
+        let (ctrl_shift_y, ctrl_j) = (chord("Ctrl+Shift+Y")?, chord("Ctrl+J")?);
+
+        browser.edit_keymap(|keymap| keymap.assign(Command::ShowHistory, [ctrl_shift_y]));
+        let (history, ctrl_h) = (accels("win.show-history"), runs("<Control>h"));
+        if !has("win.show-history", &["<Control><Shift>y"]) || !ctrl_h.is_empty() {
+            return Err(format!("after Ctrl+Shift+Y, win.show-history has {history:?} and Ctrl+H runs {ctrl_h:?}"));
+        }
+        let taken = browser.edit_keymap(|keymap| keymap.assign(Command::ShowHistory, [ctrl_j]));
+        let taken_from: Vec<&str> = taken.iter().map(|t| t.from.title()).collect();
+        let (downloads, ctrl_j_runs) = (accels("win.show-downloads"), runs("<Control>j"));
+        if taken_from != ["Downloads"] || !downloads.is_empty() || ctrl_j_runs != ["win.show-history"] {
+            return Err(format!("after Ctrl+J, taken from {taken_from:?}; win.show-downloads has {downloads:?}; Ctrl+J runs {ctrl_j_runs:?}"));
+        }
+
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        let shown = async {
+            dialog.set_visible_page_name("shortcuts");
+            if dialog.visible_page_name().as_deref() != Some("shortcuts") {
+                return Err("Settings has no \"shortcuts\" page".to_owned());
+            }
+            let row_shows = |title: &str| {
+                find::<adw::ActionRow>(dialog.upcast_ref(), |row| row.title() == title)
+                    .and_then(|row| find::<adw::ShortcutLabel>(row.upcast_ref(), |_| true))
+                    .map(|label| label.accelerator().to_string())
+            };
+            let rows = (row_shows("History"), row_shows("Downloads"));
+            if rows != (Some("<Control>j".to_owned()), Some(String::new())) {
+                return Err(format!("the History and Downloads rows show {rows:?}"));
+            }
+            glib::timeout_future(Duration::from_millis(300)).await;
+            let rows = find::<adw::ActionRow>(dialog.upcast_ref(), |row| row.title() == "History");
+            if let Some(scrolled) = rows.and_then(|row| row.ancestor(gtk::ScrolledWindow::static_type())).and_downcast::<gtk::ScrolledWindow>() {
+                let at = scrolled.vadjustment();
+                at.set_value(at.upper() - at.page_size());
+            }
+            glib::timeout_future(Duration::from_millis(300)).await;
+            crate::screenshot::save_png(window, &ctx.out_dir.join("shortcuts-edited.png")).await.map_err(|e| e.to_string())?;
+            let capture = shortcut_settings::capture(&dialog, browser, Command::ShowHistory, || {});
+            capture.press(keymap::pressed(gdk::Key::t, gdk::ModifierType::CONTROL_MASK, gdk::ModifierType::empty(), Some(gdk::Key::t)));
+            let note = capture.note();
+            glib::timeout_future(POPOVER_SETTLE).await;
+            let shot = crate::screenshot::save_png(window, &ctx.out_dir.join("shortcut-capture.png")).await;
+            capture.close();
+            shot.map_err(|e| e.to_string())?;
+            if note != "Also used by New tab. Saving moves it here." {
+                return Err(format!("capturing Ctrl+T for History says {note:?}"));
+            }
+            Ok(note)
+        }
+        .await;
+        dialog.close();
+        let note = shown?;
+
+        browser.edit_keymap(Keymap::reset_all);
+        let drifted: Vec<&str> = keymap::actions()
+            .filter(|(cmd, action)| {
+                let defaults: Vec<String> = cmd.defaults().iter().map(|&chord| keymap::accelerator(chord)).collect();
+                !has(action, &defaults.iter().map(String::as_str).collect::<Vec<_>>())
+            })
+            .map(|(_, action)| action)
+            .collect();
+        let (save, ctrl_s) = (accels("win.save-page"), runs("<Control>s"));
+        if !drifted.is_empty() || !has("win.save-page", &["<Control><Shift>s"]) || ctrl_s != ["win.toggle-tab-sidebar"] {
+            return Err(format!("after Reset All, {drifted:?} are off their defaults; win.save-page has {save:?}; Ctrl+S runs {ctrl_s:?}"));
+        }
+        Ok(format!(
+            "Ctrl+Shift+Y moved History off Ctrl+H; Ctrl+J moved to History from {taken_from:?}, leaving win.show-downloads none; Settings rows show it (shortcuts-edited.png); capturing Ctrl+T said {note:?} (shortcut-capture.png); Reset All restored every default, Ctrl+Shift+S on win.save-page, Ctrl+S on win.toggle-tab-sidebar"
+        ))
+    })
+    .await;
+
+    ctx.check("save_page", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        tab.load(index_url.as_str());
+        wait_for(&last, || {
+            let (title, uri, loading) = (title_of(tab.web_view()), tab.committed_uri().unwrap_or_default(), tab.web_view().is_loading());
+            if title == "Vsesvit fixture" && uri == index_url.as_str() && !loading { Ok(()) } else { Err(format!("title={title:?} committed={uri:?} loading={loading}")) }
+        })
+        .await;
+        let path = ctx.out_dir.join("saved-page.mhtml");
+        let _ = std::fs::remove_file(&path);
+        crate::save_page::save(browser, tab.web_view(), &path).await?;
+        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let detail = format!("{} has {} bytes", path.display(), bytes.len());
+        if String::from_utf8_lossy(&bytes).contains("Vsesvit fixture") { Ok(format!("{detail}, containing \"Vsesvit fixture\"")) } else { Err(format!("{detail}, none of them \"Vsesvit fixture\"")) }
     })
     .await;
 

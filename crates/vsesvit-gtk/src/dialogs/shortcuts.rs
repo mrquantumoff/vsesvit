@@ -1,92 +1,22 @@
 use adw::prelude::*;
+use vsesvit_core::shortcuts::{Command, Section};
 
-/// Accelerators come from the actions themselves (set in `app.rs`), so this never drifts.
+use crate::keymap::{self, Binding};
+
+/// Sections and titles come from core. Accelerators come from the actions themselves, so
+/// this never drifts from what the keys do.
 pub(crate) fn present(parent: &impl IsA<gtk::Widget>) {
     let dialog = adw::ShortcutsDialog::new();
-    for (title, items) in SECTIONS {
-        let section = adw::ShortcutsSection::new(Some(title));
-        for item in *items {
-            section.add(match item {
-                Item::Action(title, action) => adw::ShortcutsItem::from_action(title, action),
-                Item::Keys(title, accelerator) => adw::ShortcutsItem::new(title, accelerator),
-            });
+    for section in Section::ALL {
+        let group = adw::ShortcutsSection::new(Some(section.title()));
+        for &cmd in Command::ALL.iter().filter(|cmd| cmd.section() == section) {
+            match keymap::binding(cmd) {
+                Some(Binding::Action(action)) => group.add(adw::ShortcutsItem::from_action(cmd.title(), action)),
+                Some(Binding::BuiltIn(accelerator)) => group.add(adw::ShortcutsItem::new(cmd.title(), accelerator)),
+                None => {}
+            }
         }
-        dialog.add(section);
+        dialog.add(group);
     }
     dialog.present(Some(parent));
-}
-
-enum Item {
-    Action(&'static str, &'static str),
-    /// Shortcuts built into widgets rather than bound to actions.
-    Keys(&'static str, &'static str),
-}
-
-const SECTIONS: &[(&str, &[Item])] = &[
-    (
-        "Tabs and Windows",
-        &[
-            Item::Action("New tab", "win.new-tab"),
-            Item::Action("Close tab", "win.close-tab"),
-            Item::Action("Reopen closed tab", "win.reopen-closed-tab"),
-            Item::Keys("Next tab", "<Control>Tab"),
-            Item::Keys("Previous tab", "<Control><Shift>Tab"),
-            Item::Action("Show or hide the tab sidebar", "win.toggle-tab-sidebar"),
-            Item::Action("New window", "app.new-window"),
-            Item::Action("Quit", "app.quit"),
-        ],
-    ),
-    (
-        "Navigation",
-        &[
-            Item::Action("Focus the address bar", "win.focus-location"),
-            Item::Action("Back", "win.back"),
-            Item::Action("Forward", "win.forward"),
-            Item::Action("Reload", "win.reload"),
-            Item::Action("Reload, ignoring the cache", "win.reload-bypass-cache"),
-        ],
-    ),
-    (
-        "Page",
-        &[
-            Item::Action("Find", "win.find"),
-            Item::Action("Next match", "win.find-next"),
-            Item::Action("Previous match", "win.find-previous"),
-            Item::Action("Bookmark this page", "win.bookmark-page"),
-            Item::Action("Zoom in", "win.zoom-in"),
-            Item::Action("Zoom out", "win.zoom-out"),
-            Item::Action("Reset zoom", "win.zoom-reset"),
-            Item::Action("Fullscreen", "win.fullscreen"),
-        ],
-    ),
-    (
-        "General",
-        &[
-            Item::Action("Show or hide the bookmarks bar", "win.show-bookmarks-bar"),
-            Item::Action("Bookmarks", "win.show-bookmarks"),
-            Item::Action("History", "win.show-history"),
-            Item::Action("Downloads", "win.show-downloads"),
-            Item::Action("Settings", "win.show-settings"),
-            Item::Action("Keyboard shortcuts", "app.shortcuts"),
-        ],
-    ),
-];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_action_with_a_shortcut_is_listed() {
-        let listed: Vec<&str> = SECTIONS
-            .iter()
-            .flat_map(|(_, items)| items.iter())
-            .filter_map(|item| match item {
-                Item::Action(_, action) => Some(*action),
-                Item::Keys(..) => None,
-            })
-            .collect();
-        let missing: Vec<&str> = crate::app::ACCELS.iter().map(|(action, _)| *action).filter(|a| !listed.contains(a)).collect();
-        assert!(missing.is_empty(), "not in the shortcuts dialog: {missing:?}");
-    }
 }

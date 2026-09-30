@@ -1,5 +1,5 @@
-//! The GApplication: one instance per profile, command-line handling, application actions and
-//! the keyboard shortcuts of every window.
+//! The GApplication: one instance per profile, command-line handling and application actions.
+//! The browser sets every window's keyboard shortcuts from the profile's keymap.
 //!
 //! The profile is opened before the application registers on the session bus. When core
 //! reports the profile as locked, another Vsesvit process owns it: this process still runs
@@ -23,41 +23,6 @@ use crate::cli::{self, Command};
 use crate::profile::ProfileLocation;
 use crate::window::BrowserWindow;
 use crate::{dialogs, location};
-
-/// Accelerators for actions; the shortcuts dialog reads them back from the actions.
-pub(crate) const ACCELS: &[(&str, &[&str])] = &[
-    ("win.new-tab", &["<Control>t"]),
-    ("win.close-tab", &["<Control>w", "<Control>F4"]),
-    ("win.reopen-closed-tab", &["<Control><Shift>t"]),
-    ("win.focus-location", &["<Control>l", "<Alt>d", "F6"]),
-    ("win.reload", &["<Control>r", "F5"]),
-    (
-        "win.reload-bypass-cache",
-        &["<Control><Shift>r", "<Shift>F5"],
-    ),
-    ("win.back", &["<Alt>Left"]),
-    ("win.forward", &["<Alt>Right"]),
-    ("win.bookmark-page", &["<Control>d"]),
-    ("win.find", &["<Control>f"]),
-    ("win.find-next", &["<Control>g"]),
-    ("win.find-previous", &["<Control><Shift>g"]),
-    (
-        "win.zoom-in",
-        &["<Control>plus", "<Control>equal", "<Control>KP_Add"],
-    ),
-    ("win.zoom-out", &["<Control>minus", "<Control>KP_Subtract"]),
-    ("win.zoom-reset", &["<Control>0", "<Control>KP_0"]),
-    ("win.fullscreen", &["F11"]),
-    ("win.toggle-tab-sidebar", &["<Control>s", "F9"]),
-    ("win.show-bookmarks-bar", &["<Control><Shift>b"]),
-    ("win.show-bookmarks", &["<Control><Shift>o"]),
-    ("win.show-history", &["<Control>h"]),
-    ("win.show-downloads", &["<Control>j"]),
-    ("win.show-settings", &["<Control>comma"]),
-    ("app.new-window", &["<Control>n"]),
-    ("app.shortcuts", &["<Control>question"]),
-    ("app.quit", &["<Control>q"]),
-];
 
 pub(crate) const CSS: &str = "
 .link-preview {
@@ -229,9 +194,6 @@ pub(crate) fn setup(app: &adw::Application, slot: &Slot) {
     glib::set_application_name("Vsesvit");
     gtk::Window::set_default_icon_name(crate::APP_ID);
     load_css();
-    for (action, accels) in ACCELS {
-        app.set_accels_for_action(action, accels);
-    }
     install_actions(app, slot);
 }
 

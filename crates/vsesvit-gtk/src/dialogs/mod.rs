@@ -7,6 +7,7 @@ pub(crate) mod downloads;
 pub(crate) mod extensions;
 pub(crate) mod history;
 pub(crate) mod settings;
+pub(crate) mod shortcut_settings;
 pub(crate) mod shortcuts;
 pub(crate) mod welcome;
 

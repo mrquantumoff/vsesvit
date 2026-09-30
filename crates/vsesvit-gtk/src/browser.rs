@@ -20,6 +20,7 @@ use vsesvit_core::extensions::{ExtensionId, toolbar};
 use vsesvit_core::history::Transition;
 use vsesvit_core::onboarding;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
+use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
 use vsesvit_core::{Profile, Url};
 use vsesvit_webext::{Runtime, TabHost, TabId, TabInfo};
@@ -32,7 +33,7 @@ use crate::profile::{self, Core};
 use crate::tab::{Commit, Tab};
 use crate::updates::Updates;
 use crate::window::{BrowserWindow, Focus};
-use crate::{dialogs, favicons, omnibox, permissions, session};
+use crate::{dialogs, favicons, keymap, omnibox, permissions, session};
 
 const CLOSED_TABS_KEPT: usize = 25;
 /// How many sites one background favicon fetch looks up.
@@ -131,6 +132,7 @@ impl Browser {
     /// state (installs missing store extensions, unloads ones removed elsewhere).
     pub(crate) fn start(&self) {
         self.apply_theme();
+        self.apply_keymap();
         let installed = self.core().borrow_mut().extensions().list();
         match installed {
             Ok(list) => {
@@ -704,6 +706,26 @@ impl Browser {
         }
     }
 
+    pub(crate) fn keymap(&self) -> Keymap {
+        self.core().borrow_mut().prefs().keymap()
+    }
+
+    /// Every change to the shortcuts goes through here: `edit` changes the stored keymap and
+    /// every window's shortcuts follow at once.
+    pub(crate) fn edit_keymap<T>(&self, edit: impl FnOnce(&mut Keymap) -> T) -> T {
+        let mut edited = self.keymap();
+        let out = edit(&mut edited);
+        if let Err(e) = self.core().borrow_mut().prefs().set_keymap(&edited) {
+            log::warn!("prefs: {e}");
+        }
+        keymap::apply(self.app(), &edited);
+        out
+    }
+
+    pub(crate) fn apply_keymap(&self) {
+        keymap::apply(self.app(), &self.keymap());
+    }
+
     /// The homepage preference as a URL. `about:home`, the default, means the new tab page.
     pub(crate) fn homepage(&self) -> Option<Url> {
         let text = self.core().borrow_mut().prefs().get(&keys::HOMEPAGE);
@@ -730,6 +752,9 @@ impl Browser {
         }
         if changed.site_permissions {
             permissions::enforce(self);
+        }
+        if changed.prefs.iter().any(|key| key == keys::SHORTCUTS.key) {
+            self.apply_keymap();
         }
         if !changed.prefs.is_empty() {
             self.apply_theme();

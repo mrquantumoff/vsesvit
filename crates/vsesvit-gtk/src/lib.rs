@@ -19,11 +19,13 @@ mod error_page;
 mod extensions;
 mod favicons;
 mod find_bar;
+mod keymap;
 mod location;
 mod motion;
 mod omnibox;
 mod permissions;
 mod profile;
+mod save_page;
 pub mod screenshot;
 #[cfg(feature = "self-test")]
 mod self_test;

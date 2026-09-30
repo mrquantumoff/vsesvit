@@ -14,6 +14,7 @@ pub(super) fn main_menu() -> (gtk::MenuButton, gtk::Button) {
     zoom.append_item(&zoom_row);
 
     let page = gio::Menu::new();
+    page.append(Some("_Save Page As…"), Some("win.save-page"));
     page.append(Some("_Find…"), Some("win.find"));
     page.append(Some("_Fullscreen"), Some("win.fullscreen"));
 

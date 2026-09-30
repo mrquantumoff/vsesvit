@@ -14,6 +14,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::downloads::{Download, DownloadId, State, sanitize, unique_destination};
 use vsesvit_core::prefs::keys;
+use webkit::prelude::*;
 
 use crate::profile::Core;
 use crate::session::now_ms;
@@ -65,6 +66,8 @@ pub(crate) struct Downloads {
     subscribers: RefCell<Vec<(Subscription, Subscriber)>>,
     next_subscription: Cell<u64>,
     started_this_session: Cell<bool>,
+    /// The URI [`Downloads::download_to`] asked for and where it goes, until it starts.
+    chosen: RefCell<Option<(String, PathBuf)>>,
 }
 
 impl Downloads {
@@ -88,6 +91,7 @@ impl Downloads {
             subscribers: RefCell::new(Vec::new()),
             next_subscription: Cell::new(0),
             started_this_session: Cell::new(false),
+            chosen: RefCell::new(None),
         });
         let weak = Rc::downgrade(&downloads);
         session.connect_download_started(move |_, download| match weak.upgrade() {
@@ -102,6 +106,12 @@ impl Downloads {
     pub(crate) fn directory(&self) -> PathBuf {
         let chosen = self.core.borrow_mut().prefs().get(&keys::DOWNLOADS_DIR);
         chosen.unwrap_or_else(|| self.default_dir.clone())
+    }
+
+    /// Downloads `uri` from `view` into `path`, which the user already chose in a save dialog.
+    pub(crate) fn download_to(&self, view: &webkit::WebView, uri: &str, path: &Path) {
+        self.chosen.replace(Some((uri.to_owned(), path.to_owned())));
+        view.download_uri(uri);
     }
 
     /// Whether a download has started since the browser did.
@@ -173,13 +183,23 @@ impl Downloads {
     fn track(self: &Rc<Self>, download: &webkit::Download) {
         let phase = Rc::new(Cell::new(Phase::Deciding));
         let weak = Rc::downgrade(self);
+        let uri = download.request().and_then(|r| r.uri());
+        let chosen = self.chosen.borrow_mut().take_if(|(wanted, _)| uri.as_deref() == Some(wanted.as_str())).map(|(_, path)| path);
+        let chosen = Cell::new(chosen);
         download.connect_decide_destination(glib::clone!(
             #[strong]
             weak,
             move |download, suggested| {
-                match weak.upgrade() {
-                    Some(downloads) => downloads.decide_destination(download, suggested),
-                    None => download.cancel(),
+                match (weak.upgrade(), chosen.take()) {
+                    (Some(_), Some(path)) => {
+                        download.set_allow_overwrite(true);
+                        match path.to_str() {
+                            Some(path) => download.set_destination(path),
+                            None => download.cancel(),
+                        }
+                    }
+                    (Some(downloads), None) => downloads.decide_destination(download, suggested),
+                    (None, _) => download.cancel(),
                 }
                 true
             }

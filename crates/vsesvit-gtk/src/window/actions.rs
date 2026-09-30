@@ -1,4 +1,5 @@
-//! Window actions (`win.*`). Their keyboard shortcuts are set application-wide in `app.rs`.
+//! Window actions (`win.*`). Their keyboard shortcuts come from the profile's keymap
+//! (`keymap.rs`), set application-wide.
 
 use adw::prelude::*;
 use gtk::gio::ActionEntry;
@@ -9,6 +10,7 @@ use webkit::prelude::*;
 use super::{BrowserWindow, Focus};
 use crate::bookmarks_bar;
 use crate::dialogs;
+use crate::save_page;
 use crate::find_bar::Direction;
 use crate::tab::Tab;
 use crate::zoom;
@@ -73,6 +75,9 @@ pub(super) fn install(window: &BrowserWindow) {
                     w.open_tab(Some(&url), None, Focus::Foreground);
                 }
             })
+            .build(),
+        ActionEntry::builder("save-page")
+            .activate(|w: &BrowserWindow, _, _| save_page::present(w))
             .build(),
         ActionEntry::builder("find")
             .activate(|w: &BrowserWindow, _, _| {

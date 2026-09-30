@@ -1,8 +1,8 @@
-//! The Settings dialog, bound to core's preferences, in the same four pages as on
-//! Windows: General (startup, downloads, scrolling and the GPU, updates, the profile
-//! folder), Appearance (theme, tabs, bars and buttons), Search (the engine, the address
-//! bar and what it suggests) and Privacy (pop-ups, site permissions, browsing data). Every
-//! change applies at once, in every window.
+//! The Settings dialog, bound to core's preferences: General (startup, downloads, scrolling
+//! and the GPU, updates, the profile folder), Appearance (theme, tabs, bars and buttons),
+//! Search (the engine, the address bar and what it suggests), Privacy (pop-ups, site
+//! permissions, browsing data) and Shortcuts (`shortcut_settings`). Every change
+//! applies at once, in every window.
 //!
 //! WebKitGTK keeps no passwords and fills no forms, so `autofill.*` has no rows here.
 
@@ -47,15 +47,16 @@ const CHANNELS: [(UpdateChannel, &str); 4] = [
 ];
 
 pub(crate) fn present(window: &BrowserWindow) {
-    // Wide enough that the four page names in the header are not cut short.
+    // Wide enough that the five page names fit in the header rather than a bar at the bottom.
     let dialog = adw::PreferencesDialog::builder()
         .title("Settings")
-        .content_width(720)
+        .content_width(860)
         .build();
     dialog.add(&general_page(window));
     dialog.add(&appearance_page(window.browser()));
     dialog.add(&search_page(window.browser()));
     dialog.add(&privacy_page(window));
+    dialog.add(&super::shortcut_settings::page(window.browser()));
     dialog.present(Some(window));
 }
 
