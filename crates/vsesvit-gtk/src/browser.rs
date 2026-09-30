@@ -573,9 +573,9 @@ impl Browser {
     // Omnibox.
 
     /// Every edit in the address bar: core's suggestions (search, typed URL, bookmarks,
-    /// history) followed by matching open tabs.
-    pub(crate) fn omnibox_changed(&self, window: &BrowserWindow, text: &str) {
-        let suggestions = omnibox::suggestions(self, window, text);
+    /// history) followed by matching open tabs, and the inline completion when allowed.
+    pub(crate) fn omnibox_changed(&self, window: &BrowserWindow, text: &str, allow_inline: bool) {
+        let suggestions = omnibox::suggestions(self, window, text, allow_inline);
         window.address_bar().set_suggestions(suggestions);
     }
 

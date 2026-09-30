@@ -23,6 +23,7 @@ mod keymap;
 mod location;
 mod motion;
 mod omnibox;
+mod page_menu;
 mod permissions;
 mod profile;
 mod save_page;

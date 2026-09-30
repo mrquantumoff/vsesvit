@@ -3,9 +3,15 @@
 //! simplified (`example.com` for `https://www.example.com/`) while the entry does not have
 //! focus.
 //!
-//! It emits `edited` for every change the user makes, `submitted` when Enter is pressed without
-//! a suggestion selected, `cancelled` when Escape gives up editing, and `bubble-changed` when a
-//! bubble opens from it or closes.
+//! While the user edits, it works as Chrome's omnibox: the first suggestion is highlighted
+//! and is what Enter opens, the typed text can be completed inline (the completion selected
+//! after it), and Up, Down, Tab and Escape move the highlight, showing each row's text in the
+//! entry without querying again.
+//!
+//! It emits `edited` for every change the user makes, with whether the change may be completed
+//! inline, `submitted` when Enter is pressed while no suggestion shows (or Ctrl+Enter makes
+//! the text a `.com` address), `cancelled` when Escape gives up editing, and `bubble-changed`
+//! when a bubble opens from it or closes.
 //!
 //! Inside the entry, the page's security is at the start and the bookmark star at the end;
 //! clicking the star runs `win.bookmark-page`. While the page uses the camera, microphone or
@@ -24,6 +30,7 @@ use adw::subclass::prelude::*;
 use gtk::glib::subclass::Signal;
 use gtk::{gdk, glib};
 use vsesvit_core::address::simplified_url;
+use vsesvit_core::search::ctrl_enter_url;
 
 use crate::tab::display_uri;
 use crate::zoom;
@@ -44,13 +51,81 @@ pub(crate) enum Anchor {
     Star,
 }
 
-/// One suggestion row. `activate` runs when the row is chosen.
+/// One suggestion row. `activate` runs when the row is chosen; `forget`, which only history
+/// rows have, deletes the row's page from history (Shift+Delete).
 #[derive(Clone)]
 pub(crate) struct Suggestion {
     pub(crate) title: String,
     pub(crate) subtitle: String,
     pub(crate) icon_name: &'static str,
+    /// What the entry shows while the row is highlighted.
+    pub(crate) fill: String,
     pub(crate) activate: Rc<dyn Fn()>,
+    pub(crate) forget: Option<Rc<dyn Fn()>>,
+}
+
+/// The rows for what the user typed, and the text that completes it inline to the first row's
+/// `fill`.
+#[derive(Default)]
+pub(crate) struct Suggestions {
+    pub(crate) rows: Vec<Suggestion>,
+    pub(crate) inline: Option<String>,
+}
+
+/// The user's edit of the address, from their first change until they submit or give it up.
+struct Edit {
+    /// What the user typed. The entry shows it while the first row is highlighted, followed by
+    /// `inline`, selected.
+    typed: String,
+    inline: Option<String>,
+    rows: Vec<Suggestion>,
+    /// The row Enter opens: the first whenever the rows change, and a row whenever there are
+    /// any.
+    highlighted: usize,
+}
+
+impl Edit {
+    fn new(typed: String) -> Self {
+        Edit { typed, inline: None, rows: Vec::new(), highlighted: 0 }
+    }
+
+    /// The entry's text for the highlighted row, and where its selected part starts, in
+    /// characters.
+    fn shown(&self) -> (String, Option<i32>) {
+        match (self.highlighted, &self.inline) {
+            (0, Some(inline)) => (format!("{}{inline}", self.typed), Some(char_count(&self.typed))),
+            (0, None) => (self.typed.clone(), None),
+            (row, _) => (self.rows[row].fill.clone(), None),
+        }
+    }
+
+    /// Moves the highlight by `delta` rows, stopping at the first and the last.
+    fn move_highlight(&mut self, delta: isize) {
+        let last = self.rows.len().saturating_sub(1);
+        self.highlighted = self.highlighted.saturating_add_signed(delta).min(last);
+    }
+
+    /// Makes the inline completion part of the typed text, as Right or End does.
+    fn accept_inline(&mut self) {
+        if let Some(inline) = self.inline.take() {
+            self.typed.push_str(&inline);
+        }
+    }
+}
+
+/// What the address bar shows while the user edits, for tests.
+#[cfg(any(test, feature = "self-test"))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Observed {
+    pub(crate) text: String,
+    pub(crate) selection: Option<(i32, i32)>,
+    pub(crate) highlighted: Option<i32>,
+    pub(crate) fills: Vec<String>,
+    pub(crate) open: bool,
+}
+
+fn char_count(text: &str) -> i32 {
+    i32::try_from(text.chars().count()).unwrap_or(i32::MAX)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -116,15 +191,17 @@ mod imp {
         pub(super) prompt: RefCell<Option<gtk::Popover>>,
         pub(super) popover: gtk::Popover,
         pub(super) list: gtk::ListBox,
-        pub(super) items: RefCell<Vec<Suggestion>>,
         pub(super) shown: RefCell<Shown>,
-        pub(super) editing: Cell<bool>,
+        /// Set while the user edits the text.
+        pub(super) edit: RefCell<Option<Edit>>,
+        /// The user's latest change only removed text (Backspace, Delete, cut), so it gets
+        /// no inline completion.
+        pub(super) deleted: Cell<bool>,
         /// The entry has the keyboard focus, and so shows the whole URI.
         pub(super) focused: Cell<bool>,
         pub(super) full_urls: Cell<bool>,
         pub(super) security: Cell<Security>,
         pub(super) updating: Cell<bool>,
-        pub(super) popover_width: Cell<i32>,
         /// Hides the full load line after a load completed.
         pub(super) progress_hide: RefCell<Option<glib::SourceId>>,
     }
@@ -142,7 +219,7 @@ mod imp {
             SIGNALS.get_or_init(|| {
                 vec![
                     Signal::builder("edited")
-                        .param_types([String::static_type()])
+                        .param_types([String::static_type(), bool::static_type()])
                         .build(),
                     Signal::builder("submitted")
                         .param_types([String::static_type()])
@@ -165,21 +242,7 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for AddressBar {
-        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-            self.parent_size_allocate(width, height, baseline);
-            if self.popover_width.replace(width) != width {
-                self.popover.set_size_request(width, -1);
-            }
-            self.popover.present();
-            if let Some(bubble) = self.bubble.borrow().as_ref() {
-                bubble.present();
-            }
-            if let Some(prompt) = self.prompt.borrow().as_ref() {
-                prompt.present();
-            }
-        }
-    }
+    impl WidgetImpl for AddressBar {}
 
     impl BinImpl for AddressBar {}
 }
@@ -275,6 +338,19 @@ impl AddressBar {
             self,
             move |entry| bar.text_changed(&entry.text())
         ));
+        // A change that replaces text deletes, then inserts, before `changed`.
+        if let Some(text) = entry.delegate() {
+            text.connect_delete_text(glib::clone!(
+                #[weak(rename_to = bar)]
+                self,
+                move |_, _, _| bar.imp().deleted.set(true)
+            ));
+            text.connect_insert_text(glib::clone!(
+                #[weak(rename_to = bar)]
+                self,
+                move |_, _, _| bar.imp().deleted.set(false)
+            ));
+        }
         entry.connect_activate(glib::clone!(
             #[weak(rename_to = bar)]
             self,
@@ -283,7 +359,11 @@ impl AddressBar {
         list.connect_row_activated(glib::clone!(
             #[weak(rename_to = bar)]
             self,
-            move |_, row| bar.choose(row.index())
+            move |_, row| {
+                if let Ok(index) = usize::try_from(row.index()) {
+                    bar.choose(index);
+                }
+            }
         ));
 
         let keys = gtk::EventControllerKey::new();
@@ -293,7 +373,7 @@ impl AddressBar {
             self,
             #[upgrade_or]
             glib::Propagation::Proceed,
-            move |_, key, _, _| bar.key_pressed(key)
+            move |_, key, _, modifiers| bar.key_pressed(key, modifiers)
         ));
         entry.add_controller(keys);
 
@@ -315,7 +395,7 @@ impl AddressBar {
     pub(crate) fn show_uri(&self, uri: Option<&str>) {
         let imp = self.imp();
         imp.shown.replace(Shown::of(uri));
-        if !imp.editing.get() {
+        if !self.is_editing() {
             self.show_resting();
         }
     }
@@ -324,10 +404,15 @@ impl AddressBar {
     pub(crate) fn restore(&self, typed: Option<String>, uri: Option<&str>) {
         let imp = self.imp();
         imp.shown.replace(Shown::of(uri));
-        imp.editing.set(typed.is_some());
         match typed {
-            Some(typed) => self.set_text_quietly(&typed),
-            None => self.show_resting(),
+            Some(typed) => {
+                self.set_text_quietly(&typed);
+                imp.edit.replace(Some(Edit::new(typed)));
+            }
+            None => {
+                imp.edit.take();
+                self.show_resting();
+            }
         }
         imp.popover.popdown();
         self.show_security();
@@ -338,7 +423,7 @@ impl AddressBar {
     pub(crate) fn set_full_urls(&self, full: bool) {
         let imp = self.imp();
         imp.full_urls.set(full);
-        if !imp.editing.get() {
+        if !self.is_editing() {
             self.show_resting();
         }
     }
@@ -366,7 +451,7 @@ impl AddressBar {
             imp.popover.popdown();
         }
         self.align_text();
-        if imp.editing.get() {
+        if self.is_editing() {
             return;
         }
         self.show_resting();
@@ -377,7 +462,7 @@ impl AddressBar {
                 self,
                 move || {
                     let imp = bar.imp();
-                    if imp.focused.get() && !imp.editing.get() {
+                    if imp.focused.get() && !bar.is_editing() {
                         imp.entry.select_region(0, -1);
                     }
                 }
@@ -385,10 +470,13 @@ impl AddressBar {
         }
     }
 
-    /// The unsubmitted text, if the user has been editing.
+    /// What the user typed and did not submit, if they have been editing.
     pub(crate) fn take_edit(&self) -> Option<String> {
-        let imp = self.imp();
-        imp.editing.replace(false).then(|| imp.entry.text().into())
+        self.imp().edit.take().map(|edit| edit.typed)
+    }
+
+    fn is_editing(&self) -> bool {
+        self.imp().edit.borrow().is_some()
     }
 
     pub(crate) fn focus_for_typing(&self) {
@@ -400,8 +488,7 @@ impl AddressBar {
     /// Enters `text` as if the user typed it and pressed Enter (the self-test's way
     /// through the omnibox).
     pub(crate) fn submit_text(&self, text: &str) {
-        let imp = self.imp();
-        imp.editing.set(true);
+        self.imp().edit.replace(Some(Edit::new(text.to_owned())));
         self.set_text_quietly(text);
         self.submit();
     }
@@ -458,7 +545,7 @@ impl AddressBar {
 
     fn show_security(&self) {
         let imp = self.imp();
-        let shown = if imp.editing.get() {
+        let shown = if self.is_editing() {
             Security::NotApplicable
         } else {
             imp.security.get()
@@ -491,7 +578,7 @@ impl AddressBar {
 
     fn show_in_use(&self) {
         let imp = self.imp();
-        let shown = imp.capturing.get() && !imp.editing.get();
+        let shown = imp.capturing.get() && !self.is_editing();
         imp.in_use.set_visible(shown);
         // The text starts after the button rather than run under it.
         let reserve = if shown { imp.in_use.measure(gtk::Orientation::Horizontal, -1).1 + ICON_GAP } else { 0 };
@@ -657,33 +744,88 @@ impl AddressBar {
     /// it or has typed something.
     fn align_text(&self) {
         let imp = self.imp();
-        let editing = imp.focused.get() || imp.editing.get();
+        let editing = imp.focused.get() || self.is_editing();
         EditableExt::set_alignment(&imp.entry, if editing { 0.0 } else { 0.5 });
     }
 
-    /// Replaces the suggestion rows. The popover opens only while the entry has focus.
-    pub(crate) fn set_suggestions(&self, items: Vec<Suggestion>) {
+    /// Replaces the rows for what the user typed: the first is highlighted, and the inline
+    /// completion follows the typed text, selected. The popover opens only while the entry has
+    /// focus.
+    pub(crate) fn set_suggestions(&self, suggestions: Suggestions) {
         let imp = self.imp();
-        imp.list.remove_all();
-        for item in &items {
-            imp.list.append(&suggestion_row(item));
+        let Suggestions { rows, inline } = suggestions;
+        let open = !rows.is_empty() && imp.focused.get();
+        {
+            let mut edit = imp.edit.borrow_mut();
+            let Some(edit) = edit.as_mut() else { return };
+            imp.list.remove_all();
+            for row in &rows {
+                imp.list.append(&suggestion_row(row));
+            }
+            edit.rows = rows;
+            edit.inline = inline;
+            edit.highlighted = 0;
         }
-        if items.is_empty() || !imp.focused.get() {
-            imp.popover.popdown();
-        } else {
+        self.show_highlight(false);
+        if open {
+            // As wide as the bar. The bar's layout manager allocates it, so there is no
+            // allocation to follow.
+            imp.popover.set_size_request(self.width(), -1);
             imp.popover.popup();
+        } else {
+            imp.popover.popdown();
         }
-        imp.items.replace(items);
     }
 
-    pub(crate) fn connect_edited<F: Fn(&Self, &str) + 'static>(
+    /// Shows the highlighted row in the list and its text in the entry. The caret goes to the
+    /// end when the text changes, or when `caret_to_end` asks for it.
+    fn show_highlight(&self, caret_to_end: bool) {
+        let imp = self.imp();
+        let Some((text, selected_from, row)) = imp.edit.borrow().as_ref().map(|edit| {
+            let (text, selected_from) = edit.shown();
+            (text, selected_from, edit.highlighted)
+        }) else {
+            return;
+        };
+        let changed = imp.entry.text() != text;
+        if changed {
+            self.set_text_quietly(&text);
+        }
+        match selected_from {
+            Some(from) => imp.entry.select_region(from, -1),
+            None if changed || caret_to_end => imp.entry.set_position(-1),
+            None => {}
+        }
+        let row = imp.list.row_at_index(i32::try_from(row).unwrap_or(i32::MAX));
+        imp.list.select_row(row.as_ref());
+    }
+
+    /// Moves the highlight while the list is open, without querying again.
+    fn change_highlight(&self, change: impl FnOnce(&mut Edit)) {
+        if let Some(edit) = self.imp().edit.borrow_mut().as_mut() {
+            change(edit);
+        }
+        self.show_highlight(true);
+    }
+
+    /// Emits `edited` again for the same typed text, as after a row was deleted.
+    fn query_again(&self) {
+        let again = self.imp().edit.borrow().as_ref().map(|edit| (edit.typed.clone(), edit.inline.is_some()));
+        if let Some((typed, inline_allowed)) = again {
+            self.emit_by_name::<()>("edited", &[&typed, &inline_allowed]);
+        }
+    }
+
+    /// `f` gets the typed text and whether it may be completed inline: not after a change that
+    /// only deleted, nor with the caret before the end.
+    pub(crate) fn connect_edited<F: Fn(&Self, &str, bool) + 'static>(
         &self,
         f: F,
     ) -> glib::SignalHandlerId {
         self.connect_closure(
             "edited",
             false,
-            glib::closure_local!(move |bar: &Self, text: String| f(bar, &text)),
+            glib::closure_local!(move |bar: &Self, text: String, inline_allowed: bool| f(bar, &text, inline_allowed)),
         )
     }
 
@@ -726,18 +868,36 @@ impl AddressBar {
         if imp.updating.get() {
             return;
         }
-        if !imp.editing.replace(true) {
+        let inline_allowed = !imp.deleted.get() && imp.entry.position() == char_count(text);
+        let started = {
+            let mut edit = imp.edit.borrow_mut();
+            match edit.as_mut() {
+                Some(edit) => {
+                    edit.typed = text.to_owned();
+                    edit.inline = None;
+                    edit.highlighted = 0;
+                    false
+                }
+                None => {
+                    *edit = Some(Edit::new(text.to_owned()));
+                    true
+                }
+            }
+        };
+        if started {
             self.show_security();
             self.align_text();
         }
-        imp.list.unselect_all();
-        self.emit_by_name::<()>("edited", &[&text.to_owned()]);
+        imp.list.select_row(imp.list.row_at_index(0).as_ref());
+        self.emit_by_name::<()>("edited", &[&text.to_owned(), &inline_allowed]);
     }
 
+    /// Enter: the highlighted row while the list shows, else the text as it reads.
     fn submit(&self) {
         let imp = self.imp();
-        if let Some(row) = imp.list.selected_row().filter(|_| imp.popover.is_visible()) {
-            self.choose(row.index());
+        let highlighted = imp.edit.borrow().as_ref().filter(|edit| !edit.rows.is_empty()).map(|edit| edit.highlighted);
+        if let Some(row) = highlighted.filter(|_| imp.popover.is_visible()) {
+            self.choose(row);
             return;
         }
         let text: String = imp.entry.text().into();
@@ -745,14 +905,34 @@ impl AddressBar {
         self.emit_by_name::<()>("submitted", &[&text]);
     }
 
-    fn choose(&self, index: i32) {
-        let chosen = usize::try_from(index)
-            .ok()
-            .and_then(|i| self.imp().items.borrow().get(i).cloned());
+    /// Ctrl+Enter: `www.<typed>.com` for a single word, else what Enter does.
+    fn submit_as_com(&self) {
+        let typed = self.imp().edit.borrow().as_ref().map(|edit| edit.typed.clone());
+        match typed.as_deref().and_then(ctrl_enter_url) {
+            Some(url) => {
+                self.finish_editing();
+                self.emit_by_name::<()>("submitted", &[&url.to_string()]);
+            }
+            None => self.submit(),
+        }
+    }
+
+    fn choose(&self, index: usize) {
+        let chosen = self.imp().edit.borrow().as_ref().and_then(|edit| edit.rows.get(index).cloned());
         let Some(suggestion) = chosen else { return };
         self.finish_editing();
         self.show_resting();
         (suggestion.activate)();
+    }
+
+    /// Shift+Delete: deletes the highlighted row's page from history, if it is a history row,
+    /// and shows the rows for the same text again.
+    fn forget_highlighted(&self) {
+        let forget = self.imp().edit.borrow().as_ref().and_then(|edit| edit.rows.get(edit.highlighted)?.forget.clone());
+        if let Some(forget) = forget {
+            forget();
+            self.query_again();
+        }
     }
 
     fn cancel(&self) {
@@ -763,39 +943,81 @@ impl AddressBar {
 
     fn finish_editing(&self) {
         let imp = self.imp();
-        imp.editing.set(false);
+        imp.edit.take();
         imp.popover.popdown();
         self.show_security();
         self.align_text();
     }
 
-    fn key_pressed(&self, key: gdk::Key) -> glib::Propagation {
+    fn key_pressed(&self, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
+        use gdk::Key;
         let imp = self.imp();
-        let open = imp.popover.is_visible() && !imp.items.borrow().is_empty();
+        let highlighted = imp.edit.borrow().as_ref().filter(|edit| !edit.rows.is_empty()).map(|edit| edit.highlighted);
+        let open = imp.popover.is_visible() && highlighted.is_some();
+        let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+        let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+        let plain = !modifiers.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK);
         // Up and Down never move focus out of the address bar, as they would in a plain entry.
         match key {
-            gdk::Key::Down | gdk::Key::KP_Down if open => self.move_selection(1),
-            gdk::Key::Up | gdk::Key::KP_Up if open => self.move_selection(-1),
-            gdk::Key::Down | gdk::Key::KP_Down | gdk::Key::Up | gdk::Key::KP_Up => {}
-            gdk::Key::Escape if open => imp.popover.popdown(),
-            gdk::Key::Escape => self.cancel(),
+            Key::Return | Key::KP_Enter | Key::ISO_Enter if ctrl => self.submit_as_com(),
+            Key::Down | Key::KP_Down if open => self.change_highlight(|edit| edit.move_highlight(1)),
+            Key::Up | Key::KP_Up if open => self.change_highlight(|edit| edit.move_highlight(-1)),
+            Key::Tab | Key::ISO_Left_Tab if open && plain => {
+                let delta = if shift || key == Key::ISO_Left_Tab { -1 } else { 1 };
+                self.change_highlight(|edit| edit.move_highlight(delta));
+            }
+            Key::Down | Key::KP_Down | Key::Up | Key::KP_Up => {}
+            Key::Escape if open && highlighted != Some(0) => self.change_highlight(|edit| edit.highlighted = 0),
+            Key::Escape => self.cancel(),
+            Key::Delete | Key::KP_Delete if open && shift => self.forget_highlighted(),
+            Key::Right | Key::KP_Right | Key::End | Key::KP_End if !shift => {
+                // The entry then moves the caret past the completion, which leaves it typed.
+                if let Some(edit) = imp.edit.borrow_mut().as_mut().filter(|edit| edit.highlighted == 0) {
+                    edit.accept_inline();
+                }
+                return glib::Propagation::Proceed;
+            }
             _ => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop
     }
 
-    fn move_selection(&self, delta: i32) {
-        let imp = self.imp();
-        let count = i32::try_from(imp.items.borrow().len()).unwrap_or(i32::MAX);
-        let next = match imp.list.selected_row() {
-            Some(row) => row.index() + delta,
-            None if delta > 0 => 0,
-            None => count - 1,
-        };
-        match imp.list.row_at_index(next) {
-            Some(row) => imp.list.select_row(Some(&row)),
-            None => imp.list.unselect_all(),
+    /// Types `text` at the caret over any selection, as the keyboard does (in two changes
+    /// rather than one).
+    #[cfg(any(test, feature = "self-test"))]
+    pub(crate) fn type_text(&self, text: &str) {
+        let entry = &self.imp().entry;
+        entry.delete_selection();
+        if let Some(delegate) = entry.delegate() {
+            delegate.emit_by_name::<()>("insert-at-cursor", &[&text]);
         }
+    }
+
+    /// Presses `key` in the entry, as the user would; Enter ends in the entry's activation.
+    #[cfg(any(test, feature = "self-test"))]
+    pub(crate) fn press(&self, key: gdk::Key, modifiers: gdk::ModifierType) {
+        let proceeded = self.key_pressed(key, modifiers) == glib::Propagation::Proceed;
+        if proceeded && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
+            self.imp().entry.emit_activate();
+        }
+    }
+
+    /// What the entry and the list show.
+    #[cfg(any(test, feature = "self-test"))]
+    pub(crate) fn observe(&self) -> Observed {
+        let imp = self.imp();
+        Observed {
+            text: imp.entry.text().into(),
+            selection: imp.entry.selection_bounds(),
+            highlighted: imp.list.selected_row().map(|row| row.index()),
+            fills: imp.edit.borrow().as_ref().map(|edit| edit.rows.iter().map(|row| row.fill.clone()).collect()).unwrap_or_default(),
+            open: imp.popover.is_visible(),
+        }
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn suggestions_popover(&self) -> gtk::Popover {
+        self.imp().popover.clone()
     }
 }
 
@@ -1049,5 +1271,235 @@ mod tests {
         assert_eq!(added, (starred.clone(), Some("Bookmark added".to_owned())));
         assert_eq!(again, (starred, Some("Edit bookmark".to_owned())), "a second click edits rather than removes");
         assert_eq!(removed, before);
+    }
+
+    #[test]
+    fn the_highlight_stops_at_both_ends() {
+        let row = |fill: &str| Suggestion {
+            title: String::new(),
+            subtitle: String::new(),
+            icon_name: "",
+            fill: fill.to_owned(),
+            activate: Rc::new(|| {}),
+            forget: None,
+        };
+        let mut edit = Edit::new("gi".to_owned());
+        edit.rows = vec![row("github.com"), row("gi"), row("gitlab.com")];
+        edit.inline = Some("thub.com".to_owned());
+        let mut seen = Vec::new();
+        for delta in [-1, 1, 1, 1, -1, -1, -1] {
+            edit.move_highlight(delta);
+            seen.push((edit.highlighted, edit.shown()));
+        }
+        let first = (0, ("github.com".to_owned(), Some(2)));
+        assert_eq!(seen[0], first, "no row above the first");
+        assert_eq!(seen[1], (1, ("gi".to_owned(), None)));
+        assert_eq!(seen[3], (2, ("gitlab.com".to_owned(), None)), "no row below the last");
+        assert_eq!(seen[6], first, "back on the first row, the completion is selected again");
+        edit.accept_inline();
+        assert_eq!(edit.shown(), ("github.com".to_owned(), None));
+    }
+
+    /// Rows for a bar that stands in for the browser: the completion to `github.com`, the
+    /// typed text as a search, and a history row that records being forgotten.
+    struct Omnibox {
+        queries: Rc<RefCell<Vec<(String, bool)>>>,
+        chosen: Rc<RefCell<Vec<String>>>,
+        submitted: Rc<RefCell<Vec<String>>>,
+        forgotten: Rc<Cell<u32>>,
+    }
+
+    fn connect_omnibox(bar: &AddressBar) -> Omnibox {
+        let omnibox = Omnibox {
+            queries: Rc::default(),
+            chosen: Rc::default(),
+            submitted: Rc::default(),
+            forgotten: Rc::default(),
+        };
+        let row = |fill: &str, chosen: &Rc<RefCell<Vec<String>>>, forget: Option<Rc<dyn Fn()>>| {
+            let (fill, chosen) = (fill.to_owned(), chosen.clone());
+            Suggestion {
+                title: fill.clone(),
+                subtitle: String::new(),
+                icon_name: "web-browser-symbolic",
+                fill: fill.clone(),
+                activate: Rc::new(move || chosen.borrow_mut().push(fill.clone())),
+                forget,
+            }
+        };
+        let (queries, chosen, forgotten) = (omnibox.queries.clone(), omnibox.chosen.clone(), omnibox.forgotten.clone());
+        bar.connect_edited(move |bar, text, inline_allowed| {
+            queries.borrow_mut().push((text.to_owned(), inline_allowed));
+            let site = "github.com";
+            let inline = site.strip_prefix(text).filter(|rest| inline_allowed && !rest.is_empty());
+            let forgotten = forgotten.clone();
+            let forget: Rc<dyn Fn()> = Rc::new(move || forgotten.set(forgotten.get() + 1));
+            bar.set_suggestions(Suggestions {
+                rows: vec![row(site, &chosen, None), row(text, &chosen, None), row("gitlab.com", &chosen, Some(forget))],
+                inline: inline.map(str::to_owned),
+            });
+        });
+        let submitted = omnibox.submitted.clone();
+        bar.connect_submitted(move |_, text| submitted.borrow_mut().push(text.to_owned()));
+        omnibox
+    }
+
+    fn typing_in(bar: &AddressBar) {
+        let entry = bar.imp().entry.clone();
+        entry.grab_focus();
+        wait_until("the entry to take the focus", || bar.imp().focused.get());
+    }
+
+    fn shows(text: &str, selection: Option<(i32, i32)>, highlighted: i32) -> (String, Option<(i32, i32)>, Option<i32>, bool) {
+        (text.to_owned(), selection, Some(highlighted), true)
+    }
+
+    fn seen(bar: &AddressBar) -> (String, Option<(i32, i32)>, Option<i32>, bool) {
+        let o = bar.observe();
+        (o.text, o.selection, o.highlighted, o.open)
+    }
+
+    const NONE: gdk::ModifierType = gdk::ModifierType::empty();
+
+    #[gtk::test]
+    fn typing_completes_inline_and_the_keys_move_the_highlight_without_querying() {
+        let (window, bar, _) = bar_in_window();
+        let omnibox = connect_omnibox(&bar);
+        typing_in(&bar);
+
+        bar.type_text("git");
+        let typed = seen(&bar);
+        let queries = omnibox.queries.borrow().len();
+        bar.press(gdk::Key::Down, NONE);
+        let down = seen(&bar);
+        bar.press(gdk::Key::Tab, NONE);
+        let tab = seen(&bar);
+        bar.press(gdk::Key::Down, NONE);
+        let clamped = seen(&bar);
+        bar.press(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK);
+        let shift_tab = seen(&bar);
+        bar.press(gdk::Key::Up, NONE);
+        bar.press(gdk::Key::Up, NONE);
+        let top = seen(&bar);
+        let moves_queried = omnibox.queries.borrow().len() - queries;
+        bar.press(gdk::Key::Down, NONE);
+        bar.press(gdk::Key::Down, NONE);
+        bar.press(gdk::Key::Escape, NONE);
+        let escaped = seen(&bar);
+        bar.press(gdk::Key::Escape, NONE);
+        let cancelled = (bar.is_editing(), bar.observe().open);
+        let last_query = omnibox.queries.borrow().last().cloned();
+        window.destroy();
+
+        assert_eq!(last_query, Some(("git".to_owned(), true)));
+        assert_eq!(typed, shows("github.com", Some((3, 10)), 0), "the completion follows the typed text, selected");
+        assert_eq!(down, shows("git", None, 1));
+        assert_eq!(tab, shows("gitlab.com", None, 2));
+        assert_eq!(clamped, shows("gitlab.com", None, 2), "no row below the last");
+        assert_eq!(shift_tab, shows("git", None, 1));
+        assert_eq!(top, shows("github.com", Some((3, 10)), 0), "the first row brings the completion back");
+        assert_eq!(moves_queried, 0, "moving the highlight does not query");
+        assert_eq!(escaped, shows("github.com", Some((3, 10)), 0), "Escape goes back to the first row");
+        assert_eq!(cancelled, (false, false), "Escape on the first row gives up editing");
+    }
+
+    #[gtk::test]
+    fn deleting_gets_no_inline_completion() {
+        let (window, bar, _) = bar_in_window();
+        let omnibox = connect_omnibox(&bar);
+        typing_in(&bar);
+        let text = bar.imp().entry.delegate().expect("the entry's text");
+
+        bar.type_text("git");
+        text.emit_by_name::<()>("backspace", &[]);
+        let completion_removed = seen(&bar);
+        text.emit_by_name::<()>("backspace", &[]);
+        let backspaced = seen(&bar);
+        bar.type_text("t");
+        let typed_again = seen(&bar);
+        bar.imp().entry.set_position(0);
+        bar.type_text("x");
+        let typed_before_the_end = seen(&bar);
+        let queries = omnibox.queries.borrow().clone();
+        window.destroy();
+
+        assert_eq!(completion_removed, shows("git", None, 0), "Backspace removes the completion only");
+        assert_eq!(backspaced, shows("gi", None, 0));
+        assert_eq!(typed_again, shows("github.com", Some((3, 10)), 0));
+        assert_eq!(typed_before_the_end.0, "xgithub.com");
+        assert_eq!(
+            queries[queries.len() - 4..],
+            [("git".to_owned(), false), ("gi".to_owned(), false), ("git".to_owned(), true), ("xgithub.com".to_owned(), false)]
+        );
+    }
+
+    #[gtk::test]
+    fn enter_opens_the_highlighted_row_and_right_keeps_the_completion() {
+        let (window, bar, _) = bar_in_window();
+        let omnibox = connect_omnibox(&bar);
+        typing_in(&bar);
+        let text = bar.imp().entry.delegate().expect("the entry's text");
+
+        bar.type_text("git");
+        let queries = omnibox.queries.borrow().len();
+        bar.press(gdk::Key::Right, NONE);
+        text.emit_by_name::<()>("move-cursor", &[&gtk::MovementStep::VisualPositions, &1i32, &false]);
+        let accepted = seen(&bar);
+        bar.press(gdk::Key::Down, NONE);
+        bar.press(gdk::Key::Up, NONE);
+        let back = seen(&bar);
+        let right_queried = omnibox.queries.borrow().len() - queries;
+        bar.press(gdk::Key::Return, NONE);
+        let first = omnibox.chosen.borrow().clone();
+
+        typing_in(&bar);
+        bar.type_text("gitl");
+        bar.press(gdk::Key::Down, NONE);
+        bar.press(gdk::Key::Down, NONE);
+        bar.press(gdk::Key::KP_Enter, NONE);
+        let chosen = omnibox.chosen.borrow().clone();
+        let submitted = omnibox.submitted.borrow().len();
+        window.destroy();
+
+        assert_eq!(accepted, shows("github.com", None, 0), "Right moves past the completion");
+        assert_eq!(back, shows("github.com", None, 0), "the accepted completion is typed text now");
+        assert_eq!(right_queried, 0);
+        assert_eq!(first, ["github.com"], "Enter opens the first row");
+        assert_eq!(chosen, ["github.com", "gitlab.com"], "Enter opens the highlighted row");
+        assert_eq!(submitted, 0, "rows open by themselves, not by resolving the text");
+    }
+
+    #[gtk::test]
+    fn ctrl_enter_opens_the_com_address_and_shift_delete_forgets_history_rows() {
+        let (window, bar, _) = bar_in_window();
+        let omnibox = connect_omnibox(&bar);
+        typing_in(&bar);
+
+        bar.type_text("example");
+        bar.press(gdk::Key::Delete, gdk::ModifierType::SHIFT_MASK);
+        let first_row_kept = (omnibox.forgotten.get(), bar.observe().text);
+        bar.press(gdk::Key::Down, NONE);
+        bar.press(gdk::Key::Down, NONE);
+        let queries = omnibox.queries.borrow().len();
+        bar.press(gdk::Key::Delete, gdk::ModifierType::SHIFT_MASK);
+        let forgotten = omnibox.forgotten.get();
+        let asked_again = omnibox.queries.borrow()[queries..].to_vec();
+        let after = seen(&bar);
+        bar.press(gdk::Key::Return, gdk::ModifierType::CONTROL_MASK);
+        let com = omnibox.submitted.borrow().clone();
+
+        typing_in(&bar);
+        bar.imp().entry.select_region(0, -1);
+        bar.type_text("two words");
+        bar.press(gdk::Key::Return, gdk::ModifierType::CONTROL_MASK);
+        let chosen = omnibox.chosen.borrow().clone();
+        window.destroy();
+
+        assert_eq!(first_row_kept, (0, "example".to_owned()), "Shift+Delete leaves other rows alone");
+        assert_eq!(forgotten, 1);
+        assert_eq!(asked_again, [("example".to_owned(), false)], "the rows are shown again for the same text");
+        assert_eq!(after, shows("example", None, 0));
+        assert_eq!(com, ["https://www.example.com/"]);
+        assert_eq!(chosen, ["github.com"], "Ctrl+Enter on more than a word acts as Enter");
     }
 }

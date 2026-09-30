@@ -375,7 +375,7 @@ impl BrowserWindow {
         ui.address.connect_edited(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            move |_, text| window.browser().omnibox_changed(&window, text)
+            move |_, text, allow_inline| window.browser().omnibox_changed(&window, text, allow_inline)
         ));
         ui.address.connect_submitted(glib::clone!(
             #[weak(rename_to = window)]

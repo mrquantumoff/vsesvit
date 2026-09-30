@@ -19,6 +19,7 @@ use webkit::prelude::*;
 use crate::address_bar::Security;
 use crate::browser::Browser;
 use crate::error_page;
+use crate::page_menu;
 use crate::permissions::{self, TabPermissions};
 use crate::window::{BrowserWindow, Focus};
 
@@ -90,6 +91,8 @@ mod imp {
         pub(super) error_page_pending: Cell<Option<ErrorPage>>,
         pub(super) error_page_shown: Cell<Option<ErrorPage>>,
         pub(super) typed: RefCell<Option<String>>,
+        /// The text last selected in the page, for its context menu.
+        pub(super) selection: RefCell<String>,
     }
 
     #[glib::object_subclass]
@@ -160,6 +163,7 @@ impl Tab {
 
         imp.web_view.set(web_view).expect("wrap runs once");
         tab.connect_web_view();
+        page_menu::attach(&tab);
         tab
     }
 
@@ -280,6 +284,14 @@ impl Tab {
 
     pub(crate) fn take_typed(&self) -> Option<String> {
         self.imp().typed.take()
+    }
+
+    pub(crate) fn selection(&self) -> String {
+        self.imp().selection.borrow().clone()
+    }
+
+    pub(crate) fn set_selection(&self, text: String) {
+        self.imp().selection.replace(text);
     }
 
     /// The engine's opaque back/forward state, for the session store.

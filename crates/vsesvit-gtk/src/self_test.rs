@@ -18,7 +18,7 @@ use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{TabsPosition, Theme, keys};
-use vsesvit_core::search::NavTarget;
+use vsesvit_core::search::{NavTarget, SearchEngineId, UrlTemplate};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::{OpenOptions, Profile};
@@ -55,6 +55,8 @@ const CAPTURE_OUTCOME: &str = "document.documentElement.dataset.capture || ''";
 const CAPTURED_TRACKS: &str = "window.captured.getTracks().map(t => t.kind + ':' + t.readyState).sort().join(' ')";
 /// The new tab page's tile links, once its search box is there.
 const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...document.querySelectorAll('.tile')].map(a => a.href).join(' ') : 'no search box'";
+/// Selects the fixture page's heading and returns the selected text.
+const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 struct Check {
     name: &'static str,
@@ -632,6 +634,113 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             }
             (search, url) => Err(format!("search={search:?} url={url:?} default={}", default.name)),
         }
+    })
+    .await;
+
+    ctx.check("address_completion", CHECK_TIMEOUT, |last| async move {
+        let address = window.address_bar();
+        let none = gdk::ModifierType::empty();
+        let typed = "127.0.0";
+        let completed = format!("127.0.0.1:{}", ctx.server.port());
+        let completion = Some((char_len(typed), char_len(&completed)));
+        let root = ctx.server.url("/");
+        address.focus_for_typing();
+        address.type_text(typed);
+        wait_for(&last, || {
+            let seen = address.observe();
+            if seen.open && seen.text == completed && seen.selection == completion && seen.highlighted == Some(0) {
+                Ok(())
+            } else {
+                Err(format!("after typing {typed:?}: {seen:?}"))
+            }
+        })
+        .await;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        let list = address.suggestions_popover();
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&list), &ctx.out_dir.join("address-completion.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        if list.width() < address.width() {
+            return Err(format!("the list is {} px wide under a {} px address bar", list.width(), address.width()));
+        }
+        address.press(gdk::Key::Down, none);
+        let down = address.observe();
+        if down.highlighted != Some(1) || down.fills.get(1) != Some(&down.text) || down.selection.is_some() {
+            return Err(format!("after Down: {down:?}"));
+        }
+        address.press(gdk::Key::Escape, none);
+        let escaped = address.observe();
+        if escaped.highlighted != Some(0) || escaped.text != completed || escaped.selection != completion {
+            return Err(format!("after Escape: {escaped:?}"));
+        }
+        address.press(gdk::Key::Return, none);
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        wait_for(&last, || {
+            let uri = tab.committed_uri().unwrap_or_default();
+            if uri == root.as_str() { Ok(()) } else { Err(format!("after Enter the tab shows {uri:?}")) }
+        })
+        .await;
+        address.submit_text(index_url.as_str());
+        wait_for(&last, || {
+            let uri = tab.committed_uri().unwrap_or_default();
+            if uri == index_url.as_str() { Ok(()) } else { Err(format!("back to the fixture page: {uri:?}")) }
+        })
+        .await;
+        Ok(format!(
+            "typing {typed:?} read {completed:?} with {:?} selected on row 0; Down showed row 1's {:?}; Escape brought the completion back; Enter opened {root}; address-completion.png",
+            &completed[typed.len()..],
+            down.text
+        ))
+    })
+    .await;
+
+    ctx.check("selection_search", CHECK_TIMEOUT, |last| async move {
+        let template = UrlTemplate(format!("{}/search?q={{searchTerms}}", ctx.server.origin()));
+        let engine = browser.core().borrow_mut().search_engines().add("Fixture Search", None, template).map_err(|e| e.to_string())?;
+        let _engine = Cleanup(|| {
+            let mut profile = browser.core().borrow_mut();
+            let mut engines = profile.search_engines();
+            let reset = engines.set_default(&SearchEngineId::builtin_default()).and_then(|()| engines.remove(&engine));
+            if let Err(e) = reset {
+                log::warn!("self-test: removing the fixture engine: {e}");
+            }
+        });
+        browser.core().borrow_mut().search_engines().set_default(&engine).map_err(|e| e.to_string())?;
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let selected = eval_js(tab.web_view(), SELECT_HEADING).await?;
+        wait_for(&last, || {
+            let tracked = tab.selection();
+            if tracked == selected { Ok(()) } else { Err(format!("the page selected {selected:?}; the tab has {tracked:?}")) }
+        })
+        .await;
+        let menu = webkit::ContextMenu::new();
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::Copy));
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::InspectElement));
+        let item = crate::page_menu::add_selection_item(&tab, &menu).ok_or_else(|| "no item for the selection".to_owned())?;
+        let label = item.title().map(String::from).unwrap_or_default();
+        let position = menu.items().iter().position(|i| i == &item);
+        let wanted_label = format!("Search Fixture Search for \u{201c}{selected}\u{201d}");
+        if selected != "Vsesvit fixture page" || label != wanted_label || position != Some(1) {
+            return Err(format!("selected {selected:?}: the item reads {label:?} at {position:?}"));
+        }
+        let before = window.tabs().len();
+        item.gaction().ok_or_else(|| "the item has no action".to_owned())?.activate(None);
+        let wanted = format!("{}/search?q=Vsesvit+fixture+page", ctx.server.origin());
+        let opened = wait_for(&last, || {
+            let tabs = window.tabs();
+            let selected = window.selected_tab().filter(|t| t != &tab).ok_or_else(|| "no new tab selected".to_owned())?;
+            let next_to = tabs.iter().position(|t| t == &tab).map(|i| i + 1) == tabs.iter().position(|t| t == &selected);
+            let uri = selected.web_view().uri().map(String::from).unwrap_or_default();
+            if tabs.len() == before + 1 && next_to && uri == wanted {
+                Ok(selected)
+            } else {
+                Err(format!("tabs={} next to the page={next_to} requested {uri:?}", tabs.len()))
+            }
+        })
+        .await;
+        window.close_tab(&opened);
+        window.select_tab(&tab);
+        Ok(format!("{label:?} follows Copy and opened {wanted} in a new tab next to the page"))
     })
     .await;
 
@@ -1582,6 +1691,10 @@ fn heading_of(bubble: &gtk::Popover) -> Option<String> {
 }
 
 /// How many different pixel values the image has, stopping at `cap`.
+fn char_len(text: &str) -> i32 {
+    i32::try_from(text.chars().count()).unwrap_or(i32::MAX)
+}
+
 fn distinct_colors(texture: &gdk::Texture, cap: usize) -> usize {
     let downloader = gdk::TextureDownloader::new(texture);
     let (bytes, stride) = downloader.download_bytes();
