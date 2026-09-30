@@ -61,6 +61,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           bash scripts/release-plan.sh | tee -a "$GITHUB_OUTPUT"
+      # GITHUB_TOKEN cannot hold the `workflows` permission, so GitHub refuses it a new tag on a
+      # commit whose workflow files differ from main's. Tag now, while this run's commit is still
+      # main's head: by the release job, a push that edits a workflow may have moved main on.
+      - name: Tag
+        if: steps.plan.outputs.skip != 'true' && github.event_name != 'push'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A re-run computes the same tag and finds it already here.
+          tagged=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)
+          if [[ -z "$tagged" ]]; then
+            gh api "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null
+          elif [[ "$tagged" != "$SHA" ]]; then
+            echo "::error::$TAG already points at $tagged, not $SHA"; exit 1
+          fi
 
   windows:
     needs: plan
@@ -182,9 +200,9 @@ jobs:
       - run: cargo xtask manifest --base-url "https://github.com/$REPO/releases/download/$TAG" --notes "$RUNNER_TEMP/notes.md"
       - name: GitHub release
         run: |
-          flags=(--title "Vsesvit $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --target "$GITHUB_SHA")
+          # The tag was pushed, or made by the plan job; creating it here could be refused.
+          flags=(--title "Vsesvit $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag)
           if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); else flags+=(--latest); fi
-          if [[ "$GITHUB_EVENT_NAME" == push ]]; then flags+=(--verify-tag); fi
           # A re-run finds the release its first attempt created and replaces the assets.
           gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 || gh release create "$TAG" --repo "$REPO" "${flags[@]}"
           gh release upload "$TAG" --repo "$REPO" --clobber target/dist/*
