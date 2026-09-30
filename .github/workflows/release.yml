@@ -73,8 +73,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # A re-run computes the same tag and finds it already here.
-          tagged=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)
-          if [[ -z "$tagged" ]]; then
+          # gh prints a 404's error body to stdout, so test its status, not its output.
+          if ! tagged=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null); then
             gh api "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null
           elif [[ "$tagged" != "$SHA" ]]; then
             echo "::error::$TAG already points at $tagged, not $SHA"; exit 1
