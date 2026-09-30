@@ -6,7 +6,7 @@
 //! | `DATABASE_URL`            | `sqlite://vsesvit-sync.db?mode=rwc`       |
 //! | `RUN_MIGRATIONS`          | `true`; `false` refuses to start on pending migrations |
 //! | `BIND_ADDRESS`            | `0.0.0.0:8080`                            |
-//! | `OIDC_ISSUER`             | `https://api.usequadrant.dev` (Quadrant ID) |
+//! | `OIDC_ISSUER`             | required                                  |
 //! | `OIDC_CLIENT_ID`          | required                                  |
 //! | `OIDC_SCOPES`             | `openid profile`                          |
 //! | `OIDC_REDIRECT_URIS`      | `http://127.0.0.1:47801/callback` to `:47805` |
@@ -25,8 +25,6 @@ use reqwest::Url;
 use vsesvit_sync_proto::{AuthInfo, Limits};
 
 use crate::store::Quota;
-
-pub const QUADRANT_ID_ISSUER: &str = "https://api.usequadrant.dev";
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -53,7 +51,8 @@ impl Config {
         let var = |name: &str| var(name).filter(|v| !v.trim().is_empty());
         let invalid = |name, value: &str| ConfigError::Invalid { name, value: value.to_owned() };
         let client_id = var("OIDC_CLIENT_ID").ok_or(ConfigError::Missing("OIDC_CLIENT_ID"))?.trim().to_owned();
-        let issuer = var("OIDC_ISSUER").unwrap_or_else(|| QUADRANT_ID_ISSUER.to_owned()).trim().trim_end_matches('/').to_owned();
+        // No default provider: which one signs people in is the operator's choice, never a guess.
+        let issuer = var("OIDC_ISSUER").ok_or(ConfigError::Missing("OIDC_ISSUER"))?.trim().trim_end_matches('/').to_owned();
         if !is_secure_url(&issuer) {
             return Err(invalid("OIDC_ISSUER", &issuer));
         }
@@ -162,15 +161,19 @@ mod tests {
         Config::from_env(|name| vars.iter().find(|(k, _)| *k == name).map(|(_, v)| (*v).to_owned()))
     }
 
+    const ISSUER: (&str, &str) = ("OIDC_ISSUER", "https://idp.example.com/");
+
     fn with(name: &'static str, value: &'static str) -> Result<Config, ConfigError> {
-        config(&[("OIDC_CLIENT_ID", "abc"), (name, value)])
+        // The first match wins, so `name` overrides the defaults after it.
+        config(&[(name, value), ("OIDC_CLIENT_ID", "abc"), ISSUER])
     }
 
     #[test]
-    fn only_the_client_id_is_required_and_quadrant_id_is_the_default_provider() {
-        assert!(matches!(config(&[]), Err(ConfigError::Missing("OIDC_CLIENT_ID"))));
-        let c = config(&[("OIDC_CLIENT_ID", "abc")]).unwrap();
-        assert_eq!(c.auth.issuer, QUADRANT_ID_ISSUER);
+    fn the_provider_and_the_client_id_are_required() {
+        assert!(matches!(config(&[ISSUER]), Err(ConfigError::Missing("OIDC_CLIENT_ID"))));
+        assert!(matches!(config(&[("OIDC_CLIENT_ID", "abc")]), Err(ConfigError::Missing("OIDC_ISSUER"))));
+        let c = config(&[("OIDC_CLIENT_ID", "abc"), ISSUER]).unwrap();
+        assert_eq!(c.auth.issuer, "https://idp.example.com");
         assert_eq!(c.auth.scopes, ["openid", "profile"]);
         assert_eq!(c.auth.redirect_uris.len(), 5);
         assert_eq!(c.allowed_client_ids, Some(vec!["abc".to_owned()]));
@@ -180,7 +183,7 @@ mod tests {
 
     #[test]
     fn lists_split_on_spaces_and_commas_and_a_star_accepts_every_client() {
-        let c = config(&[("OIDC_CLIENT_ID", "abc"), ("OIDC_SCOPES", "openid, email"), ("OIDC_ALLOWED_CLIENT_IDS", "*")]).unwrap();
+        let c = config(&[("OIDC_CLIENT_ID", "abc"), ISSUER, ("OIDC_SCOPES", "openid, email"), ("OIDC_ALLOWED_CLIENT_IDS", "*")]).unwrap();
         assert_eq!(c.auth.scopes, ["openid", "email"]);
         assert_eq!(c.allowed_client_ids, None);
         assert!(with("OIDC_ALLOWED_CLIENT_IDS", " , ").is_err());

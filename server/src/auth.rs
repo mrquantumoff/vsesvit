@@ -2,8 +2,9 @@
 //!
 //! Userinfo is the one check every OpenID Connect provider answers the same way: opaque and JWT
 //! access tokens alike, revoked tokens refused, and `sub` the stable user id. A local JWT check
-//! cannot stand in for it: Quadrant ID's access tokens carry the granted scopes in `sub`, and the
-//! user id only in the ID token and userinfo.
+//! cannot stand in for it: an access token's `sub` need not be the user (some providers put the
+//! granted scopes there, and the user id only in the ID token and userinfo), and its signing keys
+//! and claims vary by provider.
 //!
 //! Userinfo does not say which app a token was issued to, so the token has to: a JWT naming its
 //! client (`client_id`, RFC 9068, and `azp`). Every client it names must be one the server

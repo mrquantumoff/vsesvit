@@ -2,8 +2,8 @@
 # the image then keeps its database in the vsesvit-sync volume. The server listens on 127.0.0.1
 # only, for a reverse proxy in front of it (nginx.conf).
 #
-#   OIDC_CLIENT_ID=<your client id> POSTGRES_PASSWORD=$(openssl rand -hex 24) \
-#     docker compose -f server/compose.yaml up -d --build
+#   OIDC_ISSUER=<your provider's issuer> OIDC_CLIENT_ID=<your client id> \
+#     POSTGRES_PASSWORD=$(openssl rand -hex 24) docker compose -f server/compose.yaml up -d --build
 #
 # Keep the password (in a .env file next to this one, say): the database keeps the first one.
 services:
@@ -17,7 +17,7 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       DATABASE_URL: postgres://vsesvit:${POSTGRES_PASSWORD}@postgres/vsesvit
-      OIDC_ISSUER: ${OIDC_ISSUER:-https://api.usequadrant.dev}
+      OIDC_ISSUER: ${OIDC_ISSUER:?set OIDC_ISSUER to your OpenID Connect provider's issuer URL}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID to the client id registered with the provider}
     volumes:
       - vsesvit-sync:/data
