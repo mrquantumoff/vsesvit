@@ -34,7 +34,7 @@ pub(crate) struct Provider {
     pub revocation_endpoint: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Tokens {
     pub access: String,
     pub refresh: Option<String>,

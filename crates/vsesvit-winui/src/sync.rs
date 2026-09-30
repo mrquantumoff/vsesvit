@@ -6,12 +6,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use vsesvit_core::Profile;
+use vsesvit_core::crdt::Seq;
 use vsesvit_core::extensions::toolbar;
 use vsesvit_core::prefs::keys;
-use vsesvit_core::sync::Changed;
+use vsesvit_core::sync::{Changed, DataType};
 use vsesvit_sync::status::{State, Status};
 use vsesvit_sync::{Account, Error, Http, Round, SignIn, now_secs};
 
@@ -21,7 +22,15 @@ use crate::window::BrowserWindow;
 
 /// The first sync waits this long after the first window shows.
 const FIRST_SYNC: Duration = Duration::from_secs(10);
+/// How often the schedule looks for local changes.
+const TICK: Duration = Duration::from_secs(2);
+/// A local change syncs no sooner than this after the last sync started, so a burst of edits
+/// is one sync.
+const CHANGE_GAP: Duration = Duration::from_secs(10);
+/// Without local changes, a sync this often downloads what other devices sent.
 const SYNC_INTERVAL: Duration = Duration::from_secs(60);
+/// Quitting waits at most this long for the final sync.
+const FINAL_SYNC_WAIT: Duration = Duration::from_secs(3);
 /// One sync runs at most this many rounds while either side has more; the next sync goes on.
 const MAX_ROUNDS: usize = 50;
 
@@ -38,6 +47,11 @@ pub(crate) struct SyncController {
     /// Counts sign-ins begun and cancelled. A sign-in's steps go on only while it is the latest.
     attempts: Cell<u64>,
     canceller: RefCell<Option<Arc<AtomicBool>>>,
+    /// When the last sync started, and the profile's `change_seq` then.
+    last_start: Cell<Option<(Instant, Seq)>>,
+    /// `change_seq` when the last sync that completed started: nothing is left to upload while
+    /// it has not moved.
+    uploaded: Cell<Option<Seq>>,
     /// Called after every change of `state`, while their owners (an open Settings) keep them.
     listeners: RefCell<Vec<Weak<dyn Fn()>>>,
     /// Called after a sync applied records, while their owners (an open dialog) keep them.
@@ -45,7 +59,8 @@ pub(crate) struct SyncController {
 }
 
 impl SyncController {
-    /// Signed in when the profile holds an account.
+    /// Signed in when the profile holds an account. One it holds but cannot read (its sealed
+    /// tokens do not unseal) shows as signed out, with why.
     pub fn load(profile: &mut Profile) -> Self {
         let signed_out = State::SignedOut { error: None };
         let state = match Account::load(&mut profile.sync()) {
@@ -53,7 +68,9 @@ impl SyncController {
             Ok(None) => signed_out,
             Err(e) => {
                 log::warn!("sync account: {e}");
-                signed_out
+                State::SignedOut {
+                    error: Some(e.to_string()),
+                }
             }
         };
         Self {
@@ -62,6 +79,8 @@ impl SyncController {
             running: Cell::new(false),
             attempts: Cell::new(0),
             canceller: RefCell::new(None),
+            last_start: Cell::new(None),
+            uploaded: Cell::new(None),
             listeners: RefCell::default(),
             applied: RefCell::default(),
         }
@@ -69,6 +88,14 @@ impl SyncController {
 
     pub fn status(&self) -> Status {
         self.state.borrow().status(now_secs())
+    }
+
+    pub fn state(&self) -> State {
+        self.state.borrow().clone()
+    }
+
+    pub fn signed_in(&self) -> bool {
+        matches!(*self.state.borrow(), State::SignedIn { .. })
     }
 
     /// Calls `listener` after every change of the sync state, while the caller keeps it.
@@ -216,14 +243,34 @@ fn sign_in_failed(e: &Error) -> Event {
     })
 }
 
-/// Syncs `FIRST_SYNC` after the first window shows, then every `SYNC_INTERVAL`, while signed in.
+/// Whether a scheduled tick syncs: while signed in and not syncing, `SYNC_INTERVAL` after the
+/// last sync started, or `CHANGE_GAP` after it when something changed here since. The first
+/// tick syncs.
+fn tick_syncs(due: bool, running: bool, changed: bool, since_start: Option<Duration>) -> bool {
+    if !due || running {
+        return false;
+    }
+    since_start.is_none_or(|since| since >= SYNC_INTERVAL || (changed && since >= CHANGE_GAP))
+}
+
+/// Syncs `FIRST_SYNC` after the first window shows, then as `tick_syncs` decides every `TICK`.
 pub(crate) async fn schedule(browser: Weak<Browser>) {
     exec::sleep(FIRST_SYNC).await;
     loop {
         let Some(b) = browser.upgrade() else { return };
-        sync_now(&b);
+        let sync = b.sync();
+        let last_start = sync.last_start.get();
+        let seq = b.core(|p| p.change_seq());
+        if tick_syncs(
+            due(&sync.state.borrow()),
+            sync.running.get(),
+            last_start.is_none_or(|(_, at)| at != seq),
+            last_start.map(|(at, _)| at.elapsed()),
+        ) {
+            sync_now(&b);
+        }
         drop(b);
-        exec::sleep(SYNC_INTERVAL).await;
+        exec::sleep(TICK).await;
     }
 }
 
@@ -234,14 +281,19 @@ pub(crate) fn sync_now(browser: &Rc<Browser>) {
         return;
     }
     sync.running.set(true);
+    let seq = browser.core(|p| p.change_seq());
+    sync.last_start.set(Some((Instant::now(), seq)));
     sync.apply(Event::Sync(Progress::Started));
-    exec::spawn(run(Rc::downgrade(browser)));
+    exec::spawn(run(Rc::downgrade(browser), seq));
 }
 
-async fn run(browser: Weak<Browser>) {
+async fn run(browser: Weak<Browser>, seq: Seq) {
     let result = rounds(&browser).await;
     let Some(b) = browser.upgrade() else { return };
     b.sync().running.set(false);
+    if result.is_ok() {
+        b.sync().uploaded.set(Some(seq));
+    }
     if let Err(e) = &result {
         log::warn!("sync: {e}");
     }
@@ -262,7 +314,10 @@ async fn rounds(browser: &Weak<Browser>) -> Result<Option<u64>, Error> {
     for _ in 0..MAX_ROUNDS {
         let (round, http) = {
             let b = browser.upgrade().ok_or(Error::SignedOut)?;
-            let round = b.core(|p| Round::gather(&mut p.sync(), account))?;
+            let round = b.core(|p| {
+                let types = p.prefs().get(&keys::SYNC_TYPES);
+                Round::gather(&mut p.sync(), account, &types)
+            })?;
             (round, b.sync().http.clone())
         };
         let exchanged = exec::background(move || round.run(&http)).await;
@@ -388,6 +443,97 @@ pub(crate) fn sign_out(browser: &Browser) {
             exec::background(move || account.revoke(&http)).await;
         });
     }
+}
+
+/// As the browser quits, after the session is saved: one round of what changed since the last
+/// sync, if anything did, which quitting waits `FINAL_SYNC_WAIT` for at most. A round that has
+/// not come back by then is dropped; it never refreshes tokens, so dropping it loses nothing.
+pub(crate) fn final_sync(browser: &Browser) {
+    let sync = browser.sync();
+    let seq = browser.core(|p| p.change_seq());
+    if sync.running.get() || !due(&sync.state.borrow()) || sync.uploaded.get() == Some(seq) {
+        return;
+    }
+    let gathered = browser.core(|p| {
+        let account = Account::load(&mut p.sync())?.ok_or(Error::SignedOut)?;
+        let types = p.prefs().get(&keys::SYNC_TYPES);
+        Round::gather(&mut p.sync(), account, &types)
+    });
+    let round = match gathered {
+        Ok(round) => round,
+        Err(e) => {
+            log::warn!("final sync: {e}");
+            return;
+        }
+    };
+    let (send, receive) = std::sync::mpsc::channel();
+    let http = sync.http.clone();
+    let spawned = std::thread::Builder::new()
+        .name("vsesvit-final-sync".into())
+        .spawn(move || {
+            let _ = send.send(round.run_final(&http));
+        });
+    if let Err(e) = spawned {
+        log::warn!("final sync: {e}");
+        return;
+    }
+    let Ok(exchanged) = receive.recv_timeout(FINAL_SYNC_WAIT) else {
+        log::info!("final sync: no answer in {FINAL_SYNC_WAIT:?}; quitting without it");
+        return;
+    };
+    match browser.core(|p| exchanged.finish(&mut p.sync())).result {
+        Ok(_) => log::info!("final sync: done"),
+        Err(e) => log::info!("final sync: {e}"),
+    }
+}
+
+/// Stores which types this device syncs, and syncs with them.
+pub(crate) fn set_types(browser: &Rc<Browser>, types: &[DataType]) {
+    browser.write_pref(&keys::SYNC_TYPES, &types.to_vec());
+    sync_now(browser);
+}
+
+/// Deletes what the server holds for the account, then signs out as [`sign_out`] does. `done`
+/// gets why it failed, if it did; the profile then stays signed in.
+pub(crate) fn delete_server_data(
+    browser: &Rc<Browser>,
+    done: impl FnOnce(Option<String>) + 'static,
+) {
+    let browser = Rc::downgrade(browser);
+    exec::spawn(async move {
+        // A round running meanwhile could upload again what the deletion removes.
+        let idle = exec::wait_for(Duration::from_secs(120), Duration::from_millis(100), || {
+            let b = browser.upgrade()?;
+            (!b.sync().running.replace(true)).then_some(())
+        })
+        .await;
+        let Some(b) = browser.upgrade() else { return };
+        if idle.is_none() {
+            done(Some("a sync is still running; try again".to_owned()));
+            return;
+        }
+        let account = b.core(|p| Account::load(&mut p.sync()));
+        let http = b.sync().http.clone();
+        drop(b);
+        let deleted = match account {
+            Ok(Some(account)) => exec::background(move || account.delete_server_data(&http)).await,
+            Ok(None) => Err(Error::SignedOut),
+            Err(e) => Err(e),
+        };
+        let Some(b) = browser.upgrade() else { return };
+        b.sync().running.set(false);
+        match deleted {
+            Ok(account) => {
+                log::info!("sync: deleted the data on {}", account.server());
+                sign_out(&b);
+                done(None);
+            }
+            Err(e) => {
+                log::warn!("deleting the data on the sync server: {e}");
+                done(Some(e.to_string()));
+            }
+        }
+    });
 }
 
 /// What the shell applies again after a sync changed a synced preference it holds or shows.
@@ -526,6 +672,30 @@ mod tests {
             outcome(Ok(Some(5))),
             Some(Event::Sync(Progress::Synced(Some(5))))
         ));
+    }
+
+    #[test]
+    fn a_tick_syncs_soon_after_a_change_and_now_and_then_without_one() {
+        let s = Duration::from_secs;
+        assert!(tick_syncs(true, false, false, None), "the first tick");
+        assert!(
+            !tick_syncs(true, false, true, Some(s(4))),
+            "too soon after the last start"
+        );
+        assert!(tick_syncs(true, false, true, Some(s(10))));
+        assert!(
+            !tick_syncs(true, false, false, Some(s(30))),
+            "nothing changed"
+        );
+        assert!(tick_syncs(true, false, false, Some(s(60))), "downloads");
+        assert!(
+            !tick_syncs(true, true, true, Some(s(90))),
+            "one sync at a time"
+        );
+        assert!(
+            !tick_syncs(false, false, true, Some(s(90))),
+            "signed out, or waiting for a new sign-in"
+        );
     }
 
     #[test]

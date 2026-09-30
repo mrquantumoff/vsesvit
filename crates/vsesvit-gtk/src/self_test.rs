@@ -885,7 +885,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             .and_downcast::<adw::PreferencesDialog>()
             .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
         let mut shots = Vec::new();
-        for name in ["sync", "general", "appearance", "search", "privacy", "shortcuts"] {
+        for name in ["general", "sync", "appearance", "search", "privacy", "shortcuts"] {
             dialog.set_visible_page_name(name);
             if dialog.visible_page_name().as_deref() != Some(name) {
                 dialog.close();
@@ -1052,8 +1052,10 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             if dialog.visible_page_name().as_deref() != Some("shortcuts") {
                 return Err("Settings has no \"shortcuts\" page".to_owned());
             }
+            // Only the Shortcuts page: the Sync page has a "History" row of its own.
+            let page = dialog.visible_page().ok_or_else(|| "the shortcuts page is not shown".to_owned())?;
             let row_shows = |title: &str| {
-                find::<adw::ActionRow>(dialog.upcast_ref(), |row| row.title() == title)
+                find::<adw::ActionRow>(page.upcast_ref(), |row| row.title() == title)
                     .and_then(|row| find::<adw::ShortcutLabel>(row.upcast_ref(), |_| true))
                     .map(|label| label.accelerator().to_string())
             };
@@ -1062,7 +1064,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
                 return Err(format!("the History and Downloads rows show {rows:?}"));
             }
             glib::timeout_future(Duration::from_millis(300)).await;
-            let rows = find::<adw::ActionRow>(dialog.upcast_ref(), |row| row.title() == "History");
+            let rows = find::<adw::ActionRow>(page.upcast_ref(), |row| row.title() == "History");
             if let Some(scrolled) = rows.and_then(|row| row.ancestor(gtk::ScrolledWindow::static_type())).and_downcast::<gtk::ScrolledWindow>() {
                 let at = scrolled.vadjustment();
                 at.set_value(at.upper() - at.page_size());
@@ -1530,6 +1532,15 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
                         .ok_or_else(|| "the page shows no status".to_owned())?;
                     let button = button_labelled(&page, "Make Vsesvit the Default Browser").is_some_and(|b| b.is_visible());
                     notes.push(format!("default browser: {status:?}, button shown={button}"));
+                }
+                Step::Sync => {
+                    let server = browser.core().borrow_mut().prefs().get(&keys::SYNC_SERVER);
+                    let row = find::<adw::EntryRow>(&page, |r| r.title() == "Sync Server").ok_or_else(|| "no Sync Server row".to_owned())?;
+                    let sign_in = button_labelled(&page, "Sign In").is_some_and(|b| b.is_visible());
+                    if row.text() != server || !sign_in {
+                        return Err(format!("Sync Server shows {:?} for {server:?}, Sign In shown={sign_in}", row.text()));
+                    }
+                    notes.push(format!("sync: Sign In and the server {server}"));
                 }
                 Step::Welcome | Step::Done => {}
             }

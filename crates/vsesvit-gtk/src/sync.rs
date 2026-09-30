@@ -1,16 +1,19 @@
 //! Sync with a Vsesvit sync server (`vsesvit-sync`). The browser owns one [`Syncer`]: it signs
-//! the profile in and out, and syncs 10 seconds after the first window opens, every minute after
-//! that, and when asked. What touches the profile runs on the UI thread; the network steps run on
-//! worker threads. Settings watches the [`State`].
+//! the profile in and out, and syncs 10 seconds after the first window opens, then every minute,
+//! soon after a local change, when asked, and once more as the browser quits. What touches the
+//! profile runs on the UI thread; the network steps run on worker threads. Settings watches the
+//! [`State`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::Profile;
+use vsesvit_core::crdt::Seq;
 use vsesvit_core::prefs::keys;
 use vsesvit_sync::status::{Action, State};
 use vsesvit_sync::{Account, Error, Http, Round, SignIn};
@@ -19,7 +22,13 @@ use crate::browser::{self, Browser};
 use crate::window::Focus;
 
 const FIRST_SYNC_DELAY_SECS: u32 = 10;
-const SYNC_INTERVAL_SECS: u32 = 60;
+const TICK_SECS: u32 = 2;
+/// How often a sync starts when nothing changes here, for what other devices changed.
+const SYNC_INTERVAL: Duration = Duration::from_secs(60);
+/// How soon after the last sync started a local change is synced.
+const SYNC_SOON: Duration = Duration::from_secs(10);
+/// How long quitting waits for the final sync.
+const FINAL_SYNC_WAIT: Duration = Duration::from_secs(3);
 /// Rounds one sync runs at most; the next tick takes what is left.
 const MAX_ROUNDS: usize = 50;
 
@@ -36,6 +45,12 @@ struct Inner {
     /// A sync is running. Kept apart from `State::SignedIn.syncing`, because a round can outlive
     /// the sign-in it started under.
     running: Cell<bool>,
+    deleting: Cell<bool>,
+    last_start: Cell<Option<Instant>>,
+    /// `Profile::change_seq` when the last sync started; `None` asks for a sync at the next tick.
+    start_seq: Cell<Option<Seq>>,
+    /// `Profile::change_seq` when the last sync that completed started.
+    synced_seq: Cell<Option<Seq>>,
     /// Bumped by every sign-in and cancel, so the later steps of an abandoned sign-in stop.
     attempt: Cell<u64>,
     canceller: RefCell<Option<Arc<AtomicBool>>>,
@@ -49,11 +64,12 @@ impl Syncer {
         Syncer(Rc::new(Inner {
             browser,
             http: Http::new(),
-            state: RefCell::new(match stored_account(profile) {
-                Some(account) => signed_in(&account, false, false),
-                None => State::SignedOut { error: None },
-            }),
+            state: RefCell::new(stored_state(profile, None, false)),
             running: Cell::new(false),
+            deleting: Cell::new(false),
+            last_start: Cell::new(None),
+            start_seq: Cell::new(None),
+            synced_seq: Cell::new(None),
             attempt: Cell::new(0),
             canceller: RefCell::default(),
             watchers: RefCell::default(),
@@ -77,14 +93,26 @@ impl Syncer {
         }
     }
 
-    /// A button from [`vsesvit_sync::status::Status::actions`].
+    /// A button from [`vsesvit_sync::status::Status::actions`]. [`Action::DeleteServerData`] asks
+    /// first, so Settings calls [`Syncer::delete_server_data`] itself.
     pub(crate) fn act(&self, action: Action) {
         match action {
             Action::SignIn => self.sign_in(),
             Action::Cancel => self.cancel(),
             Action::SyncNow => self.sync_now(),
             Action::SignOut => self.sign_out(),
+            Action::DeleteServerData => {}
         }
+    }
+
+    pub(crate) fn is_signed_in(&self) -> bool {
+        matches!(*self.0.state.borrow(), State::SignedIn { .. })
+    }
+
+    /// The user chose other data types: sync them now, or at a tick once the running sync ends.
+    pub(crate) fn types_changed(&self) {
+        self.0.start_seq.set(None);
+        self.sync_now();
     }
 
     fn browser(&self) -> Option<Browser> {
@@ -112,16 +140,16 @@ impl Syncer {
         let first = glib::timeout_add_seconds_local_once(first_secs, move || {
             let Some(inner) = weak.upgrade() else { return };
             let weak = Rc::downgrade(&inner);
-            let every = glib::timeout_add_seconds_local(SYNC_INTERVAL_SECS, move || match weak.upgrade() {
+            let every = glib::timeout_add_seconds_local(TICK_SECS, move || match weak.upgrade() {
                 Some(inner) => {
-                    Syncer(inner).sync_now();
+                    Syncer(inner).tick();
                     glib::ControlFlow::Continue
                 }
                 None => glib::ControlFlow::Break,
             });
             // The one-shot source is already gone, so its id is dropped, not removed.
             *inner.timer.borrow_mut() = Some(every);
-            Syncer(inner).sync_now();
+            Syncer(inner).tick();
         });
         self.0.timer.replace(Some(first));
     }
@@ -132,12 +160,27 @@ impl Syncer {
         }
     }
 
+    fn change_seq(&self) -> Option<Seq> {
+        self.browser().map(|browser| browser.core().borrow().change_seq())
+    }
+
     // Syncing.
 
+    fn tick(&self) {
+        let changed = self.change_seq() != self.0.start_seq.get();
+        let since_start = self.0.last_start.get().map(|at| at.elapsed());
+        if due(&self.0.state.borrow(), self.0.running.get(), changed, since_start) {
+            self.sync_now();
+        }
+    }
+
     fn sync_now(&self) {
-        if !should_sync(&self.0.state.borrow(), self.0.running.get()) {
+        if self.0.deleting.get() || !should_sync(&self.0.state.borrow(), self.0.running.get()) {
             return;
         }
+        let start_seq = self.change_seq();
+        self.0.start_seq.set(start_seq);
+        self.0.last_start.set(Some(Instant::now()));
         self.0.running.set(true);
         self.update(|state| {
             if let State::SignedIn { syncing, .. } = state {
@@ -148,8 +191,9 @@ impl Syncer {
         glib::spawn_future_local(async move {
             let mut synced_at = None;
             let result = syncer.rounds(&mut synced_at).await;
-            if let Err(e) = &result {
-                log::warn!("sync: {e}");
+            match &result {
+                Ok(()) => syncer.0.synced_seq.set(start_seq),
+                Err(e) => log::warn!("sync: {e}"),
             }
             syncer.0.running.set(false);
             syncer.update(|state| settle(state, result, synced_at));
@@ -161,14 +205,7 @@ impl Syncer {
     async fn rounds(&self, synced_at: &mut Option<u64>) -> Result<(), Error> {
         for _ in 0..MAX_ROUNDS {
             let Some(browser) = self.browser() else { return Err(Error::SignedOut) };
-            let round = {
-                let mut profile = browser.core().borrow_mut();
-                let mut store = profile.sync();
-                match Account::load(&mut store)? {
-                    Some(account) => Round::gather(&mut store, account)?,
-                    None => return Err(Error::SignedOut),
-                }
-            };
+            let Some(round) = gather(&mut browser.core().borrow_mut())? else { return Err(Error::SignedOut) };
             drop(browser);
             let http = self.0.http.clone();
             let exchanged = on_worker(move || round.run(&http)).await;
@@ -215,12 +252,12 @@ impl Syncer {
                 Ok(account) => {
                     syncer.set_state(signed_in(&account, syncer.0.running.get(), false));
                     syncer.sync_now();
-                    syncer.schedule(SYNC_INTERVAL_SECS);
+                    syncer.schedule(TICK_SECS);
                 }
                 Err(e) => {
                     log::warn!("sync sign-in: {e}");
                     let error = (!matches!(e, Error::Cancelled)).then(|| e.to_string());
-                    let state = abandoned_sign_in(&mut browser.core().borrow_mut(), error);
+                    let state = stored_state(&mut browser.core().borrow_mut(), error, true);
                     syncer.set_state(state);
                 }
             }
@@ -248,7 +285,7 @@ impl Syncer {
             canceller.store(true, Ordering::Relaxed);
         }
         if let Some(browser) = self.browser() {
-            let state = abandoned_sign_in(&mut browser.core().borrow_mut(), None);
+            let state = stored_state(&mut browser.core().borrow_mut(), None, true);
             self.set_state(state);
         }
     }
@@ -256,24 +293,80 @@ impl Syncer {
     /// A round still running is dropped by `Exchanged::finish`, which sees the account gone.
     fn sign_out(&self) {
         let Some(browser) = self.browser() else { return };
-        let forgotten = {
-            let mut profile = browser.core().borrow_mut();
-            let mut store = profile.sync();
-            Account::load(&mut store).and_then(|account| Account::forget(&mut store).map(|()| account))
-        };
-        let account = match forgotten {
-            Ok(account) => account,
-            Err(e) => {
-                log::warn!("sync sign-out: {e}");
-                return;
-            }
-        };
+        let loaded = Account::load(&mut browser.core().borrow_mut().sync());
+        if let Err(e) = loaded.and_then(|account| self.forget(&browser, account)) {
+            log::warn!("sync sign-out: {e}");
+        }
+    }
+
+    /// Signs out, and revokes `account`'s refresh token on a worker thread.
+    fn forget(&self, browser: &Browser, account: Option<Account>) -> Result<(), Error> {
+        Account::forget(&mut browser.core().borrow_mut().sync())?;
         self.cancel_timer();
         self.set_state(State::SignedOut { error: None });
         if let Some(account) = account {
             let http = self.0.http.clone();
             std::thread::spawn(move || account.revoke(&http));
         }
+        Ok(())
+    }
+
+    /// Deletes everything the server holds for the account, then signs out. On failure the
+    /// profile stays signed in.
+    pub(crate) async fn delete_server_data(&self) -> Result<(), Error> {
+        let browser = self.browser().ok_or(Error::SignedOut)?;
+        let account = Account::load(&mut browser.core().borrow_mut().sync())?.ok_or(Error::SignedOut)?;
+        drop(browser);
+        self.0.deleting.set(true);
+        let http = self.0.http.clone();
+        let deleted = on_worker(move || account.delete_server_data(&http)).await;
+        self.0.deleting.set(false);
+        let account = deleted?;
+        let browser = self.browser().ok_or(Error::SignedOut)?;
+        self.forget(&browser, Some(account))
+    }
+
+    /// As the browser quits, after the session is saved: one round of what changed since the last
+    /// sync, given at most [`FINAL_SYNC_WAIT`]. A round still out then is abandoned, which
+    /// `Round::run_final` makes safe.
+    pub(crate) fn final_sync(&self) {
+        self.cancel_timer();
+        let Some(browser) = self.browser() else { return };
+        let changed = self.change_seq() != self.0.synced_seq.get();
+        if self.0.deleting.get() || !changed || !should_sync(&self.0.state.borrow(), self.0.running.get()) {
+            return;
+        }
+        let round = match gather(&mut browser.core().borrow_mut()) {
+            Ok(Some(round)) => round,
+            Ok(None) => return,
+            Err(e) => {
+                log::warn!("final sync: {e}");
+                return;
+            }
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let http = self.0.http.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(round.run_final(&http));
+        });
+        let Ok(exchanged) = receiver.recv_timeout(FINAL_SYNC_WAIT) else {
+            log::info!("final sync: no answer in {FINAL_SYNC_WAIT:?}; quitting without it");
+            return;
+        };
+        match exchanged.finish(&mut browser.core().borrow_mut().sync()).result {
+            Ok(_) => log::info!("final sync: done"),
+            Err(e) => log::info!("final sync: {e}"),
+        }
+    }
+}
+
+/// A round of the data types the user chose; `None` when signed out.
+fn gather(profile: &mut Profile) -> Result<Option<Round>, Error> {
+    let types = profile.prefs().get(&keys::SYNC_TYPES);
+    let mut store = profile.sync();
+    match Account::load(&mut store)? {
+        Some(account) => Ok(Some(Round::gather(&mut store, account, &types)?)),
+        None => Ok(None),
     }
 }
 
@@ -295,25 +388,30 @@ fn signed_in(account: &Account, syncing: bool, needs_sign_in: bool) -> State {
     }
 }
 
-/// The profile's account, `None` when it is signed out.
-fn stored_account(profile: &mut Profile) -> Option<Account> {
-    Account::load(&mut profile.sync()).unwrap_or_else(|e| {
-        log::warn!("sync account: {e}");
-        None
-    })
-}
-
-/// Where a sign-in that did not finish leaves the profile. One that still holds an account was
-/// signing in again because that account's sign-in expired, which it still is.
-fn abandoned_sign_in(profile: &mut Profile, error: Option<String>) -> State {
-    match stored_account(profile) {
-        Some(account) => signed_in(&account, false, true),
-        None => State::SignedOut { error },
+/// The profile's account as Settings shows it while nothing runs: at startup, and after a
+/// sign-in that did not finish (`after_sign_in`), which with an account still stored was signing
+/// in again because that account's sign-in expired, as it still is. An account that cannot be
+/// read, such as behind a locked keyring, shows as signed out with the reason.
+fn stored_state(profile: &mut Profile, error: Option<String>, after_sign_in: bool) -> State {
+    match Account::load(&mut profile.sync()) {
+        Ok(Some(account)) => signed_in(&account, false, after_sign_in),
+        Ok(None) => State::SignedOut { error },
+        Err(e) => {
+            log::warn!("sync account: {e}");
+            State::SignedOut { error: Some(e.to_string()) }
+        }
     }
 }
 
 fn should_sync(state: &State, running: bool) -> bool {
     !running && matches!(state, State::SignedIn { needs_sign_in: false, syncing: false, .. })
+}
+
+/// Whether a tick starts a sync: the first of this run, a minute after the last one started, or
+/// soon after a local change, but never sooner than [`SYNC_SOON`] after the last one started.
+fn due(state: &State, running: bool, changed: bool, since_start: Option<Duration>) -> bool {
+    should_sync(state, running)
+        && since_start.is_none_or(|since| since >= SYNC_INTERVAL || (changed && since >= SYNC_SOON))
 }
 
 /// The state once a sync has ended with `result`. A profile that signed out meanwhile keeps the
@@ -361,6 +459,20 @@ mod tests {
         assert!(!should_sync(&signed_in_state(false, true), false), "an expired sign-in waits for the user");
         assert!(!should_sync(&State::SignedOut { error: None }, false));
         assert!(!should_sync(&State::SigningIn, false));
+    }
+
+    #[test]
+    fn a_change_syncs_soon_and_no_change_waits_a_minute() {
+        let idle = signed_in_state(false, false);
+        let secs = |s| Some(Duration::from_secs(s));
+        assert!(due(&idle, false, false, None), "the first tick of a run syncs");
+        assert!(!due(&idle, false, true, secs(9)), "not sooner than 10 s after the last start");
+        assert!(due(&idle, false, true, secs(10)));
+        assert!(!due(&idle, false, false, secs(59)), "nothing changed: wait for the minute");
+        assert!(due(&idle, false, false, secs(60)));
+        assert!(!due(&idle, true, true, secs(120)), "one sync at a time");
+        assert!(!due(&signed_in_state(false, true), false, true, secs(120)), "an expired sign-in waits for the user");
+        assert!(!due(&State::SignedOut { error: None }, false, true, None));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! The first-run welcome (`vsesvit_core::onboarding`): a few pages stepped through with
 //! Back and Next, to choose the search engine, import bookmarks, add the recommended
-//! extensions and make Vsesvit the default browser. Every choice takes effect when it is
-//! made and none is required, so Next only moves on. Closing the dialog at any page ends
-//! the first run.
+//! extensions, make Vsesvit the default browser and sign in to sync. Every choice takes effect
+//! when it is made and none is required, so Next only moves on. Closing the dialog at any page
+//! ends the first run.
 //!
 //! Like the library dialogs, it holds the window weakly, so an open welcome does not keep
 //! the profile open.
@@ -15,6 +15,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use vsesvit_core::onboarding::{self, RECOMMENDED_EXTENSIONS, Recommended};
 use vsesvit_core::search::SearchEngine;
+use vsesvit_sync::status::{Action, State};
 
 use super::bookmarks::{Import, pick_bookmarks_file};
 use crate::window::BrowserWindow;
@@ -26,15 +27,17 @@ pub(crate) enum Step {
     Import,
     Extensions,
     DefaultBrowser,
+    Sync,
     Done,
 }
 
-pub(crate) const STEPS: [Step; 6] = [
+pub(crate) const STEPS: [Step; 7] = [
     Step::Welcome,
     Step::Search,
     Step::Import,
     Step::Extensions,
     Step::DefaultBrowser,
+    Step::Sync,
     Step::Done,
 ];
 
@@ -48,6 +51,7 @@ impl Step {
             Step::Import => "import",
             Step::Extensions => "extensions",
             Step::DefaultBrowser => "default-browser",
+            Step::Sync => "sync",
             Step::Done => "done",
         }
     }
@@ -55,6 +59,7 @@ impl Step {
     pub(crate) fn next_label(self) -> &'static str {
         match self {
             Step::Welcome => "Get Started",
+            Step::Sync => "Skip",
             Step::Done => "Start Browsing",
             _ => "Next",
         }
@@ -67,6 +72,7 @@ impl Step {
             Step::Import => import_page(window),
             Step::Extensions => extensions_page(window),
             Step::DefaultBrowser => default_browser_page(),
+            Step::Sync => sync_page(window),
             Step::Done => status_page(
                 "object-select-symbolic",
                 "You’re All Set",
@@ -447,6 +453,56 @@ impl DefaultBrowser {
             DefaultBrowser::Unavailable(why) => (*why).to_owned(),
         }
     }
+}
+
+/// Sign In starts the usual sign-in, whose page opens in a tab, and moves on without waiting for
+/// it. Once signed in or signing in, the page says so instead.
+fn sync_page(window: &BrowserWindow) -> adw::StatusPage {
+    let browser = window.browser();
+    let syncer = browser.sync().clone();
+    let server = adw::PreferencesGroup::new();
+    server.add(&super::settings::sync_server_row(browser, &server));
+    let sign_in = gtk::Button::builder()
+        .label(Action::SignIn.label())
+        .halign(gtk::Align::Center)
+        .css_classes(["pill", "suggested-action"])
+        .build();
+    let status = gtk::Label::builder().wrap(true).justify(gtk::Justification::Center).build();
+    sign_in.connect_clicked(glib::clone!(
+        #[strong]
+        syncer,
+        move |button| {
+            syncer.act(Action::SignIn);
+            if let Some(next) = button.ancestor(adw::Dialog::static_type()).and_downcast::<adw::Dialog>().and_then(|d| d.default_widget()) {
+                next.activate();
+            }
+        }
+    ));
+    syncer.watch(glib::clone!(
+        #[weak]
+        sign_in,
+        #[weak]
+        status,
+        #[upgrade_or]
+        false,
+        move |state: &State| {
+            let offered = state.status(0).actions.contains(&Action::SignIn);
+            sign_in.set_visible(offered);
+            status.set_visible(!offered);
+            status.set_label(&state.status(vsesvit_sync::now_secs()).title);
+            true
+        }
+    ));
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
+    content.append(&server);
+    content.append(&sign_in);
+    content.append(&status);
+    status_page(
+        super::settings::SYNC_ICON,
+        "Sync your browser",
+        "Have your bookmarks, history, open tabs, extensions and settings on all your devices.",
+        Some(content.upcast_ref()),
+    )
 }
 
 fn default_browser_page() -> adw::StatusPage {

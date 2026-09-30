@@ -4,6 +4,8 @@
 //! step, writes `smoke.json` and exits with 0 only if every step held. Nothing here sends OS
 //! input or activates a window: page input goes through the DevTools protocol, and dialogs are
 //! shown as previews over the window instead of modally.
+//!
+//! With `VSESVIT_SYNC_LIVE` set it runs a live sync through a real server instead (`sync_live`).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
@@ -23,6 +25,7 @@ mod connection_steps;
 mod dialog_steps;
 mod motion_steps;
 mod permission_steps;
+mod sync_live;
 mod progress_steps;
 mod tab_steps;
 mod toolbar_steps;
@@ -371,7 +374,10 @@ pub(crate) fn prepare(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()>
 
 pub(crate) async fn ui_smoke(browser: Rc<Browser>, out_dir: PathBuf) {
     let mut steps = Vec::new();
-    let result = run(&browser, &out_dir, &mut steps).await;
+    let result = match sync_live::Live::from_env() {
+        Some(live) => sync_live::run(&live, &browser, &out_dir, &mut steps).await,
+        None => run(&browser, &out_dir, &mut steps).await,
+    };
     let ok = result.is_ok() && steps.iter().all(|s| s["ok"] == true);
     let report = json!({ "ok": ok, "error": result.err(), "steps": steps });
     let written = std::fs::write(

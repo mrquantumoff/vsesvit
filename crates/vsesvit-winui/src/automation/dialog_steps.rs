@@ -124,7 +124,7 @@ pub(super) async fn settings(
         "ok": defaults == (true, false) && narrow > 0.0 && narrow <= 720.5 && wide > narrow,
     }));
 
-    select_index(&categories, 1)?;
+    select_index(&categories, 0)?;
     settle().await;
     let gpu: ToggleSwitch = preview.find("HardwareAcceleration")?;
     let smooth: ToggleSwitch = preview.find("SmoothScrolling")?;

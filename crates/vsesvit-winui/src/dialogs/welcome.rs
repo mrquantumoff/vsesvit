@@ -1,5 +1,5 @@
 //! The welcome: pages that choose the search engine, bring bookmarks over from other browsers,
-//! add recommended extensions and make Vsesvit the default browser. It opens by itself on the
+//! add recommended extensions, make Vsesvit the default browser and sign in to sync. It opens by itself on the
 //! launch that created the profile (`onboarding::should_show`) and from the menu at any time;
 //! closing it by any means marks the profile onboarded.
 
@@ -9,15 +9,17 @@ use std::rc::{Rc, Weak};
 use vsesvit_core::import::{self, Found, Source};
 use vsesvit_core::onboarding::{self, RECOMMENDED_EXTENSIONS, Recommended};
 use vsesvit_core::search::SearchEngineId;
+use vsesvit_sync::status::{Action, State};
 use windows_core::{Interface, Result};
 
 use super::bookmarks::import_bookmarks;
+use super::sync_settings::{ServerBox, server_markup};
 use super::{Wired, default_browser, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::extensions::Progress;
 use crate::window::BrowserWindow;
-use crate::{anim, exec, pickers, xaml};
+use crate::{anim, exec, pickers, sync, xaml};
 
 /// A fixed size, so the dialog does not jump between pages.
 pub(super) const MARKUP: &str = r#"
@@ -47,15 +49,17 @@ pub(crate) enum Page {
     Import,
     Extensions,
     DefaultBrowser,
+    Sync,
     Done,
 }
 
-pub(crate) const PAGES: [Page; 6] = [
+pub(crate) const PAGES: [Page; 7] = [
     Page::Hello,
     Page::Search,
     Page::Import,
     Page::Extensions,
     Page::DefaultBrowser,
+    Page::Sync,
     Page::Done,
 ];
 
@@ -68,6 +72,7 @@ impl Page {
             Page::Import => "WelcomeImport",
             Page::Extensions => "WelcomeExtensions",
             Page::DefaultBrowser => "WelcomeDefaultBrowser",
+            Page::Sync => "WelcomeSync",
             Page::Done => "WelcomeDone",
         }
     }
@@ -75,6 +80,7 @@ impl Page {
     fn next_label(self) -> &'static str {
         match self {
             Page::Hello => "Get started",
+            Page::Sync => "Skip",
             Page::Done => "Start browsing",
             _ => "Next",
         }
@@ -93,6 +99,7 @@ impl Page {
   {}"#,
                 default_browser::MARKUP
             ),
+            Page::Sync => SYNC.replacen("SERVER", &server_markup("WelcomeSync"), 1),
             Page::Done => DONE.to_owned(),
         }
     }
@@ -148,6 +155,15 @@ const EXTENSIONS: &str = r#"
              Text="Each comes from the Chrome Web Store, checked against its publisher's signature. Add any now, or later from Extensions."/>
   <StackPanel x:Name="WelcomeExtensionRows" Spacing="4"/>"#;
 
+const SYNC: &str = r#"
+  <TextBlock Text="Sync your browser" Style="{StaticResource SubtitleTextBlockStyle}"/>
+  <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+             Text="Sign in to have your bookmarks, history, open tabs, extensions and settings on all your devices."/>
+  SERVER
+  <Button x:Name="WelcomeSyncSignIn" Content="Sign In" Style="{StaticResource AccentButtonStyle}"/>
+  <TextBlock x:Name="WelcomeSyncStatus" TextWrapping="Wrap" Visibility="Collapsed"
+             Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>"#;
+
 const DONE: &str = r#"
   <FontIcon Glyph="&#xE930;" FontSize="48" HorizontalAlignment="Left" Margin="0,24,0,8"
             Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
@@ -185,6 +201,7 @@ pub(super) fn wire(
     let importer = Importer::wire(&pages[Page::Import as usize], browser, window)?;
     let extensions = extension_rows(&pages[Page::Extensions as usize], browser)?;
     let default_browser = default_browser::wire(&pages[Page::DefaultBrowser as usize])?;
+    let sync = SyncStep::wire(&pages[Page::Sync as usize], root, browser, window)?;
 
     let welcome = Rc::new(Welcome {
         browser: Rc::downgrade(browser),
@@ -220,7 +237,13 @@ pub(super) fn wire(
 
     let b = Rc::downgrade(browser);
     Ok(Wired {
-        _alive: vec![welcome, importer, Rc::new(extensions), default_browser],
+        _alive: vec![
+            welcome,
+            importer,
+            Rc::new(extensions),
+            default_browser,
+            sync,
+        ],
         on_close: Some(Box::new(move || {
             if let Some(b) = b.upgrade()
                 && let Err(e) = b.core(onboarding::finish)
@@ -457,6 +480,88 @@ impl Importer {
         if let Ok(ring) = self.busy.cast::<ProgressRing>() {
             let _ = ring.SetIsActive(busy);
         }
+    }
+}
+
+/// The sync page: the server, Sign In, and where signing in is, following the sync state.
+struct SyncStep {
+    browser: Weak<Browser>,
+    window: Weak<BrowserWindow>,
+    dialog: FrameworkElement,
+    server: Rc<ServerBox>,
+    sign_in: UIElement,
+    status: TextBlock,
+    follow: Rc<dyn Fn()>,
+}
+
+impl SyncStep {
+    fn wire(
+        page: &FrameworkElement,
+        dialog: &FrameworkElement,
+        browser: &Rc<Browser>,
+        window: &Rc<BrowserWindow>,
+    ) -> Result<Rc<Self>> {
+        let (server, sign_in, status) = (
+            ServerBox::wire(page, browser, "WelcomeSync")?,
+            xaml::find::<UIElement>(page, "WelcomeSyncSignIn")?,
+            xaml::find(page, "WelcomeSyncStatus")?,
+        );
+        let this = Rc::new_cyclic(|me: &Weak<SyncStep>| {
+            let me = me.clone();
+            SyncStep {
+                browser: Rc::downgrade(browser),
+                window: Rc::downgrade(window),
+                dialog: dialog.clone(),
+                server,
+                sign_in,
+                status,
+                follow: Rc::new(move || {
+                    if let Some(me) = me.upgrade() {
+                        me.show();
+                    }
+                }),
+            }
+        });
+        let me = Rc::downgrade(&this);
+        on_click(&this.sign_in, move || {
+            if let Some(me) = me.upgrade() {
+                me.start();
+            }
+        })?;
+        this.show();
+        browser.sync().on_change(&this.follow);
+        Ok(this)
+    }
+
+    fn show(&self) {
+        let Some(browser) = self.browser.upgrade() else {
+            return;
+        };
+        let status = browser.sync().status();
+        let untouched = browser.sync().state() == State::SignedOut { error: None };
+        let _ = self
+            .status
+            .SetText(&format!("{}\n{}", status.title, status.subtitle));
+        let _ = xaml::set_visible(&self.status, !untouched);
+        let _ = xaml::set_visible(&self.sign_in, status.actions.contains(&Action::SignIn));
+        self.server.set_editable(status.server_editable);
+    }
+
+    /// Signs in as the Sync page does. The welcome closes once the provider's page opens, so
+    /// that page shows; signing in goes on without it.
+    fn start(&self) {
+        let Some(browser) = self.browser.upgrade() else {
+            return;
+        };
+        if !self.server.apply() {
+            return;
+        }
+        let dialog = self.dialog.clone();
+        sync::sign_in(&browser, self.window.clone(), move || {
+            if let Err(e) = dialog.cast::<IContentDialog>().and_then(|d| d.Hide()) {
+                log::warn!("closing the welcome for the sign-in page: {e}");
+            }
+        });
     }
 }
 

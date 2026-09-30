@@ -252,9 +252,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
     if !browser.updates.is_disabled() {
         exec::spawn(updates::schedule(Rc::downgrade(&browser)));
     }
-    if browser.config.mode.is_interactive() {
-        exec::spawn(sync::schedule(Rc::downgrade(&browser)));
-    }
+    exec::spawn(sync::schedule(Rc::downgrade(&browser)));
     Ok(())
 }
 
@@ -1157,8 +1155,8 @@ impl Browser {
     }
 }
 
-/// Saves the session and drops the browser (and with it every window and web view) before XAML
-/// shuts down.
+/// Saves the session, sends what changed since the last sync (`sync::final_sync`), and drops the
+/// browser (and with it every window and web view) before XAML shuts down.
 pub(crate) fn shutdown() {
     let browser = BROWSER.with_borrow_mut(Option::take);
     if let Some(browser) = &browser
@@ -1166,6 +1164,9 @@ pub(crate) fn shutdown() {
         && !browser.windows.borrow().is_empty()
     {
         browser.save_session_now();
+    }
+    if let Some(browser) = &browser {
+        sync::final_sync(browser);
     }
     drop(browser);
 }

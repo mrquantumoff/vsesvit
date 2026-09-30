@@ -7,11 +7,13 @@ use std::rc::Rc;
 
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::search::{SearchEngineId, classify_url};
+use vsesvit_core::sync::Changed;
 use windows_core::{Interface, Result};
 
 use super::{Wired, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
+use crate::sync::Applied;
 use crate::updates::StatusButton;
 use crate::window::{Backdrop, BrowserWindow};
 use crate::{exec, pickers, xaml};
@@ -25,10 +27,8 @@ pub(super) const MARKUP: &str = r#"
       <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
     <ListView x:Name="SettingsCategories" AutomationProperties.Name="Settings categories"/>
-    {sync}
 
-    <ScrollViewer x:Name="GeneralPanel" Grid.Column="1" Padding="0,0,16,0" VerticalScrollBarVisibility="Auto"
-                  Visibility="Collapsed">
+    <ScrollViewer x:Name="GeneralPanel" Grid.Column="1" Padding="0,0,16,0" VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="28" Padding="0,0,0,12">
         <StackPanel Spacing="12">
           <TextBlock Text="On startup" Style="{StaticResource BodyStrongTextBlockStyle}"/>
@@ -92,6 +92,8 @@ pub(super) const MARKUP: &str = r#"
         </StackPanel>
       </StackPanel>
     </ScrollViewer>
+
+    {sync}
 
     <ScrollViewer x:Name="AppearancePanel" Grid.Column="1" Padding="0,0,16,0" VerticalScrollBarVisibility="Auto"
                   Visibility="Collapsed">
@@ -189,17 +191,16 @@ pub(crate) struct Category {
     pub panel: &'static str,
 }
 
-/// Sync first, as Chrome puts "You and Google" first.
 pub(crate) const CATEGORIES: [Category; 7] = [
-    Category {
-        label: "Sync",
-        glyph: "\u{E895}",
-        panel: "SyncPanel",
-    },
     Category {
         label: "General",
         glyph: "\u{E713}",
         panel: "GeneralPanel",
+    },
+    Category {
+        label: "Sync",
+        glyph: "\u{E895}",
+        panel: "SyncPanel",
     },
     Category {
         label: "Appearance",
@@ -259,6 +260,14 @@ type Written = fn(&Browser);
 /// Applies a setting in every window.
 type Setter = fn(&Browser, bool);
 
+/// Reads a setting's current state.
+type Getter = fn(&Browser) -> bool;
+
+/// Shows a setting's stored value again in its control, after a sync changed it.
+type Shown = Box<dyn Fn(&Browser)>;
+
+type Follow = Vec<Shown>;
+
 /// Switches bound straight to a preference, and what follows once it is written. What the
 /// others change reads its preference when it needs it: the address bar's suggestions as the
 /// user types, a page's pop-up as it opens, and the engine's startup switches at the next start.
@@ -281,38 +290,36 @@ const PREF_SWITCHES: [(&str, &Pref<bool>, Written); 8] = [
     ),
 ];
 
-/// Switches for settings every window shows at once: each one's name, current state and setter.
-fn window_switches(browser: &Browser) -> [(&'static str, bool, Setter); 5] {
-    [
-        (
-            "ShowBookmarksBar",
-            browser.bookmarks_bar_visible(),
-            Browser::set_bookmarks_bar_visible,
-        ),
-        (
-            "ShowHomeButton",
-            browser.home_button_visible(),
-            Browser::set_home_button_visible,
-        ),
-        (
-            "CompactAddress",
-            browser.compact_address(),
-            Browser::set_compact_address,
-        ),
-        ("FullUrls", browser.full_urls(), Browser::set_full_urls),
-        (
-            "Transparent",
-            browser.backdrop() == Backdrop::Acrylic,
-            |b, on| {
-                b.set_backdrop(if on {
-                    Backdrop::Acrylic
-                } else {
-                    Backdrop::Mica
-                })
-            },
-        ),
-    ]
-}
+/// Switches for settings every window shows at once: each one's name, state and setter.
+const WINDOW_SWITCHES: [(&str, Getter, Setter); 5] = [
+    (
+        "ShowBookmarksBar",
+        Browser::bookmarks_bar_visible,
+        Browser::set_bookmarks_bar_visible,
+    ),
+    (
+        "ShowHomeButton",
+        Browser::home_button_visible,
+        Browser::set_home_button_visible,
+    ),
+    (
+        "CompactAddress",
+        Browser::compact_address,
+        Browser::set_compact_address,
+    ),
+    ("FullUrls", Browser::full_urls, Browser::set_full_urls),
+    (
+        "Transparent",
+        |b| b.backdrop() == Backdrop::Acrylic,
+        |b, on| {
+            b.set_backdrop(if on {
+                Backdrop::Acrylic
+            } else {
+                Backdrop::Mica
+            })
+        },
+    ),
+];
 
 pub(super) fn wire(
     root: &FrameworkElement,
@@ -326,10 +333,11 @@ pub(super) fn wire(
     super::site_permissions::wire(root, browser)?;
     let shortcuts = super::shortcut_settings::wire(root, browser, window)?;
     let sync = super::sync_settings::wire(root, browser, window)?;
+    let mut follow: Follow = Vec::new();
 
     let tabs: ComboBox = xaml::find(root, "TabsPosition")?;
     let w = weak.clone();
-    choices(
+    let show = choices(
         &tabs,
         &TAB_POSITIONS,
         browser.tabs_position(),
@@ -339,6 +347,7 @@ pub(super) fn wire(
             }
         },
     )?;
+    follow.push(Box::new(move |b| show(b.tabs_position())));
 
     let (engines, default) = browser.core(|p| {
         let engines = p.search_engines().list().unwrap_or_default();
@@ -353,7 +362,7 @@ pub(super) fn wire(
         .map(|(id, name)| (id.clone(), name.as_str()))
         .collect();
     let w = weak.clone();
-    choices(
+    let show = choices(
         &search,
         &named,
         default.unwrap_or_else(SearchEngineId::builtin_default),
@@ -365,33 +374,43 @@ pub(super) fn wire(
             }
         },
     )?;
+    follow.push(Box::new(move |b| {
+        if let Some(default) = b.core(|p| p.search_engines().default_engine().ok()) {
+            show(default.id);
+        }
+    }));
 
     let startup: ComboBox = xaml::find(root, "Startup")?;
     let current = browser.core(|p| p.prefs().get(&keys::STARTUP));
     let w = weak.clone();
-    choices(&startup, &STARTUP, current, move |choice| {
+    let show = choices(&startup, &STARTUP, current, move |choice| {
         if let Some(b) = w.upgrade() {
             b.write_pref(&keys::STARTUP, &choice);
         }
     })?;
+    follow.push(Box::new(move |b| {
+        show(b.core(|p| p.prefs().get(&keys::STARTUP)));
+    }));
 
     let theme: ComboBox = xaml::find(root, "Theme")?;
     let w = weak.clone();
-    choices(&theme, &THEMES, browser.theme(), move |theme| {
+    let show = choices(&theme, &THEMES, browser.theme(), move |theme| {
         if let Some(b) = w.upgrade() {
             b.set_theme(theme);
         }
     })?;
+    follow.push(Box::new(move |b| show(b.theme())));
 
     for (name, pref, written) in PREF_SWITCHES {
-        let on = browser.core(|p| p.prefs().get(pref));
-        switch(root, browser, name, on, move |b, on| {
+        let current = move |b: &Browser| b.core(|p| p.prefs().get(pref));
+        let set = move |b: &Browser, on| {
             b.write_pref(pref, &on);
             written(b);
-        })?;
+        };
+        follow.push(followed_switch(root, browser, name, current, set)?);
     }
-    for (name, on, set) in window_switches(browser) {
-        switch(root, browser, name, on, set)?;
+    for (name, current, set) in WINDOW_SWITCHES {
+        follow.push(followed_switch(root, browser, name, current, set)?);
     }
 
     let updates = wire_updates(root, browser)?;
@@ -406,11 +425,31 @@ pub(super) fn wire(
     ))?;
 
     let default_browser = super::default_browser::wire(root)?;
+    let (w, shown) = (weak.clone(), homepage.clone());
+    let synced: Rc<Applied> = Rc::new(move |changed: &Changed| {
+        let Some(b) = w.upgrade() else { return };
+        if !changed.prefs.is_empty() || changed.search_engines {
+            for show in &follow {
+                show(&b);
+            }
+        }
+        if changed.prefs.iter().any(|k| k == keys::HOMEPAGE.key) {
+            let stored = b.core(|p| p.prefs().get(&keys::HOMEPAGE));
+            let _ = shown.SetText(if stored == "about:home" { "" } else { &stored });
+        }
+    });
+    browser.sync().on_applied(&synced);
     let w = weak;
     Ok(Wired {
-        _alive: vec![default_browser, updates, shortcuts, sync.clone()],
+        _alive: vec![
+            default_browser,
+            updates,
+            shortcuts,
+            sync.clone(),
+            Rc::new(synced),
+        ],
         on_close: Some(Box::new(move || {
-            sync.apply_server();
+            sync.server.apply();
             let Some(b) = w.upgrade() else { return };
             let text = homepage.Text().unwrap_or_default();
             match homepage_value(&text) {
@@ -484,6 +523,27 @@ fn switch(
     Ok(switch)
 }
 
+/// A switch bound to a setting that a sync can change: set when the user flips it to what
+/// `current` does not already say, and shown again by the returned `Follow` entry.
+fn followed_switch(
+    root: &FrameworkElement,
+    browser: &Rc<Browser>,
+    name: &str,
+    current: impl Fn(&Browser) -> bool + Clone + 'static,
+    set: impl Fn(&Browser, bool) + 'static,
+) -> Result<Shown> {
+    let read = current.clone();
+    let on = current(browser);
+    let switch = switch(root, browser, name, on, move |b, on| {
+        if on != read(b) {
+            set(b, on);
+        }
+    })?;
+    Ok(Box::new(move |b| {
+        let _ = switch.SetIsOn(current(b));
+    }))
+}
+
 /// The Updates group. Its status line and button follow the update state while the dialog is
 /// open; the returned listener is what keeps them following, so the dialog must keep it.
 fn wire_updates(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Rc<dyn std::any::Any>> {
@@ -501,7 +561,7 @@ fn wire_updates(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Rc<dyn
 
     let channel: ComboBox = xaml::find(root, "UpdatesChannel")?;
     let w = Rc::downgrade(browser);
-    choices(
+    let _ = choices(
         &channel,
         &CHANNELS,
         browser.updates_channel(),
@@ -679,13 +739,13 @@ fn homepage_value(text: &str) -> Option<HomepageValue> {
 }
 
 /// Fills `combo` with the labels of `options`, selects `current`, and calls `chosen` when the
-/// user picks another.
+/// user picks another. Returns what selects another value without calling `chosen`.
 fn choices<T: Clone + PartialEq + 'static>(
     combo: &ComboBox,
     options: &[(T, &str)],
     current: T,
     chosen: impl Fn(T) + 'static,
-) -> Result<()> {
+) -> Result<impl Fn(T) + 'static> {
     let items = combo.cast::<ItemsControl>()?.Items()?;
     for (_, label) in options {
         items.Append(&xaml::boxed(label)?)?;
@@ -697,23 +757,28 @@ fn choices<T: Clone + PartialEq + 'static>(
     let values: Vec<T> = options.iter().map(|(value, _)| value.clone()).collect();
     // A combo box re-raises SelectionChanged for its initial selection when it loads; only a
     // different choice is the user's.
-    let shown = std::cell::RefCell::new(current);
-    let source = selector.clone();
+    let shown = Rc::new(std::cell::RefCell::new(current));
+    let (source, seen, listed) = (selector.clone(), shown.clone(), values.clone());
     selector
         .SelectionChanged(move |_, _| {
             let index = source
                 .SelectedIndex()
                 .ok()
                 .and_then(|i| usize::try_from(i).ok());
-            if let Some(value) = index.and_then(|i| values.get(i))
-                && *value != *shown.borrow()
+            if let Some(value) = index.and_then(|i| listed.get(i))
+                && *value != *seen.borrow()
             {
-                *shown.borrow_mut() = value.clone();
+                *seen.borrow_mut() = value.clone();
                 chosen(value.clone());
             }
         })?
         .forget();
-    Ok(())
+    Ok(move |value: T| {
+        if let Some(index) = values.iter().position(|v| *v == value) {
+            *shown.borrow_mut() = value;
+            let _ = selector.SetSelectedIndex(i32::try_from(index).unwrap_or(-1));
+        }
+    })
 }
 
 #[cfg(test)]

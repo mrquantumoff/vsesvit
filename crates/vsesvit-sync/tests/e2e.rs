@@ -15,6 +15,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::prefs::{Theme, keys};
+use vsesvit_core::sync::DataType;
+use vsesvit_core::vault::KeyStore;
 use vsesvit_core::{OpenOptions, Profile, Url};
 use vsesvit_sync::{Account, Error, Http, Round, SignIn};
 
@@ -46,6 +48,8 @@ struct ProviderState {
     refresh: HashMap<String, String>,
     issued: u32,
     refreshes: u32,
+    /// Seconds an access token lives; 1 makes every call refresh first.
+    expires_in: u64,
 }
 
 /// Discovery, an authorize endpoint that signs `user` straight in, a token endpoint that checks
@@ -144,7 +148,7 @@ fn serve(mut stream: TcpStream, issuer: &str, state: &Mutex<ProviderState>) {
                     // do not say which client they were issued to.
                     let claims = serde_json::json!({ "client_id": CLIENT_ID, "user": user, "n": s.issued });
                     let access = format!("e30.{}.sig", URL_SAFE_NO_PAD.encode(claims.to_string()));
-                    let json = serde_json::json!({ "access_token": access, "token_type": "Bearer", "expires_in": 1, "refresh_token": refresh });
+                    let json = serde_json::json!({ "access_token": access, "token_type": "Bearer", "expires_in": s.expires_in.max(1), "refresh_token": refresh });
                     ("200 OK", String::new(), json.to_string())
                 }
                 None => ("400 Bad Request", String::new(), r#"{"error":"invalid_grant"}"#.to_owned()),
@@ -190,7 +194,8 @@ fn free_port() -> u16 {
 }
 
 fn start_server(bin: &str, issuer: &str) -> Server {
-    let dir = TempDir::new("server");
+    static SERVERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = TempDir::new(&format!("server-{}", SERVERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let database = format!("sqlite://{}?mode=rwc", dir.0.join("sync.db").display().to_string().replace('\\', "/"));
     let mut child = Command::new(bin)
         .env("DATABASE_URL", database)
@@ -214,8 +219,10 @@ fn start_server(bin: &str, issuer: &str) -> Server {
     Server { child, url: format!("http://{address}"), _dir: dir }
 }
 
+/// `Basic` keeps each profile's vault key in its database, so a run never touches the developer's
+/// keyring.
 fn open(dir: &TempDir) -> Profile {
-    Profile::open(&dir.0, OpenOptions::default()).unwrap()
+    Profile::open(&dir.0, OpenOptions { key_store: KeyStore::Basic, ..OpenOptions::default() }).unwrap()
 }
 
 /// Opens the provider's page as the browser tab would: following its redirect to the loopback.
@@ -233,9 +240,13 @@ fn sign_in(profile: &mut Profile, http: &Http, server: &str) -> Account {
 
 /// Rounds until nothing is left, as a shell runs them.
 fn sync(profile: &mut Profile, http: &Http) {
+    sync_types(profile, http, &DataType::ALL);
+}
+
+fn sync_types(profile: &mut Profile, http: &Http, types: &[DataType]) {
     let mut account = Account::load(&mut profile.sync()).unwrap().expect("signed in");
     for _ in 0..50 {
-        let round = Round::gather(&mut profile.sync(), account).unwrap();
+        let round = Round::gather(&mut profile.sync(), account, types).unwrap();
         let finished = round.run(http).finish(&mut profile.sync());
         account = finished.account;
         if !finished.result.unwrap().again {
@@ -295,15 +306,114 @@ fn two_devices_sync_through_the_server_and_another_account_sees_nothing() {
 
     provider.state.lock().unwrap().refresh.clear();
     let account = Account::load(&mut c.sync()).unwrap().unwrap();
-    let round = Round::gather(&mut c.sync(), account).unwrap();
+    let round = Round::gather(&mut c.sync(), account, &DataType::ALL).unwrap();
     let finished = round.run(&http).finish(&mut c.sync());
     assert!(matches!(finished.result, Err(Error::SignInExpired)), "a refused refresh token asks for a new sign-in");
 
     let account = Account::load(&mut a.sync()).unwrap().unwrap();
-    let in_flight = Round::gather(&mut a.sync(), account).unwrap().run(&http);
+    let in_flight = Round::gather(&mut a.sync(), account, &DataType::ALL).unwrap().run(&http);
     Account::forget(&mut a.sync()).unwrap();
     assert!(Account::load(&mut a.sync()).unwrap().is_none());
     let finished = in_flight.finish(&mut a.sync());
     assert!(matches!(finished.result, Err(Error::SignedOut)));
     assert!(Account::load(&mut a.sync()).unwrap().is_none(), "a round that outlived its sign-in saves nothing");
+}
+
+#[test]
+fn a_type_turned_off_neither_goes_up_nor_comes_down_until_it_is_turned_on() {
+    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
+        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
+        return;
+    };
+    let provider = MockProvider::start();
+    let server = start_server(&bin, &provider.issuer);
+    let http = Http::new();
+    let (dir_a, dir_b) = (TempDir::new("types-a"), TempDir::new("types-b"));
+    let (mut a, mut b) = (open(&dir_a), open(&dir_b));
+    let no_settings: Vec<DataType> = DataType::ALL.into_iter().filter(|t| *t != DataType::Settings).collect();
+    let no_bookmarks: Vec<DataType> = DataType::ALL.into_iter().filter(|t| *t != DataType::Bookmarks).collect();
+
+    provider.sign_in_as("carol");
+    sign_in(&mut a, &http, &server.url);
+    sign_in(&mut b, &http, &server.url);
+    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Kept", &Url::parse("https://example.com/").unwrap()).unwrap();
+    a.prefs().set(&keys::THEME, &Theme::Dark).unwrap();
+    sync_types(&mut a, &http, &no_settings);
+    sync_types(&mut b, &http, &no_bookmarks);
+    assert!(toolbar_titles(&mut b).is_empty(), "b does not sync bookmarks");
+    assert_eq!(b.prefs().get(&keys::THEME), Theme::System, "a did not upload its settings");
+
+    sync(&mut a, &http);
+    sync(&mut b, &http);
+    assert_eq!(toolbar_titles(&mut b), ["Kept"], "turning bookmarks on downloads what was skipped");
+    assert_eq!(b.prefs().get(&keys::THEME), Theme::Dark, "turning settings on uploads what changed meanwhile");
+}
+
+#[test]
+fn a_final_sync_goes_only_with_a_fresh_token_and_never_refreshes() {
+    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
+        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
+        return;
+    };
+    let provider = MockProvider::start();
+    let server = start_server(&bin, &provider.issuer);
+    let http = Http::new();
+    let (dir_a, dir_b) = (TempDir::new("final-a"), TempDir::new("final-b"));
+    let (mut a, mut b) = (open(&dir_a), open(&dir_b));
+
+    provider.sign_in_as("dave");
+    sign_in(&mut a, &http, &server.url);
+    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Stale", &Url::parse("https://example.com/").unwrap()).unwrap();
+    let refreshes = provider.state.lock().unwrap().refreshes;
+    let account = Account::load(&mut a.sync()).unwrap().unwrap();
+    let finished = Round::gather(&mut a.sync(), account, &DataType::ALL).unwrap().run_final(&http).finish(&mut a.sync());
+    assert!(matches!(finished.result, Err(Error::NeedsRefresh)));
+    assert_eq!(provider.state.lock().unwrap().refreshes, refreshes, "a final sync never refreshes");
+
+    provider.state.lock().unwrap().expires_in = 3600;
+    sign_in(&mut a, &http, &server.url);
+    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Fresh", &Url::parse("https://example.org/").unwrap()).unwrap();
+    let account = Account::load(&mut a.sync()).unwrap().unwrap();
+    let finished = Round::gather(&mut a.sync(), account, &DataType::ALL).unwrap().run_final(&http).finish(&mut a.sync());
+    finished.result.unwrap();
+
+    sign_in(&mut b, &http, &server.url);
+    sync(&mut b, &http);
+    assert_eq!(toolbar_titles(&mut b), ["Stale", "Fresh"], "the final sync uploaded");
+}
+
+#[test]
+fn the_tokens_are_sealed_and_an_account_saved_before_the_vault_moves_into_it() {
+    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
+        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
+        return;
+    };
+    let provider = MockProvider::start();
+    let server = start_server(&bin, &provider.issuer);
+    let http = Http::new();
+    let dir = TempDir::new("vault");
+    let mut a = open(&dir);
+    provider.sign_in_as("erin");
+    let account = sign_in(&mut a, &http, &server.url);
+
+    let plain = a.sync().engine_state("account").unwrap().unwrap();
+    assert!(!String::from_utf8_lossy(&plain).contains("\"access\""), "the plain JSON holds no tokens");
+    assert!(a.sync().secret_state("account.tokens").unwrap().is_some());
+
+    // An account as builds before the vault saved it: the tokens inside the plain JSON.
+    let mut legacy: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+    let sealed = a.sync().secret_state("account.tokens").unwrap().unwrap();
+    legacy["tokens"] = serde_json::from_slice(&sealed).unwrap();
+    a.sync().set_secret_state("account.tokens", &[]).unwrap();
+    a.sync().set_engine_state("account", legacy.to_string().as_bytes()).unwrap();
+
+    let loaded = Account::load(&mut a.sync()).unwrap().expect("still signed in");
+    assert_eq!(loaded, account);
+    assert!(a.sync().secret_state("account.tokens").unwrap().is_some(), "loading sealed the tokens");
+    assert!(!String::from_utf8_lossy(&a.sync().engine_state("account").unwrap().unwrap()).contains("\"access\""));
+    sync(&mut a, &http);
+
+    Account::forget(&mut a.sync()).unwrap();
+    assert!(a.sync().secret_state("account.tokens").unwrap().is_none());
+    assert!(Account::load(&mut a.sync()).unwrap().is_none());
 }

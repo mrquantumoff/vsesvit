@@ -25,7 +25,16 @@ pub enum Action {
     Cancel,
     SyncNow,
     SignOut,
+    /// Asks first: [`DELETE_CONFIRMATION`].
+    DeleteServerData,
 }
+
+/// The confirmation before [`Action::DeleteServerData`]: title, body, and the destructive button.
+pub const DELETE_CONFIRMATION: (&str, &str, &str) = (
+    "Delete your data on the sync server?",
+    "Your bookmarks, history, open tabs, extensions and settings are deleted from the server, and this device signs out. They stay on this device and your other devices, which upload them again when they next sign in.",
+    "Delete",
+);
 
 impl Action {
     pub fn label(self) -> &'static str {
@@ -34,6 +43,7 @@ impl Action {
             Action::Cancel => "Cancel",
             Action::SyncNow => "Sync Now",
             Action::SignOut => "Sign Out",
+            Action::DeleteServerData => "Delete Data on Server…",
         }
     }
 }
@@ -87,7 +97,11 @@ impl State {
                         None => "Not synced yet".to_owned(),
                     }
                 };
-                let actions = if *needs_sign_in { vec![Action::SignIn, Action::SignOut] } else { vec![Action::SyncNow, Action::SignOut] };
+                let actions = if *needs_sign_in {
+                    vec![Action::SignIn, Action::SignOut]
+                } else {
+                    vec![Action::SyncNow, Action::SignOut, Action::DeleteServerData]
+                };
                 Status { title, subtitle, actions, busy: *syncing, server_editable: false }
             }
         }
@@ -133,7 +147,7 @@ mod tests {
     fn signed_in_says_who_and_when() {
         let s = signed_in().status(1000 + 125);
         assert_eq!((s.title.as_str(), s.subtitle.as_str()), ("Signed in as Demir", "Last synced 2 minutes ago"));
-        assert_eq!(s.actions, [Action::SyncNow, Action::SignOut]);
+        assert_eq!(s.actions, [Action::SyncNow, Action::SignOut, Action::DeleteServerData]);
         assert_eq!(signed_in().status(1030).subtitle, "Last synced just now");
         assert_eq!(signed_in().status(1000 + 3600).subtitle, "Last synced 1 hour ago");
         assert_eq!(signed_in().status(1000 + 3 * 86_400).subtitle, "Last synced 3 days ago");

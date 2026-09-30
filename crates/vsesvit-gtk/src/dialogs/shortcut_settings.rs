@@ -71,6 +71,8 @@ pub(super) fn page(browser: &Browser) -> adw::PreferencesPage {
 
     let page = Rc::new(Page { browser: browser.clone(), rows, reset_all });
     page.refresh();
+    let weak = Rc::downgrade(&page);
+    browser.watch_prefs(move |_| weak.upgrade().inspect(|page| page.refresh()).is_some());
     for row in &page.rows {
         let cmd = row.cmd;
         row.row.connect_activated(glib::clone!(

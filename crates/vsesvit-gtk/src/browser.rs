@@ -45,6 +45,9 @@ const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 #[derive(Clone)]
 pub(crate) struct Browser(pub(crate) Rc<Inner>);
 
+/// Shows a preference again after sync changed it; `false` once its widgets are gone.
+type PrefView = Box<dyn Fn(&Browser) -> bool>;
+
 pub(crate) struct Inner {
     app: adw::Application,
     core: Core,
@@ -63,8 +66,11 @@ pub(crate) struct Inner {
     favicon_fetch: Cell<FetchState>,
     /// What else shows bookmarks (an open Bookmarks dialog), refreshed with the bars.
     bookmark_views: RefCell<Vec<Weak<dyn Fn()>>>,
-    /// An open History dialog, refreshed when sync brings history.
+    /// An open History dialog, refreshed when sync brings history or other devices' tabs.
     history_views: RefCell<Vec<Weak<dyn Fn()>>>,
+    /// Open Settings controls, shown again when sync changes a preference; each is dropped once
+    /// it returns false.
+    pref_views: RefCell<Vec<PrefView>>,
     updates: Option<Updates>,
     sync: Syncer,
     /// This run created the profile: the first window opens the welcome, once.
@@ -116,6 +122,7 @@ impl Browser {
                 favicon_fetch: Cell::new(FetchState::Idle),
                 bookmark_views: RefCell::new(Vec::new()),
                 history_views: RefCell::new(Vec::new()),
+                pref_views: RefCell::new(Vec::new()),
                 updates: Updates::new(app, updates_automatic, updates_channel),
                 sync,
                 welcome: Cell::new(welcome),
@@ -304,11 +311,13 @@ impl Browser {
         }
     }
 
-    /// Called from the application's `shutdown`: the last session write. Nothing writes it
-    /// afterwards, so tearing the windows down for a restart cannot overwrite it.
+    /// Called from the application's `shutdown`: the last session write, then the final sync.
+    /// Nothing writes the session afterwards, so tearing the windows down for a restart cannot
+    /// overwrite it.
     pub(crate) fn shutdown(&self) {
         self.save_session_now();
         self.0.shut_down.set(true);
+        self.0.sync.final_sync();
     }
 
     // Tabs.
@@ -490,9 +499,16 @@ impl Browser {
         self.0.bookmark_views.borrow_mut().push(Rc::downgrade(refresh));
     }
 
-    /// Runs `refresh` after sync changes the history, for as long as the caller keeps it.
+    /// Runs `refresh` after sync changes the history or other devices' tabs, for as long as the
+    /// caller keeps it.
     pub(crate) fn watch_history(&self, refresh: &Rc<dyn Fn()>) {
         self.0.history_views.borrow_mut().push(Rc::downgrade(refresh));
+    }
+
+    /// Calls `show` after sync changes preferences or search engines, until it returns false.
+    /// `show` holds its widgets weakly, so it returns false once they are gone.
+    pub(crate) fn watch_prefs(&self, show: impl Fn(&Browser) -> bool + 'static) {
+        self.0.pref_views.borrow_mut().push(Box::new(show));
     }
 
     /// Fetches the icons of bookmarked sites that have none, without visiting them: core
@@ -745,14 +761,17 @@ impl Browser {
         Url::parse(text).ok()
     }
 
-    /// What the shell refreshes after sync applied remote records (`ApplyReport::changed`).
-    /// Search engines and sessions need nothing: the address bar reads the engines each time.
+    /// What the shell refreshes after sync applied remote records (`ApplyReport::changed`). The
+    /// address bar reads the search engines each time, so only Settings shows them again.
     pub(crate) fn sync_applied(&self, changed: &Changed) {
         if changed.bookmarks {
             self.bookmarks_changed();
         }
-        if changed.history {
+        if changed.history || changed.sessions {
             refresh_views(&self.0.history_views);
+        }
+        if !changed.prefs.is_empty() || changed.search_engines {
+            self.0.pref_views.borrow_mut().retain(|show| show(self));
         }
         if changed.extensions {
             self.reconcile_extensions();

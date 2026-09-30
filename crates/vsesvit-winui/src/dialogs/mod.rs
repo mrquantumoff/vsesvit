@@ -11,6 +11,7 @@ mod default_browser;
 mod downloads;
 mod extensions;
 mod history;
+mod other_devices;
 mod settings;
 mod shortcut_settings;
 mod site_permissions;
@@ -64,13 +65,15 @@ impl Dialog {
     fn body(self) -> Cow<'static, str> {
         match self {
             Self::Bookmarks => bookmarks::MARKUP.into(),
-            Self::History => history::MARKUP.into(),
+            Self::History => history::MARKUP
+                .replacen("{other_devices}", other_devices::PANEL, 1)
+                .into(),
             Self::Downloads => downloads::MARKUP.into(),
             Self::Extensions => extensions::MARKUP.into(),
             Self::Settings => settings::MARKUP
                 .replacen("{default_browser}", default_browser::MARKUP, 1)
                 .replacen("{shortcuts}", shortcut_settings::PANEL, 1)
-                .replacen("{sync}", sync_settings::PANEL, 1)
+                .replacen("{sync}", &sync_settings::panel(), 1)
                 .into(),
             Self::About => about::MARKUP.into(),
             Self::Welcome => welcome::MARKUP.into(),

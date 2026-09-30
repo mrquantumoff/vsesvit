@@ -1,4 +1,5 @@
-//! History: recent pages or a search, opening one, deleting a page, and clearing a time range.
+//! History: recent pages or a search, opening one, deleting a page, and clearing a time range;
+//! and, as Chrome's history page has beside it, tabs from other devices.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -15,27 +16,41 @@ use crate::window::BrowserWindow;
 use crate::xaml;
 
 pub(super) const MARKUP: &str = r#"
-  <Grid Width="720" RowSpacing="12">
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/><RowDefinition Height="380"/><RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
-    <AutoSuggestBox x:Name="HistorySearch" PlaceholderText="Search history" QueryIcon="Find"/>
-    <Grid Grid.Row="1">
-      <ListView x:Name="HistoryList" SelectionMode="Single"/>
-      <TextBlock x:Name="HistoryEmpty" Text="No history" HorizontalAlignment="Center"
-                 VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+  <Grid Width="880" ColumnSpacing="16">
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="200"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <ListView x:Name="HistorySections" AutomationProperties.Name="History sections"/>
+    <Grid x:Name="HistoryPanel" Grid.Column="1" RowSpacing="12">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/><RowDefinition Height="380"/><RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <AutoSuggestBox x:Name="HistorySearch" PlaceholderText="Search history" QueryIcon="Find"/>
+      <Grid Grid.Row="1">
+        <ListView x:Name="HistoryList" SelectionMode="Single"/>
+        <TextBlock x:Name="HistoryEmpty" Text="No history" HorizontalAlignment="Center"
+                   VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+      </Grid>
+      <Grid Grid.Row="2" ColumnSpacing="8">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <Button x:Name="HistoryOpen" Content="Open in a new tab"/>
+        <Button x:Name="HistoryDelete" Grid.Column="1" Content="Delete page from history"/>
+        <ComboBox x:Name="HistoryRange" Grid.Column="3" MinWidth="170"/>
+        <Button x:Name="HistoryClear" Grid.Column="4" Content="Clear"/>
+      </Grid>
     </Grid>
-    <Grid Grid.Row="2" ColumnSpacing="8">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
-        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
-      </Grid.ColumnDefinitions>
-      <Button x:Name="HistoryOpen" Content="Open in a new tab"/>
-      <Button x:Name="HistoryDelete" Grid.Column="1" Content="Delete page from history"/>
-      <ComboBox x:Name="HistoryRange" Grid.Column="3" MinWidth="170"/>
-      <Button x:Name="HistoryClear" Grid.Column="4" Content="Clear"/>
-    </Grid>
+    {other_devices}
   </Grid>"#;
+
+/// The sections down the side: each one's label, Segoe Fluent Icons glyph, and panel.
+const SECTIONS: [(&str, &str, &str); 2] = [
+    ("History", "\u{E81C}", "HistoryPanel"),
+    ("Tabs from other devices", "\u{E772}", "OtherDevicesPanel"),
+];
 
 const SHOWN: usize = 300;
 
@@ -128,17 +143,31 @@ pub(super) fn wire(
             }
         })?;
     }
-    let p = Rc::downgrade(&page);
+    wire_sections(root)?;
+    let devices = super::other_devices::wire(root, browser, window)?;
+    let (p, d) = (Rc::downgrade(&page), Rc::downgrade(&devices));
     let synced: Rc<dyn Fn(&Changed)> = Rc::new(move |changed| {
         if changed.history
             && let Some(p) = p.upgrade()
         {
             p.render();
         }
+        if changed.sessions
+            && let Some(d) = d.upgrade()
+        {
+            d.render();
+        }
     });
     browser.sync().on_applied(&synced);
+    let d = Rc::downgrade(&devices);
+    let signed_in: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(d) = d.upgrade() {
+            d.render();
+        }
+    });
+    browser.sync().on_change(&signed_in);
     Ok(Wired {
-        _alive: vec![page, Rc::new(synced)],
+        _alive: vec![page, devices, Rc::new(synced), Rc::new(signed_in)],
         on_close: None,
     })
 }
@@ -258,8 +287,43 @@ fn row(entry: &HistoryEntry, now_ms: i64) -> Result<IInspectable> {
     element.cast()
 }
 
+/// Fills the section list from `SECTIONS` and shows the selected one's panel.
+fn wire_sections(root: &FrameworkElement) -> Result<()> {
+    let list: ListView = xaml::find(root, "HistorySections")?;
+    let items = list.cast::<ItemsControl>()?.Items()?;
+    let mut panels = Vec::new();
+    for (label, glyph, panel) in SECTIONS {
+        let item: UIElement = xaml::load(&format!(
+            r#"<StackPanel {{ns}} Orientation="Horizontal" Spacing="12">
+  <FontIcon Glyph="{glyph}" FontSize="16"/>
+  <TextBlock Text="{}" VerticalAlignment="Center"/>
+</StackPanel>"#,
+            xaml::escape(label)
+        ))?;
+        items.Append(&item)?;
+        panels.push(xaml::find::<UIElement>(root, panel)?);
+    }
+    let selector = list.cast::<Selector>()?;
+    let source = selector.clone();
+    selector
+        .SelectionChanged(move |_, _| {
+            let Some(selected) = source
+                .SelectedIndex()
+                .ok()
+                .and_then(|i| usize::try_from(i).ok())
+            else {
+                return;
+            };
+            for (index, panel) in panels.iter().enumerate() {
+                let _ = xaml::set_visible(panel, index == selected);
+            }
+        })?
+        .forget();
+    selector.SetSelectedIndex(0)
+}
+
 /// "just now", "5 minutes ago", "3 hours ago", "2 days ago".
-fn ago(now_ms: i64, then_ms: i64) -> String {
+pub(super) fn ago(now_ms: i64, then_ms: i64) -> String {
     let minutes = (now_ms - then_ms).max(0) / 60_000;
     let (n, unit) = match minutes {
         0 => return "just now".to_owned(),

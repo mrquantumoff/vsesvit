@@ -1,6 +1,7 @@
 //! The History dialog: recent visits or a search over core's history, opening a page in a
 //! new tab, forgetting one URL, and clearing a time range (which writes a synced
-//! deletion directive).
+//! deletion directive). Above the visits, Chrome's "Tabs from other devices" lists what the
+//! devices syncing with this one have open.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -9,9 +10,11 @@ use adw::prelude::*;
 use gtk::glib;
 use vsesvit_core::Url;
 use vsesvit_core::history::HistoryEntry;
+use vsesvit_core::session::TabSnapshot;
 
 use super::{LibraryDialog, format_time, prompt_choice};
 use crate::browser::Browser;
+use crate::favicons;
 use crate::session::now_ms;
 use crate::tab::display_uri;
 use crate::window::{BrowserWindow, Focus};
@@ -42,6 +45,9 @@ struct State {
     list: gtk::ListBox,
     stack: gtk::Stack,
     rows: RefCell<Vec<gtk::Widget>>,
+    devices: gtk::Box,
+    /// Tells the visits from the devices' tabs; hidden with them while searching.
+    visits_heading: gtk::Label,
     /// Kept for [`Browser::watch_history`], which holds it weakly.
     watch: Rc<dyn Fn()>,
 }
@@ -64,20 +70,39 @@ pub(crate) fn present(window: &BrowserWindow) {
         .margin_bottom(12)
         .valign(gtk::Align::Start)
         .build();
-    let scroller = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&list)
-        .vexpand(true)
-        .build();
     let empty = adw::StatusPage::builder()
         .icon_name("document-open-recent-symbolic")
         .title("No History")
         .description("Pages you visit appear here")
         .build();
-    let stack = gtk::Stack::new();
-    stack.add_named(&scroller, Some("list"));
+    let stack = gtk::Stack::builder().vhomogeneous(false).build();
+    stack.add_named(&list, Some("list"));
     stack.add_named(&empty, Some("empty"));
-    ui.content.set_child(Some(&stack));
+    let devices = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(18)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(6)
+        .margin_bottom(12)
+        .build();
+    let visits_heading = gtk::Label::builder()
+        .label("Recent History")
+        .xalign(0.0)
+        .css_classes(["heading"])
+        .margin_start(18)
+        .margin_top(6)
+        .build();
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    column.append(&devices);
+    column.append(&visits_heading);
+    column.append(&stack);
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&column)
+        .vexpand(true)
+        .build();
+    ui.content.set_child(Some(&scroller));
 
     let state = Rc::new_cyclic(|weak: &Weak<State>| {
         let weak = weak.clone();
@@ -87,6 +112,8 @@ pub(crate) fn present(window: &BrowserWindow) {
             list,
             stack,
             rows: RefCell::new(Vec::new()),
+            devices,
+            visits_heading,
             watch: Rc::new(move || {
                 if let Some(state) = weak.upgrade() {
                     state.refresh();
@@ -140,6 +167,7 @@ impl State {
     }
 
     fn refresh(self: &Rc<Self>) {
+        self.refresh_devices();
         let rows = self.load();
         for row in self.rows.take() {
             self.list.remove(&row);
@@ -153,6 +181,64 @@ impl State {
         let page = if widgets.is_empty() { "empty" } else { "list" };
         self.rows.replace(widgets);
         self.stack.set_visible_child_name(page);
+    }
+
+    /// Each other device with when it last synced, then its tabs. Hidden while searching, which
+    /// searches the visits only.
+    fn refresh_devices(&self) {
+        while let Some(child) = self.devices.first_child() {
+            self.devices.remove(&child);
+        }
+        let shown = self.ui.search.text().trim().is_empty();
+        self.devices.set_visible(shown);
+        self.visits_heading.set_visible(shown);
+        let Some(browser) = self.browser().filter(|_| shown) else { return };
+        let signed_in = browser.sync().is_signed_in();
+        let devices = if signed_in {
+            browser.core().borrow_mut().session().other_devices().unwrap_or_else(|e| {
+                log::warn!("tabs from other devices: {e}");
+                Vec::new()
+            })
+        } else {
+            Vec::new()
+        };
+        let heading = adw::PreferencesGroup::builder().title("Tabs from Other Devices").build();
+        if !signed_in {
+            heading.set_description(Some("Sign in to sync to see tabs from your other devices."));
+        } else if devices.is_empty() {
+            heading.set_description(Some("Tabs from your other devices appear here when they sync."));
+        }
+        self.devices.append(&heading);
+        let now = now_ms();
+        for device in devices {
+            let group = adw::PreferencesGroup::builder()
+                .title(&device.device_name)
+                .description(synced_ago(now - device.updated_ms))
+                .build();
+            for tab in device.windows.iter().flat_map(|w| &w.tabs) {
+                group.add(&self.device_tab_row(&browser, tab));
+            }
+            self.devices.append(&group);
+        }
+    }
+
+    fn device_tab_row(&self, browser: &Browser, tab: &TabSnapshot) -> adw::ActionRow {
+        let title = if tab.title.trim().is_empty() { display_uri(tab.url.as_str()) } else { tab.title.clone() };
+        let row = adw::ActionRow::builder()
+            .title(&title)
+            .tooltip_text(tab.url.as_str())
+            .activatable(true)
+            .use_markup(false)
+            .build();
+        let icon = favicons::stored(&mut browser.core().borrow_mut(), &tab.url);
+        row.add_prefix(&favicons::image(icon.as_ref(), "web-browser-symbolic"));
+        let (window, url) = (self.window.clone(), tab.url.to_string());
+        row.connect_activated(move |_| {
+            if let Some(window) = window.upgrade() {
+                window.open_tab(Some(&url), None, Focus::Foreground);
+            }
+        });
+        row
     }
 
     fn row_widget(self: &Rc<Self>, row: Row) -> adw::ActionRow {
@@ -219,5 +305,32 @@ impl State {
             self.ui.toast(&format!("History: {e}"));
         }
         self.refresh();
+    }
+}
+
+/// When another device's tabs were last synced, for its heading.
+fn synced_ago(ms: i64) -> String {
+    let secs = ms.max(0) / 1000;
+    let (n, unit) = match secs {
+        0..60 => return "Synced just now".to_owned(),
+        60..3600 => (secs / 60, "minute"),
+        3600..86_400 => (secs / 3600, "hour"),
+        _ => (secs / 86_400, "day"),
+    };
+    format!("Synced {n} {unit}{} ago", if n == 1 { "" } else { "s" })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_device_says_how_long_ago_it_synced() {
+        assert_eq!(synced_ago(-5), "Synced just now");
+        assert_eq!(synced_ago(59_000), "Synced just now");
+        assert_eq!(synced_ago(60_000), "Synced 1 minute ago");
+        assert_eq!(synced_ago(5 * 60_000), "Synced 5 minutes ago");
+        assert_eq!(synced_ago(2 * 3_600_000), "Synced 2 hours ago");
+        assert_eq!(synced_ago(3 * 86_400_000), "Synced 3 days ago");
     }
 }

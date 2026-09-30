@@ -1,7 +1,8 @@
 //! The welcome, page by page through its own Back and Next: the search engines with the
 //! default chosen (another choice becomes core's default on Next), the browsers to import from
 //! (and its import, on a fixture file), a row per recommended extension, the default-browser status as
-//! Windows has it, and the last page closing the dialog. Nothing here installs from the network
+//! Windows has it, the sync page with this profile's server and Sign In (not pressed), and the last
+//! page closing the dialog. Nothing here installs from the network
 //! or opens Windows Settings. Then the first pages again in the light theme.
 
 use std::path::Path;
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use vsesvit_core::bookmarks::BookmarkId;
 use vsesvit_core::import::Source;
 use vsesvit_core::onboarding::RECOMMENDED_EXTENSIONS;
-use vsesvit_core::prefs::Theme;
+use vsesvit_core::prefs::{Theme, keys};
 use windows_core::{Interface, Result};
 
 use super::dialog_steps::invoke;
@@ -158,6 +159,25 @@ pub(super) async fn run(
                         })
                     },
                 )
+                .await;
+            }
+            WelcomePage::Sync => {
+                let server = preview
+                    .find::<TextBox>("WelcomeSyncServer")
+                    .and_then(|t| t.Text())
+                    .unwrap_or_default();
+                let stored = browser.core(|p| p.prefs().get(&keys::SYNC_SERVER));
+                let sign_in = preview
+                    .find::<UIElement>("WelcomeSyncSignIn")
+                    .is_ok_and(|b| xaml::is_visible(&b));
+                shoot(window, out_dir, "25fb-welcome-sync", steps, |_| {
+                    json!({
+                        "server": server,
+                        "sign_in_shown": sign_in,
+                        "next": next_label,
+                        "ok": is_shown && chrome_ok && server == stored && sign_in && next_label == "Skip",
+                    })
+                })
                 .await;
             }
             WelcomePage::Done => {

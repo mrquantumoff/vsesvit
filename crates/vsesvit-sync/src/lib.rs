@@ -16,7 +16,8 @@
 //! // One sync, a few rounds.
 //! let mut account = Account::load(&mut profile.sync())?.unwrap();
 //! loop {
-//!     let round = Round::gather(&mut profile.sync(), account)?;  // UI
+//!     let types = profile.prefs().get(&keys::SYNC_TYPES);
+//!     let round = Round::gather(&mut profile.sync(), account, &types)?;  // UI
 //!     let exchanged = round.run(&http);                          // worker
 //!     let finished = exchanged.finish(&mut profile.sync());      // UI: applies, saves the account
 //!     account = finished.account;
@@ -69,6 +70,8 @@ pub enum Error {
     Cancelled,
     #[error("signed out while syncing")]
     SignedOut,
+    #[error("the access token needs refreshing, which a final sync does not do")]
+    NeedsRefresh,
     #[error("the sign-in took too long")]
     TimedOut,
     #[error(transparent)]
