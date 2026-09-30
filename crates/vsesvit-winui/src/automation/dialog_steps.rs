@@ -26,7 +26,7 @@ const WAIT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
 
 /// Clicks a button the way assistive technology does.
-pub(super) fn invoke(element: &impl Interface) -> Result<()> {
+pub(crate) fn invoke(element: &impl Interface) -> Result<()> {
     let element = element.cast::<UIElement>()?;
     // A peer of an element that has left the tree must not be invoked.
     element.XamlRoot()?;

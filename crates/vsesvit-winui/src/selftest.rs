@@ -6,6 +6,8 @@
 //! toolbar button. The window is never activated and gets no OS input. Every check is bounded;
 //! a timeout reports the last value the check saw.
 
+mod shortcut_checks;
+
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -58,6 +60,9 @@ pub(crate) fn prepare(out_dir: &Path) -> std::io::Result<()> {
         "report.json",
         "window.png",
         "downloads.png",
+        "settings-shortcuts.png",
+        "shortcut-capture.png",
+        "saved-page.mhtml",
         "probe.crx",
         "vsesvit.log",
     ] {
@@ -491,6 +496,22 @@ async fn checks(
         (s.url == "about:blank" && s.title == "New tab")
             .then_some(detail.clone())
             .ok_or(detail)
+    })
+    .await;
+
+    check(report, "shortcuts", Duration::from_secs(90), async |p| {
+        shortcut_checks::shortcuts(&window, &tab, out_dir, p)
+            .await
+            .map_err(|e| format!("{e} (at: {})", p.last()))
+    })
+    .await;
+    window.close_scripted_dialog();
+    if browser.core(|c| c.prefs().keymap()) != vsesvit_core::shortcuts::Keymap::default() {
+        browser.edit_keymap(vsesvit_core::shortcuts::Keymap::reset_all);
+    }
+
+    check(report, "save_page", DEFAULT_TIMEOUT, async |p| {
+        shortcut_checks::save_page(&tab, out_dir, p).await
     })
     .await;
 

@@ -174,6 +174,7 @@ pub(super) const MARKUP: &str = r#"
         </StackPanel>
       </StackPanel>
     </ScrollViewer>
+    {shortcuts}
   </Grid>"#;
 
 /// A category down the side of the dialog and the panel of settings it shows.
@@ -185,7 +186,7 @@ pub(crate) struct Category {
     pub panel: &'static str,
 }
 
-pub(crate) const CATEGORIES: [Category; 5] = [
+pub(crate) const CATEGORIES: [Category; 6] = [
     Category {
         label: "General",
         glyph: "\u{E713}",
@@ -200,6 +201,11 @@ pub(crate) const CATEGORIES: [Category; 5] = [
         label: "Search",
         glyph: "\u{E721}",
         panel: "SearchPanel",
+    },
+    Category {
+        label: "Keyboard shortcuts",
+        glyph: "\u{E765}",
+        panel: "ShortcutsPanel",
     },
     Category {
         label: "Site permissions",
@@ -309,6 +315,7 @@ pub(super) fn wire(
     wire_downloads(root, browser, window)?;
     wire_clear_browsing_data(root, browser)?;
     super::site_permissions::wire(root, browser)?;
+    let shortcuts = super::shortcut_settings::wire(root, browser, window)?;
 
     let tabs: ComboBox = xaml::find(root, "TabsPosition")?;
     let w = weak.clone();
@@ -391,7 +398,7 @@ pub(super) fn wire(
     let default_browser = super::default_browser::wire(root)?;
     let w = weak;
     Ok(Wired {
-        _alive: vec![default_browser, updates],
+        _alive: vec![default_browser, updates, shortcuts],
         on_close: Some(Box::new(move || {
             let Some(b) = w.upgrade() else { return };
             let text = homepage.Text().unwrap_or_default();

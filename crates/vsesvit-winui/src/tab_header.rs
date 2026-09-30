@@ -7,6 +7,7 @@ use vsesvit_core::permissions::Capturing;
 use windows_core::Result;
 
 use crate::bindings::*;
+use crate::shortcuts::{self, Command};
 use crate::xaml;
 
 /// Whether a tab makes sound.
@@ -91,7 +92,7 @@ const HEADER_XAML: &str = r#"
     </Button>
     <Button x:Name="Close" Width="24" Height="24" Padding="0" Background="Transparent"
             BorderThickness="0" VerticalAlignment="Center" Visibility="Collapsed"
-            ToolTipService.ToolTip="Close tab (Ctrl+W)" AutomationProperties.Name="Close tab">
+            AutomationProperties.Name="Close tab">
       <FontIcon Glyph="&#xE711;" FontSize="10"/>
     </Button>
   </StackPanel>
@@ -119,7 +120,7 @@ impl TabHeader {
         let root: FrameworkElement = xaml::load(HEADER_XAML)?;
         let close: Button = xaml::find(&root, "Close")?;
         xaml::set_visible(&close, closable)?;
-        Ok(Self {
+        let header = Self {
             default_icon: xaml::find(&root, "DefaultIcon")?,
             favicon: xaml::find(&root, "Favicon")?,
             spinner: xaml::find(&root, "Spinner")?,
@@ -133,7 +134,17 @@ impl TabHeader {
             audio_glyph: xaml::find(&root, "AudioGlyph")?,
             close: closable.then_some(close),
             root,
-        })
+        };
+        header.show_shortcuts();
+        Ok(header)
+    }
+
+    /// The close button's tooltip, from the bindings in effect.
+    pub fn show_shortcuts(&self) {
+        if let Some(close) = &self.close {
+            let tip = shortcuts::current().tip("Close tab", Command::CloseTab);
+            let _ = xaml::boxed(&tip).and_then(|tip| ToolTipService::SetToolTip(close, &tip));
+        }
     }
 
     pub fn root(&self) -> &FrameworkElement {

@@ -12,6 +12,7 @@ mod downloads;
 mod extensions;
 mod history;
 mod settings;
+mod shortcut_settings;
 mod site_permissions;
 mod welcome;
 
@@ -30,6 +31,7 @@ pub(crate) use settings::CATEGORIES as SETTINGS_CATEGORIES;
 pub(crate) use {
     bookmarks::import_bookmarks,
     default_browser::describe as describe_default_browser,
+    shortcut_settings::{Page as ShortcutsPage, row_name as shortcut_row_name},
     welcome::{PAGES as WELCOME_PAGES, Page as WelcomePage},
 };
 
@@ -66,6 +68,7 @@ impl Dialog {
             Self::Extensions => extensions::MARKUP.into(),
             Self::Settings => settings::MARKUP
                 .replacen("{default_browser}", default_browser::MARKUP, 1)
+                .replacen("{shortcuts}", shortcut_settings::PANEL, 1)
                 .into(),
             Self::About => about::MARKUP.into(),
             Self::Welcome => welcome::MARKUP.into(),
@@ -156,7 +159,7 @@ pub(crate) fn build(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Built> {
     })
 }
 
-fn element_theme(theme: Theme) -> ElementTheme {
+pub(super) fn element_theme(theme: Theme) -> ElementTheme {
     match theme {
         Theme::System => ElementTheme::Default,
         Theme::Light => ElementTheme::Light,
@@ -172,6 +175,19 @@ pub(crate) struct Preview {
 }
 
 impl Preview {
+    pub fn kind(&self) -> Dialog {
+        self._built.kind
+    }
+
+    /// What the dialog's wiring keeps alive of type `T`, such as a page's state.
+    pub fn wired<T: 'static>(&self) -> Option<Rc<T>> {
+        self._built
+            .wired
+            ._alive
+            .iter()
+            .find_map(|alive| alive.clone().downcast::<T>().ok())
+    }
+
     /// A named element of the dialog's content (or of a row inside it), once laid out.
     pub fn find<T: Interface>(&self, name: &str) -> Result<T> {
         xaml::find_named(&self.body.cast()?, name)

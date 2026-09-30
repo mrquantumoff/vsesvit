@@ -10,7 +10,7 @@ use super::{BrowserWindow, MenuAction};
 use crate::bindings::*;
 use crate::dialogs::Dialog;
 use crate::exec;
-use crate::shortcuts::{BINDINGS, Command, Mods};
+use crate::shortcuts::{self, Command, Mods};
 use crate::player::PlayerEvents;
 use crate::strip::StripEvents;
 use crate::{xaml, zoom};
@@ -144,6 +144,7 @@ impl BrowserWindow {
             ("MenuHistory", MenuAction::Show(Dialog::History)),
             ("MenuDownloads", MenuAction::Show(Dialog::Downloads)),
             ("MenuExtensions", MenuAction::Show(Dialog::Extensions)),
+            ("MenuSavePage", MenuAction::Run(Command::SavePage)),
             ("MenuSettings", MenuAction::Show(Dialog::Settings)),
             ("MenuWelcome", MenuAction::Show(Dialog::Welcome)),
             ("MenuAbout", MenuAction::Show(Dialog::About)),
@@ -176,8 +177,18 @@ impl BrowserWindow {
     pub(super) fn install_accelerators(&self) -> Result<()> {
         let root = self.ui.root.cast::<UIElement>()?;
         root.SetKeyboardAcceleratorPlacementMode(KeyboardAcceleratorPlacementMode::Hidden)?;
-        let accelerators = root.KeyboardAccelerators()?;
-        for binding in BINDINGS {
+        self.set_accelerators()
+    }
+
+    /// The window's accelerators from the bindings in effect; none while a shortcut is being
+    /// captured, so the key pressed for it runs nothing.
+    pub(super) fn set_accelerators(&self) -> Result<()> {
+        let accelerators = self.ui.root.cast::<UIElement>()?.KeyboardAccelerators()?;
+        accelerators.Clear()?;
+        if self.shortcuts_suspended.get() {
+            return Ok(());
+        }
+        for binding in shortcuts::current().list() {
             let accelerator = KeyboardAccelerator::new()?;
             accelerator.SetKey(VirtualKey(i32::from(binding.vk)))?;
             accelerator.SetModifiers(virtual_key_modifiers(binding.mods))?;
@@ -202,6 +213,7 @@ impl BrowserWindow {
         if self.closed.replace(true) {
             return;
         }
+        self.close_scripted_dialog();
         let browser = self.browser();
         if let Some(browser) = &browser {
             browser.window_closing(self);
@@ -315,13 +327,13 @@ pub(super) fn player_events(slot: &WindowSlot) -> PlayerEvents {
 
 fn virtual_key_modifiers(mods: Mods) -> VirtualKeyModifiers {
     let mut bits = 0;
-    if mods.bits() & Mods::CTRL.bits() != 0 {
+    if mods.has(Mods::CTRL) {
         bits |= VirtualKeyModifiers::Control.0;
     }
-    if mods.bits() & Mods::SHIFT.bits() != 0 {
+    if mods.has(Mods::SHIFT) {
         bits |= VirtualKeyModifiers::Shift.0;
     }
-    if mods.bits() & Mods::ALT.bits() != 0 {
+    if mods.has(Mods::ALT) {
         bits |= VirtualKeyModifiers::Menu.0;
     }
     VirtualKeyModifiers(bits)

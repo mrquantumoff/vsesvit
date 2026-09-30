@@ -159,7 +159,10 @@ Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions::CreateInstance
 Microsoft.UI.Xaml.Controls.Primitives.IFlyoutShowOptions::{put_ShowMode, put_Placement}
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowMode
 Microsoft.UI.Xaml.Input.KeyboardAccelerator::CreateInstance
-Microsoft.UI.Xaml.Input.IKeyboardAccelerator::{put_Key, put_Modifiers, Invoked}
+Microsoft.UI.Xaml.Input.IKeyboardAccelerator::{get_Key, put_Key, get_Modifiers, put_Modifiers, Invoked}
+Microsoft.UI.Xaml.IUIElement::PreviewKeyDown
+Microsoft.UI.Xaml.Controls.IMenuFlyoutItem::{get_KeyboardAcceleratorTextOverride, put_KeyboardAcceleratorTextOverride}
+Microsoft.UI.Xaml.Controls.Primitives.IFlyoutBase::Opened
 Microsoft.UI.Xaml.Input.IKeyboardAcceleratorInvokedEventArgs::put_Handled
 Windows.System.VirtualKey
 Windows.System.VirtualKeyModifiers
@@ -231,6 +234,11 @@ Microsoft.Web.WebView2.Core.ICoreWebView2DownloadStartingEventArgs::{get_Downloa
 Microsoft.Web.WebView2.Core.ICoreWebView2DownloadOperation::{get_Uri, get_BytesReceived, get_TotalBytesToReceive, get_State, get_InterruptReason, BytesReceivedChanged, StateChanged, Cancel}
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadState
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadInterruptReason
+Microsoft.Web.WebView2.Core.ICoreWebView2_25::{ShowSaveAsUIAsync, SaveAsUIShowing}
+Microsoft.Web.WebView2.Core.ICoreWebView2_9::{IsDefaultDownloadDialogOpenChanged, get_IsDefaultDownloadDialogOpen, CloseDefaultDownloadDialog}
+Microsoft.Web.WebView2.Core.ICoreWebView2SaveAsUIShowingEventArgs::{get_ContentMimeType, put_Cancel, put_SuppressDefaultDialog, put_SaveAsFilePath, put_AllowReplace, put_Kind}
+Microsoft.Web.WebView2.Core.CoreWebView2SaveAsKind
+Microsoft.Web.WebView2.Core.CoreWebView2SaveAsUIResult
 
 // ---- site permissions ----
 Microsoft.Web.WebView2.Core.ICoreWebView2::PermissionRequested

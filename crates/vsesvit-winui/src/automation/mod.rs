@@ -28,6 +28,8 @@ mod tab_steps;
 mod toolbar_steps;
 mod welcome_steps;
 
+pub(crate) use dialog_steps::invoke;
+
 use crate::bindings::*;
 use crate::bookmarks_bar::BarItem;
 use crate::browser::Browser;

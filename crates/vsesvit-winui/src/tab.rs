@@ -137,6 +137,7 @@ pub(crate) struct Tab {
     permissions: TabPermissions,
     /// The page's capture is being polled (see `capturing`).
     capture_polled: Cell<bool>,
+    shortcut_world: RefCell<shortcuts::World>,
     closed: Cell<bool>,
 }
 
@@ -167,6 +168,7 @@ impl Tab {
             pinned: Cell::new(false),
             permissions: TabPermissions::default(),
             capture_polled: Cell::new(false),
+            shortcut_world: RefCell::new(shortcuts::World::default()),
             closed: Cell::new(false),
         }))
     }
@@ -330,6 +332,21 @@ impl Tab {
     /// Runs the shortcut script in its isolated world of every new document (see `shortcuts`)
     /// and listens to its binding; runs the store script in the main world (see `store`).
     async fn inject(self: &Rc<Self>, core: &CoreWebView2, script: &PageScript) -> Result<()> {
+        self.shortcut_world.borrow_mut().name = script.world.clone();
+        for event in shortcuts::CONTEXT_EVENTS {
+            core.GetDevToolsProtocolEventReceiver(event)?
+                .DevToolsProtocolEventReceived(on(
+                    self,
+                    move |tab, args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs| {
+                        if let Ok(params) = args.ParameterObjectAsJson() {
+                            tab.shortcut_world
+                                .borrow_mut()
+                                .track(event, &params.to_string());
+                        }
+                    },
+                ))?
+                .forget();
+        }
         core.GetDevToolsProtocolEventReceiver("Runtime.bindingCalled")?
             .DevToolsProtocolEventReceived(on(
                 self,
@@ -379,7 +396,67 @@ impl Tab {
             core.CallDevToolsProtocolMethodAsync(method, &params)?
                 .await?;
         }
+        self.apply_shortcuts(core).await
+    }
+
+    /// Gives the page script the key sets in effect: in documents to come, and in the ones
+    /// already loaded, so a changed shortcut applies without a reload.
+    pub fn shortcuts_changed(self: &Rc<Self>) {
+        let Some(core) = self.core.get().cloned() else {
+            return;
+        };
+        let tab = self.clone();
+        exec::spawn(async move {
+            if let Err(e) = tab.apply_shortcuts(&core).await {
+                log::warn!("tab {}: keyboard shortcuts: {e}", tab.id);
+            }
+        });
+    }
+
+    async fn apply_shortcuts(&self, core: &CoreWebView2) -> Result<()> {
+        let script = shortcuts::current().keys_script();
+        let world = self.shortcut_world.borrow().name.clone();
+        let added = core
+            .CallDevToolsProtocolMethodAsync(
+                "Page.addScriptToEvaluateOnNewDocument",
+                &json!({ "source": script, "worldName": world }).to_string(),
+            )?
+            .await?
+            .to_string_lossy();
+        let identifier = serde_json::from_str::<serde_json::Value>(&added)
+            .ok()
+            .and_then(|v| v["identifier"].as_str().map(str::to_owned));
+        // The newer script runs after the older one, so replacing it cannot leave a new
+        // document with stale keys.
+        let replaced = std::mem::replace(
+            &mut self.shortcut_world.borrow_mut().keys_script,
+            identifier,
+        );
+        if let Some(old) = replaced {
+            core.CallDevToolsProtocolMethodAsync(
+                "Page.removeScriptToEvaluateOnNewDocument",
+                &json!({ "identifier": old }).to_string(),
+            )?
+            .await?;
+        }
+        let contexts = self.shortcut_world.borrow().contexts.clone();
+        for context in contexts {
+            let params = json!({ "expression": script, "contextId": context }).to_string();
+            let evaluated = core
+                .CallDevToolsProtocolMethodAsync("Runtime.evaluate", &params)?
+                .await;
+            // A context can go away between the event and this call.
+            if let Err(e) = evaluated {
+                log::debug!("tab {}: shortcut world {context}: {e}", self.id);
+            }
+        }
         Ok(())
+    }
+
+    /// WebView2's Save As dialog for the page, and how it ended.
+    pub async fn save_as(&self) -> Result<CoreWebView2SaveAsUIResult> {
+        let core = self.core.get().ok_or_else(windows_core::Error::empty)?;
+        core.cast::<ICoreWebView2_25>()?.ShowSaveAsUIAsync()?.await
     }
 
     pub fn navigate(&self, url: &str) {
@@ -653,6 +730,17 @@ impl Tab {
                 },
             ))?
             .forget();
+        // A saved page never raises `DownloadStarting`, yet WebView2 shows its own download
+        // flyout for it; the shell keeps that flyout hidden for every download.
+        core.cast::<ICoreWebView2_9>()?
+            .IsDefaultDownloadDialogOpenChanged(|core, _| {
+                if let Some(core) = core.as_ref().and_then(|c| c.cast::<ICoreWebView2_9>().ok())
+                    && core.IsDefaultDownloadDialogOpen().unwrap_or(false)
+                {
+                    let _ = core.CloseDefaultDownloadDialog();
+                }
+            })?
+            .forget();
         core.PermissionRequested(on(
             self,
             |tab, args: &CoreWebView2PermissionRequestedEventArgs| {
@@ -908,7 +996,7 @@ impl Tab {
         let Ok(event) = args.ParameterObjectAsJson() else {
             return;
         };
-        match shortcuts::parse_binding_call(&event) {
+        match shortcuts::parse_binding_call(&event, &shortcuts::current()) {
             // Runs on the next turn: the command may close this tab's web view (Ctrl+W).
             Some(PageMessage::Key(command)) => exec::spawn(async move { window.run(command) }),
             Some(PageMessage::BackgroundLink(url)) => {

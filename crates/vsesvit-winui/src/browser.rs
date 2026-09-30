@@ -17,6 +17,7 @@ use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::session::SessionSnapshot;
+use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::{Profile, Url, onboarding};
 
 use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
@@ -158,6 +159,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
     }
     let engine = Engine::create(&profile.paths().engine_data, &arguments).await?;
     let page_script = Rc::new(shortcuts::PageScript::new(&secret()));
+    shortcuts::set_current(profile.prefs().keymap());
     let prefs = WindowPrefs {
         tabs: profile.prefs().get(&keys::TABS_POSITION),
         pane_collapsed: profile.prefs().get(&TAB_PANE_COLLAPSED),
@@ -934,6 +936,25 @@ impl Browser {
         let mut prefs = self.prefs.get();
         f(&mut prefs);
         self.prefs.set(prefs);
+    }
+
+    /// Applies `edit` to the keyboard shortcuts, stores them and applies them in every window.
+    pub fn edit_keymap(&self, edit: impl FnOnce(&mut Keymap)) {
+        let mut keymap = self.core(|p| p.prefs().keymap());
+        edit(&mut keymap);
+        if let Err(e) = self.core(|p| p.prefs().set_keymap(&keymap)) {
+            log::warn!("keyboard shortcuts: {e}");
+        }
+        self.keymap_changed();
+    }
+
+    /// Applies the stored keyboard shortcuts in every window. Whatever else writes
+    /// `keyboard.shortcuts`, such as a sync, calls this once it has.
+    pub fn keymap_changed(&self) {
+        shortcuts::set_current(self.core(|p| p.prefs().keymap()));
+        for window in self.windows() {
+            window.shortcuts_changed();
+        }
     }
 
     pub fn write_pref<T: serde::Serialize>(&self, pref: &Pref<T>, value: &T) {

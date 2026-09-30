@@ -1,0 +1,347 @@
+//! The `shortcuts` and `save_page` checks: reassigning shortcuts through Settings applies at
+//! once to the page already loaded and to the window, and Ctrl+Shift+S saves the page.
+
+use std::path::Path;
+use std::rc::Rc;
+use std::time::Duration;
+
+use vsesvit_core::shortcuts::{Command as Core, Keymap};
+use windows_core::Interface;
+
+use super::{Probe, eval, until, wait_ready};
+use crate::automation::{invoke, press};
+use crate::bindings::{
+    Button, CoreWebView2SaveAsKind, DependencyObject, Flyout, FrameworkElement, IButton,
+    ICoreWebView2_9, ICoreWebView2_25, IScrollViewer, ListView, Point, Selector, UIElement,
+};
+use crate::dialogs::{
+    self, Dialog, Preview, SETTINGS_CATEGORIES, ShortcutsPage, shortcut_row_name,
+};
+use crate::shortcuts::{self, Command, InPage, Mods};
+use crate::tab::Tab;
+use crate::window::BrowserWindow;
+use crate::{exec, xaml};
+
+const SETTLE: Duration = Duration::from_millis(500);
+/// DevTools modifier bits for `press`.
+const CTRL: u8 = 2;
+const SHIFT: u8 = 8;
+/// `VirtualKeyModifiers` bits of an accelerator.
+const ACCEL_CTRL: u32 = 1;
+const ACCEL_SHIFT: u32 = 4;
+/// Page-side record of every key press the page itself sees, and whether it arrived prevented.
+const RECORD_KEYS: &str = "window.__vsesvitMark = 1; window.__keys = []; \
+    addEventListener('keydown', e => __keys.push(e.keyCode + ':' + e.defaultPrevented)); 1";
+
+fn err(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
+
+/// Settings over the window, on its Keyboard shortcuts page.
+async fn shortcuts_page(
+    window: &Rc<BrowserWindow>,
+) -> Result<(Preview, Rc<ShortcutsPage>), String> {
+    let preview = dialogs::preview(window, Dialog::Settings).map_err(err)?;
+    exec::sleep(SETTLE).await;
+    let index = SETTINGS_CATEGORIES
+        .iter()
+        .position(|c| c.panel == "ShortcutsPanel")
+        .ok_or("no Keyboard shortcuts category")?;
+    preview
+        .find::<ListView>("SettingsCategories")
+        .and_then(|list| list.cast::<Selector>())
+        .and_then(|s| s.SetSelectedIndex(i32::try_from(index).unwrap_or(0)))
+        .map_err(err)?;
+    exec::sleep(SETTLE).await;
+    let page = preview
+        .wired::<ShortcutsPage>()
+        .ok_or("the Settings dialog has no shortcuts page")?;
+    Ok((preview, page))
+}
+
+/// Scrolls `command`'s row into view and activates it, which opens the capture flyout.
+async fn open_capture(preview: &Preview, command: Core) -> Result<(), String> {
+    let row: FrameworkElement = preview.find(&shortcut_row_name(command)).map_err(err)?;
+    let panel: IScrollViewer = preview.find("ShortcutsPanel").map_err(err)?;
+    let top = row
+        .cast::<UIElement>()
+        .and_then(|r| r.TransformToVisual(&panel.cast::<UIElement>()?))
+        .and_then(|t| t.TransformPoint(Point { x: 0.0, y: 0.0 }))
+        .map_err(err)?
+        .y;
+    let offset = panel.VerticalOffset().map_err(err)? + f64::from(top) - 120.0;
+    panel
+        .ChangeViewWithOptionalAnimation(None, Some(offset.max(0.0)), None, true)
+        .map_err(err)?;
+    exec::sleep(Duration::from_millis(300)).await;
+    invoke(&row).map_err(err)?;
+    exec::sleep(SETTLE).await;
+    Ok(())
+}
+
+fn has_accelerator(window: &BrowserWindow, vk: i32, mods: u32) -> bool {
+    window.accelerator_keys().contains(&(vk, mods))
+}
+
+async fn marked(tab: &Tab) -> bool {
+    eval(tab, "String(window.__vsesvitMark)").await.as_deref() == Ok("\"1\"")
+}
+
+/// Waits up to `limit` for the scripted run's dialog, then closes it.
+async fn dialog_opened(window: &BrowserWindow, limit: Duration) -> Option<Dialog> {
+    let shown = exec::wait_for(limit, Duration::from_millis(100), || {
+        window.scripted_dialog()
+    })
+    .await;
+    window.close_scripted_dialog();
+    shown
+}
+
+pub(super) async fn shortcuts(
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    out_dir: &Path,
+    p: &Probe,
+) -> Result<String, String> {
+    let browser = window.browser().ok_or("no browser")?;
+    eval(tab, RECORD_KEYS).await?;
+    let mut detail = Vec::new();
+
+    let (preview, page) = shortcuts_page(window).await?;
+    let shot = window.capture().await.map_err(err)?;
+    std::fs::write(out_dir.join("settings-shortcuts.png"), &shot.png).map_err(err)?;
+    let listed: Vec<Core> = shortcuts::listed().collect();
+    let rows = listed
+        .iter()
+        .filter(|&&c| {
+            preview
+                .find::<FrameworkElement>(&shortcut_row_name(c))
+                .is_ok()
+        })
+        .count();
+    detail.push(format!(
+        "settings lists {rows} of {} commands",
+        listed.len()
+    ));
+    if rows != listed.len()
+        || preview
+            .find::<FrameworkElement>(&shortcut_row_name(Core::ZoomIn))
+            .is_ok()
+    {
+        return Err(detail.join("; "));
+    }
+
+    p.observe("capturing a shortcut for History");
+    open_capture(&preview, Core::ShowHistory).await?;
+    let suspended = window.accelerator_keys().is_empty();
+    page.capture_key(0x54, Mods::CTRL);
+    exec::sleep(Duration::from_millis(300)).await;
+    let conflict = page.capture_note();
+    let shot = window.capture().await.map_err(err)?;
+    std::fs::write(out_dir.join("shortcut-capture.png"), &shot.png).map_err(err)?;
+    page.capture_key(0x59, Mods::of(true, true, false));
+    let free = page.capture_note();
+    let scroller: IScrollViewer = preview.find("ShortcutsPanel").map_err(err)?;
+    let scrolled = scroller.VerticalOffset().map_err(err)?;
+    page.capture_key(0x0D, Mods::NONE);
+    exec::sleep(SETTLE).await;
+    let kept_scroll =
+        scrolled > 0.0 && (scroller.VerticalOffset().map_err(err)? - scrolled).abs() < 1.0;
+    drop(preview);
+    let stored: Vec<String> = browser
+        .core(|c| c.prefs().keymap())
+        .chords(Core::ShowHistory)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let xaml_y = has_accelerator(window, 0x59, ACCEL_CTRL | ACCEL_SHIFT);
+    let xaml_h = has_accelerator(window, 0x48, ACCEL_CTRL);
+    detail.push(format!(
+        "capture: accelerators off while open {suspended}, Ctrl+T noted {conflict:?}, Ctrl+Shift+Y noted {free:?}; stored {stored:?}, the list kept its scroll position {kept_scroll}; window accelerators Ctrl+Shift+Y={xaml_y} Ctrl+H={xaml_h}"
+    ));
+    if !(suspended
+        && conflict == "Also used by New tab. Saving moves it here."
+        && free.is_empty()
+        && stored == ["Ctrl+Shift+Y"]
+        && kept_scroll
+        && xaml_y
+        && !xaml_h)
+    {
+        return Err(detail.join("; "));
+    }
+
+    p.observe("Ctrl+Shift+Y and Ctrl+H in the page");
+    press(tab, 0x59, CTRL | SHIFT).await?;
+    let new_chord = dialog_opened(window, Duration::from_secs(5)).await;
+    press(tab, 0x48, CTRL).await?;
+    let old_chord = dialog_opened(window, Duration::from_millis(1500)).await;
+    let kept = marked(tab).await;
+    detail.push(format!(
+        "in the loaded page Ctrl+Shift+Y opened {new_chord:?}, Ctrl+H opened {old_chord:?}, page not reloaded {kept}"
+    ));
+    if new_chord != Some(Dialog::History) || old_chord.is_some() || !kept {
+        return Err(detail.join("; "));
+    }
+
+    p.observe("giving Ctrl+R to New tab");
+    let (preview, page) = shortcuts_page(window).await?;
+    open_capture(&preview, Core::NewTab).await?;
+    page.capture_key(0x52, Mods::CTRL);
+    let taken = page.capture_note();
+    page.capture_key(0x0D, Mods::NONE);
+    exec::sleep(SETTLE).await;
+    drop(preview);
+    let before = window.tab_count();
+    press(tab, 0x52, CTRL).await?;
+    let opened = exec::wait_for(Duration::from_secs(5), Duration::from_millis(100), || {
+        window.tabs_in_order().into_iter().find(|t| t.id != tab.id)
+    })
+    .await;
+    if let Some(new) = &opened {
+        window.close_tab(new.id);
+    }
+    let kept = marked(tab).await;
+    detail.push(format!(
+        "Ctrl+R noted {taken:?}; in the page it opened a tab {} ({before} -> {}), page not reloaded {kept}",
+        opened.is_some(),
+        before + usize::from(opened.is_some())
+    ));
+    if taken != "Also used by Reload. Saving moves it here." || opened.is_none() || !kept {
+        return Err(detail.join("; "));
+    }
+
+    p.observe("moving Reload to Ctrl+Shift+E");
+    let chord = "Ctrl+Shift+E".parse().map_err(err)?;
+    browser.edit_keymap(|k| {
+        k.assign(Core::Reload, [chord]);
+    });
+    exec::sleep(SETTLE).await;
+    eval(tab, "window.__keys = []; 1").await?;
+    press(tab, 0x74, 0).await?;
+    exec::sleep(Duration::from_millis(300)).await;
+    let f5 = eval(tab, "__keys.join(' ')").await?;
+    let hidden = eval(tab, "typeof globalThis.vsesvitKeys").await?;
+    let kind = shortcuts::current()
+        .list()
+        .iter()
+        .find(|b| b.vk == 0x45 && b.mods == Mods::of(true, true, false))
+        .map(|b| (b.command, b.in_page));
+    press(tab, 0x45, CTRL | SHIFT).await?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut reloaded = false;
+    while !reloaded && std::time::Instant::now() < deadline {
+        exec::sleep(Duration::from_millis(100)).await;
+        reloaded =
+            eval(tab, "String(window.__vsesvitMark)").await.as_deref() == Ok("\"undefined\"");
+    }
+    wait_ready(tab, p).await;
+    detail.push(format!(
+        "Reload on Ctrl+Shift+E is {kind:?}; F5 reached the page as {f5}; the page sees vsesvitKeys as {hidden}; Ctrl+Shift+E reloaded {reloaded}"
+    ));
+    if kind != Some((Command::Reload, InPage::Overridable))
+        || f5 != "\"116:true\""
+        || hidden != "\"undefined\""
+        || !reloaded
+    {
+        return Err(detail.join("; "));
+    }
+
+    p.observe("Reset all");
+    let (preview, _page) = shortcuts_page(window).await?;
+    let button = preview.find::<Button>("ShortcutsResetAll").map_err(err)?;
+    invoke(&button).map_err(err)?;
+    exec::sleep(SETTLE).await;
+    let content: DependencyObject = button
+        .cast::<IButton>()
+        .and_then(|b| b.Flyout())
+        .and_then(|f| f.cast::<Flyout>()?.Content())
+        .and_then(|c| c.cast())
+        .map_err(err)?;
+    let confirm: Button =
+        xaml::find_named(&content, "ShortcutsResetAllConfirm").ok_or("no Reset button")?;
+    invoke(&confirm).map_err(err)?;
+    exec::sleep(SETTLE).await;
+    drop(preview);
+    let defaults = browser.core(|c| c.prefs().keymap()) == Keymap::default();
+    let mut toggled = Vec::new();
+    for _ in 0..2 {
+        let before = window.is_pane_collapsed();
+        press(tab, 0x53, CTRL).await?;
+        let changed = exec::wait_for(Duration::from_secs(5), Duration::from_millis(100), || {
+            (window.is_pane_collapsed() != before).then_some(())
+        })
+        .await;
+        toggled.push(changed.is_some());
+    }
+    let save = shortcuts::current()
+        .list()
+        .iter()
+        .find(|b| b.vk == 0x53 && b.mods == Mods::of(true, true, false))
+        .map(|b| (b.command, b.in_page));
+    press(tab, 0x48, CTRL).await?;
+    let history = dialog_opened(window, Duration::from_secs(5)).await;
+    detail.push(format!(
+        "after Reset all the keymap is the default {defaults}; Ctrl+S toggled the tab list {toggled:?}; Ctrl+Shift+S is {save:?}; Ctrl+H opened {history:?}"
+    ));
+    let ok = defaults
+        && toggled == [true, true]
+        && save == Some((Command::SavePage, InPage::Overridable))
+        && history == Some(Dialog::History);
+    let detail = detail.join("; ");
+    ok.then_some(detail.clone()).ok_or(detail)
+}
+
+/// Types Ctrl+Shift+S into the fixture page with the Save As dialog answered by
+/// `SaveAsUIShowing`: a single-file save to `<out_dir>/saved-page.mhtml`.
+pub(super) async fn save_page(tab: &Rc<Tab>, out_dir: &Path, p: &Probe) -> Result<String, String> {
+    let path = out_dir.join("saved-page.mhtml");
+    let _ = std::fs::remove_file(&path);
+    let core = tab.core().ok_or("the tab has no engine view")?;
+    let target = path.to_string_lossy().into_owned();
+    let mime = Rc::new(std::cell::RefCell::new(String::new()));
+    let seen = mime.clone();
+    let revoker = core
+        .cast::<ICoreWebView2_25>()
+        .and_then(|c| {
+            c.SaveAsUIShowing(move |_, args| {
+                let Some(args) = args.as_ref() else { return };
+                *seen.borrow_mut() = args.ContentMimeType().unwrap_or_default();
+                let answered = args
+                    .SetSuppressDefaultDialog(true)
+                    .and_then(|()| args.SetSaveAsFilePath(&target))
+                    .and_then(|()| args.SetKind(CoreWebView2SaveAsKind::SingleFile))
+                    .and_then(|()| args.SetAllowReplace(true));
+                if let Err(e) = answered {
+                    log::warn!("SaveAsUIShowing: {e}");
+                }
+            })
+        })
+        .map_err(err)?;
+    press(tab, 0x53, CTRL | SHIFT).await?;
+    let text = until(p, |p| {
+        let text = std::fs::read(&path)
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).into_owned());
+        p.observe(format!(
+            "{} {}",
+            path.display(),
+            text.as_ref()
+                .map_or("not written".to_owned(), |t| format!("{} bytes", t.len()))
+        ));
+        text.filter(|t| t.contains("Vsesvit fixture"))
+    })
+    .await;
+    drop(revoker);
+    exec::sleep(Duration::from_millis(700)).await;
+    let edge_flyout = core
+        .cast::<ICoreWebView2_9>()
+        .and_then(|c| c.IsDefaultDownloadDialogOpen())
+        .map_err(err)?;
+    let detail = format!(
+        "Ctrl+Shift+S in the page: SaveAsUIShowing for {:?}, saved {} ({} bytes) as a single file containing \"Vsesvit fixture\"; WebView2's download flyout open afterwards: {edge_flyout}",
+        mime.borrow(),
+        path.display(),
+        text.len()
+    );
+    (!edge_flyout).then_some(detail.clone()).ok_or(detail)
+}

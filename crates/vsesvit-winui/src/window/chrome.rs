@@ -83,16 +83,16 @@ const WINDOW_XAML: &str = r#"
       <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <Button x:Name="Back" Style="{StaticResource ToolbarButton}" IsEnabled="False"
-            ToolTipService.ToolTip="Back (Alt+Left)" AutomationProperties.Name="Back">
+            ToolTipService.ToolTip="Back" AutomationProperties.Name="Back">
       <FontIcon Glyph="&#xE72B;" FontSize="16"/>
     </Button>
     <Button x:Name="Forward" Grid.Column="1" Style="{StaticResource ToolbarButton}" IsEnabled="False"
-            ToolTipService.ToolTip="Forward (Alt+Right)" AutomationProperties.Name="Forward">
+            ToolTipService.ToolTip="Forward" AutomationProperties.Name="Forward">
       <FontIcon Glyph="&#xE72A;" FontSize="16"/>
     </Button>
     <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2">
       <Button x:Name="Reload" Style="{StaticResource ToolbarButton}"
-              ToolTipService.ToolTip="Refresh (Ctrl+R)" AutomationProperties.Name="Refresh">
+              ToolTipService.ToolTip="Refresh" AutomationProperties.Name="Refresh">
         <FontIcon x:Name="ReloadGlyph" Glyph="&#xE72C;" FontSize="16"/>
       </Button>
       <Button x:Name="Home" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
@@ -171,12 +171,12 @@ const WINDOW_XAML: &str = r#"
       </Button>
       <Button x:Name="CopyLink" Grid.Column="3" Style="{StaticResource ToolbarButton}" Width="32" Height="26"
               Margin="0,0,2,0" CornerRadius="6" Visibility="Collapsed"
-              ToolTipService.ToolTip="Copy link without trackers (Ctrl+Shift+C)" AutomationProperties.Name="Copy link">
+              ToolTipService.ToolTip="Copy link without trackers" AutomationProperties.Name="Copy link">
         <FontIcon x:Name="CopyLinkGlyph" Glyph="&#xE8C8;" FontSize="14"/>
       </Button>
       <ToggleButton x:Name="Star" Grid.Column="4" Style="{StaticResource ToolbarToggle}" Width="32" Height="26"
                     Margin="0,0,2,0" CornerRadius="6"
-                    ToolTipService.ToolTip="Bookmark this page (Ctrl+D)" AutomationProperties.Name="Bookmark this page">
+                    ToolTipService.ToolTip="Bookmark this page" AutomationProperties.Name="Bookmark this page">
         <FontIcon x:Name="StarGlyph" Glyph="&#xE734;" FontSize="14"/>
       </ToggleButton>
       <!-- The page's load progress, a line along the bottom that fades in from its start. -->
@@ -212,7 +212,7 @@ const WINDOW_XAML: &str = r#"
       </Button>
     </StackPanel>
     <Button x:Name="Downloads" Grid.Column="5" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
-            ToolTipService.ToolTip="Downloads (Ctrl+J)" AutomationProperties.Name="Downloads">
+            ToolTipService.ToolTip="Downloads" AutomationProperties.Name="Downloads">
       <Grid>
         <FontIcon Glyph="&#xE896;" FontSize="16"/>
         <ProgressRing x:Name="DownloadsBusy" Width="28" Height="28" MinWidth="28" MinHeight="28" IsActive="False"/>
@@ -224,24 +224,28 @@ const WINDOW_XAML: &str = r#"
       <Button.Flyout>
         <MenuFlyout Placement="BottomEdgeAlignedRight">
           {acrylic_menu}
-          <MenuFlyoutItem x:Name="MenuNewTab" Text="New tab" KeyboardAcceleratorTextOverride="Ctrl+T">
+          <MenuFlyoutItem x:Name="MenuNewTab" Text="New tab">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xECCD;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
-          <MenuFlyoutItem x:Name="MenuNewWindow" Text="New window" KeyboardAcceleratorTextOverride="Ctrl+N">
+          <MenuFlyoutItem x:Name="MenuNewWindow" Text="New window">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE78B;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
           <MenuFlyoutSeparator/>
-          <MenuFlyoutItem x:Name="MenuBookmarks" Text="Bookmarks" KeyboardAcceleratorTextOverride="Ctrl+Shift+O">
+          <MenuFlyoutItem x:Name="MenuBookmarks" Text="Bookmarks">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE728;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
-          <MenuFlyoutItem x:Name="MenuHistory" Text="History" KeyboardAcceleratorTextOverride="Ctrl+H">
+          <MenuFlyoutItem x:Name="MenuHistory" Text="History">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE81C;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
-          <MenuFlyoutItem x:Name="MenuDownloads" Text="Downloads" KeyboardAcceleratorTextOverride="Ctrl+J">
+          <MenuFlyoutItem x:Name="MenuDownloads" Text="Downloads">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE896;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
           <MenuFlyoutItem x:Name="MenuExtensions" Text="Extensions">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xEA86;"/></MenuFlyoutItem.Icon>
+          </MenuFlyoutItem>
+          <MenuFlyoutSeparator/>
+          <MenuFlyoutItem x:Name="MenuSavePage" Text="Save page as…">
+            <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74E;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
           <MenuFlyoutSeparator/>
           <MenuFlyoutItem x:Name="MenuSettings" Text="Settings">
@@ -292,6 +296,7 @@ const WINDOW_XAML: &str = r#"
         <Button x:Name="UpdateAction"/>
       </InfoBar.ActionButton>
     </InfoBar>
+    <InfoBar x:Name="NoticeBar" IsOpen="False" Severity="Error" CornerRadius="0" BorderThickness="0,1,0,0"/>
     <!-- While the selected tab shares the screen. -->
     <InfoBar x:Name="ShareBar" IsOpen="False" IsClosable="False" CornerRadius="0" BorderThickness="0,1,0,0">
       <InfoBar.ActionButton>
@@ -381,6 +386,7 @@ pub(super) struct Chrome {
     pub(super) bookmarks_hint: UIElement,
     pub(super) update_bar: InfoBar,
     pub(super) update_action: Button,
+    pub(super) notice_bar: InfoBar,
     pub(super) share_bar: InfoBar,
     pub(super) share_stop: Button,
     pub(super) left_host: Panel,
@@ -434,6 +440,7 @@ impl Chrome {
             bookmarks_hint: xaml::find(&root, "BookmarksHint")?,
             update_bar: xaml::find(&root, "UpdateBar")?,
             update_action: xaml::find(&root, "UpdateAction")?,
+            notice_bar: xaml::find(&root, "NoticeBar")?,
             share_bar: xaml::find(&root, "ShareBar")?,
             share_stop: xaml::find(&root, "ShareStop")?,
             left_host: xaml::find(&root, "LeftHost")?,

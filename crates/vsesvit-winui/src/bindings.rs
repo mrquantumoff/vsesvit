@@ -2089,6 +2089,69 @@ pub struct CoreWebView2Profile_Manual3_Vtbl {
     ) -> windows_core::HRESULT,
 }
 #[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2SaveAsKind(pub i32);
+impl CoreWebView2SaveAsKind {
+    pub const Default: Self = Self(0);
+    pub const HtmlOnly: Self = Self(1);
+    pub const SingleFile: Self = Self(2);
+    pub const Complete: Self = Self(3);
+}
+impl windows_core::imp::TypeKind for CoreWebView2SaveAsKind {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2SaveAsKind {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2SaveAsKind;i4)",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2SaveAsUIResult(pub i32);
+impl CoreWebView2SaveAsUIResult {
+    pub const Success: Self = Self(0);
+    pub const InvalidPath: Self = Self(1);
+    pub const FileAlreadyExists: Self = Self(2);
+    pub const KindNotSupported: Self = Self(3);
+    pub const Cancelled: Self = Self(4);
+}
+impl windows_core::imp::TypeKind for CoreWebView2SaveAsUIResult {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2SaveAsUIResult {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2SaveAsUIResult;i4)",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2SaveAsUIShowingEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2SaveAsUIShowingEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2SaveAsUIShowingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2SaveAsUIShowingEventArgs>();
+}
+unsafe impl windows_core::Interface for CoreWebView2SaveAsUIShowingEventArgs {
+    type Vtable = <ICoreWebView2SaveAsUIShowingEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2SaveAsUIShowingEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2SaveAsUIShowingEventArgs {
+    type Target = ICoreWebView2SaveAsUIShowingEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2SaveAsUIShowingEventArgs {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2SaveAsUIShowingEventArgs";
+}
+unsafe impl Send for CoreWebView2SaveAsUIShowingEventArgs {}
+unsafe impl Sync for CoreWebView2SaveAsUIShowingEventArgs {}
+#[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWebView2ScreenCaptureStartingEventArgs(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
@@ -7395,6 +7458,101 @@ pub struct ICoreWebView2Profile7_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2SaveAsUIShowingEventArgs,
+    ICoreWebView2SaveAsUIShowingEventArgs_Vtbl,
+    0xcc39a250_2b4c_5608_9097_c59b8a8231b9
+);
+impl windows_core::RuntimeType for ICoreWebView2SaveAsUIShowingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2SaveAsUIShowingEventArgs {
+    pub fn ContentMimeType(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ContentMimeType)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn SetCancel(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetCancel)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn SetSuppressDefaultDialog(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetSuppressDefaultDialog)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn SetSaveAsFilePath(&self, value: &str) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetSaveAsFilePath)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(value)),
+            )
+            .ok()
+        }
+    }
+    pub fn SetAllowReplace(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetAllowReplace)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn SetKind(&self, value: CoreWebView2SaveAsKind) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetKind)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2SaveAsUIShowingEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub ContentMimeType: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    Cancel: usize,
+    pub SetCancel: unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    SuppressDefaultDialog: usize,
+    pub SetSuppressDefaultDialog:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    SaveAsFilePath: usize,
+    pub SetSaveAsFilePath: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    AllowReplace: usize,
+    pub SetAllowReplace:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    Kind: usize,
+    pub SetKind: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        CoreWebView2SaveAsKind,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2ScreenCaptureStartingEventArgs,
     ICoreWebView2ScreenCaptureStartingEventArgs_Vtbl,
     0x35f0e2bb_94b0_5be7_b633_f87244e38bfe
@@ -7723,6 +7881,70 @@ pub struct ICoreWebView2_15_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2_25,
+    ICoreWebView2_25_Vtbl,
+    0xb8e2edce_d943_5871_8397_483dbd6c0f9e
+);
+impl windows_core::RuntimeType for ICoreWebView2_25 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2_25 {
+    pub fn SaveAsUIShowing<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2>,
+                windows_core::Ref<CoreWebView2SaveAsUIShowingEventArgs>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2, CoreWebView2SaveAsUIShowingEventArgs> = {
+            let com = windows_core::imp::DelegateBox::< TypedEventHandler < CoreWebView2 , CoreWebView2SaveAsUIShowingEventArgs > , F >::new (& TypedEventHandlerBox::< CoreWebView2 , CoreWebView2SaveAsUIShowingEventArgs , F >::VTABLE , handler) ;
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).SaveAsUIShowing)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveSaveAsUIShowing,
+            ))
+        }
+    }
+    pub fn ShowSaveAsUIAsync(
+        &self,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<CoreWebView2SaveAsUIResult>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ShowSaveAsUIAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2_25_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub SaveAsUIShowing: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveSaveAsUIShowing:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    pub ShowSaveAsUIAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2_27,
     ICoreWebView2_27_Vtbl,
     0xd964f497_ffdf_5bcd_bf52_ff4585f2ebc2
@@ -7992,6 +8214,89 @@ pub struct ICoreWebView2_8_Vtbl {
     ) -> windows_core::HRESULT,
     pub RemoveIsDocumentPlayingAudioChanged:
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2_9,
+    ICoreWebView2_9_Vtbl,
+    0x64b2ec16_0b29_5216_bf86_e575c88f7031
+);
+impl windows_core::RuntimeType for ICoreWebView2_9 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2_9 {
+    pub fn IsDefaultDownloadDialogOpen(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsDefaultDownloadDialogOpen)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn IsDefaultDownloadDialogOpenChanged<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<CoreWebView2>, windows_core::Ref<windows_core::IInspectable>)
+            + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2, windows_core::IInspectable> = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<CoreWebView2, windows_core::IInspectable>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<CoreWebView2, windows_core::IInspectable, F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self)
+                .IsDefaultDownloadDialogOpenChanged)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveIsDefaultDownloadDialogOpenChanged,
+            ))
+        }
+    }
+    pub fn CloseDefaultDownloadDialog(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).CloseDefaultDownloadDialog)(
+                windows_core::Interface::as_raw(self),
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2_9_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub IsDefaultDownloadDialogOpen:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    DefaultDownloadDialogCornerAlignment: usize,
+    SetDefaultDownloadDialogCornerAlignment: usize,
+    DefaultDownloadDialogMargin: usize,
+    SetDefaultDownloadDialogMargin: usize,
+    pub IsDefaultDownloadDialogOpenChanged: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveIsDefaultDownloadDialogOpenChanged:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    OpenDefaultDownloadDialog: usize,
+    pub CloseDefaultDownloadDialog:
+        unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICryptographicBufferStatics,
@@ -9205,6 +9510,36 @@ impl IFlyoutBase {
             .map(|| result__)
         }
     }
+    pub fn Opened<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<windows_core::IInspectable>,
+                windows_core::Ref<windows_core::IInspectable>,
+            ) + 'static,
+    {
+        let handler: EventHandler<windows_core::IInspectable> = {
+            let com =
+                windows_core::imp::DelegateBox::<EventHandler<windows_core::IInspectable>, F>::new(
+                    &EventHandlerBox::<windows_core::IInspectable, F>::VTABLE,
+                    handler,
+                );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).Opened)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveOpened,
+            ))
+        }
+    }
     pub fn Closed<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
     where
         F: Fn(
@@ -9339,8 +9674,13 @@ pub struct IFlyoutBase_Vtbl {
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
     XamlRoot: usize,
     SetXamlRoot: usize,
-    Opened: usize,
-    RemoveOpened: usize,
+    pub Opened: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveOpened:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     pub Closed: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
@@ -10641,6 +10981,16 @@ impl windows_core::RuntimeType for IKeyboardAccelerator {
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
 impl IKeyboardAccelerator {
+    pub fn Key(&self) -> windows_core::Result<VirtualKey> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Key)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
     pub fn SetKey(&self, value: VirtualKey) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SetKey)(
@@ -10648,6 +10998,16 @@ impl IKeyboardAccelerator {
                 value,
             )
             .ok()
+        }
+    }
+    pub fn Modifiers(&self) -> windows_core::Result<VirtualKeyModifiers> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Modifiers)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
         }
     }
     pub fn SetModifiers(&self, value: VirtualKeyModifiers) -> windows_core::Result<()> {
@@ -10700,10 +11060,14 @@ impl IKeyboardAccelerator {
 #[repr(C)]
 pub struct IKeyboardAccelerator_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
-    Key: usize,
+    pub Key:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut VirtualKey) -> windows_core::HRESULT,
     pub SetKey:
         unsafe extern "system" fn(*mut core::ffi::c_void, VirtualKey) -> windows_core::HRESULT,
-    Modifiers: usize,
+    pub Modifiers: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut VirtualKeyModifiers,
+    ) -> windows_core::HRESULT,
     pub SetModifiers: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         VirtualKeyModifiers,
@@ -11066,6 +11430,28 @@ impl IMenuFlyoutItem {
             .ok()
         }
     }
+    pub fn KeyboardAcceleratorTextOverride(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).KeyboardAcceleratorTextOverride)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn SetKeyboardAcceleratorTextOverride(&self, value: &str) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetKeyboardAcceleratorTextOverride)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(value)),
+            )
+            .ok()
+        }
+    }
     pub fn Click<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
     where
         F: Fn(windows_core::Ref<windows_core::IInspectable>, windows_core::Ref<RoutedEventArgs>)
@@ -11117,8 +11503,14 @@ pub struct IMenuFlyoutItem_Vtbl {
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
-    KeyboardAcceleratorTextOverride: usize,
-    SetKeyboardAcceleratorTextOverride: usize,
+    pub KeyboardAcceleratorTextOverride: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub SetKeyboardAcceleratorTextOverride: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     TemplateSettings: usize,
     pub Click: unsafe extern "system" fn(
         *mut core::ffi::c_void,
@@ -13972,6 +14364,33 @@ impl IUIElement {
             ))
         }
     }
+    pub fn PreviewKeyDown<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<windows_core::IInspectable>, windows_core::Ref<KeyRoutedEventArgs>)
+            + 'static,
+    {
+        let handler: KeyEventHandler = {
+            let com = windows_core::imp::DelegateBox::<KeyEventHandler, F>::new(
+                &KeyEventHandlerBox::<F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).PreviewKeyDown)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemovePreviewKeyDown,
+            ))
+        }
+    }
     pub fn Measure(&self, availablesize: Size) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).Measure)(
@@ -14312,8 +14731,13 @@ pub struct IUIElement_Vtbl {
     RemoveLosingFocus: usize,
     NoFocusCandidateFound: usize,
     RemoveNoFocusCandidateFound: usize,
-    PreviewKeyDown: usize,
-    RemovePreviewKeyDown: usize,
+    pub PreviewKeyDown: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemovePreviewKeyDown:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     PreviewKeyUp: usize,
     RemovePreviewKeyUp: usize,
     BringIntoViewRequested: usize,

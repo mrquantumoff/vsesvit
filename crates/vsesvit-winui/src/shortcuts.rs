@@ -1,23 +1,30 @@
 //! Keyboard shortcuts.
 //!
-//! One table serves two paths. While XAML has focus, each binding is a `KeyboardAccelerator` on
-//! the window root. While the page has focus, keys go to the engine's own window and XAML never
-//! sees them (WinUI's `WebView2` does not forward `AcceleratorKeyPressed`), so:
-//! - `Native` keys (reload, back/forward, find, zoom) are left to WebView2's built-in handling;
+//! Core's keymap says which chords run which command; `Bindings` turns it into Windows key
+//! codes for the commands this shell implements, and serves two paths. While XAML has focus,
+//! each binding is a `KeyboardAccelerator` on the window root. While the page has focus, keys go
+//! to the engine's own window and XAML never sees them (WinUI's `WebView2` does not forward
+//! `AcceleratorKeyPressed`), so:
+//! - `Native` keys (reload, back/forward, find) are left to WebView2's built-in handling;
 //! - `Reserved` keys are taken by a script injected into every page before the page sees them;
 //! - `Overridable` keys reach the page first and are taken only if it does not
 //!   `preventDefault()` them, which is how Chromium treats non-reserved browser shortcuts.
 //!
 //! The script runs in an isolated world, created through the DevTools protocol before the page's
 //! own scripts: it shares the page's DOM but none of its JavaScript objects, so the page cannot
-//! redefine what the script reads a key press through. It reports through a DevTools binding that
-//! exists only in that world, so the page can neither see nor send its messages.
+//! redefine what the script reads a key press through, nor read or change the key sets the
+//! script holds. It reports through a DevTools binding that exists only in that world, so the
+//! page can neither see nor send its messages.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use serde_json::Value;
+use vsesvit_core::shortcuts::{self as keymap, Chord, Key, Keymap};
 
 use crate::store::{self, StoreRequest};
-use Command as C;
 use InPage::{Native, Overridable, Reserved};
+use keymap::Command as Core;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -47,8 +54,82 @@ pub(crate) enum Command {
     CopyCleanLink,
     /// Copies the page's address as it is.
     CopyLink,
+    /// WebView2's Save As dialog for the page: HTML pages and other files (images, PDFs) alike.
+    SavePage,
 }
 
+/// Where a key press for a command is taken while the page has focus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InPage {
+    Native,
+    Reserved,
+    Overridable,
+}
+
+/// Every core command this shell implements, with its shell command and the in-page kind of its
+/// default chords. Zoom, fullscreen, find next/previous, reload without the cache, quit,
+/// Settings and the shortcuts list are missing: WebView2 or nothing handles them.
+const IMPLEMENTED: &[(Core, Command, InPage)] = &[
+    (Core::NewTab, Command::NewTab, Reserved),
+    (Core::CloseTab, Command::CloseTab, Reserved),
+    (Core::ReopenClosedTab, Command::ReopenClosedTab, Reserved),
+    (Core::NextTab, Command::NextTab, Reserved),
+    (Core::PreviousTab, Command::PreviousTab, Reserved),
+    (Core::SelectTab1, Command::SelectTab(0), Overridable),
+    (Core::SelectTab2, Command::SelectTab(1), Overridable),
+    (Core::SelectTab3, Command::SelectTab(2), Overridable),
+    (Core::SelectTab4, Command::SelectTab(3), Overridable),
+    (Core::SelectTab5, Command::SelectTab(4), Overridable),
+    (Core::SelectTab6, Command::SelectTab(5), Overridable),
+    (Core::SelectTab7, Command::SelectTab(6), Overridable),
+    (Core::SelectTab8, Command::SelectTab(7), Overridable),
+    (Core::SelectLastTab, Command::SelectLastTab, Overridable),
+    (Core::ToggleTabList, Command::ToggleTabPane, Overridable),
+    (Core::NewWindow, Command::NewWindow, Reserved),
+    (Core::FocusAddress, Command::FocusAddress, Overridable),
+    (Core::Back, Command::Back, Native),
+    (Core::Forward, Command::Forward, Native),
+    (Core::Reload, Command::Reload, Native),
+    // Pages such as editors keep a Ctrl+Shift+S of their own, as Chrome's Ctrl+S.
+    (Core::SavePage, Command::SavePage, Overridable),
+    (Core::Find, Command::Find, Native),
+    (Core::BookmarkPage, Command::Bookmark, Overridable),
+    (Core::CopyCleanLink, Command::CopyCleanLink, Reserved),
+    (Core::CopyLink, Command::CopyLink, Reserved),
+    (
+        Core::ToggleBookmarksBar,
+        Command::ToggleBookmarksBar,
+        Overridable,
+    ),
+    (Core::ShowBookmarks, Command::ShowBookmarks, Overridable),
+    (Core::ShowHistory, Command::ShowHistory, Overridable),
+    (Core::ShowDownloads, Command::ShowDownloads, Overridable),
+];
+
+fn implemented(core: Core) -> Option<(Command, InPage)> {
+    IMPLEMENTED
+        .iter()
+        .find(|(c, _, _)| *c == core)
+        .map(|&(_, command, kind)| (command, kind))
+}
+
+/// The core commands this shell implements, in core's order, for the shortcuts list.
+pub(crate) fn listed() -> impl Iterator<Item = Core> {
+    Core::ALL
+        .iter()
+        .copied()
+        .filter(|&c| implemented(c).is_some())
+}
+
+fn core_of(command: Command) -> Core {
+    IMPLEMENTED
+        .iter()
+        .find(|(_, c, _)| *c == command)
+        .map(|&(core, _, _)| core)
+        .expect("every shell command has a core command")
+}
+
+/// Modifiers as the page script and XAML encode them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct Mods(u8);
 
@@ -57,8 +138,6 @@ impl Mods {
     pub const CTRL: Self = Self(1);
     pub const SHIFT: Self = Self(2);
     pub const ALT: Self = Self(4);
-    const CTRL_SHIFT: Self = Self(3);
-    const CTRL_ALT_SHIFT: Self = Self(7);
 
     pub fn from_bits(bits: u8) -> Option<Self> {
         (bits <= 7).then_some(Self(bits))
@@ -67,16 +146,139 @@ impl Mods {
     pub fn bits(self) -> u8 {
         self.0
     }
+
+    pub fn of(ctrl: bool, shift: bool, alt: bool) -> Self {
+        Self(u8::from(ctrl) | u8::from(shift) << 1 | u8::from(alt) << 2)
+    }
+
+    pub fn has(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    fn core(self) -> keymap::Mods {
+        keymap::Mods {
+            ctrl: self.has(Self::CTRL),
+            alt: self.has(Self::ALT),
+            shift: self.has(Self::SHIFT),
+        }
+    }
+}
+
+/// The Windows virtual-key code of `key`, and whether typing it takes Shift.
+///
+/// Symbol keys assume the US layout, where core's names match the keys: Plus is Shift with the
+/// `=+` key, Question is Shift with the `/?` key. `KeyboardEvent.keyCode` carries the same codes.
+fn key_vk(key: Key) -> (u16, bool) {
+    const OEM_1: u16 = 0xBA;
+    const OEM_PLUS: u16 = 0xBB;
+    const OEM_COMMA: u16 = 0xBC;
+    const OEM_MINUS: u16 = 0xBD;
+    const OEM_PERIOD: u16 = 0xBE;
+    const OEM_2: u16 = 0xBF;
+    let runs = [
+        (Key::A, Key::Z, 0x41),
+        (Key::Digit0, Key::Digit9, 0x30),
+        (Key::F1, Key::F24, 0x70),
+        (Key::Keypad0, Key::Keypad9, 0x60),
+    ];
+    let at = key as u16;
+    if let Some((first, _, base)) = runs
+        .iter()
+        .find(|(first, last, _)| (*first as u16..=*last as u16).contains(&at))
+    {
+        return (base + at - *first as u16, false);
+    }
+    let vk = match key {
+        Key::Tab => 0x09,
+        Key::Space => 0x20,
+        Key::PageUp => 0x21,
+        Key::PageDown => 0x22,
+        Key::End => 0x23,
+        Key::Home => 0x24,
+        Key::Left => 0x25,
+        Key::Up => 0x26,
+        Key::Right => 0x27,
+        Key::Down => 0x28,
+        Key::Insert => 0x2D,
+        Key::Delete => 0x2E,
+        Key::KeypadPlus => 0x6B,
+        Key::KeypadMinus => 0x6D,
+        Key::Semicolon => OEM_1,
+        Key::Equal => OEM_PLUS,
+        Key::Plus => return (OEM_PLUS, true),
+        Key::Comma => OEM_COMMA,
+        Key::Minus => OEM_MINUS,
+        Key::Period => OEM_PERIOD,
+        Key::Slash => OEM_2,
+        Key::Question => return (OEM_2, true),
+        _ => unreachable!("{key:?} is in a run of keys above"),
+    };
+    (vk, false)
+}
+
+/// The key code and modifiers that type `chord`.
+pub(crate) fn vk_chord(chord: Chord) -> (u16, Mods) {
+    let m = chord.mods();
+    let (vk, shift) = key_vk(chord.key());
+    (vk, Mods::of(m.ctrl, m.shift || shift, m.alt))
+}
+
+/// The key a key press is, and the modifiers held with it. Shift with the `=+` or `/?` key is
+/// Plus or Question, as those keys type with Shift.
+fn key_of(vk: u16, mods: Mods) -> Option<(Key, Mods)> {
+    let shifted = mods.has(Mods::SHIFT);
+    let find = |shift: bool| Key::ALL.iter().copied().find(|&k| key_vk(k) == (vk, shift));
+    match find(true).filter(|_| shifted) {
+        Some(key) => Some((key, mods.without(Mods::SHIFT))),
+        None => find(false).map(|key| (key, mods)),
+    }
+}
+
+/// What a key press does while Settings captures a shortcut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Press {
+    Cancel,
+    /// Leaves the command without a shortcut.
+    Remove,
+    Save,
+    /// A modifier on its own: the chord is still coming.
+    Modifier,
+    Chord(Chord),
+    /// A key that types or moves the caret without Ctrl or Alt.
+    NeedsModifier,
+    /// A key core has no name for, such as Print Screen.
+    NotAKey,
+}
+
+pub(crate) fn press(vk: u16, mods: Mods) -> Press {
+    match vk {
+        0x1B => Press::Cancel,
+        0x08 => Press::Remove,
+        0x0D => Press::Save,
+        0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0x90 | 0x91 | 0xA0..=0xA5 => Press::Modifier,
+        _ => match key_of(vk, mods) {
+            Some((key, mods)) => {
+                Chord::new(mods.core(), key).map_or(Press::NeedsModifier, Press::Chord)
+            }
+            None => Press::NotAKey,
+        },
+    }
+}
+
+/// The in-page kind of a command's chord: a `Native` command is left to WebView2 only on the
+/// chords WebView2 knows it by, its defaults; on any other chord the script reports it.
+pub(crate) fn in_page(kind: InPage, on_a_default_chord: bool) -> InPage {
+    match kind {
+        Native if !on_a_default_chord => Overridable,
+        kind => kind,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum InPage {
-    Native,
-    Reserved,
-    Overridable,
-}
-
-#[derive(Clone, Copy, Debug)]
 pub(crate) struct Binding {
     /// Windows virtual-key code; `KeyboardEvent.keyCode` carries the same value on Windows.
     pub vk: u16,
@@ -85,73 +287,123 @@ pub(crate) struct Binding {
     pub in_page: InPage,
 }
 
-mod vk {
-    pub const TAB: u16 = 0x09;
-    pub const LEFT: u16 = 0x25;
-    pub const RIGHT: u16 = 0x27;
-    pub const KEY_0: u16 = 0x30;
-    pub const B: u16 = 0x42;
-    pub const C: u16 = 0x43;
-    pub const D: u16 = 0x44;
-    pub const F: u16 = 0x46;
-    pub const H: u16 = 0x48;
-    pub const J: u16 = 0x4A;
-    pub const L: u16 = 0x4C;
-    pub const N: u16 = 0x4E;
-    pub const O: u16 = 0x4F;
-    pub const R: u16 = 0x52;
-    pub const S: u16 = 0x53;
-    pub const T: u16 = 0x54;
-    pub const W: u16 = 0x57;
-    pub const F4: u16 = 0x73;
-    pub const F5: u16 = 0x74;
-    pub const F6: u16 = 0x75;
+/// The effective key bindings of the commands this shell implements.
+pub(crate) struct Bindings {
+    keymap: Keymap,
+    list: Vec<Binding>,
+    /// Default chords of `Native` commands that no longer run them and run nothing this shell
+    /// implements: the script takes them so WebView2 does not act on them.
+    swallowed: Vec<(u16, Mods)>,
 }
 
-const fn bind(vk: u16, mods: Mods, command: Command, in_page: InPage) -> Binding {
-    Binding {
-        vk,
-        mods,
-        command,
-        in_page,
+impl Bindings {
+    pub fn new(keymap: Keymap) -> Self {
+        let mut list: Vec<Binding> = Vec::new();
+        for (core, chords) in keymap.iter() {
+            let Some((command, kind)) = implemented(core) else {
+                continue;
+            };
+            for &chord in chords {
+                let (vk, mods) = vk_chord(chord);
+                // Ctrl+Plus and Ctrl+Shift+Equal are one key press.
+                if list.iter().any(|b| b.vk == vk && b.mods == mods) {
+                    continue;
+                }
+                let in_page = in_page(kind, core.defaults().contains(&chord));
+                list.push(Binding {
+                    vk,
+                    mods,
+                    command,
+                    in_page,
+                });
+            }
+        }
+        let swallowed = IMPLEMENTED
+            .iter()
+            .filter(|(_, _, kind)| *kind == Native)
+            .flat_map(|&(core, _, _)| core.defaults().iter().map(move |&chord| (core, chord)))
+            .filter(|&(core, chord)| {
+                keymap
+                    .command_for(chord)
+                    .is_none_or(|owner| owner != core && implemented(owner).is_none())
+            })
+            .map(|(_, chord)| vk_chord(chord))
+            .collect();
+        Self {
+            keymap,
+            list,
+            swallowed,
+        }
+    }
+
+    pub fn keymap(&self) -> &Keymap {
+        &self.keymap
+    }
+
+    pub fn list(&self) -> &[Binding] {
+        &self.list
+    }
+
+    /// The command a key press the page script reported runs. Never a `Native` one: WebView2
+    /// runs those itself, and the script does not report them.
+    fn reported(&self, vk: u16, mods: Mods) -> Option<Command> {
+        self.list
+            .iter()
+            .find(|b| b.vk == vk && b.mods == mods && b.in_page != Native)
+            .map(|b| b.command)
+    }
+
+    /// How menus and tooltips name the command's shortcut: its first chord.
+    pub fn label(&self, command: Command) -> Option<String> {
+        self.keymap
+            .chords(core_of(command))
+            .first()
+            .map(ToString::to_string)
+    }
+
+    /// `text` with the command's shortcut in parentheses, for a tooltip.
+    pub fn tip(&self, text: &str, command: Command) -> String {
+        match self.label(command) {
+            Some(label) => format!("{text} ({label})"),
+            None => text.to_owned(),
+        }
+    }
+
+    /// Sets the key sets in the shortcut world (see `page_script`).
+    pub fn keys_script(&self) -> String {
+        let set = |keys: &mut dyn Iterator<Item = (u16, Mods)>| {
+            keys.map(|(vk, mods)| format!("\"{vk}:{}\"", mods.bits()))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let kind = |kind: InPage| {
+            set(&mut self
+                .list
+                .iter()
+                .filter(move |b| b.in_page == kind)
+                .map(|b| (b.vk, b.mods)))
+        };
+        format!(
+            "globalThis.{KEYS} = {{ reserved: new Set([{}]), overridable: new Set([{}]), swallowed: new Set([{}]) }};",
+            kind(Reserved),
+            kind(Overridable),
+            set(&mut self.swallowed.iter().copied()),
+        )
     }
 }
 
-pub(crate) const BINDINGS: &[Binding] = &[
-    bind(vk::T, Mods::CTRL, C::NewTab, Reserved),
-    bind(vk::N, Mods::CTRL, C::NewWindow, Reserved),
-    bind(vk::W, Mods::CTRL, C::CloseTab, Reserved),
-    bind(vk::F4, Mods::CTRL, C::CloseTab, Reserved),
-    bind(vk::T, Mods::CTRL_SHIFT, C::ReopenClosedTab, Reserved),
-    bind(vk::TAB, Mods::CTRL, C::NextTab, Reserved),
-    bind(vk::TAB, Mods::CTRL_SHIFT, C::PreviousTab, Reserved),
-    bind(vk::L, Mods::CTRL, C::FocusAddress, Overridable),
-    bind(vk::D, Mods::ALT, C::FocusAddress, Overridable),
-    bind(vk::F6, Mods::NONE, C::FocusAddress, Overridable),
-    bind(vk::D, Mods::CTRL, C::Bookmark, Overridable),
-    bind(vk::B, Mods::CTRL_SHIFT, C::ToggleBookmarksBar, Overridable),
-    bind(vk::O, Mods::CTRL_SHIFT, C::ShowBookmarks, Overridable),
-    bind(vk::H, Mods::CTRL, C::ShowHistory, Overridable),
-    bind(vk::J, Mods::CTRL, C::ShowDownloads, Overridable),
-    bind(vk::S, Mods::CTRL, C::ToggleTabPane, Overridable),
-    // Chrome opens the element inspector with Ctrl+Shift+C; Vsesvit copies the clean link.
-    bind(vk::C, Mods::CTRL_SHIFT, C::CopyCleanLink, Reserved),
-    bind(vk::C, Mods::CTRL_ALT_SHIFT, C::CopyLink, Reserved),
-    bind(vk::KEY_0 + 1, Mods::CTRL, C::SelectTab(0), Overridable),
-    bind(vk::KEY_0 + 2, Mods::CTRL, C::SelectTab(1), Overridable),
-    bind(vk::KEY_0 + 3, Mods::CTRL, C::SelectTab(2), Overridable),
-    bind(vk::KEY_0 + 4, Mods::CTRL, C::SelectTab(3), Overridable),
-    bind(vk::KEY_0 + 5, Mods::CTRL, C::SelectTab(4), Overridable),
-    bind(vk::KEY_0 + 6, Mods::CTRL, C::SelectTab(5), Overridable),
-    bind(vk::KEY_0 + 7, Mods::CTRL, C::SelectTab(6), Overridable),
-    bind(vk::KEY_0 + 8, Mods::CTRL, C::SelectTab(7), Overridable),
-    bind(vk::KEY_0 + 9, Mods::CTRL, C::SelectLastTab, Overridable),
-    bind(vk::R, Mods::CTRL, C::Reload, Native),
-    bind(vk::F5, Mods::NONE, C::Reload, Native),
-    bind(vk::LEFT, Mods::ALT, C::Back, Native),
-    bind(vk::RIGHT, Mods::ALT, C::Forward, Native),
-    bind(vk::F, Mods::CTRL, C::Find, Native),
-];
+thread_local! {
+    static CURRENT: RefCell<Rc<Bindings>> = RefCell::new(Rc::new(Bindings::new(Keymap::default())));
+}
+
+/// The bindings in effect, for every window of this (UI) thread.
+pub(crate) fn current() -> Rc<Bindings> {
+    CURRENT.with_borrow(Rc::clone)
+}
+
+pub(crate) fn set_current(keymap: Keymap) {
+    CURRENT.set(Rc::new(Bindings::new(keymap)));
+}
 
 /// A message the shortcut script sent to the host.
 #[derive(Debug, PartialEq)]
@@ -168,6 +420,9 @@ pub(crate) enum PageMessage {
 
 /// The binding the script reports through (`Runtime.bindingCalled` events carry its name).
 pub(crate) const BINDING: &str = "vsesvitShortcut";
+
+/// Where the shortcut world keeps its key sets.
+const KEYS: &str = "vsesvitKeys";
 
 /// The script and the isolated world it runs in.
 pub(crate) struct PageScript {
@@ -186,63 +441,101 @@ impl PageScript {
     }
 }
 
+/// The shortcut world in one engine view: what keeps its key sets current.
+#[derive(Debug, Default)]
+pub(crate) struct World {
+    pub name: String,
+    /// The identifier of the new-document script that sets the key sets, to remove it once a
+    /// newer one replaces it.
+    pub keys_script: Option<String>,
+    /// The world's execution contexts in loaded documents.
+    pub contexts: Vec<i64>,
+}
+
+/// The DevTools events `World::track` follows.
+pub(crate) const CONTEXT_EVENTS: [&str; 3] = [
+    "Runtime.executionContextCreated",
+    "Runtime.executionContextDestroyed",
+    "Runtime.executionContextsCleared",
+];
+
+impl World {
+    /// Follows one of `CONTEXT_EVENTS`, given its parameters.
+    pub fn track(&mut self, event: &str, params: &str) {
+        let Ok(value) = serde_json::from_str::<Value>(params) else {
+            return;
+        };
+        match event {
+            "Runtime.executionContextCreated" => {
+                let context = &value["context"];
+                if context["name"].as_str() == Some(self.name.as_str())
+                    && let Some(id) = context["id"].as_i64()
+                {
+                    self.contexts.push(id);
+                }
+            }
+            "Runtime.executionContextDestroyed" => {
+                if let Some(id) = value["executionContextId"].as_i64() {
+                    self.contexts.retain(|&c| c != id);
+                }
+            }
+            "Runtime.executionContextsCleared" => self.contexts.clear(),
+            _ => {}
+        }
+    }
+}
+
 /// A `Runtime.bindingCalled` event's parameters: a message if it is a call of `BINDING`.
-pub(crate) fn parse_binding_call(event: &str) -> Option<PageMessage> {
+pub(crate) fn parse_binding_call(event: &str, bindings: &Bindings) -> Option<PageMessage> {
     let value: Value = serde_json::from_str(event).ok()?;
     if value.get("name")?.as_str()? != BINDING {
         return None;
     }
-    parse_page_message(value.get("payload")?.as_str()?)
+    parse_page_message(value.get("payload")?.as_str()?, bindings)
 }
 
-fn parse_page_message(message: &str) -> Option<PageMessage> {
+fn parse_page_message(message: &str, bindings: &Bindings) -> Option<PageMessage> {
     let value: Value = serde_json::from_str(message).ok()?;
     match value.get("t")?.as_str()? {
         "key" => {
             let vk = u16::try_from(value.get("vk")?.as_u64()?).ok()?;
             let mods = Mods::from_bits(u8::try_from(value.get("m")?.as_u64()?).ok()?)?;
-            let binding = BINDINGS
-                .iter()
-                .find(|b| b.vk == vk && b.mods == mods && b.in_page != Native)?;
-            Some(PageMessage::Key(binding.command))
+            bindings.reported(vk, mods).map(PageMessage::Key)
         }
         "link" => Some(PageMessage::BackgroundLink(
             value.get("url")?.as_str()?.to_owned(),
         )),
         "zoom" => Some(PageMessage::Zoom(value.get("dpr")?.as_f64()?)),
-        "store" => store::parse_request(
-            value.get("host")?.as_str()?,
-            value.get("detail")?.as_str()?,
-        )
-        .map(PageMessage::Store),
+        "store" => {
+            store::parse_request(value.get("host")?.as_str()?, value.get("detail")?.as_str()?)
+                .map(PageMessage::Store)
+        }
         _ => None,
     }
 }
 
-/// The script every new top-level document runs in the shortcut world.
+/// The script every new top-level document runs in the shortcut world. It reads the key sets
+/// at each key press, so `Bindings::keys_script` can change them in a loaded document.
 fn page_script() -> String {
-    let keys = |kind: InPage| {
-        BINDINGS
-            .iter()
-            .filter(|b| b.in_page == kind)
-            .map(|b| format!("\"{}:{}\"", b.vk, b.mods.bits()))
-            .collect::<Vec<_>>()
-            .join(",")
-    };
     format!(
         r#"(() => {{
-  const report = globalThis.{binding};
+  const report = globalThis.{BINDING};
   if (typeof report !== "function" || window !== window.top) return;
-  const reserved = new Set([{reserved}]);
-  const overridable = new Set([{overridable}]);
-  const chord = (e) => e.keyCode + ":" + ((e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0));
+  const none = new Set();
+  const keys = (kind) => (globalThis.{KEYS} || {{}})[kind] || none;
+  const mods = (e) => (e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0);
+  const chord = (e) => e.keyCode + ":" + mods(e);
   const send = (e) => {{
     e.preventDefault();
     e.stopImmediatePropagation();
-    report(JSON.stringify({{ t: "key", vk: e.keyCode, m: (e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0) }}));
+    report(JSON.stringify({{ t: "key", vk: e.keyCode, m: mods(e) }}));
   }};
-  addEventListener("keydown", (e) => {{ if (e.isTrusted && reserved.has(chord(e))) send(e); }}, true);
-  addEventListener("keydown", (e) => {{ if (e.isTrusted && !e.defaultPrevented && overridable.has(chord(e))) send(e); }}, false);
+  addEventListener("keydown", (e) => {{
+    if (!e.isTrusted) return;
+    if (keys("reserved").has(chord(e))) send(e);
+    else if (keys("swallowed").has(chord(e))) e.preventDefault();
+  }}, true);
+  addEventListener("keydown", (e) => {{ if (e.isTrusted && !e.defaultPrevented && keys("overridable").has(chord(e))) send(e); }}, false);
   const link = (e) => {{
     const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
     if (a) report(JSON.stringify({{ t: "link", url: a.href }}));
@@ -261,10 +554,7 @@ fn page_script() -> String {
   document.addEventListener("vsesvit-store", (e) => {{
     if (typeof e.detail === "string") report(JSON.stringify({{ t: "store", host: location.hostname, detail: e.detail }}));
   }});
-}})();"#,
-        binding = BINDING,
-        reserved = keys(Reserved),
-        overridable = keys(Overridable),
+}})();"#
     )
 }
 
@@ -272,17 +562,159 @@ fn page_script() -> String {
 mod tests {
     use super::*;
 
-    fn lookup(vk: u16, mods: Mods) -> Option<Command> {
-        BINDINGS
+    const CTRL_SHIFT: Mods = Mods(3);
+    const CTRL_ALT_SHIFT: Mods = Mods(7);
+
+    fn defaults() -> Bindings {
+        Bindings::new(Keymap::default())
+    }
+
+    fn with(edit: impl FnOnce(&mut Keymap)) -> Bindings {
+        let mut keymap = Keymap::default();
+        edit(&mut keymap);
+        Bindings::new(keymap)
+    }
+
+    fn chord(s: &str) -> Chord {
+        s.parse().unwrap()
+    }
+
+    fn chord_of(vk: u16, mods: Mods) -> Option<Chord> {
+        match press(vk, mods) {
+            Press::Chord(chord) => Some(chord),
+            _ => None,
+        }
+    }
+
+    fn lookup(bindings: &Bindings, vk: u16, mods: Mods) -> Option<Binding> {
+        bindings
+            .list()
             .iter()
             .find(|b| b.vk == vk && b.mods == mods)
-            .map(|b| b.command)
+            .copied()
+    }
+
+    #[test]
+    fn every_key_has_its_own_key_press() {
+        for (i, &a) in Key::ALL.iter().enumerate() {
+            for &b in &Key::ALL[i + 1..] {
+                assert_ne!(key_vk(a), key_vk(b), "{a:?} and {b:?}");
+            }
+        }
+        assert_eq!(key_vk(Key::A), (0x41, false));
+        assert_eq!(key_vk(Key::Z), (0x5A, false));
+        assert_eq!(key_vk(Key::Digit9), (0x39, false));
+        assert_eq!(key_vk(Key::F1), (0x70, false));
+        assert_eq!(key_vk(Key::F9), (0x78, false));
+        assert_eq!(key_vk(Key::F24), (0x87, false));
+        assert_eq!(key_vk(Key::Keypad0), (0x60, false));
+        assert_eq!(key_vk(Key::Keypad9), (0x69, false));
+        assert_eq!(key_vk(Key::KeypadPlus), (0x6B, false));
+        assert_eq!(key_vk(Key::Plus), (0xBB, true));
+        assert_eq!(key_vk(Key::Equal), (0xBB, false));
+        assert_eq!(key_vk(Key::Question), (0xBF, true));
+        assert_eq!(key_vk(Key::Slash), (0xBF, false));
+        assert_eq!(key_vk(Key::Tab), (0x09, false));
+        assert_eq!(key_vk(Key::Left), (0x25, false));
+    }
+
+    #[test]
+    fn every_chord_survives_the_round_trip_through_its_key_press() {
+        for &key in Key::ALL {
+            for bits in 0..8 {
+                let mods = Mods(bits);
+                let Some(chord) = Chord::new(mods.core(), key) else {
+                    continue;
+                };
+                let (vk, pressed) = vk_chord(chord);
+                let back = chord_of(vk, pressed).unwrap();
+                let typed_with_shift = match key {
+                    Key::Equal | Key::Plus => Some(Key::Plus),
+                    Key::Slash | Key::Question => Some(Key::Question),
+                    _ => None,
+                };
+                let expected = match typed_with_shift {
+                    Some(symbol) if mods.has(Mods::SHIFT) => {
+                        Chord::new(mods.without(Mods::SHIFT).core(), symbol).unwrap()
+                    }
+                    _ => chord,
+                };
+                assert_eq!(back, expected, "{chord}");
+            }
+        }
+    }
+
+    #[test]
+    fn key_presses_read_as_chords() {
+        assert_eq!(chord_of(0xBB, CTRL_SHIFT), Some(chord("Ctrl+Plus")));
+        assert_eq!(chord_of(0xBB, Mods::CTRL), Some(chord("Ctrl+Equal")));
+        assert_eq!(chord_of(0xBF, CTRL_SHIFT), Some(chord("Ctrl+Question")));
+        assert_eq!(chord_of(0x59, CTRL_SHIFT), Some(chord("Ctrl+Shift+Y")));
+        assert_eq!(chord_of(0x78, Mods::NONE), Some(chord("F9")));
+        assert_eq!(chord_of(0x41, Mods::SHIFT), None, "Shift+A types text");
+        assert_eq!(chord_of(0x11, Mods::CTRL), None, "Ctrl alone is no chord");
+    }
+
+    #[test]
+    fn capture_reads_key_presses() {
+        assert_eq!(press(0x1B, Mods::CTRL), Press::Cancel);
+        assert_eq!(press(0x08, Mods::NONE), Press::Remove);
+        assert_eq!(press(0x0D, Mods::NONE), Press::Save);
+        assert_eq!(press(0x11, Mods::CTRL), Press::Modifier);
+        assert_eq!(press(0xA0, Mods::SHIFT), Press::Modifier);
+        assert_eq!(press(0x59, CTRL_SHIFT), Press::Chord(chord("Ctrl+Shift+Y")));
+        assert_eq!(press(0x75, Mods::NONE), Press::Chord(chord("F6")));
+        assert_eq!(press(0x59, Mods::SHIFT), Press::NeedsModifier);
+        assert_eq!(press(0x25, Mods::NONE), Press::NeedsModifier);
+        assert_eq!(press(0x2C, Mods::CTRL), Press::NotAKey, "Print Screen");
+    }
+
+    #[test]
+    fn native_commands_are_native_only_on_their_defaults() {
+        assert_eq!(in_page(Native, true), Native);
+        assert_eq!(in_page(Native, false), Overridable);
+        for kind in [Reserved, Overridable] {
+            assert_eq!(in_page(kind, true), kind);
+            assert_eq!(in_page(kind, false), kind);
+        }
+    }
+
+    #[test]
+    fn only_commands_this_shell_implements_are_bound_or_listed() {
+        let absent = [
+            Core::Quit,
+            Core::ReloadBypassCache,
+            Core::FindNext,
+            Core::FindPrevious,
+            Core::ZoomIn,
+            Core::ZoomOut,
+            Core::ZoomReset,
+            Core::Fullscreen,
+            Core::ShowSettings,
+            Core::ShowShortcuts,
+        ];
+        let listed: Vec<Core> = listed().collect();
+        assert_eq!(listed.len() + absent.len(), Core::ALL.len());
+        assert!(absent.iter().all(|c| !listed.contains(c)));
+        let bindings = defaults();
+        assert!(
+            lookup(&bindings, 0x51, Mods::CTRL).is_none(),
+            "Ctrl+Q quits nothing"
+        );
+        assert!(
+            lookup(&bindings, 0x7A, Mods::NONE).is_none(),
+            "F11 is WebView2's"
+        );
+        for (i, (_, a, _)) in IMPLEMENTED.iter().enumerate() {
+            assert!(IMPLEMENTED[i + 1..].iter().all(|(_, b, _)| a != b));
+        }
     }
 
     #[test]
     fn every_chord_is_bound_once() {
-        for (i, a) in BINDINGS.iter().enumerate() {
-            for b in &BINDINGS[i + 1..] {
+        let bindings = defaults();
+        for (i, a) in bindings.list().iter().enumerate() {
+            for b in &bindings.list()[i + 1..] {
                 assert!(
                     !(a.vk == b.vk && a.mods == b.mods),
                     "{a:?} and {b:?} share a chord"
@@ -292,19 +724,157 @@ mod tests {
     }
 
     #[test]
-    fn lookup_finds_commands() {
-        assert_eq!(lookup(0x54, Mods::CTRL), Some(Command::NewTab));
+    fn defaults_bind_as_before() {
+        let bindings = defaults();
+        let find = |vk, mods| lookup(&bindings, vk, mods).map(|b| (b.command, b.in_page));
+        assert_eq!(find(0x54, Mods::CTRL), Some((Command::NewTab, Reserved)));
         assert_eq!(
-            lookup(0x54, Mods::CTRL_SHIFT),
-            Some(Command::ReopenClosedTab)
+            find(0x54, CTRL_SHIFT),
+            Some((Command::ReopenClosedTab, Reserved))
         );
-        assert_eq!(lookup(0x09, Mods::CTRL_SHIFT), Some(Command::PreviousTab));
-        assert_eq!(lookup(0x33, Mods::CTRL), Some(Command::SelectTab(2)));
-        assert_eq!(lookup(0x74, Mods::NONE), Some(Command::Reload));
-        assert_eq!(lookup(0x53, Mods::CTRL), Some(Command::ToggleTabPane));
-        assert_eq!(lookup(0x43, Mods::CTRL_SHIFT), Some(Command::CopyCleanLink));
-        assert_eq!(lookup(0x43, Mods::CTRL_ALT_SHIFT), Some(Command::CopyLink));
-        assert_eq!(lookup(0x54, Mods::ALT), None);
+        assert_eq!(
+            find(0x09, CTRL_SHIFT),
+            Some((Command::PreviousTab, Reserved))
+        );
+        assert_eq!(
+            find(0x33, Mods::CTRL),
+            Some((Command::SelectTab(2), Overridable))
+        );
+        assert_eq!(find(0x74, Mods::NONE), Some((Command::Reload, Native)));
+        assert_eq!(find(0x52, Mods::CTRL), Some((Command::Reload, Native)));
+        assert_eq!(find(0x46, Mods::CTRL), Some((Command::Find, Native)));
+        assert_eq!(find(0x25, Mods::ALT), Some((Command::Back, Native)));
+        assert_eq!(
+            find(0x53, Mods::CTRL),
+            Some((Command::ToggleTabPane, Overridable))
+        );
+        assert_eq!(
+            find(0x78, Mods::NONE),
+            Some((Command::ToggleTabPane, Overridable))
+        );
+        assert_eq!(
+            find(0x53, CTRL_SHIFT),
+            Some((Command::SavePage, Overridable))
+        );
+        assert_eq!(
+            find(0x43, CTRL_SHIFT),
+            Some((Command::CopyCleanLink, Reserved))
+        );
+        assert_eq!(
+            find(0x43, CTRL_ALT_SHIFT),
+            Some((Command::CopyLink, Reserved))
+        );
+        assert_eq!(find(0x54, Mods::ALT), None);
+        assert!(bindings.swallowed.is_empty());
+        assert_eq!(
+            bindings.label(Command::ToggleTabPane).as_deref(),
+            Some("Ctrl+S")
+        );
+        assert_eq!(
+            bindings.tip("Downloads", Command::ShowDownloads),
+            "Downloads (Ctrl+J)"
+        );
+    }
+
+    #[test]
+    fn a_reassigned_command_follows_its_new_chord() {
+        let bindings = with(|k| {
+            k.assign(Core::ShowHistory, [chord("Ctrl+Shift+Y")]);
+        });
+        assert_eq!(
+            bindings.reported(0x59, CTRL_SHIFT),
+            Some(Command::ShowHistory)
+        );
+        assert_eq!(bindings.reported(0x48, Mods::CTRL), None);
+        assert!(lookup(&bindings, 0x48, Mods::CTRL).is_none());
+        assert_eq!(
+            bindings.tip("History", Command::ShowHistory),
+            "History (Ctrl+Shift+Y)"
+        );
+    }
+
+    #[test]
+    fn a_native_default_given_to_another_command_is_reported_for_it() {
+        let bindings = with(|k| {
+            k.assign(Core::NewTab, [chord("Ctrl+R")]);
+        });
+        assert_eq!(
+            lookup(&bindings, 0x52, Mods::CTRL).map(|b| (b.command, b.in_page)),
+            Some((Command::NewTab, Reserved))
+        );
+        assert_eq!(bindings.reported(0x52, Mods::CTRL), Some(Command::NewTab));
+        assert_eq!(
+            lookup(&bindings, 0x74, Mods::NONE).map(|b| b.in_page),
+            Some(Native)
+        );
+        assert!(bindings.swallowed.is_empty());
+        assert_eq!(
+            bindings.reported(0x54, Mods::CTRL),
+            None,
+            "Ctrl+T left new tab"
+        );
+    }
+
+    #[test]
+    fn a_native_command_on_a_new_chord_is_reported_and_its_defaults_swallowed() {
+        let bindings = with(|k| {
+            k.assign(Core::Reload, [chord("Ctrl+Shift+Y")]);
+        });
+        assert_eq!(
+            lookup(&bindings, 0x59, CTRL_SHIFT).map(|b| (b.command, b.in_page)),
+            Some((Command::Reload, Overridable))
+        );
+        assert_eq!(bindings.reported(0x59, CTRL_SHIFT), Some(Command::Reload));
+        assert_eq!(bindings.swallowed, [(0x52, Mods::CTRL), (0x74, Mods::NONE)]);
+        let script = bindings.keys_script();
+        assert!(
+            script.contains("swallowed: new Set([\"82:1\",\"116:0\"])"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn a_native_default_owned_by_a_command_this_shell_lacks_is_swallowed() {
+        let bindings = with(|k| {
+            k.assign(Core::ZoomIn, [chord("Ctrl+F")]);
+        });
+        assert!(lookup(&bindings, 0x46, Mods::CTRL).is_none());
+        assert_eq!(bindings.swallowed, [(0x46, Mods::CTRL)]);
+        let unbound = with(|k| {
+            k.assign(Core::Back, []);
+        });
+        assert_eq!(unbound.swallowed, [(0x25, Mods::ALT)]);
+    }
+
+    #[test]
+    fn reset_all_restores_the_defaults() {
+        let mut keymap = Keymap::default();
+        keymap.assign(Core::NewTab, [chord("Ctrl+R")]);
+        keymap.assign(Core::ToggleTabList, []);
+        keymap.reset_all();
+        let bindings = Bindings::new(keymap);
+        assert_eq!(bindings.list(), defaults().list());
+        assert_eq!(bindings.keys_script(), defaults().keys_script());
+    }
+
+    #[test]
+    fn the_world_tracks_only_its_own_contexts() {
+        let mut world = World {
+            name: "vsesvit-s".into(),
+            ..World::default()
+        };
+        let created = |id: i64, name: &str| {
+            serde_json::json!({ "context": { "id": id, "name": name, "origin": "https://a.test" } })
+                .to_string()
+        };
+        world.track(CONTEXT_EVENTS[0], &created(3, "vsesvit-s"));
+        world.track(CONTEXT_EVENTS[0], &created(4, ""));
+        world.track(CONTEXT_EVENTS[0], &created(5, "vsesvit-s"));
+        assert_eq!(world.contexts, [3, 5]);
+        world.track(CONTEXT_EVENTS[1], r#"{"executionContextId":3}"#);
+        assert_eq!(world.contexts, [5]);
+        world.track(CONTEXT_EVENTS[2], "{}");
+        assert!(world.contexts.is_empty());
     }
 
     /// A `Runtime.bindingCalled` event as WebView2 hands it over.
@@ -312,32 +882,36 @@ mod tests {
         serde_json::json!({ "name": name, "payload": payload, "executionContextId": 7 }).to_string()
     }
 
+    fn parse(event: &str) -> Option<PageMessage> {
+        parse_binding_call(event, &defaults())
+    }
+
     #[test]
     fn only_calls_of_the_shortcut_binding_count() {
         let key = r#"{"t":"key","vk":87,"m":1}"#;
         assert_eq!(
-            parse_binding_call(&called(BINDING, key)),
+            parse(&called(BINDING, key)),
             Some(PageMessage::Key(Command::CloseTab))
         );
-        assert_eq!(parse_binding_call(&called("other", key)), None);
-        assert_eq!(parse_binding_call(r#"{"payload":"{}"}"#), None);
+        assert_eq!(parse(&called("other", key)), None);
+        assert_eq!(parse(r#"{"payload":"{}"}"#), None);
     }
 
     #[test]
     fn pages_cannot_trigger_native_bindings_or_garbage() {
         let reload = r#"{"t":"key","vk":82,"m":1}"#;
-        assert_eq!(parse_binding_call(&called(BINDING, reload)), None);
+        assert_eq!(parse(&called(BINDING, reload)), None);
         let bad_mods = r#"{"t":"key","vk":87,"m":9}"#;
-        assert_eq!(parse_binding_call(&called(BINDING, bad_mods)), None);
-        assert_eq!(parse_binding_call(&called(BINDING, "not json")), None);
-        assert_eq!(parse_binding_call("not json"), None);
+        assert_eq!(parse(&called(BINDING, bad_mods)), None);
+        assert_eq!(parse(&called(BINDING, "not json")), None);
+        assert_eq!(parse("not json"), None);
     }
 
     #[test]
     fn link_hints_parse() {
         let link = r#"{"t":"link","url":"https://a.test/x"}"#;
         assert_eq!(
-            parse_binding_call(&called(BINDING, link)),
+            parse(&called(BINDING, link)),
             Some(PageMessage::BackgroundLink("https://a.test/x".into()))
         );
     }
@@ -346,32 +920,36 @@ mod tests {
     fn zoom_reports_carry_the_pixel_ratio() {
         let zoom = r#"{"t":"zoom","dpr":1.925}"#;
         assert_eq!(
-            parse_binding_call(&called(BINDING, zoom)),
+            parse(&called(BINDING, zoom)),
             Some(PageMessage::Zoom(1.925))
         );
         let bad = r#"{"t":"zoom","dpr":"big"}"#;
-        assert_eq!(parse_binding_call(&called(BINDING, bad)), None);
+        assert_eq!(parse(&called(BINDING, bad)), None);
     }
 
     #[test]
     fn store_requests_carry_the_senders_host() {
         let request = r#"{"t":"store","host":"chromewebstore.google.com","detail":"{\"seq\":1,\"op\":\"list\"}"}"#;
         assert!(matches!(
-            parse_binding_call(&called(BINDING, request)),
+            parse(&called(BINDING, request)),
             Some(PageMessage::Store(_))
         ));
         let elsewhere = request.replace("chromewebstore.google.com", "example.com");
-        assert_eq!(parse_binding_call(&called(BINDING, &elsewhere)), None);
+        assert_eq!(parse(&called(BINDING, &elsewhere)), None);
     }
 
     #[test]
-    fn script_lists_only_page_handled_keys() {
-        let script = page_script();
+    fn the_key_sets_list_only_page_handled_keys() {
+        let script = defaults().keys_script();
         assert!(script.contains("\"87:1\""), "Ctrl+W is reserved");
         assert!(script.contains("\"68:1\""), "Ctrl+D is overridable");
         assert!(
             script.contains("\"83:1\""),
             "Ctrl+S is overridable, so pages keep their own"
+        );
+        assert!(
+            script.contains("\"83:3\""),
+            "Ctrl+Shift+S is overridable too"
         );
         assert!(!script.contains("\"82:1\""), "Ctrl+R is left to WebView2");
     }
@@ -381,6 +959,7 @@ mod tests {
         let script = PageScript::new("q7x9secret");
         assert_eq!(script.world, "vsesvit-q7x9secret");
         assert!(script.source.contains(&format!("globalThis.{BINDING};")));
+        assert!(script.source.contains(&format!("globalThis.{KEYS}")));
         assert!(!script.source.contains("webview"));
         assert!(
             !script.source.contains("q7x9secret"),

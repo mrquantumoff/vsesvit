@@ -36,7 +36,7 @@ use crate::extension_toolbar as toolbar;
 use crate::layout::StripKind;
 use crate::popup::{self, Activation, ExtensionAction, OpenerTab, Popup};
 use crate::session::{TabPlan, WindowPlan};
-use crate::shortcuts::Command;
+use crate::shortcuts::{self, Command};
 use crate::player::Player;
 use crate::strip::{SidePane, TopStrip};
 use crate::tab::{Initial, Tab, TabId};
@@ -155,6 +155,10 @@ pub(crate) struct BrowserWindow {
     connection: RefCell<Option<Flyout>>,
     permissions: permissions::PermissionUi,
     dialog_open: Cell<bool>,
+    /// What a scripted run's `show_dialog` shows over the window instead of the modal dialog.
+    scripted_dialog: RefCell<Option<dialogs::Preview>>,
+    /// A shortcut is being captured in Settings: the window's accelerators are off.
+    shortcuts_suspended: Cell<bool>,
     /// What the update bar shows; the user may have closed it since.
     update_banner: RefCell<Option<Banner>>,
     closed: Cell<bool>,
@@ -215,6 +219,8 @@ impl BrowserWindow {
             connection: RefCell::new(None),
             permissions: permissions::PermissionUi::default(),
             dialog_open: Cell::new(false),
+            scripted_dialog: RefCell::new(None),
+            shortcuts_suspended: Cell::new(false),
             update_banner: RefCell::new(None),
             closed: Cell::new(false),
             me: me.clone(),
@@ -231,6 +237,7 @@ impl BrowserWindow {
         this.wire()?;
         this.wire_permissions()?;
         this.install_accelerators()?;
+        this.show_shortcuts();
         this.size_for_screen()?;
         match show {
             Show::Activate => this.window.Activate()?,
@@ -520,10 +527,11 @@ impl BrowserWindow {
         let (glyph, tip) = if state.loading() {
             ("\u{E711}", "Stop")
         } else {
-            ("\u{E72C}", "Refresh (Ctrl+R)")
+            ("\u{E72C}", "Refresh")
         };
+        let tip = shortcuts::current().tip(tip, Command::Reload);
         let _ = self.ui.reload_glyph.SetGlyph(glyph);
-        let _ = xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.reload, &tip));
+        let _ = xaml::boxed(&tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.reload, &tip));
         if !self.address_edited.get() {
             let shown = self.address_shown(&state.url);
             if self.ui.address.Text().is_ok_and(|t| t != shown) {
@@ -841,10 +849,102 @@ impl BrowserWindow {
                     self.copy_link(&tab, command == Command::CopyCleanLink);
                 }
             }
+            Command::SavePage => {
+                if let Some(tab) = active {
+                    exec::spawn(save_page(self.me.clone(), tab));
+                }
+            }
         }
     }
 
+    /// Applies the bindings in effect: the accelerators, the shortcuts that menus and tooltips
+    /// name, and the pages' key sets.
+    pub fn shortcuts_changed(&self) {
+        if let Err(e) = self.set_accelerators() {
+            log::warn!("keyboard accelerators: {e}");
+        }
+        self.show_shortcuts();
+        let tabs = self.tabs.borrow().clone();
+        for tab in tabs {
+            tab.shortcuts_changed();
+        }
+    }
+
+    /// Turns the window's accelerators off while Settings captures a shortcut, and on again.
+    pub fn suspend_shortcuts(&self, suspended: bool) {
+        self.shortcuts_suspended.set(suspended);
+        if let Err(e) = self.set_accelerators() {
+            log::warn!("keyboard accelerators: {e}");
+        }
+    }
+
+    /// The key and modifiers of each of the window's accelerators.
+    pub fn accelerator_keys(&self) -> Vec<(i32, u32)> {
+        let Ok(accelerators) = self
+            .ui
+            .root
+            .cast::<UIElement>()
+            .and_then(|r| r.KeyboardAccelerators())
+        else {
+            return Vec::new();
+        };
+        accelerators
+            .into_iter()
+            .filter_map(|a| Some((a.Key().ok()?.0, a.Modifiers().ok()?.0)))
+            .collect()
+    }
+
+    fn show_shortcuts(&self) {
+        let bindings = shortcuts::current();
+        let ui = &self.ui;
+        let tips = [
+            (ui.back.cast::<DependencyObject>(), "Back", Command::Back),
+            (ui.forward.cast(), "Forward", Command::Forward),
+            (
+                ui.copy_link.cast(),
+                "Copy link without trackers",
+                Command::CopyCleanLink,
+            ),
+            (ui.star.cast(), "Bookmark this page", Command::Bookmark),
+            (ui.downloads.cast(), "Downloads", Command::ShowDownloads),
+        ];
+        for (element, text, command) in tips {
+            let tip = bindings.tip(text, command);
+            let _ = element.and_then(|e| ToolTipService::SetToolTip(&e, &xaml::boxed(&tip)?));
+        }
+        let menu = [
+            ("MenuNewTab", Command::NewTab),
+            ("MenuNewWindow", Command::NewWindow),
+            ("MenuBookmarks", Command::ShowBookmarks),
+            ("MenuHistory", Command::ShowHistory),
+            ("MenuDownloads", Command::ShowDownloads),
+            ("MenuSavePage", Command::SavePage),
+        ];
+        for (name, command) in menu {
+            let label = bindings.label(command).unwrap_or_default();
+            let _ = xaml::find::<MenuFlyoutItem>(&ui.root, name)
+                .and_then(|item| item.SetKeyboardAcceleratorTextOverride(&label));
+        }
+        self.refresh_chrome();
+        self.side.show_shortcuts();
+    }
+
+    /// Says in the window that something the user asked for failed.
+    pub fn show_failure(&self, title: &str, message: &str) {
+        let bar = &self.ui.notice_bar;
+        let _ = bar.SetTitle(title);
+        let _ = bar.SetMessage(message);
+        let _ = bar.SetIsOpen(true);
+    }
+
     pub fn show_dialog(&self, dialog: Dialog) {
+        if self
+            .browser()
+            .is_some_and(|b| !b.config().mode.is_interactive())
+        {
+            self.show_scripted_dialog(dialog);
+            return;
+        }
         if self.dialog_open.replace(true) {
             return;
         }
@@ -856,6 +956,28 @@ impl BrowserWindow {
             }
             me.dialog_open.set(false);
         });
+    }
+
+    /// A scripted run never shows the modal dialog (see `dialogs`): its content goes over the
+    /// window until the next one or `close_scripted_dialog`.
+    fn show_scripted_dialog(&self, dialog: Dialog) {
+        self.close_scripted_dialog();
+        match dialogs::preview(&self.me(), dialog) {
+            Ok(preview) => *self.scripted_dialog.borrow_mut() = Some(preview),
+            Err(e) => log::error!("{dialog:?} dialog: {e}"),
+        }
+    }
+
+    /// The dialog a scripted run's `show_dialog` put over the window.
+    pub fn scripted_dialog(&self) -> Option<Dialog> {
+        self.scripted_dialog
+            .borrow()
+            .as_ref()
+            .map(dialogs::Preview::kind)
+    }
+
+    pub fn close_scripted_dialog(&self) {
+        drop(self.scripted_dialog.take());
     }
 
     /// Shows `body` over the window like a dialog, without the modal dialog's focus handling,
@@ -873,7 +995,7 @@ impl BrowserWindow {
 
     /// Programmatic focus in an inactive window would activate it, which scripted runs and
     /// background events must never do.
-    fn is_foreground(&self) -> bool {
+    pub fn is_foreground(&self) -> bool {
         platform::window_handle(&self.window)
             .is_ok_and(|hwnd| unsafe { GetForegroundWindow() } == hwnd)
     }
@@ -1474,6 +1596,34 @@ impl BrowserWindow {
 
 /// The bookmarks bar's commands reach the window through `slot`, as it is created after the
 /// bar. They run on the next turn: a command may rebuild the menu or bar entry it came from.
+/// WebView2's Save As dialog for `tab`'s page. A cancel is the user's; anything else that is not
+/// a save says so in the window.
+async fn save_page(window: Weak<BrowserWindow>, tab: Rc<Tab>) {
+    let failure = match tab.save_as().await {
+        Ok(CoreWebView2SaveAsUIResult::Success) => {
+            log::info!("tab {}: page saved", tab.id);
+            return;
+        }
+        Ok(CoreWebView2SaveAsUIResult::Cancelled) => {
+            log::info!("tab {}: saving the page was cancelled", tab.id);
+            return;
+        }
+        Ok(CoreWebView2SaveAsUIResult::FileAlreadyExists) => "The file already exists.".to_owned(),
+        Ok(CoreWebView2SaveAsUIResult::InvalidPath) => {
+            "The file name or folder is not valid.".to_owned()
+        }
+        Ok(CoreWebView2SaveAsUIResult::KindNotSupported) => {
+            "This page cannot be saved in that format.".to_owned()
+        }
+        Ok(other) => format!("WebView2 gave the unknown result {}.", other.0),
+        Err(e) => e.message(),
+    };
+    log::warn!("tab {}: saving the page failed: {failure}", tab.id);
+    if let Some(window) = window.upgrade() {
+        window.show_failure("Could not save the page", &failure);
+    }
+}
+
 fn bar_host(slot: &wiring::WindowSlot) -> BarHost {
     let slot = slot.clone();
     Rc::new(move |command| {

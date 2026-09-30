@@ -23,7 +23,7 @@
 //! | `dialogs`         | Bookmarks / History / Downloads / Extensions / Settings / About     |
 //! | `downloads`       | where downloads go, their live progress, core's downloads list      |
 //! | `pickers`         | file and folder pickers                                             |
-//! | `shortcuts`       | keyboard bindings, shared by XAML accelerators and the page script  |
+//! | `shortcuts`       | core's keymap as key bindings, for XAML accelerators and the page script |
 //! | `omnibox`         | address-box details around core's omnibox                          |
 //! | `capture`         | PNG capture of web content and of the whole window, without focus   |
 //! | `selftest`, `automation` | `--self-test` and `--ui-smoke` (feature `self-test`)         |

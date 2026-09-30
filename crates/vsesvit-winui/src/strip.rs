@@ -16,6 +16,7 @@ use crate::bindings::*;
 use crate::layout::StripKind;
 use crate::tab::TabId;
 use crate::tab_header::{TabHeader, TabLook};
+use crate::shortcuts::{self, Command};
 use crate::{anim, exec, xaml};
 
 /// What a list reports to its window.
@@ -386,12 +387,12 @@ const PANE_XAML: &str = r#"
     <RowDefinition Height="Auto"/>
   </Grid.RowDefinitions>
   <Button x:Name="PaneToggle" Width="36" Height="32" Padding="0" Background="Transparent" BorderThickness="0"
-          ToolTipService.ToolTip="Collapse the tab list (Ctrl+S)" AutomationProperties.Name="Collapse the tab list">
+          AutomationProperties.Name="Collapse the tab list">
     <FontIcon Glyph="&#xE700;" FontSize="16"/>
   </Button>
   <Button x:Name="PaneNewTab" Grid.Row="1" Height="36" Padding="10,0" HorizontalAlignment="Stretch"
           HorizontalContentAlignment="Left" Background="Transparent" BorderThickness="0"
-          ToolTipService.ToolTip="New tab (Ctrl+T)" AutomationProperties.Name="New tab">
+          AutomationProperties.Name="New tab">
     <StackPanel Orientation="Horizontal" Spacing="12">
       <FontIcon Glyph="&#xE710;" FontSize="14"/>
       <TextBlock x:Name="PaneNewTabText" Text="New tab"/>
@@ -453,6 +454,7 @@ pub(crate) struct SidePane {
     width_tween: anim::Tween,
     list: ListView,
     toggle: Button,
+    new_tab: Button,
     new_tab_text: UIElement,
     media_host: Panel,
     grips: [UIElement; 2],
@@ -478,6 +480,7 @@ impl SidePane {
             width_tween: anim::Tween::find(&root, "PaneWidth")?,
             list: xaml::find(&root, "TabList")?,
             toggle: xaml::find(&root, "PaneToggle")?,
+            new_tab: xaml::find(&root, "PaneNewTab")?,
             new_tab_text: xaml::find(&root, "PaneNewTabText")?,
             media_host: xaml::find(&root, "MediaHost")?,
             grips: [xaml::find(&root, "GripRight")?, xaml::find(&root, "GripLeft")?],
@@ -495,9 +498,11 @@ impl SidePane {
             .cast::<ButtonBase>()?
             .Click(move |_, _| (e.toggle_collapsed)())?
             .forget();
-        let new_tab: ButtonBase = xaml::find(&this.root, "PaneNewTab")?;
         let e = events.clone();
-        new_tab.Click(move |_, _| (e.new_tab)())?.forget();
+        this.new_tab
+            .cast::<ButtonBase>()?
+            .Click(move |_, _| (e.new_tab)())?
+            .forget();
         let e = events.clone();
         this.selector()?
             .SelectionChanged(move |_, _| (e.selection_changed)(StripKind::Side))?
@@ -660,13 +665,25 @@ impl SidePane {
         }
         self.show_grip();
         let _ = xaml::set_visible(&self.new_tab_text, !compact);
-        let tip = if compact {
-            "Expand the tab list (Ctrl+S)"
-        } else {
-            "Collapse the tab list (Ctrl+S)"
-        };
-        let _ = xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.toggle, &tip));
+        self.show_shortcuts();
         self.rows.each_header(|header| header.set_compact(compact));
+    }
+
+    /// The tooltips that name a shortcut, from the bindings in effect.
+    pub fn show_shortcuts(&self) {
+        let bindings = shortcuts::current();
+        let toggle = if self.compact.get() {
+            "Expand the tab list"
+        } else {
+            "Collapse the tab list"
+        };
+        for (button, tip) in [
+            (&self.toggle, bindings.tip(toggle, Command::ToggleTabPane)),
+            (&self.new_tab, bindings.tip("New tab", Command::NewTab)),
+        ] {
+            let _ = xaml::boxed(&tip).and_then(|tip| ToolTipService::SetToolTip(button, &tip));
+        }
+        self.rows.each_header(TabHeader::show_shortcuts);
     }
 
     fn selector(&self) -> Result<Selector> {
