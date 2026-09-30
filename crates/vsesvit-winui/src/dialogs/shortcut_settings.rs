@@ -15,7 +15,7 @@ use crate::bindings::*;
 use crate::browser::Browser;
 use crate::shortcuts::{self, Mods, Press};
 use crate::window::BrowserWindow;
-use crate::{exec, xaml};
+use crate::{exec, platform, xaml};
 
 pub(super) const PANEL: &str = r#"
     <ScrollViewer x:Name="ShortcutsPanel" Grid.Column="1" Padding="0,0,16,0" VerticalScrollBarVisibility="Auto"
@@ -340,7 +340,7 @@ impl Page {
                 };
                 let _ = args.SetHandled(true);
                 let vk = args.Key().map_or(0, |k| u16::try_from(k.0).unwrap_or(0));
-                me.capture_key(vk, held_modifiers());
+                me.capture_key(vk, platform::held_modifiers());
             })?
             .forget();
         let me = self.me.clone();
@@ -482,11 +482,6 @@ impl Page {
     pub(crate) fn capture_note(&self) -> String {
         self.capture.note.Text().unwrap_or_default()
     }
-}
-
-fn held_modifiers() -> Mods {
-    let held = |vk: i32| unsafe { GetKeyState(vk) } < 0;
-    Mods::of(held(0x11), held(0x10), held(0x12))
 }
 
 #[cfg(test)]

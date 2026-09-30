@@ -6,6 +6,7 @@
 //! toolbar button. The window is never activated and gets no OS input. Every check is bounded;
 //! a timeout reports the last value the check saw.
 
+mod omnibox_checks;
 mod shortcut_checks;
 
 use std::cell::RefCell;
@@ -62,6 +63,7 @@ pub(crate) fn prepare(out_dir: &Path) -> std::io::Result<()> {
         "downloads.png",
         "settings-shortcuts.png",
         "shortcut-capture.png",
+        "omnibox-inline.png",
         "saved-page.mhtml",
         "probe.crx",
         "vsesvit.log",
@@ -445,6 +447,16 @@ async fn checks(
         (search_ok && direct_ok && box_ok)
             .then_some(detail.clone())
             .ok_or(detail)
+    })
+    .await;
+
+    check(report, "address_completion", DEFAULT_TIMEOUT, async |p| {
+        omnibox_checks::address_completion(&window, &tab, &server, out_dir, p).await
+    })
+    .await;
+
+    check(report, "selection_search", DEFAULT_TIMEOUT, async |p| {
+        omnibox_checks::selection_search(browser, &window, &tab, &server, p).await
     })
     .await;
 

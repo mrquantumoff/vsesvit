@@ -7,6 +7,7 @@
 //! order and the selection live in the live tab list. No `RefCell` borrow is held across a XAML
 //! call, because XAML raises events such as `SelectionChanged` synchronously from inside them.
 
+mod address;
 mod chrome;
 mod media;
 mod permissions;
@@ -34,6 +35,7 @@ use crate::dialogs::{self, Dialog};
 use crate::downloads::Indicator;
 use crate::extension_toolbar as toolbar;
 use crate::layout::StripKind;
+use crate::omnibox::{self, Address};
 use crate::popup::{self, Activation, ExtensionAction, OpenerTab, Popup};
 use crate::session::{TabPlan, WindowPlan};
 use crate::shortcuts::{self, Command};
@@ -41,7 +43,7 @@ use crate::player::Player;
 use crate::strip::{SidePane, TopStrip};
 use crate::tab::{Initial, Tab, TabId};
 use crate::updates::{Action, Banner, Severity};
-use crate::{capture, connection, exec, omnibox, platform, xaml, zoom};
+use crate::{capture, connection, exec, platform, xaml, zoom};
 
 use chrome::Chrome;
 use tab_actions::Split;
@@ -131,12 +133,12 @@ pub(crate) struct BrowserWindow {
     progress: progress::Progress,
     tabs_position: Cell<TabsPosition>,
     tabs: RefCell<Vec<Rc<Tab>>>,
-    /// The user typed into the address box since it last showed the page URL.
-    address_edited: Cell<bool>,
-    /// What the shell last put in the address box, which is never the user's typing.
-    address_written: RefCell<String>,
-    /// The suggestion list's labels and the URL each one opens.
-    suggestions: RefCell<Vec<(String, String)>>,
+    /// The page's URL in the address box, or the user's edit and its suggestions.
+    address: RefCell<Address>,
+    /// The last key pressed in the address box deletes text (see `omnibox::deletes`).
+    address_deleting: Cell<bool>,
+    /// Keeps the suggestion list highlighting the edit's row (see `watch_suggestion_list`).
+    suggestion_list_watch: RefCell<Option<windows_core::EventRevoker>>,
     /// The tab the toolbar currently shows.
     shown_tab: Cell<Option<TabId>>,
     split: Cell<Option<Split>>,
@@ -203,9 +205,9 @@ impl BrowserWindow {
             progress: progress::Progress::default(),
             tabs_position: Cell::new(prefs.tabs),
             tabs: RefCell::new(Vec::new()),
-            address_edited: Cell::new(false),
-            address_written: RefCell::new(String::new()),
-            suggestions: RefCell::new(Vec::new()),
+            address: RefCell::new(Address::Page(String::new())),
+            address_deleting: Cell::new(false),
+            suggestion_list_watch: RefCell::new(None),
             shown_tab: Cell::new(None),
             split: Cell::new(None),
             fullscreen: Cell::new(false),
@@ -485,7 +487,7 @@ impl BrowserWindow {
         }
         let active_id = active.as_ref().map(|t| t.id);
         if self.shown_tab.replace(active_id) != active_id {
-            self.address_edited.set(false);
+            self.address.replace(Address::Page(String::new()));
             if let Some(tab) = &active {
                 tab.mark_active();
             }
@@ -532,12 +534,16 @@ impl BrowserWindow {
         let tip = shortcuts::current().tip(tip, Command::Reload);
         let _ = self.ui.reload_glyph.SetGlyph(glyph);
         let _ = xaml::boxed(&tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.reload, &tip));
-        if !self.address_edited.get() {
-            let shown = self.address_shown(&state.url);
-            if self.ui.address.Text().is_ok_and(|t| t != shown) {
-                self.address_written.replace(shown.clone());
-                let _ = self.ui.address.SetText(&shown);
+        let shown = self.address_shown(&state.url);
+        let showing_page = match &mut *self.address.borrow_mut() {
+            Address::Page(written) => {
+                written.clone_from(&shown);
+                true
             }
+            Address::Editing(_) => false,
+        };
+        if showing_page && self.ui.address.Text().is_ok_and(|t| t != shown) {
+            let _ = self.ui.address.SetText(&shown);
         }
         self.show_progress();
         self.show_star(state.starred);
@@ -581,6 +587,10 @@ impl BrowserWindow {
     /// Clicking into the address box shows the whole URL, selected; leaving it shows the
     /// simplified one again, unless the user typed something.
     pub(super) fn address_focus_changed(&self, focused: bool) {
+        // The box's list opening can raise `LostFocus` while the focus stays in the box.
+        if !focused && self.focus_in_address() {
+            return;
+        }
         self.address_focused.set(focused);
         if !focused {
             // Focus moving into the box's own suggestion list leaves and returns within a turn.
@@ -595,20 +605,16 @@ impl BrowserWindow {
         }
         self.refresh_chrome();
         let _ = xaml::set_visible(&self.ui.address_focus_ring, focused);
-        let text_box = self
-            .ui
-            .address
-            .cast::<DependencyObject>()
-            .ok()
-            .and_then(|root| xaml::find_descendant::<TextBox>(&root));
-        if let Some(text_box) = text_box {
+        if let Some(text_box) = self.address_text_box() {
             let alignment = if focused {
                 TextAlignment::Left
             } else {
                 TextAlignment::Center
             };
             let _ = text_box.SetTextAlignment(alignment);
-            if focused {
+            // The box's own list takes the focus from it and gives it back while the user
+            // edits, which must leave the edit's selection alone.
+            if focused && matches!(*self.address.borrow(), Address::Page(_)) {
                 let _ = text_box.SelectAll();
             }
         }
@@ -1004,13 +1010,12 @@ impl BrowserWindow {
         if !self.is_foreground() {
             return;
         }
-        let address = &self.ui.address;
-        let _ = address
+        let _ = self
+            .ui
+            .address
             .cast::<UIElement>()
             .and_then(|a| a.Focus(FocusState::Programmatic));
-        if let Ok(root) = address.cast::<DependencyObject>()
-            && let Some(text_box) = xaml::find_descendant::<TextBox>(&root)
-        {
+        if let Some(text_box) = self.address_text_box() {
             let _ = text_box.SelectAll();
         }
     }
@@ -1069,97 +1074,6 @@ impl BrowserWindow {
             Some(url) => tab.navigate_as(&url, Transition::Bookmark),
             None => tab.go_to_new_tab_page(),
         }
-    }
-
-    /// Enter in the address box.
-    pub fn address_submitted(&self, text: &str) {
-        self.address_edited.set(false);
-        let chosen = self
-            .suggestions
-            .borrow()
-            .iter()
-            .find(|(label, _)| label == text)
-            .map(|(_, url)| url.clone());
-        let Some(browser) = self.browser() else {
-            return;
-        };
-        let Some(url) = chosen.or_else(|| browser.resolve_input(text)) else {
-            return;
-        };
-        match self.active_tab() {
-            Some(tab) => {
-                tab.navigate_as(&url, Transition::Typed);
-                if self.is_foreground() {
-                    tab.focus_page();
-                }
-            }
-            None => {
-                if let Err(e) = self.open_url_tab(&url, true) {
-                    log::error!("open {url}: {e}");
-                }
-            }
-        }
-        self.refresh_chrome();
-    }
-
-    /// Fills the suggestion list for `text` (what the user typed).
-    pub fn show_suggestions(&self, text: &str) -> usize {
-        let Some(browser) = self.browser() else {
-            return 0;
-        };
-        let suggestions = browser.suggest(text);
-        let items: Vec<Option<IInspectable>> = suggestions
-            .iter()
-            .map(|(label, _)| xaml::boxed(label).ok())
-            .collect();
-        let count = suggestions.len();
-        *self.suggestions.borrow_mut() = suggestions;
-        let source = windows_collections::IVector::<IInspectable>::from(items);
-        let _ = self
-            .ui
-            .address
-            .cast::<ItemsControl>()
-            .and_then(|list| list.SetItemsSource(&source));
-        count
-    }
-
-    /// Anything that opens over the address box, or takes the focus from it, closes its list.
-    /// The list is emptied too: a focused box with suggestions opens it again by itself, and
-    /// only typing should.
-    pub(super) fn close_suggestions(&self) {
-        let _ = self.ui.address.SetIsSuggestionListOpen(false);
-        self.suggestions.borrow_mut().clear();
-        let empty =
-            windows_collections::IVector::<IInspectable>::from(Vec::<Option<IInspectable>>::new());
-        let _ = self
-            .ui
-            .address
-            .cast::<ItemsControl>()
-            .and_then(|list| list.SetItemsSource(&empty));
-    }
-
-    pub fn suggestions_open(&self) -> bool {
-        self.ui.address.IsSuggestionListOpen().unwrap_or(false)
-    }
-
-    /// The labels the suggestion list currently holds.
-    pub fn suggestion_labels(&self) -> Vec<String> {
-        self.suggestions
-            .borrow()
-            .iter()
-            .map(|(l, _)| l.clone())
-            .collect()
-    }
-
-    /// The box's `TextChanged` says `UserInput` for some of the shell's own URL updates too:
-    /// only a focused box can be typed in, and typing changes what the shell wrote.
-    fn address_edited_by_user(&self) {
-        if !self.address_focused.get() || self.address_text() == *self.address_written.borrow() {
-            return;
-        }
-        self.address_edited.set(true);
-        let text = self.address_text();
-        self.show_suggestions(&text);
     }
 
     // ---- bars ----

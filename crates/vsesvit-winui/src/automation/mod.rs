@@ -685,11 +685,14 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     motion_steps::run(&window, out_dir, steps).await?;
     permission_steps::run(browser, &window, &server, out_dir, steps).await?;
 
-    let count = window.show_suggestions("fixture");
+    window.type_address("fixture");
+    let labels = window.suggestion_labels();
+    window.address_key_down(0x1B, crate::shortcuts::Mods::NONE);
     steps.push(json!({
         "name": "13-omnibox-suggestions",
-        "labels": window.suggestion_labels(),
-        "ok": count >= 2,
+        "labels": labels,
+        "list_closed_by_escape": !window.suggestions_open(),
+        "ok": labels.len() >= 2 && !window.suggestions_open(),
     }));
 
     let page2 = server.url("/page2.html");

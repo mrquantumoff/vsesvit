@@ -16,6 +16,7 @@ use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, keys};
+use vsesvit_core::search::{SelectionAction, Suggestions};
 use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
@@ -800,17 +801,28 @@ impl Browser {
         }
     }
 
-    /// Suggestions for the address box: each label and the URL it opens.
-    pub fn suggest(&self, text: &str) -> Vec<(String, String)> {
-        match self.core(|p| p.omnibox().suggest(text, SUGGESTIONS)) {
-            Ok(list) => list
-                .iter()
-                .map(|s| (omnibox::label(s), s.target.url().to_string()))
-                .collect(),
-            Err(e) => {
+    /// Suggestions for the address box, with an inline completion when `allow_inline`.
+    pub fn suggest(&self, text: &str, allow_inline: bool) -> Suggestions {
+        self.core(|p| p.omnibox().suggest(text, SUGGESTIONS, allow_inline))
+            .unwrap_or_else(|e| {
                 log::warn!("omnibox suggestions: {e}");
-                Vec::new()
-            }
+                Suggestions::default()
+            })
+    }
+
+    /// The page context menu's item for selected `text`.
+    pub fn selection_action(&self, text: &str) -> Option<SelectionAction> {
+        self.core(|p| p.omnibox().for_selection(text))
+            .unwrap_or_else(|e| {
+                log::warn!("context menu search: {e}");
+                None
+            })
+    }
+
+    /// Shift+Delete on a history suggestion.
+    pub fn forget_visit(&self, url: &Url) {
+        if let Err(e) = self.core(|p| p.history().delete_url(url)) {
+            log::warn!("deleting {url} from history: {e}");
         }
     }
 

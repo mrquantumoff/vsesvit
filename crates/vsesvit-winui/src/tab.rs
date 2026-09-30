@@ -756,6 +756,16 @@ impl Tab {
                 },
             ))?
             .forget();
+        core.cast::<ICoreWebView2_11>()?
+            .ContextMenuRequested(on(
+                self,
+                |tab, args: &CoreWebView2ContextMenuRequestedEventArgs| {
+                    if let Err(e) = tab.add_selection_item(args) {
+                        log::warn!("tab {}: context menu: {e}", tab.id);
+                    }
+                },
+            ))?
+            .forget();
         core.ProcessFailed(on(
             self,
             |tab, args: &CoreWebView2ProcessFailedEventArgs| {
@@ -899,6 +909,58 @@ impl Tab {
             deferral,
         };
         window.open_tab_from(self.id, Initial::Opener(request), background);
+    }
+
+    /// Chrome's item for selected text, right after Copy: a search for it on the default
+    /// engine, or its address, opened in a new tab next to this one.
+    fn add_selection_item(
+        self: &Rc<Self>,
+        args: &CoreWebView2ContextMenuRequestedEventArgs,
+    ) -> Result<()> {
+        let target = args.ContextMenuTarget()?;
+        if !target.HasSelection()? {
+            return Ok(());
+        }
+        let Some(browser) = self.window().and_then(|w| w.browser()) else {
+            return Ok(());
+        };
+        let Some(action) = browser.selection_action(&target.SelectionText()?) else {
+            return Ok(());
+        };
+        let item = browser
+            .engine()
+            .environment()
+            .cast::<ICoreWebView2Environment9>()?
+            .CreateContextMenuItem(
+                &action.label,
+                None::<&IRandomAccessStream>,
+                CoreWebView2ContextMenuItemKind::Command,
+            )?;
+        let tab = Rc::downgrade(self);
+        let url = action.url.to_string();
+        item.CustomItemSelected(move |_, _| {
+            let (tab, url) = (tab.clone(), url.clone());
+            // After the menu has closed, not from inside its event.
+            exec::spawn(async move {
+                if let Some(tab) = tab.upgrade()
+                    && let Some(window) = tab.window()
+                {
+                    window.open_tab_from(tab.id, Initial::Url(url), false);
+                }
+            });
+        })?
+        .forget();
+        let items = args.MenuItems()?;
+        let copy = (0..items.Size()?).find(|&i| {
+            items
+                .GetAt(i)
+                .and_then(|m| m.Name())
+                .is_ok_and(|n| n == "copy")
+        });
+        match copy {
+            Some(index) => items.InsertAt(index + 1, &item),
+            None => items.Append(&item),
+        }
     }
 
     pub fn permissions(&self) -> &TabPermissions {

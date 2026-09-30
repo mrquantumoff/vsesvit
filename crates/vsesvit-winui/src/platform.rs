@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, w};
 
 use crate::bindings::*;
+use crate::shortcuts::Mods;
 
 const RUNTIME_FAMILY: PCWSTR = w!("Microsoft.WindowsAppRuntime.2_8wekyb3d8bbwe");
 /// Windows App Runtime 2.5.1.0, the runtime of Windows App SDK 2.5.1.
@@ -318,4 +319,10 @@ pub(crate) fn copy_text(text: &str) -> windows_core::Result<()> {
     package.SetText(text)?;
     Clipboard::SetContent(&package)?;
     Clipboard::Flush()
+}
+
+/// Ctrl, Shift and Alt as held during the key event being handled.
+pub(crate) fn held_modifiers() -> Mods {
+    let held = |vk: i32| unsafe { GetKeyState(vk) } < 0;
+    Mods::of(held(0x11), held(0x10), held(0x12))
 }

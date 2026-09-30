@@ -79,7 +79,7 @@ Microsoft.UI.Xaml.IXamlRoot::{get_RasterizationScale, Changed}
 Microsoft.UI.Xaml.XamlRootChangedEventArgs
 Microsoft.UI.Xaml.RoutedEventHandler
 Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode
-Microsoft.UI.Xaml.Media.VisualTreeHelper::{GetChildrenCount, GetChild}
+Microsoft.UI.Xaml.Media.VisualTreeHelper::{GetChildrenCount, GetChild, GetParent}
 Microsoft.UI.Xaml.Controls.IPanel::get_Children
 Microsoft.UI.Xaml.Controls.UIElementCollection
 Microsoft.UI.Xaml.Controls.ToolTipService::SetToolTip
@@ -103,6 +103,11 @@ Microsoft.UI.Xaml.Controls.IAutoSuggestBoxQuerySubmittedEventArgs::{get_QueryTex
 Microsoft.UI.Xaml.Controls.IItemsControl::{put_ItemsSource, get_Items}
 Microsoft.UI.Xaml.Controls.ItemCollection
 Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text, put_Text, put_TextAlignment, TextChanged}
+Microsoft.UI.Xaml.Controls.ITextBox::{Select, get_SelectionStart, get_SelectionLength}
+Microsoft.UI.Xaml.Controls.Primitives.Popup
+Microsoft.UI.Xaml.Controls.Primitives.IPopup::get_Child
+Microsoft.UI.Xaml.Controls.IListViewBase::ContainerContentChanging
+Microsoft.UI.Xaml.Controls.ContainerContentChangingEventArgs
 Microsoft.UI.Xaml.Controls.TextChangedEventHandler
 Microsoft.UI.Xaml.Controls.TextChangedEventArgs
 Microsoft.UI.Xaml.TextAlignment
@@ -252,6 +257,14 @@ Microsoft.Web.WebView2.Core.ICoreWebView2FrameInfo::get_Source
 Microsoft.Web.WebView2.Core.ICoreWebView2Profile4::SetPermissionStateAsync
 Microsoft.Web.WebView2.Core.CoreWebView2Profile_Manual2::GetNonDefaultPermissionSettingsAsync
 Microsoft.Web.WebView2.Core.ICoreWebView2PermissionSetting::{get_PermissionKind, get_PermissionOrigin, get_PermissionState}
+
+// ---- page context menu ----
+Microsoft.Web.WebView2.Core.ICoreWebView2_11::ContextMenuRequested
+Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuRequestedEventArgs::{get_MenuItems, get_ContextMenuTarget, put_SelectedCommandId, put_Handled}
+Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuTarget::{get_HasSelection, get_SelectionText}
+Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuItem::{get_Name, get_Label, get_CommandId, CustomItemSelected}
+Microsoft.Web.WebView2.Core.ICoreWebView2Environment9::CreateContextMenuItem
+Microsoft.Web.WebView2.Core.CoreWebView2ContextMenuItemKind
 Microsoft.UI.Xaml.Controls.IInfoBar::{get_IsOpen, get_Title}
 Microsoft.UI.Xaml.Controls.Primitives.IFlyoutBase::put_OverlayInputPassThroughElement
 Microsoft.UI.Xaml.Input.FocusManager::GetFocusedElementWithRoot

@@ -13,7 +13,7 @@ use crate::exec;
 use crate::shortcuts::{self, Command, Mods};
 use crate::player::PlayerEvents;
 use crate::strip::StripEvents;
-use crate::{xaml, zoom};
+use crate::{platform, xaml, zoom};
 
 impl BrowserWindow {
     pub(super) fn wire(&self) -> Result<()> {
@@ -99,11 +99,27 @@ impl BrowserWindow {
                 let (Some(w), Some(args)) = (w.upgrade(), args.as_ref()) else {
                     return;
                 };
-                if args
+                let typed = args
                     .Reason()
-                    .is_ok_and(|r| r == AutoSuggestionBoxTextChangeReason::UserInput)
-                {
-                    w.address_edited_by_user();
+                    .is_ok_and(|r| r == AutoSuggestionBoxTextChangeReason::UserInput);
+                w.address_text_changed(typed);
+            })?
+            .forget();
+        let w = me();
+        ui.address
+            .cast::<FrameworkElement>()?
+            .Loaded(move |_, _| with(&w, BrowserWindow::watch_suggestion_list))?
+            .forget();
+        let w = me();
+        ui.address
+            .cast::<UIElement>()?
+            .PreviewKeyDown(move |_, args| {
+                let (Some(w), Some(args)) = (w.upgrade(), args.as_ref()) else {
+                    return;
+                };
+                let vk = args.Key().map_or(0, |k| u16::try_from(k.0).unwrap_or(0));
+                if w.address_key_down(vk, platform::held_modifiers()) {
+                    let _ = args.SetHandled(true);
                 }
             })?
             .forget();
@@ -221,6 +237,10 @@ impl BrowserWindow {
         for tab in self.tabs.take() {
             tab.close();
         }
+        // XAML keeps the text box that last had the focus until it shuts down, and then
+        // destroys it after the window's input site is gone, which crashes; releasing the
+        // content now lets it go while the window still exists.
+        let _ = self.window.SetContent(None::<&UIElement>);
         if let Some(browser) = browser {
             browser.window_closed(self);
         }

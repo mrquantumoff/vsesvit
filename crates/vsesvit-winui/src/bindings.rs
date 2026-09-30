@@ -1082,6 +1082,34 @@ unsafe impl Send for ComboBox {}
 unsafe impl Sync for ComboBox {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContainerContentChangingEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    ContainerContentChangingEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for ContainerContentChangingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IContainerContentChangingEventArgs>();
+}
+unsafe impl windows_core::Interface for ContainerContentChangingEventArgs {
+    type Vtable = <IContainerContentChangingEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <IContainerContentChangingEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for ContainerContentChangingEventArgs {
+    type Target = IContainerContentChangingEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for ContainerContentChangingEventArgs {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Controls.ContainerContentChangingEventArgs";
+}
+unsafe impl Send for ContainerContentChangingEventArgs {}
+unsafe impl Sync for ContainerContentChangingEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContentControl(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     ContentControl,
@@ -1352,6 +1380,110 @@ impl windows_core::RuntimeName for CoreWebView2ContentLoadingEventArgs {
 }
 unsafe impl Send for CoreWebView2ContentLoadingEventArgs {}
 unsafe impl Sync for CoreWebView2ContentLoadingEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2ContextMenuItem(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2ContextMenuItem,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2ContextMenuItem {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2ContextMenuItem>();
+}
+unsafe impl windows_core::Interface for CoreWebView2ContextMenuItem {
+    type Vtable = <ICoreWebView2ContextMenuItem as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <ICoreWebView2ContextMenuItem as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2ContextMenuItem {
+    type Target = ICoreWebView2ContextMenuItem;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2ContextMenuItem {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2ContextMenuItem";
+}
+unsafe impl Send for CoreWebView2ContextMenuItem {}
+unsafe impl Sync for CoreWebView2ContextMenuItem {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2ContextMenuItemKind(pub i32);
+impl CoreWebView2ContextMenuItemKind {
+    pub const Command: Self = Self(0);
+    pub const CheckBox: Self = Self(1);
+    pub const Radio: Self = Self(2);
+    pub const Separator: Self = Self(3);
+    pub const Submenu: Self = Self(4);
+}
+impl windows_core::imp::TypeKind for CoreWebView2ContextMenuItemKind {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2ContextMenuItemKind {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2ContextMenuItemKind;i4)",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2ContextMenuRequestedEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2ContextMenuRequestedEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2ContextMenuRequestedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::for_class::<
+        Self,
+        ICoreWebView2ContextMenuRequestedEventArgs,
+    >();
+}
+unsafe impl windows_core::Interface for CoreWebView2ContextMenuRequestedEventArgs {
+    type Vtable = <ICoreWebView2ContextMenuRequestedEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2ContextMenuRequestedEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2ContextMenuRequestedEventArgs {
+    type Target = ICoreWebView2ContextMenuRequestedEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2ContextMenuRequestedEventArgs {
+    const NAME: &'static str =
+        "Microsoft.Web.WebView2.Core.CoreWebView2ContextMenuRequestedEventArgs";
+}
+unsafe impl Send for CoreWebView2ContextMenuRequestedEventArgs {}
+unsafe impl Sync for CoreWebView2ContextMenuRequestedEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2ContextMenuTarget(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2ContextMenuTarget,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2ContextMenuTarget {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2ContextMenuTarget>();
+}
+unsafe impl windows_core::Interface for CoreWebView2ContextMenuTarget {
+    type Vtable = <ICoreWebView2ContextMenuTarget as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2ContextMenuTarget as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2ContextMenuTarget {
+    type Target = ICoreWebView2ContextMenuTarget;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2ContextMenuTarget {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2ContextMenuTarget";
+}
+unsafe impl Send for CoreWebView2ContextMenuTarget {}
+unsafe impl Sync for CoreWebView2ContextMenuTarget {}
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWebView2DevToolsProtocolEventReceivedEventArgs(windows_core::IUnknown);
@@ -5270,6 +5402,19 @@ pub struct IComboBox_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
+    IContainerContentChangingEventArgs,
+    IContainerContentChangingEventArgs_Vtbl,
+    0xf4c8c937_b070_53ce_a76c_074ee5750a71
+);
+impl windows_core::RuntimeType for IContainerContentChangingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IContainerContentChangingEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
     IContentControl,
     IContentControl_Vtbl,
     0x07e81761_11b2_52ae_8f8b_4d53d2b5900a
@@ -6294,6 +6439,247 @@ pub struct ICoreWebView2ContentLoadingEventArgs_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2ContextMenuItem,
+    ICoreWebView2ContextMenuItem_Vtbl,
+    0x2a65706f_941a_52cd_8651_a165586b0abf
+);
+impl windows_core::RuntimeType for ICoreWebView2ContextMenuItem {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2ContextMenuItem {
+    pub fn Name(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Name)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn Label(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Label)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn CommandId(&self) -> windows_core::Result<i32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CommandId)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn CustomItemSelected<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2ContextMenuItem>,
+                windows_core::Ref<windows_core::IInspectable>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2ContextMenuItem, windows_core::IInspectable> = {
+            let com =
+                windows_core::imp::DelegateBox::<
+                    TypedEventHandler<CoreWebView2ContextMenuItem, windows_core::IInspectable>,
+                    F,
+                >::new(
+                    &TypedEventHandlerBox::<
+                        CoreWebView2ContextMenuItem,
+                        windows_core::IInspectable,
+                        F,
+                    >::VTABLE,
+                    handler,
+                );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).CustomItemSelected)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveCustomItemSelected,
+            ))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2ContextMenuItem_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Name: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub Label: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub CommandId:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i32) -> windows_core::HRESULT,
+    ShortcutKeyDescription: usize,
+    Icon: usize,
+    Kind: usize,
+    IsEnabled: usize,
+    SetIsEnabled: usize,
+    IsChecked: usize,
+    SetIsChecked: usize,
+    Children: usize,
+    pub CustomItemSelected: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveCustomItemSelected:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2ContextMenuRequestedEventArgs,
+    ICoreWebView2ContextMenuRequestedEventArgs_Vtbl,
+    0xd77bdd8c_9b3e_596e_ae80_320c0df4ecbc
+);
+impl windows_core::RuntimeType for ICoreWebView2ContextMenuRequestedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2ContextMenuRequestedEventArgs {
+    pub fn MenuItems(
+        &self,
+    ) -> windows_core::Result<windows_collections::IVector<CoreWebView2ContextMenuItem>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).MenuItems)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn ContextMenuTarget(&self) -> windows_core::Result<CoreWebView2ContextMenuTarget> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).ContextMenuTarget)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn SetSelectedCommandId(&self, value: i32) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetSelectedCommandId)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn SetHandled(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetHandled)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2ContextMenuRequestedEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub MenuItems: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub ContextMenuTarget: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    Location: usize,
+    SelectedCommandId: usize,
+    pub SetSelectedCommandId:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i32) -> windows_core::HRESULT,
+    Handled: usize,
+    pub SetHandled:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2ContextMenuTarget,
+    ICoreWebView2ContextMenuTarget_Vtbl,
+    0x41e24e6a_4612_5bd9_8e61_e9280615205e
+);
+impl windows_core::RuntimeType for ICoreWebView2ContextMenuTarget {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2ContextMenuTarget {
+    pub fn HasSelection(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).HasSelection)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SelectionText(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).SelectionText)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2ContextMenuTarget_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    Kind: usize,
+    IsEditable: usize,
+    IsRequestedForMainFrame: usize,
+    PageUri: usize,
+    FrameUri: usize,
+    HasLinkUri: usize,
+    LinkUri: usize,
+    HasLinkText: usize,
+    LinkText: usize,
+    HasSourceUri: usize,
+    SourceUri: usize,
+    pub HasSelection:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    pub SelectionText: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2DevToolsProtocolEventReceivedEventArgs,
     ICoreWebView2DevToolsProtocolEventReceivedEventArgs_Vtbl,
     0xb6a4b41d_fd18_59fa_923a_c57555d960ce
@@ -6732,6 +7118,49 @@ pub struct ICoreWebView2Environment15_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
     pub CreateFindOptions: unsafe extern "system" fn(
         *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2Environment9,
+    ICoreWebView2Environment9_Vtbl,
+    0xc8213ec7_7dc9_5468_a88b_15c6b7144478
+);
+impl windows_core::RuntimeType for ICoreWebView2Environment9 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2Environment9 {
+    pub fn CreateContextMenuItem<P1>(
+        &self,
+        label: &str,
+        iconstream: P1,
+        kind: CoreWebView2ContextMenuItemKind,
+    ) -> windows_core::Result<CoreWebView2ContextMenuItem>
+    where
+        P1: windows_core::Param<IRandomAccessStream>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CreateContextMenuItem)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(label)),
+                iconstream.param().abi(),
+                kind,
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2Environment9_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub CreateContextMenuItem: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        CoreWebView2ContextMenuItemKind,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }
@@ -7762,6 +8191,68 @@ pub struct ICoreWebView2WebMessageReceivedEventArgs_Vtbl {
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2_11,
+    ICoreWebView2_11_Vtbl,
+    0xc00acbb1_ae32_501f_ad19_9d0ac32d6142
+);
+impl windows_core::RuntimeType for ICoreWebView2_11 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2_11 {
+    pub fn ContextMenuRequested<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2>,
+                windows_core::Ref<CoreWebView2ContextMenuRequestedEventArgs>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2, CoreWebView2ContextMenuRequestedEventArgs> = {
+            let com =
+                windows_core::imp::DelegateBox::<
+                    TypedEventHandler<CoreWebView2, CoreWebView2ContextMenuRequestedEventArgs>,
+                    F,
+                >::new(
+                    &TypedEventHandlerBox::<
+                        CoreWebView2,
+                        CoreWebView2ContextMenuRequestedEventArgs,
+                        F,
+                    >::VTABLE,
+                    handler,
+                );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).ContextMenuRequested)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveContextMenuRequested,
+            ))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2_11_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub ContextMenuRequested: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveContextMenuRequested:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2_13,
@@ -11226,6 +11717,41 @@ impl IListViewBase {
             ))
         }
     }
+    pub fn ContainerContentChanging<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<ListViewBase>,
+                windows_core::Ref<ContainerContentChangingEventArgs>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<ListViewBase, ContainerContentChangingEventArgs> = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<ListViewBase, ContainerContentChangingEventArgs>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<ListViewBase, ContainerContentChangingEventArgs, F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).ContainerContentChanging)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveContainerContentChanging,
+            ))
+        }
+    }
     pub fn ScrollIntoView<P0>(&self, item: P0) -> windows_core::Result<()>
     where
         P0: windows_core::Param<windows_core::IInspectable>,
@@ -11284,8 +11810,13 @@ pub struct IListViewBase_Vtbl {
     ) -> windows_core::HRESULT,
     pub RemoveDragItemsCompleted:
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
-    ContainerContentChanging: usize,
-    RemoveContainerContentChanging: usize,
+    pub ContainerContentChanging: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveContainerContentChanging:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     ChoosingItemContainer: usize,
     RemoveChoosingItemContainer: usize,
     ChoosingGroupHeaderContainer: usize,
@@ -12044,6 +12575,31 @@ pub struct IPointerRoutedEventArgs_Vtbl {
     IsGenerated: usize,
     pub GetCurrentPoint: unsafe extern "system" fn(
         *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(IPopup, IPopup_Vtbl, 0x4e3ab19d_2f95_579c_9535_906c58629437);
+impl windows_core::RuntimeType for IPopup {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IPopup {
+    pub fn Child(&self) -> windows_core::Result<UIElement> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Child)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct IPopup_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Child: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
@@ -13170,6 +13726,26 @@ impl ITextBox {
             .ok()
         }
     }
+    pub fn SelectionLength(&self) -> windows_core::Result<i32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).SelectionLength)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SelectionStart(&self) -> windows_core::Result<i32> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).SelectionStart)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
     pub fn SetTextAlignment(&self, value: TextAlignment) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SetTextAlignment)(
@@ -13208,6 +13784,16 @@ impl ITextBox {
             ))
         }
     }
+    pub fn Select(&self, start: i32, length: i32) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Select)(
+                windows_core::Interface::as_raw(self),
+                start,
+                length,
+            )
+            .ok()
+        }
+    }
     pub fn SelectAll(&self) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SelectAll)(windows_core::Interface::as_raw(self))
@@ -13228,9 +13814,11 @@ pub struct ITextBox_Vtbl {
     ) -> windows_core::HRESULT,
     SelectedText: usize,
     SetSelectedText: usize,
-    SelectionLength: usize,
+    pub SelectionLength:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i32) -> windows_core::HRESULT,
     SetSelectionLength: usize,
-    SelectionStart: usize,
+    pub SelectionStart:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut i32) -> windows_core::HRESULT,
     SetSelectionStart: usize,
     MaxLength: usize,
     SetMaxLength: usize,
@@ -13304,7 +13892,8 @@ pub struct ITextBox_Vtbl {
     RemoveBeforeTextChanging: usize,
     SelectionChanging: usize,
     RemoveSelectionChanging: usize,
-    Select: usize,
+    pub Select:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i32, i32) -> windows_core::HRESULT,
     pub SelectAll: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
@@ -14877,6 +15466,11 @@ pub struct IVisualTreeHelperStatics_Vtbl {
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
         *mut i32,
+    ) -> windows_core::HRESULT,
+    pub GetParent: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
@@ -17169,6 +17763,30 @@ impl windows_core::RuntimeType for PointerUpdateKind {
 }
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Popup(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(Popup, windows_core::IUnknown, windows_core::IInspectable);
+windows_core::imp::required_hierarchy!(Popup, FrameworkElement, UIElement, DependencyObject);
+impl windows_core::RuntimeType for Popup {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IPopup>();
+}
+unsafe impl windows_core::Interface for Popup {
+    type Vtable = <IPopup as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IPopup as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for Popup {
+    type Target = IPopup;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for Popup {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Controls.Primitives.Popup";
+}
+unsafe impl Send for Popup {}
+unsafe impl Sync for Popup {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProgressBar(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     ProgressBar,
@@ -18564,6 +19182,19 @@ impl<TSender: windows_core::RuntimeType + 'static, TResult: windows_core::Runtim
         .push_other(TResult::SIGNATURE)
         .push_slice(b")");
 }
+impl<TSender: windows_core::RuntimeType + 'static, TResult: windows_core::RuntimeType + 'static>
+    TypedEventHandler<TSender, TResult>
+{
+    pub fn new<F: Fn(windows_core::Ref<TSender>, windows_core::Ref<TResult>) + 'static>(
+        invoke: F,
+    ) -> Self {
+        let com = windows_core::imp::DelegateBox::<Self, F>::new(
+            &TypedEventHandlerBox::<TSender, TResult, F>::VTABLE,
+            invoke,
+        );
+        unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+    }
+}
 #[repr(C)]
 pub struct TypedEventHandler_Vtbl<TSender, TResult>
 where
@@ -19013,6 +19644,20 @@ impl VisualTreeHelper {
                 &mut result__,
             )
             .map(|| result__)
+        })
+    }
+    pub fn GetParent<P0>(reference: P0) -> windows_core::Result<DependencyObject>
+    where
+        P0: windows_core::Param<DependencyObject>,
+    {
+        Self::IVisualTreeHelperStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).GetParent)(
+                windows_core::Interface::as_raw(this),
+                reference.param().abi(),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
         })
     }
     fn IVisualTreeHelperStatics<
