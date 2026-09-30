@@ -11,6 +11,7 @@ pub mod entities;
 pub mod store;
 
 use migration::{Migrator, MigratorTrait};
+use config::DatabaseConfig;
 use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, DbErr};
 
 #[derive(Debug, thiserror::Error)]
@@ -24,9 +25,10 @@ pub enum ConnectError {
 /// Connects, then applies the migrations this build has and the database lacks. With
 /// `run_migrations` off, pending migrations are an error instead: the server would otherwise
 /// fail on its first query against the old schema.
-pub async fn connect(url: &str, run_migrations: bool) -> Result<DatabaseConnection, ConnectError> {
+pub async fn connect(config: &DatabaseConfig) -> Result<DatabaseConnection, ConnectError> {
+    let url = config.url.as_str();
     let mut options = ConnectOptions::new(url);
-    options.sqlx_logging(false);
+    options.sqlx_logging(false).min_connections(0).max_connections(config.max_connections);
     let in_memory = url.contains(":memory:") || url.contains("mode=memory");
     if in_memory {
         // Every connection to an in-memory SQLite database opens a database of its own.
@@ -40,7 +42,7 @@ pub async fn connect(url: &str, run_migrations: bool) -> Result<DatabaseConnecti
     if pending.is_empty() {
         return Ok(db);
     }
-    if !run_migrations {
+    if !config.run_migrations {
         return Err(ConnectError::Pending(pending.join(", ")));
     }
     tracing::info!(migrations = %pending.join(", "), "applying migrations");

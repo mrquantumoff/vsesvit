@@ -17,7 +17,7 @@ use std::sync::{Arc, LazyLock};
 use tower::ServiceExt;
 use vsesvit_sync_proto::{Page, Record, ServerInfo, Upload, Uploaded};
 use vsesvit_sync_server::api::{self, AppState};
-use vsesvit_sync_server::config::Config;
+use vsesvit_sync_server::config::{Config, DatabaseConfig};
 use vsesvit_sync_server::store;
 
 /// A JWT access token, unsigned: the mock provider trusts it, and the server reads only its claims.
@@ -62,6 +62,10 @@ async fn provider() -> (String, Arc<AtomicUsize>) {
     (issuer, calls)
 }
 
+fn database(url: &str, run_migrations: bool) -> DatabaseConfig {
+    DatabaseConfig { url: url.to_owned(), run_migrations, max_connections: 4 }
+}
+
 struct TestApp {
     router: Router,
     db: DatabaseConnection,
@@ -85,7 +89,7 @@ async fn app(database_url: &str, settings: &[(&str, &str)]) -> TestApp {
         _ => settings.iter().find(|(k, _)| *k == name).map(|(_, v)| (*v).to_owned()),
     })
     .unwrap();
-    let db = vsesvit_sync_server::connect(database_url, true).await.unwrap();
+    let db = vsesvit_sync_server::connect(&database(database_url, true)).await.unwrap();
     TestApp { router: api::router(AppState::new(db.clone(), &config)), db, provider_calls }
 }
 
@@ -298,9 +302,9 @@ async fn pending_migrations_are_applied_or_refused_as_configured() {
     let dir = std::env::temp_dir().join(format!("vsesvit-sync-migrations-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let url = format!("sqlite://{}?mode=rwc", dir.join("sync.db").display().to_string().replace('\\', "/"));
-    let refused = vsesvit_sync_server::connect(&url, false).await;
+    let refused = vsesvit_sync_server::connect(&database(&url, false)).await;
     assert!(matches!(refused, Err(vsesvit_sync_server::ConnectError::Pending(names)) if names.contains("create_accounts_and_records")));
-    vsesvit_sync_server::connect(&url, true).await.unwrap();
-    vsesvit_sync_server::connect(&url, false).await.expect("nothing is pending once applied");
+    vsesvit_sync_server::connect(&database(&url, true)).await.unwrap();
+    vsesvit_sync_server::connect(&database(&url, false)).await.expect("nothing is pending once applied");
     let _ = std::fs::remove_dir_all(&dir);
 }

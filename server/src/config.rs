@@ -5,6 +5,7 @@
 //! |---------------------------|-------------------------------------------|
 //! | `DATABASE_URL`            | `sqlite://vsesvit-sync.db?mode=rwc`       |
 //! | `RUN_MIGRATIONS`          | `true`; `false` refuses to start on pending migrations |
+//! | `DATABASE_MAX_CONNECTIONS`| `10`                                      |
 //! | `BIND_ADDRESS`            | `0.0.0.0:8080`                            |
 //! | `OIDC_ISSUER`             | required                                  |
 //! | `OIDC_CLIENT_ID`          | required                                  |
@@ -28,14 +29,22 @@ use crate::store::Quota;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    pub database_url: String,
-    pub run_migrations: bool,
+    pub database: DatabaseConfig,
     pub bind: SocketAddr,
     pub auth: AuthInfo,
     /// `None` accepts an access token issued to any client.
     pub allowed_client_ids: Option<Vec<String>>,
     pub limits: Limits,
     pub quota: Quota,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatabaseConfig {
+    pub url: String,
+    pub run_migrations: bool,
+    /// Connections the pool opens at most. A Postgres shared with other services, or a role with
+    /// a connection limit, needs this below its limit.
+    pub max_connections: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,9 +108,16 @@ impl Config {
         if quota.max_records < 1 {
             return Err(invalid("MAX_ACCOUNT_RECORDS", &quota.max_records.to_string()));
         }
+        let max_connections = parse(&var, "DATABASE_MAX_CONNECTIONS", 10)?;
+        if !(1..=1000).contains(&max_connections) {
+            return Err(invalid("DATABASE_MAX_CONNECTIONS", &max_connections.to_string()));
+        }
         Ok(Config {
-            database_url: var("DATABASE_URL").unwrap_or_else(|| "sqlite://vsesvit-sync.db?mode=rwc".to_owned()),
-            run_migrations: parse(&var, "RUN_MIGRATIONS", true)?,
+            database: DatabaseConfig {
+                url: var("DATABASE_URL").unwrap_or_else(|| "sqlite://vsesvit-sync.db?mode=rwc".to_owned()),
+                run_migrations: parse(&var, "RUN_MIGRATIONS", true)?,
+                max_connections,
+            },
             bind: parse(&var, "BIND_ADDRESS", "0.0.0.0:8080".parse().expect("valid address"))?,
             auth: AuthInfo { issuer, client_id, scopes, redirect_uris },
             allowed_client_ids,
@@ -177,8 +193,10 @@ mod tests {
         assert_eq!(c.auth.scopes, ["openid", "profile"]);
         assert_eq!(c.auth.redirect_uris.len(), 5);
         assert_eq!(c.allowed_client_ids, Some(vec!["abc".to_owned()]));
-        assert!(c.run_migrations);
-        assert!(!with("RUN_MIGRATIONS", "false").unwrap().run_migrations);
+        assert!(c.database.run_migrations);
+        assert_eq!(c.database.max_connections, 10);
+        assert!(!with("RUN_MIGRATIONS", "false").unwrap().database.run_migrations);
+        assert_eq!(with("DATABASE_MAX_CONNECTIONS", "3").unwrap().database.max_connections, 3);
     }
 
     #[test]
@@ -223,6 +241,8 @@ mod tests {
             ("MAX_REQUEST_BYTES", "100"),
             ("MAX_ACCOUNT_BYTES", "10"),
             ("MAX_ACCOUNT_RECORDS", "0"),
+            ("DATABASE_MAX_CONNECTIONS", "0"),
+            ("DATABASE_MAX_CONNECTIONS", "-1"),
         ] {
             assert!(with(name, value).is_err(), "{name}={value}");
         }

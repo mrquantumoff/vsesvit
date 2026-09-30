@@ -39,6 +39,13 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 dotenvy = "0.15"
+# musl's allocator is slow under a server's load; the image links musl.
+mimalloc = "0.1"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

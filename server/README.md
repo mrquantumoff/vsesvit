@@ -20,6 +20,8 @@ With Postgres, use `compose.yaml`. It needs a database password; keep it, since 
 OIDC_ISSUER=<issuer URL> OIDC_CLIENT_ID=<client id> POSTGRES_PASSWORD=$(openssl rand -hex 24) docker compose -f server/compose.yaml up -d
 ```
 
+The image is Alpine with a statically linked server and nothing else but CA certificates, and runs as an unprivileged user.
+
 To build the image yourself, run this from the repository root:
 
 ```bash
@@ -37,6 +39,7 @@ Settings come from environment variables, or from a `.env` file in the working d
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | `sqlite://vsesvit-sync.db?mode=rwc` (in the image, `/data/vsesvit-sync.db`) | `sqlite://…` or `postgres://…`. |
+| `DATABASE_MAX_CONNECTIONS` | `10` | Connections to the database the server opens at most, 1 to 1000. Keep it under the limit of a Postgres shared with other services, or of the server's role. |
 | `RUN_MIGRATIONS` | `true` | At startup, apply the migrations the database lacks. With `false`, the server refuses to start while any are pending, for databases migrated separately with the migration CLI. |
 | `BIND_ADDRESS` | `0.0.0.0:8080` | |
 | `OIDC_ISSUER` | required | The provider's issuer URL, exactly as its `/.well-known/openid-configuration` states it. HTTPS, or HTTP on `localhost` or a loopback IP. |
