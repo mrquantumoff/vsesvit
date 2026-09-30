@@ -29,6 +29,17 @@ ureq = "3.4"
 x509-parser = "0.18"
 # Favicons fetched for bookmarks are decoded and scaled to a 32x32 PNG. Only the formats sites serve icons in.
 image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "gif", "webp", "bmp"] }
+# The profile vault (vault.rs): one OS-protected key per profile seals secrets such as sync tokens.
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+getrandom = "0.4"
+log = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Pure Rust D-Bus and crypto, so the Secret Service adds no system library.
+secret-service = { version = "5.2", features = ["rt-async-io-crypto-rust"] }
 
 [features]
 # Test helpers shared with the shells' self-tests: a CRX3 writer and a fixture HTTP server.

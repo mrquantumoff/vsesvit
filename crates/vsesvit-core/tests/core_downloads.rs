@@ -134,17 +134,17 @@ fn a_v1_profile_gains_the_table_and_keeps_its_data() {
         p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Kept", &bookmark).unwrap();
     }
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
-    conn.execute_batch("DROP TABLE downloads; DROP TABLE favicons; DROP TABLE favicon_failures; DROP TABLE site_permissions; DROP TABLE site_zoom; PRAGMA user_version = 1;").unwrap();
+    conn.execute_batch("DROP TABLE downloads; DROP TABLE favicons; DROP TABLE favicon_failures; DROP TABLE site_permissions; DROP TABLE site_zoom; DROP TABLE vault_key; DROP TABLE sync_secrets; PRAGMA user_version = 1;").unwrap();
     drop(conn);
 
     let mut p = open_at(&dir.0);
     assert!(p.bookmarks().is_bookmarked(&bookmark));
     let d = p.downloads().start("https://example.com/", Path::new("/dl/f"), None, T0).unwrap();
     drop(p);
-    assert_eq!(user_version(&dir.0), 7);
+    assert_eq!(user_version(&dir.0), 8);
 
     let mut p = open_at(&dir.0);
-    assert_eq!(user_version(&dir.0), 7, "reopening migrates nothing");
+    assert_eq!(user_version(&dir.0), 8, "reopening migrates nothing");
     assert_eq!(p.downloads().list(10).unwrap(), vec![d]);
     assert!(p.bookmarks().is_bookmarked(&bookmark));
 }

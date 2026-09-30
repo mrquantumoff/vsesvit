@@ -54,13 +54,16 @@ Threading model:
 - Every call a shell makes on the UI thread is a local SQLite transaction or an in-memory lookup. Bookmarks are held in memory.
 - Slow work is a `Send` value with no database handle: an extension download and verify (`InstallJob::run`) today, and a sync engine's network I/O later. It runs on a worker thread and its result is committed back on the UI thread.
 - Nothing is shared between threads, so there are no locks.
+- Secrets (sync tokens; later passwords) are sealed with one random key per profile (`vault.rs`), fetched on the UI thread on first use and kept for the process. On Linux that first use may wait on a keyring unlock prompt.
 
 Profile directory, one per profile:
 
 ```
 <data dir>/Vsesvit/profiles/<name>/
   LOCK                                 OS file lock; a second process gets "profile in use"
-  vsesvit.db (+ -wal, -shm)            all synced and local records
+  vsesvit.db (+ -wal, -shm)            all synced and local records; `vault_key` holds the profile's key wrapped by
+                                       DPAPI (Windows), or notes it is in the Secret Service as "Vsesvit Safe Storage"
+                                       (Linux), or holds it unprotected where there is neither (on Linux, until a Secret Service is reachable)
   extensions/<id>/<version>_<sha256 prefix, 32 hex>/   unpacked extensions, immutable once committed
   staging/                             in-flight installs, wiped at open
   engine/                              WebView2 user data folder / WebKit network session data

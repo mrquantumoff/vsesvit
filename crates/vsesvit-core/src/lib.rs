@@ -37,6 +37,7 @@
 //! | [`extensions`]   | desired set (synced) vs installed set (local), CRX3/XPI/unpacked      |
 //! | [`ext_storage`]  | `chrome.storage.local` / `.sync` backing for the Linux runtime        |
 //! | [`sync`]         | what a future sync engine calls: `changes_since`, `apply`             |
+//! | [`vault`]        | the profile's OS-protected key that seals secrets (LOCAL)             |
 //! | `db`             | schema, migrations, `Tx` (stamp + seq + clock persistence)            |
 
 use std::marker::PhantomData;
@@ -64,6 +65,7 @@ pub mod shortcuts;
 pub mod sync;
 #[cfg(feature = "testkit")]
 pub mod testkit;
+pub mod vault;
 pub mod zoom;
 
 pub use url::Url;
@@ -92,6 +94,9 @@ pub struct Profile {
     /// bookmarks-bar paint, so reads never touch SQLite.
     pub(crate) bookmarks: bookmarks::Model,
     pub(crate) chrome_version: String,
+    key_store: vault::KeyStore,
+    /// Fetched on first use, then kept for the process lifetime.
+    vault_key: Option<vault::Key>,
     created: bool,
     /// Exclusive OS lock (`std::fs::File::try_lock`) on `<root>/LOCK`. The OS releases it
     /// when the process dies, so a crash never leaves a stale lock.
@@ -152,6 +157,8 @@ pub struct OpenOptions {
     /// Sent to the Chrome Web Store as `prodversion`. The Windows shell passes the WebView2
     /// runtime's Chromium version; Linux keeps the default.
     pub chrome_version: String,
+    /// Where the vault key goes if the profile has none yet.
+    pub key_store: vault::KeyStore,
 }
 
 impl Default for OpenOptions {
@@ -160,6 +167,7 @@ impl Default for OpenOptions {
             time: TimeSource::System,
             new_device_id: None,
             chrome_version: extensions::DEFAULT_CHROME_VERSION.to_owned(),
+            key_store: vault::KeyStore::default(),
         }
     }
 }
@@ -208,6 +216,8 @@ impl Profile {
             next_seq: meta.next_seq,
             bookmarks: bookmarks::Model::new(records),
             chrome_version: opts.chrome_version,
+            key_store: opts.key_store,
+            vault_key: None,
             created: meta.created,
             _lock: lock,
             _not_send: PhantomData,
@@ -284,9 +294,27 @@ impl Profile {
         ext_storage::ExtStorage { p: self }
     }
 
-    /// The surface a future sync engine uses. Nothing in core calls it.
+    /// The surface the sync engine (`vsesvit-sync`) uses. Nothing in core calls it.
     pub fn sync(&mut self) -> sync::SyncStore<'_> {
         sync::SyncStore { p: self }
+    }
+
+    /// Moves forward whenever a write gives a record something to upload, local edits and
+    /// merges alike, and never otherwise. A shell compares it with the value at its last sync
+    /// start to sync soon after a change, without being told about every edit.
+    pub fn change_seq(&self) -> crdt::Seq {
+        crdt::Seq(self.next_seq)
+    }
+
+    /// The key that seals this profile's secrets. The first call may wait on an OS keyring
+    /// prompt.
+    pub(crate) fn vault_key(&mut self) -> Result<vault::Key, Error> {
+        if let Some(key) = self.vault_key {
+            return Ok(key);
+        }
+        let key = vault::load_or_create(&self.conn, self.device, self.key_store)?;
+        self.vault_key = Some(key);
+        Ok(key)
     }
 
     /// Run `f` in one SQLite transaction. `Tx::stamp()` mints at most one stamp and
@@ -339,6 +367,8 @@ pub enum Error {
     Storage(#[from] ext_storage::StorageError),
     #[error(transparent)]
     Install(#[from] extensions::InstallError),
+    #[error(transparent)]
+    Vault(#[from] vault::VaultError),
     #[error("no such item")]
     NotFound,
     #[error("{} is asked for every time", .0.label())]

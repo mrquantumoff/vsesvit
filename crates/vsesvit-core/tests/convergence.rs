@@ -81,6 +81,7 @@ impl Device {
                 time: TimeSource::Manual(time.clone()),
                 new_device_id: Some(DeviceId(n as u64 + 1)),
                 chrome_version: DEFAULT_CHROME_VERSION.to_owned(),
+                ..OpenOptions::default()
             },
         )
         .expect("open profile");

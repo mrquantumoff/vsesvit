@@ -160,7 +160,13 @@ pub mod keys {
     /// names the same one, so there is nothing to sync, and a synced value would move a device
     /// off its server before it could sign in there.
     pub const SYNC_SERVER: Pref<String> = Pref { key: "sync.server", scope: Scope::Local, default: || DEFAULT_SYNC_SERVER.to_owned() };
+    /// What this device syncs; every type by default.
+    pub const SYNC_TYPES: Pref<Vec<crate::sync::DataType>> =
+        Pref { key: super::SYNC_TYPES_KEY, scope: Scope::Local, default: || crate::sync::DataType::ALL.to_vec() };
 }
+
+/// Local, as Chrome's "Customize sync" is per device.
+pub const SYNC_TYPES_KEY: &str = "sync.types";
 
 pub const DEFAULT_SYNC_SERVER: &str = "https://vsesvit-service.mrquantumoff.dev";
 

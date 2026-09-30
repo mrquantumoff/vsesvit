@@ -6,7 +6,8 @@
 //! 1. `changes_since(kind, cursor, limit)`: local changes to upload.
 //! 2. `apply(records)`: merge downloaded records. Idempotent, order-independent,
 //!    any batch split.
-//! 3. `engine_state` / `set_engine_state`: a place to keep its cursors and tokens.
+//! 3. `engine_state` / `set_engine_state`: a place to keep its cursors; `secret_state` /
+//!    `set_secret_state` for its tokens, sealed by the [`vault`](crate::vault).
 //! 4. `ApplyReport::changed`: what the shell must refresh afterwards.
 //!
 //! There is no trait. There is one implementation (this) and one consumer (the engine),
@@ -40,7 +41,16 @@ use crate::permissions::SitePermissionsTable;
 use crate::prefs::{PrefRecord, PrefsTable};
 use crate::search::EnginesTable;
 use crate::session::SessionsTable;
-use crate::{Error, Profile};
+use crate::{Error, Profile, vault};
+
+/// Values the engine keeps secret, apart from `sync_state` so a sealed value is never read as
+/// a plain one.
+pub(crate) const SECRETS_SCHEMA: &str = "
+CREATE TABLE sync_secrets (              -- LOCAL
+  key    TEXT PRIMARY KEY,
+  value  BLOB NOT NULL                   -- sealed by vault::seal
+) WITHOUT ROWID;
+";
 
 /// Stable numeric codes, so an engine can store them. Never reuse a retired code.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -80,6 +90,49 @@ impl Kind {
     /// on the server untouched.
     pub fn from_code(code: u8) -> Option<Kind> {
         Kind::ALL.iter().copied().find(|k| k.code() == code)
+    }
+}
+
+/// What a person turns sync on or off for, as Chrome's "Customize sync" lists it. Each is one
+/// or more [`Kind`]s.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataType {
+    Bookmarks,
+    History,
+    /// Open tabs, which other devices list as "Tabs from other devices".
+    Tabs,
+    /// Installed extensions and their `storage.sync`.
+    Extensions,
+    /// Preferences, search engines and site permissions.
+    Settings,
+}
+
+impl DataType {
+    pub const ALL: [DataType; 5] = [DataType::Bookmarks, DataType::History, DataType::Tabs, DataType::Extensions, DataType::Settings];
+
+    pub fn kinds(self) -> &'static [Kind] {
+        match self {
+            DataType::Bookmarks => &[Kind::Bookmarks],
+            DataType::History => &[Kind::HistoryPages, Kind::HistoryDeletions],
+            DataType::Tabs => &[Kind::Sessions],
+            DataType::Extensions => &[Kind::Extensions, Kind::ExtStorageSync],
+            DataType::Settings => &[Kind::Prefs, Kind::SearchEngines, Kind::SitePermissions],
+        }
+    }
+
+    pub fn of(kind: Kind) -> DataType {
+        DataType::ALL.into_iter().find(|t| t.kinds().contains(&kind)).expect("every kind has a data type")
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DataType::Bookmarks => "Bookmarks",
+            DataType::History => "History",
+            DataType::Tabs => "Open tabs",
+            DataType::Extensions => "Extensions",
+            DataType::Settings => "Settings",
+        }
     }
 }
 
@@ -223,6 +276,39 @@ impl SyncStore<'_> {
         )?;
         Ok(())
     }
+
+    /// Like [`SyncStore::engine_state`], for tokens: sealed with the profile's vault key. A value
+    /// that does not open (another key, altered) is an error, never `None`. The first call
+    /// in a process may wait on an OS keyring prompt.
+    pub fn secret_state(&mut self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+        let sealed: Option<Vec<u8>> =
+            self.p.conn.query_row("SELECT value FROM sync_secrets WHERE key = ?1", [key], |r| r.get(0)).optional()?;
+        let Some(sealed) = sealed else {
+            return Ok(None);
+        };
+        let vault_key = self.p.vault_key()?;
+        Ok(Some(vault::open(&vault_key, &secret_aad(key), &sealed)?))
+    }
+
+    /// An empty `value` removes the key, and needs no vault key, so signing out works with the
+    /// keyring locked.
+    pub fn set_secret_state(&mut self, key: &str, value: &[u8]) -> Result<(), Error> {
+        if value.is_empty() {
+            self.p.conn.execute("DELETE FROM sync_secrets WHERE key = ?1", [key])?;
+            return Ok(());
+        }
+        let vault_key = self.p.vault_key()?;
+        let sealed = vault::seal(&vault_key, &secret_aad(key), value);
+        self.p.conn.execute(
+            "INSERT INTO sync_secrets (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, sealed],
+        )?;
+        Ok(())
+    }
+}
+
+fn secret_aad(key: &str) -> Vec<u8> {
+    format!("sync_secrets:{key}").into_bytes()
 }
 
 // ---------------------------------------------------------------------------
