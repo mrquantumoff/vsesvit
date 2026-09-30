@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::crdt::{JsonText, Lattice, Lww, Seq, Stamp};
 use crate::db::{seq_col, stamp_col};
 use crate::search::SearchEngineId;
+use crate::shortcuts::Overrides;
 use crate::sync::{Kind, SyncTable, changed_rows};
 use crate::{Error, Profile};
 
@@ -150,6 +151,11 @@ pub mod keys {
     pub const ONBOARDING_DONE: Pref<bool> = Pref { key: "onboarding.done", scope: Scope::Local, default: || false };
     /// Whether each download opens a save dialog instead of going straight to [`DOWNLOADS_DIR`].
     pub const DOWNLOADS_ASK: Pref<bool> = Pref { key: "downloads.ask", scope: Scope::Synced, default: || false };
+    /// The user's shortcut reassignments, read through [`crate::shortcuts::Keymap`]. One register
+    /// for the whole keymap, not one per command: two devices reassigning different commands
+    /// could each take the same chord, and merging per command would give that chord to both.
+    /// Last writer wins keeps a keymap one device resolved as a whole.
+    pub const SHORTCUTS: Pref<Overrides> = Pref { key: "keyboard.shortcuts", scope: Scope::Synced, default: Overrides::new };
 }
 
 /// Sync record: one per key.

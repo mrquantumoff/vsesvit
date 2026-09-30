@@ -33,6 +33,7 @@
 //! | [`session`]      | this device's windows/tabs (restore) = its published "tabs" record    |
 //! | [`prefs`]        | typed preferences                                                    |
 //! | [`search`]       | search engines, omnibox resolve + suggest                             |
+//! | [`shortcuts`]    | commands, default chords, the user's keymap                           |
 //! | [`extensions`]   | desired set (synced) vs installed set (local), CRX3/XPI/unpacked      |
 //! | [`ext_storage`]  | `chrome.storage.local` / `.sync` backing for the Linux runtime        |
 //! | [`sync`]         | what a future sync engine calls: `changes_since`, `apply`             |
@@ -59,6 +60,7 @@ pub mod permissions;
 pub mod prefs;
 pub mod search;
 pub mod session;
+pub mod shortcuts;
 pub mod sync;
 #[cfg(feature = "testkit")]
 pub mod testkit;
