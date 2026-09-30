@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use tracing_subscriber::EnvFilter;
@@ -9,6 +10,7 @@ async fn main() -> ExitCode {
     let _ = dotenvy::dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
     match run().await {
         Ok(()) => ExitCode::SUCCESS,

@@ -91,8 +91,9 @@ impl Account {
         oidc::revoke(http, &self.provider, &self.tokens);
     }
 
-    /// Worker thread: deletes everything the server holds for the account. Other devices keep
-    /// their copies, and upload them again on their next sync.
+    /// Worker thread: deletes everything the server holds for the account. Every device keeps its
+    /// copy, but uploads only what changes from then on: a device's cursors say the server has
+    /// the rest. Signing in again starts a device's cursors over, and uploads everything it holds.
     pub fn delete_server_data(mut self, http: &Http) -> Result<Account, Error> {
         let server = self.server.clone();
         with_token(http, &mut self, |token| server::delete_account(http, &server, token))?;
