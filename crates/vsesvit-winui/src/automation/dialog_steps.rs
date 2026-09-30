@@ -78,7 +78,7 @@ pub(super) async fn settings(
         category_steps(window, out_dir, &preview, category.panel, steps).await?;
     }
 
-    select_index(&categories, 1)?;
+    select_index(&categories, 2)?;
     settle().await;
     let tabs: ComboBox = preview.find("TabsPosition")?;
     select_index(&tabs, 1)?;
@@ -106,7 +106,7 @@ pub(super) async fn settings(
     }));
     home_button(window, out_dir, &preview, page2, steps).await?;
 
-    select_index(&categories, 2)?;
+    select_index(&categories, 3)?;
     settle().await;
     let compact: ToggleSwitch = preview.find("CompactAddress")?;
     let full_urls: ToggleSwitch = preview.find("FullUrls")?;
@@ -124,7 +124,7 @@ pub(super) async fn settings(
         "ok": defaults == (true, false) && narrow > 0.0 && narrow <= 720.5 && wide > narrow,
     }));
 
-    select_index(&categories, 0)?;
+    select_index(&categories, 1)?;
     settle().await;
     let gpu: ToggleSwitch = preview.find("HardwareAcceleration")?;
     let smooth: ToggleSwitch = preview.find("SmoothScrolling")?;

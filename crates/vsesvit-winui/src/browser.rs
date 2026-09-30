@@ -18,6 +18,7 @@ use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::shortcuts::Keymap;
+use vsesvit_core::sync::Changed;
 use vsesvit_core::{Profile, Url, onboarding};
 
 use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
@@ -29,10 +30,11 @@ use crate::engine::{self, Engine};
 use crate::extensions::ExtensionHost;
 use crate::popup::ExtensionAction;
 use crate::session::{self, TabPlan, WindowPlan};
+use crate::sync::{PrefEffect, SyncController};
 use crate::tab::Autofill;
 use crate::updates::{self, Action, Trigger, Updates};
 use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
-use crate::{app, cli, exec, instance, omnibox, platform, shortcuts};
+use crate::{app, cli, exec, instance, omnibox, platform, shortcuts, sync};
 
 /// Recently closed tabs kept for Ctrl+Shift+T.
 const CLOSED_TABS_KEPT: usize = 25;
@@ -115,6 +117,7 @@ pub(crate) struct Browser {
     session_final: Cell<bool>,
     profile_open_ms: u128,
     updates: Updates,
+    sync: SyncController,
     pub(crate) site_mirror: crate::permissions::EngineMirror,
     me: Weak<Browser>,
 }
@@ -177,6 +180,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
     } else {
         Updates::disabled("scripted runs do not update".into())
     };
+    let sync = SyncController::load(&mut profile);
     let browser = Rc::new_cyclic(|me| Browser {
         config,
         profile: RefCell::new(profile),
@@ -194,6 +198,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         session_final: Cell::new(false),
         profile_open_ms,
         updates,
+        sync,
         site_mirror: crate::permissions::EngineMirror::default(),
         me: me.clone(),
     });
@@ -245,6 +250,9 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
     }
     if !browser.updates.is_disabled() {
         exec::spawn(updates::schedule(Rc::downgrade(&browser)));
+    }
+    if browser.config.mode.is_interactive() {
+        exec::spawn(sync::schedule(Rc::downgrade(&browser)));
     }
     Ok(())
 }
@@ -957,6 +965,68 @@ impl Browser {
         }
     }
 
+    /// What a sync engine calls after `sync().apply`, with the report's `changed`: what shows
+    /// the changed data follows, as after the same edit made here. Open tabs from other devices
+    /// show nowhere yet, and `storage.sync` belongs to WebView2 here.
+    pub fn sync_applied(&self, changed: &Changed) {
+        if changed.bookmarks {
+            self.bookmarks_changed();
+        }
+        for effect in sync::pref_effects(&changed.prefs) {
+            match effect {
+                PrefEffect::Window => self.window_prefs_synced(),
+                PrefEffect::Keymap => self.keymap_changed(),
+                PrefEffect::Autofill => self.apply_autofill(),
+                PrefEffect::ExtensionToolbar => self.show_extension_actions(),
+            }
+        }
+        if let Some(me) = self.me.upgrade() {
+            if changed.extensions {
+                me.reconcile_extensions();
+            }
+            if changed.site_permissions {
+                crate::permissions::settings_changed(&me);
+            }
+        }
+        self.sync.applied(changed);
+    }
+
+    /// Reads the synced preferences `WindowPrefs` holds again, and shows what changed in every
+    /// window.
+    fn window_prefs_synced(&self) {
+        let old = self.prefs.get();
+        let new = self.core(|p| WindowPrefs {
+            tabs: p.prefs().get(&keys::TABS_POSITION),
+            theme: p.prefs().get(&keys::THEME),
+            bookmarks_bar: p.prefs().get(&keys::SHOW_BOOKMARKS_BAR),
+            home_button: p.prefs().get(&keys::SHOW_HOME_BUTTON),
+            compact_address: p.prefs().get(&keys::COMPACT_ADDRESS_BAR),
+            full_urls: p.prefs().get(&keys::SHOW_FULL_URLS),
+            ..old
+        });
+        self.prefs.set(new);
+        for window in self.windows() {
+            if new.tabs != old.tabs {
+                window.set_tabs_position(new.tabs);
+            }
+            if new.theme != old.theme {
+                window.apply_theme(new.theme);
+            }
+            if new.bookmarks_bar != old.bookmarks_bar {
+                window.set_bookmarks_bar_visible(new.bookmarks_bar);
+            }
+            if new.home_button != old.home_button {
+                window.set_home_button_visible(new.home_button);
+            }
+            if new.compact_address != old.compact_address {
+                window.set_compact_address(new.compact_address);
+            }
+            if new.full_urls != old.full_urls {
+                window.set_full_urls(new.full_urls);
+            }
+        }
+    }
+
     pub fn write_pref<T: serde::Serialize>(&self, pref: &Pref<T>, value: &T) {
         if let Err(e) = self.core(|p| p.prefs().set(pref, value)) {
             log::warn!("preference {}: {e}", pref.key);
@@ -1014,6 +1084,12 @@ impl Browser {
     pub fn set_updates_channel(&self, channel: UpdateChannel) {
         self.write_pref(&keys::UPDATES_CHANNEL, &channel);
         updates::switch_channel(self);
+    }
+
+    // ---- sync ----
+
+    pub fn sync(&self) -> &SyncController {
+        &self.sync
     }
 
     // ---- extensions ----

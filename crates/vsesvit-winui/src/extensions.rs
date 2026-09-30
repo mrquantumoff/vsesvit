@@ -38,6 +38,9 @@ pub(crate) struct ExtensionHost {
     /// Why the engine refused to load an extension, from the last sync.
     engine_errors: RefCell<HashMap<ExtensionId, String>>,
     listeners: RefCell<Vec<Weak<dyn Fn()>>>,
+    reconcile_running: Cell<bool>,
+    /// Asked for during a reconcile, which then runs once more.
+    reconcile_again: Cell<bool>,
 }
 
 impl ExtensionHost {
@@ -119,8 +122,7 @@ pub(crate) fn verification_label(verification: &Verification) -> &'static str {
 }
 
 impl Browser {
-    /// At startup: `--load-extension` folders, installs another device asked for, then the
-    /// engine sync.
+    /// At startup: `--load-extension` folders, then what other devices asked for.
     pub(crate) async fn start_extensions(self: Rc<Self>) {
         for dir in self.config().load_extensions.clone() {
             let installed = match InstallSource::from_path(&dir) {
@@ -137,6 +139,31 @@ impl Browser {
                 Err(e) => log::error!("--load-extension {}: {e}", dir.display()),
             }
         }
+        self.reconcile_extensions();
+    }
+
+    /// Installs and removes what other devices asked for (at startup, and after a sync changed
+    /// the synced extensions), then brings the engine in line. Reconciles run one at a time.
+    pub(crate) fn reconcile_extensions(self: &Rc<Self>) {
+        let host = &self.extensions;
+        if host.reconcile_running.replace(true) {
+            host.reconcile_again.set(true);
+            return;
+        }
+        let browser = self.clone();
+        exec::spawn(async move {
+            loop {
+                browser.extensions.reconcile_again.set(false);
+                browser.reconcile_once().await;
+                if !browser.extensions.reconcile_again.get() {
+                    break;
+                }
+            }
+            browser.extensions.reconcile_running.set(false);
+        });
+    }
+
+    async fn reconcile_once(self: &Rc<Self>) {
         match self.core(|p| p.extensions().reconcile()) {
             Ok(work) => {
                 for id in &work.removed {
@@ -159,7 +186,7 @@ impl Browser {
             Err(e) => log::warn!("extension reconcile: {e}"),
         }
         if let Err(e) = self.sync_extensions().await {
-            log::warn!("extension sync at startup: {e}");
+            log::warn!("extension sync after reconcile: {e}");
         }
     }
 

@@ -15,6 +15,7 @@ self-test = ["vsesvit-core/testkit"]
 
 [target.'cfg(windows)'.dependencies]
 vsesvit-core = { workspace = true }
+vsesvit-sync = { workspace = true }
 vsesvit-update = { workspace = true }
 windows-core = { workspace = true }
 windows-future = { workspace = true }

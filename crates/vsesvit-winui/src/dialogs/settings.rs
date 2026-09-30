@@ -1,6 +1,7 @@
 //! Settings, bound to vsesvit-core preferences, in categories down the side as in Windows
 //! Settings. Every choice applies at once, in every window, except the engine's startup
-//! switches (at the next start) and the home page (written when the dialog closes).
+//! switches (at the next start), the home page (written when the dialog closes) and the sync
+//! server (written when its box loses focus).
 
 use std::rc::Rc;
 
@@ -24,8 +25,10 @@ pub(super) const MARKUP: &str = r#"
       <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
     <ListView x:Name="SettingsCategories" AutomationProperties.Name="Settings categories"/>
+    {sync}
 
-    <ScrollViewer x:Name="GeneralPanel" Grid.Column="1" Padding="0,0,16,0" VerticalScrollBarVisibility="Auto">
+    <ScrollViewer x:Name="GeneralPanel" Grid.Column="1" Padding="0,0,16,0" VerticalScrollBarVisibility="Auto"
+                  Visibility="Collapsed">
       <StackPanel Spacing="28" Padding="0,0,0,12">
         <StackPanel Spacing="12">
           <TextBlock Text="On startup" Style="{StaticResource BodyStrongTextBlockStyle}"/>
@@ -186,7 +189,13 @@ pub(crate) struct Category {
     pub panel: &'static str,
 }
 
-pub(crate) const CATEGORIES: [Category; 6] = [
+/// Sync first, as Chrome puts "You and Google" first.
+pub(crate) const CATEGORIES: [Category; 7] = [
+    Category {
+        label: "Sync",
+        glyph: "\u{E895}",
+        panel: "SyncPanel",
+    },
     Category {
         label: "General",
         glyph: "\u{E713}",
@@ -316,6 +325,7 @@ pub(super) fn wire(
     wire_clear_browsing_data(root, browser)?;
     super::site_permissions::wire(root, browser)?;
     let shortcuts = super::shortcut_settings::wire(root, browser, window)?;
+    let sync = super::sync_settings::wire(root, browser, window)?;
 
     let tabs: ComboBox = xaml::find(root, "TabsPosition")?;
     let w = weak.clone();
@@ -398,8 +408,9 @@ pub(super) fn wire(
     let default_browser = super::default_browser::wire(root)?;
     let w = weak;
     Ok(Wired {
-        _alive: vec![default_browser, updates, shortcuts],
+        _alive: vec![default_browser, updates, shortcuts, sync.clone()],
         on_close: Some(Box::new(move || {
+            sync.apply_server();
             let Some(b) = w.upgrade() else { return };
             let text = homepage.Text().unwrap_or_default();
             match homepage_value(&text) {

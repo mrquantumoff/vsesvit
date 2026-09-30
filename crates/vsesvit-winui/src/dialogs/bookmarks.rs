@@ -1,7 +1,8 @@
 //! Bookmarks: the tree of folders and bookmarks, with add folder, rename (and edit the URL),
 //! move to another folder or up and down (or drag in the tree), delete, and import from another
 //! browser or a bookmarks file. Every change goes to core, then the tree, the bookmarks bars and the stars
-//! are rebuilt from core, as they are when the icons of bookmarked pages arrive.
+//! are rebuilt from core, as they are when the icons of bookmarked pages arrive or a sync changed
+//! bookmarks.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -10,6 +11,7 @@ use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
 use vsesvit_core::import::{self, Found, Source};
 use vsesvit_core::search::classify_url;
+use vsesvit_core::sync::Changed;
 use windows_core::{Interface, Result};
 
 use super::{Wired, on_click};
@@ -189,8 +191,17 @@ pub(super) fn wire(
         }
     });
     browser.on_favicons_arrived(&repaint);
+    let e = Rc::downgrade(&editor);
+    let synced: Rc<dyn Fn(&Changed)> = Rc::new(move |changed| {
+        if changed.bookmarks
+            && let Some(e) = e.upgrade()
+        {
+            e.render();
+        }
+    });
+    browser.sync().on_applied(&synced);
     Ok(Wired {
-        _alive: vec![editor, Rc::new(repaint)],
+        _alive: vec![editor, Rc::new(repaint), Rc::new(synced)],
         on_close: None,
     })
 }

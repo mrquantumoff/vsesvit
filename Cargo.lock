@@ -2928,6 +2928,7 @@ dependencies = [
  "sha2 0.11.0",
  "time",
  "vsesvit-core",
+ "vsesvit-sync",
  "vsesvit-update",
  "windows-collections",
  "windows-core",

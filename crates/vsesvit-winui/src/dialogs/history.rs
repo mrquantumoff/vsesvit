@@ -5,6 +5,7 @@ use std::rc::{Rc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use vsesvit_core::history::HistoryEntry;
+use vsesvit_core::sync::Changed;
 use windows_core::{IInspectable, Interface, Result};
 
 use super::{Wired, on_click};
@@ -127,8 +128,17 @@ pub(super) fn wire(
             }
         })?;
     }
+    let p = Rc::downgrade(&page);
+    let synced: Rc<dyn Fn(&Changed)> = Rc::new(move |changed| {
+        if changed.history
+            && let Some(p) = p.upgrade()
+        {
+            p.render();
+        }
+    });
+    browser.sync().on_applied(&synced);
     Ok(Wired {
-        _alive: vec![page],
+        _alive: vec![page, Rc::new(synced)],
         on_close: None,
     })
 }

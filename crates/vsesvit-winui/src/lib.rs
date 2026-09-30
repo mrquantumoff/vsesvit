@@ -28,6 +28,7 @@
 //! | `capture`         | PNG capture of web content and of the whole window, without focus   |
 //! | `selftest`, `automation` | `--self-test` and `--ui-smoke` (feature `self-test`)         |
 //! | `updates`         | the self-update state machine, its schedule, the update commands    |
+//! | `sync`            | signing in to a sync server, the sync rounds and their schedule     |
 //! | `bindings`        | generated; regenerate with `tools/bindgen` (see `bindings.txt`)     |
 #![cfg(windows)]
 #![cfg_attr(
@@ -85,6 +86,7 @@ mod session;
 mod shortcuts;
 mod store;
 mod strip;
+mod sync;
 mod tab;
 mod tab_header;
 mod updates;

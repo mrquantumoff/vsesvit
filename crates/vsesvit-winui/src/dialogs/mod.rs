@@ -14,6 +14,7 @@ mod history;
 mod settings;
 mod shortcut_settings;
 mod site_permissions;
+mod sync_settings;
 mod welcome;
 
 use std::borrow::Cow;
@@ -69,6 +70,7 @@ impl Dialog {
             Self::Settings => settings::MARKUP
                 .replacen("{default_browser}", default_browser::MARKUP, 1)
                 .replacen("{shortcuts}", shortcut_settings::PANEL, 1)
+                .replacen("{sync}", sync_settings::PANEL, 1)
                 .into(),
             Self::About => about::MARKUP.into(),
             Self::Welcome => welcome::MARKUP.into(),
