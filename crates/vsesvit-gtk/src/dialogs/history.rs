@@ -3,7 +3,7 @@
 //! deletion directive).
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::glib;
@@ -42,6 +42,8 @@ struct State {
     list: gtk::ListBox,
     stack: gtk::Stack,
     rows: RefCell<Vec<gtk::Widget>>,
+    /// Kept for [`Browser::watch_history`], which holds it weakly.
+    watch: Rc<dyn Fn()>,
 }
 
 pub(crate) fn present(window: &BrowserWindow) {
@@ -77,13 +79,22 @@ pub(crate) fn present(window: &BrowserWindow) {
     stack.add_named(&empty, Some("empty"));
     ui.content.set_child(Some(&stack));
 
-    let state = Rc::new(State {
-        window: window.downgrade(),
-        ui,
-        list,
-        stack,
-        rows: RefCell::new(Vec::new()),
+    let state = Rc::new_cyclic(|weak: &Weak<State>| {
+        let weak = weak.clone();
+        State {
+            window: window.downgrade(),
+            ui,
+            list,
+            stack,
+            rows: RefCell::new(Vec::new()),
+            watch: Rc::new(move || {
+                if let Some(state) = weak.upgrade() {
+                    state.refresh();
+                }
+            }),
+        }
     });
+    window.browser().watch_history(&state.watch);
     state.refresh();
 
     state.ui.search.connect_search_changed(glib::clone!(

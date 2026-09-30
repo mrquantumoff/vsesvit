@@ -2851,6 +2851,7 @@ dependencies = [
  "time",
  "url",
  "vsesvit-core",
+ "vsesvit-sync",
  "vsesvit-update",
  "vsesvit-webext",
  "webkit6",

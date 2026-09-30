@@ -776,7 +776,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             .and_downcast::<adw::PreferencesDialog>()
             .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
         let mut shots = Vec::new();
-        for name in ["general", "appearance", "search", "privacy", "shortcuts"] {
+        for name in ["sync", "general", "appearance", "search", "privacy", "shortcuts"] {
             dialog.set_visible_page_name(name);
             if dialog.visible_page_name().as_deref() != Some(name) {
                 dialog.close();

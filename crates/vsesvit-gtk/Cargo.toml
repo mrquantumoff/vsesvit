@@ -19,6 +19,7 @@ self-test = ["vsesvit-core/testkit"]
 vsesvit-core = { workspace = true }
 vsesvit-webext = { workspace = true }
 vsesvit-update = { workspace = true }
+vsesvit-sync = { workspace = true }
 gtk = { workspace = true }
 adw = { workspace = true }
 webkit = { workspace = true }

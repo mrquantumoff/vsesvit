@@ -31,6 +31,7 @@ pub mod screenshot;
 mod self_test;
 mod session;
 mod site_info;
+mod sync;
 mod tab;
 #[cfg(test)]
 mod test_support;

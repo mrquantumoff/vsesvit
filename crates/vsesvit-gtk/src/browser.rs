@@ -30,6 +30,7 @@ use crate::closed_tabs::ClosedTabs;
 use crate::downloads::Downloads;
 use crate::engine::Engine;
 use crate::profile::{self, Core};
+use crate::sync::Syncer;
 use crate::tab::{Commit, Tab};
 use crate::updates::Updates;
 use crate::window::{BrowserWindow, Focus};
@@ -62,7 +63,10 @@ pub(crate) struct Inner {
     favicon_fetch: Cell<FetchState>,
     /// What else shows bookmarks (an open Bookmarks dialog), refreshed with the bars.
     bookmark_views: RefCell<Vec<Weak<dyn Fn()>>>,
+    /// An open History dialog, refreshed when sync brings history.
+    history_views: RefCell<Vec<Weak<dyn Fn()>>>,
     updates: Option<Updates>,
+    sync: Syncer,
     /// This run created the profile: the first window opens the welcome, once.
     welcome: Cell<bool>,
 }
@@ -96,6 +100,7 @@ impl Browser {
         let inner = Rc::new_cyclic(|weak: &Weak<Inner>| {
             let host: Rc<dyn TabHost> = Rc::new(Host(weak.clone()));
             let runtime = Runtime::new(core.clone(), engine.session(), host);
+            let sync = Syncer::new(weak.clone(), &mut core.borrow_mut());
             Inner {
                 app: app.clone(),
                 core,
@@ -110,7 +115,9 @@ impl Browser {
                 shut_down: Cell::new(false),
                 favicon_fetch: Cell::new(FetchState::Idle),
                 bookmark_views: RefCell::new(Vec::new()),
+                history_views: RefCell::new(Vec::new()),
                 updates: Updates::new(app, updates_automatic, updates_channel),
+                sync,
                 welcome: Cell::new(welcome),
             }
         });
@@ -183,6 +190,10 @@ impl Browser {
     /// `None` when this copy does not update itself.
     pub(crate) fn updates(&self) -> Option<&Updates> {
         self.0.updates.as_ref()
+    }
+
+    pub(crate) fn sync(&self) -> &Syncer {
+        &self.0.sync
     }
 
     /// Set when the user chose to restart into an installed update.
@@ -470,20 +481,18 @@ impl Browser {
             window.refresh_bookmarks_bar();
             window.sync_star();
         }
-        let views: Vec<Rc<dyn Fn()>> = {
-            let mut views = self.0.bookmark_views.borrow_mut();
-            views.retain(|view| view.strong_count() > 0);
-            views.iter().filter_map(Weak::upgrade).collect()
-        };
-        for refresh in views {
-            refresh();
-        }
+        refresh_views(&self.0.bookmark_views);
         self.preload_favicons();
     }
 
     /// Runs `refresh` after every bookmark change for as long as the caller keeps it.
     pub(crate) fn watch_bookmarks(&self, refresh: &Rc<dyn Fn()>) {
         self.0.bookmark_views.borrow_mut().push(Rc::downgrade(refresh));
+    }
+
+    /// Runs `refresh` after sync changes the history, for as long as the caller keeps it.
+    pub(crate) fn watch_history(&self, refresh: &Rc<dyn Fn()>) {
+        self.0.history_views.borrow_mut().push(Rc::downgrade(refresh));
     }
 
     /// Fetches the icons of bookmarked sites that have none, without visiting them: core
@@ -736,13 +745,14 @@ impl Browser {
         Url::parse(text).ok()
     }
 
-    /// What the shell refreshes after a sync engine applied remote records
-    /// (`ApplyReport::changed`). No sync engine exists yet, so the only caller is the
-    /// development action `app.debug-apply-sync`.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    /// What the shell refreshes after sync applied remote records (`ApplyReport::changed`).
+    /// Search engines and sessions need nothing: the address bar reads the engines each time.
     pub(crate) fn sync_applied(&self, changed: &Changed) {
         if changed.bookmarks {
             self.bookmarks_changed();
+        }
+        if changed.history {
+            refresh_views(&self.0.history_views);
         }
         if changed.extensions {
             self.reconcile_extensions();
@@ -804,6 +814,19 @@ impl Browser {
         if let Err(e) = saved {
             log::warn!("cannot save the session: {e}");
         }
+    }
+}
+
+/// Runs the views' refreshes, forgetting the views that are gone. The list is not borrowed while
+/// they run, so a refresh may add a view.
+fn refresh_views(views: &RefCell<Vec<Weak<dyn Fn()>>>) {
+    let live: Vec<Rc<dyn Fn()>> = {
+        let mut views = views.borrow_mut();
+        views.retain(|view| view.strong_count() > 0);
+        views.iter().filter_map(Weak::upgrade).collect()
+    };
+    for refresh in live {
+        refresh();
     }
 }
 

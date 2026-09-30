@@ -160,6 +160,7 @@ impl BrowserWindow {
         if let Some(updates) = browser.updates() {
             updates.window_opened(&window);
         }
+        browser.sync().window_opened();
         window
     }
 

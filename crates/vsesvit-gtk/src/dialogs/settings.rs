@@ -1,7 +1,7 @@
-//! The Settings dialog, bound to core's preferences: General (startup, downloads, scrolling
-//! and the GPU, updates, the profile folder), Appearance (theme, tabs, bars and buttons),
-//! Search (the engine, the address bar and what it suggests), Privacy (pop-ups, site
-//! permissions, browsing data) and Shortcuts (`shortcut_settings`). Every change
+//! The Settings dialog, bound to core's preferences: Sync (the account and its server), General
+//! (startup, downloads, scrolling and the GPU, updates, the profile folder), Appearance (theme,
+//! tabs, bars and buttons), Search (the engine, the address bar and what it suggests), Privacy
+//! (pop-ups, site permissions, browsing data) and Shortcuts (`shortcut_settings`). Every change
 //! applies at once, in every window.
 //!
 //! WebKitGTK keeps no passwords and fills no forms, so `autofill.*` has no rows here.
@@ -13,11 +13,13 @@ use gtk::{gio, glib};
 use vsesvit_core::permissions::{Origin, Permission, Setting, SiteSetting};
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::search::SearchEngine;
+use vsesvit_sync::status::{Action, State};
 
 use super::confirm;
 use crate::browser::Browser;
 use crate::permissions;
 use crate::session::now_ms;
+use crate::sync::Syncer;
 use crate::updates::{Status, StatusButton, Updates};
 use crate::window::BrowserWindow;
 
@@ -39,6 +41,9 @@ const THEMES: [(Theme, &str); 3] = [
     (Theme::Dark, "Dark"),
 ];
 
+/// Every sync button, in the order each state lists the ones it shows.
+const SYNC_ACTIONS: [Action; 4] = [Action::SignIn, Action::Cancel, Action::SyncNow, Action::SignOut];
+
 const CHANNELS: [(UpdateChannel, &str); 4] = [
     (UpdateChannel::Stable, "Stable"),
     (UpdateChannel::Beta, "Beta"),
@@ -47,11 +52,13 @@ const CHANNELS: [(UpdateChannel, &str); 4] = [
 ];
 
 pub(crate) fn present(window: &BrowserWindow) {
-    // Wide enough that the five page names fit in the header rather than a bar at the bottom.
+    // Wide enough that the six page names fit in the header rather than a bar at the bottom.
     let dialog = adw::PreferencesDialog::builder()
         .title("Settings")
-        .content_width(860)
+        .content_width(1040)
         .build();
+    // First, as Chrome puts "You and Google".
+    dialog.add(&sync_page(window.browser()));
     dialog.add(&general_page(window));
     dialog.add(&appearance_page(window.browser()));
     dialog.add(&search_page(window.browser()));
@@ -76,6 +83,117 @@ fn page(name: &str, title: &str, icon: &str, groups: &[adw::PreferencesGroup]) -
 /// An empty `title` for a group about the page's own subject, which the page already names.
 fn group(title: &str) -> adw::PreferencesGroup {
     adw::PreferencesGroup::builder().title(title).build()
+}
+
+fn sync_page(browser: &Browser) -> adw::PreferencesPage {
+    let account = group("");
+    account.add(&sync_account_row(browser.sync()));
+    let server = group("");
+    server.add(&sync_server_row(browser, &server));
+    page("sync", "Sync", "emblem-synchronizing-symbolic", &[account, server])
+}
+
+/// Who is signed in and how the last sync went, with the buttons the state offers, kept current
+/// while the dialog is open.
+fn sync_account_row(syncer: &Syncer) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().use_markup(false).build();
+    let buttons: Vec<(Action, glib::WeakRef<gtk::Button>)> = SYNC_ACTIONS
+        .into_iter()
+        .map(|action| {
+            let button = gtk::Button::builder()
+                .label(action.label())
+                .valign(gtk::Align::Center)
+                .build();
+            button.connect_clicked(glib::clone!(
+                #[strong]
+                syncer,
+                move |_| syncer.act(action)
+            ));
+            row.add_suffix(&button);
+            (action, button.downgrade())
+        })
+        .collect();
+    syncer.watch(glib::clone!(
+        #[weak]
+        row,
+        #[upgrade_or]
+        false,
+        move |state: &State| {
+            let status = state.status(vsesvit_sync::now_secs());
+            row.set_title(&status.title);
+            row.set_subtitle(&status.subtitle);
+            for (action, button) in &buttons {
+                let Some(button) = button.upgrade() else { return false };
+                button.set_visible(status.actions.contains(action));
+                button.set_sensitive(!(status.busy && *action == Action::SyncNow));
+                if status.actions.first() == Some(action) {
+                    button.add_css_class("suggested-action");
+                } else {
+                    button.remove_css_class("suggested-action");
+                }
+            }
+            true
+        }
+    ));
+    row
+}
+
+/// The server to sign in to, which only changes while signed out. An address that is not one is
+/// refused under the field.
+fn sync_server_row(browser: &Browser, group: &adw::PreferencesGroup) -> adw::EntryRow {
+    let current = browser.core().borrow_mut().prefs().get(&keys::SYNC_SERVER);
+    let row = adw::EntryRow::builder()
+        .title("Sync Server")
+        .text(&current)
+        .show_apply_button(true)
+        .input_purpose(gtk::InputPurpose::Url)
+        .build();
+    let show_error = glib::clone!(
+        #[weak]
+        row,
+        #[weak]
+        group,
+        move |error: Option<&str>| {
+            group.set_description(error);
+            if error.is_some() {
+                row.add_css_class("error");
+            } else {
+                row.remove_css_class("error");
+            }
+        }
+    );
+    row.connect_changed(glib::clone!(
+        #[strong]
+        show_error,
+        move |_| show_error(None)
+    ));
+    row.connect_apply(glib::clone!(
+        #[strong]
+        browser,
+        move |row| match vsesvit_sync::normalize_base_url(&row.text()) {
+            Ok(server) => {
+                let set = browser.core().borrow_mut().prefs().set(&keys::SYNC_SERVER, &server);
+                if let Err(e) = set {
+                    log::warn!("prefs: {e}");
+                }
+                if row.text() != server {
+                    row.set_text(&server);
+                }
+            }
+            Err(e) => show_error(Some(&e.to_string())),
+        }
+    ));
+    browser.sync().watch(glib::clone!(
+        #[weak]
+        row,
+        #[upgrade_or]
+        false,
+        move |state: &State| {
+            row.set_sensitive(state.status(0).server_editable);
+            true
+        }
+    ));
+    row
 }
 
 fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
@@ -663,6 +781,23 @@ fn index_of<T: PartialEq, const N: usize>(options: &[(T, &str); N], value: &T) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_sync_state_lists_its_buttons_in_their_fixed_order() {
+        let signed_in = |needs_sign_in| State::SignedIn {
+            name: None,
+            server: "https://sync.example".to_owned(),
+            last_synced: None,
+            syncing: false,
+            error: None,
+            needs_sign_in,
+        };
+        for state in [State::SignedOut { error: None }, State::SigningIn, signed_in(false), signed_in(true)] {
+            let actions = state.status(0).actions;
+            let order: Vec<usize> = actions.iter().map(|a| SYNC_ACTIONS.iter().position(|b| a == b).unwrap()).collect();
+            assert!(order.is_sorted(), "{state:?} lists {actions:?}");
+        }
+    }
 
     #[test]
     fn sites_on_one_host_are_told_apart_by_scheme() {
