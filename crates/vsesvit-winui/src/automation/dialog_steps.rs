@@ -36,6 +36,19 @@ pub(crate) fn invoke(element: &impl Interface) -> Result<()> {
         .Invoke()
 }
 
+/// Invokes the button named `name` in `button`'s flyout, which must be open.
+pub(crate) fn confirm_flyout(button: &Button, name: &str) -> Result<()> {
+    let content: DependencyObject = button
+        .cast::<IButton>()?
+        .Flyout()?
+        .cast::<Flyout>()?
+        .Content()?
+        .cast()?;
+    let confirm: Button = xaml::find_named(&content, name)
+        .ok_or_else(|| windows_core::Error::new(E_FAIL, format!("no {name} in the flyout")))?;
+    invoke(&confirm)
+}
+
 fn click(preview: &Preview, name: &str) -> Result<()> {
     invoke(&preview.find::<Button>(name)?)
 }
@@ -300,15 +313,7 @@ pub(super) async fn clear_browsing_data(
         |_| json!({ "ok": true }),
     )
     .await;
-    let content: DependencyObject = button
-        .cast::<IButton>()?
-        .Flyout()?
-        .cast::<Flyout>()?
-        .Content()?
-        .cast()?;
-    let confirm: Button = xaml::find_named(&content, "ClearBrowsingDataConfirm")
-        .ok_or_else(|| windows_core::Error::new(E_FAIL, "no Clear button in the flyout"))?;
-    invoke(&confirm)?;
+    confirm_flyout(&button, "ClearBrowsingDataConfirm")?;
     let status: TextBlock = preview.find("ClearBrowsingDataStatus")?;
     let reported = until(|| {
         status

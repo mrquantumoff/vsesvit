@@ -23,12 +23,12 @@ use vsesvit_core::testkit::FixtureServer;
 use vsesvit_sync::status::State;
 use windows_core::Interface;
 
-use super::{invoke, settings_on, shoot, wait_loaded};
+use super::{confirm_flyout, invoke, settings_on, shoot, wait_loaded};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog};
+use crate::exec;
 use crate::window::BrowserWindow;
-use crate::{exec, xaml};
 
 const POLL: Duration = Duration::from_millis(250);
 const SETTLE: Duration = Duration::from_millis(600);
@@ -490,15 +490,7 @@ async fn role_delete(
         |_| json!({ "signed_in_at_start": signed_in, "ok": signed_in }),
     )
     .await;
-    let content: DependencyObject = button
-        .cast::<IButton>()
-        .and_then(|b| b.Flyout())
-        .and_then(|f| f.cast::<Flyout>()?.Content())
-        .and_then(|c| c.cast())
-        .map_err(|e| e.to_string())?;
-    let confirm: Button =
-        xaml::find_named(&content, "SyncDeleteConfirm").ok_or("no Delete in the flyout")?;
-    invoke(&confirm).map_err(|e| e.to_string())?;
+    confirm_flyout(&button, "SyncDeleteConfirm").map_err(|e| e.to_string())?;
     let signed_out = exec::wait_for(Duration::from_secs(30), POLL, || {
         (!browser.sync().signed_in()).then_some(())
     })

@@ -14,17 +14,17 @@ use vsesvit_core::sync::{Kind, WireRecord};
 use windows_core::Interface;
 
 use super::{Probe, eval, tab_ids, until, wait_ready};
-use crate::automation::{invoke, press, settings_on};
+use crate::automation::{confirm_flyout, invoke, press, settings_on};
 use crate::browser::Browser;
 use crate::bindings::{
-    Button, CoreWebView2SaveAsKind, DependencyObject, Flyout, FrameworkElement, IButton,
-    ICoreWebView2_9, ICoreWebView2_25, IScrollViewer, Point, UIElement,
+    Button, CoreWebView2SaveAsKind, FrameworkElement, ICoreWebView2_9, ICoreWebView2_25,
+    IScrollViewer, Point, UIElement,
 };
 use crate::dialogs::{Dialog, Preview, ShortcutsPage, shortcut_row_name};
+use crate::exec;
 use crate::shortcuts::{self, Command, InPage, Mods};
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
-use crate::{exec, xaml};
 
 const SETTLE: Duration = Duration::from_millis(500);
 /// DevTools modifier bits for `press`.
@@ -270,15 +270,7 @@ pub(super) async fn shortcuts(
     let button = preview.find::<Button>("ShortcutsResetAll").map_err(err)?;
     invoke(&button).map_err(err)?;
     exec::sleep(SETTLE).await;
-    let content: DependencyObject = button
-        .cast::<IButton>()
-        .and_then(|b| b.Flyout())
-        .and_then(|f| f.cast::<Flyout>()?.Content())
-        .and_then(|c| c.cast())
-        .map_err(err)?;
-    let confirm: Button =
-        xaml::find_named(&content, "ShortcutsResetAllConfirm").ok_or("no Reset button")?;
-    invoke(&confirm).map_err(err)?;
+    confirm_flyout(&button, "ShortcutsResetAllConfirm").map_err(err)?;
     exec::sleep(SETTLE).await;
     drop(preview);
     let defaults = browser.core(|c| c.prefs().keymap()) == Keymap::default();
