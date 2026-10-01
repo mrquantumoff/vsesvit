@@ -334,7 +334,7 @@ impl InstallJob {
         {
             return Err(InstallError::IdMismatch { expected: expected.as_str().to_owned(), actual: id.as_str().to_owned() });
         }
-        Ok(StagedInstall { version: manifest.version.clone(), id, source, intent, files, manifest, verification })
+        Ok(StagedInstall { id, source, intent, files, manifest, verification })
     }
 }
 
@@ -659,7 +659,6 @@ impl Drop for StagingDir {
 #[derive(Debug)]
 pub struct StagedInstall {
     pub(crate) id: ExtensionId,
-    pub(crate) version: String,
     pub(crate) source: InstallSource,
     pub(crate) intent: Intent,
     pub(crate) files: StagedFiles,
@@ -686,12 +685,6 @@ pub(crate) enum StagedFiles {
 impl StagedInstall {
     pub fn id(&self) -> &ExtensionId {
         &self.id
-    }
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-    pub fn manifest(&self) -> &Manifest {
-        &self.manifest
     }
     pub fn verification(&self) -> &Verification {
         &self.verification

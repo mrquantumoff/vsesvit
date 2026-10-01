@@ -343,7 +343,7 @@ impl Extensions<'_> {
     /// 6. Upsert the `extension_installs` row. Crash after the rename but before the
     ///    commit leaves an unreferenced dir that the next open GCs or the next install reuses.
     pub fn commit(&mut self, staged: StagedInstall) -> Result<Option<InstalledExtension>, Error> {
-        let StagedInstall { id, version, source, intent, files, manifest, verification } = staged;
+        let StagedInstall { id, source, intent, files, manifest, verification } = staged;
         if intent == Intent::Reconcile && !self.desired_installed(&id)? {
             return Ok(None);
         }
@@ -351,7 +351,7 @@ impl Extensions<'_> {
         let existing = self.row(&id)?;
         self.check_id(&id, &verification, existing.as_ref())?;
         if let Some(row) = &existing
-            && cmp_versions(&version, &row.version) == Ordering::Less
+            && cmp_versions(&manifest.version, &row.version) == Ordering::Less
             && verification.id_hold() <= row.verification.id_hold()
         {
             if let Some(store) = wanted_store {
@@ -378,7 +378,7 @@ impl Extensions<'_> {
             engine_id: existing.as_ref().filter(|_| same_dir).and_then(|r| r.engine_id.clone()),
             installed_ms: existing.as_ref().filter(|_| same_dir).map_or_else(now_ms, |r| r.installed_ms),
             id,
-            version,
+            version: manifest.version.clone(),
             dir: dir_text,
             source,
             verification,
