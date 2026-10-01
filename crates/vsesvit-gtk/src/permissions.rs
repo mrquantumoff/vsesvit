@@ -291,12 +291,22 @@ pub(crate) fn enforce(browser: &Browser) {
             let origin = origin_of(tab.committed_uri().as_deref());
             let now = capturing(tab.web_view());
             for permission in Permission::ALL.iter().copied().filter(|&p| now.uses(p)) {
-                if decide(browser, &tab, origin.as_ref(), &[permission]) != Decision::Allow {
+                if ends(permission, &decide(browser, &tab, origin.as_ref(), &[permission])) {
                     stop(tab.web_view(), permission);
                 }
             }
         }
         window.sync_permission_prompt();
+    }
+}
+
+/// Whether a live capture under `permission` must end now. A screen share is allowed share
+/// by share and never decides as Allow, so only a block ends it.
+fn ends(permission: Permission, decision: &Decision) -> bool {
+    match decision {
+        Decision::Allow => false,
+        Decision::Block => true,
+        Decision::Ask(_) => permission.remembers_allow(),
     }
 }
 
@@ -521,6 +531,10 @@ fn choose(browser: &Browser, tab: &Tab, origin: Option<&Origin>, permission: Per
     let setting = choice.setting();
     if setting != Some(Setting::Allow) {
         tab.permissions().borrow_mut().grants.revoke(permission);
+        // A screen share has no grant to end, so `enforce` would let it go on.
+        if !permission.remembers_allow() && capturing(tab.web_view()).uses(permission) {
+            stop(tab.web_view(), permission);
+        }
     }
     if let Some(origin) = origin
         && let Err(e) = browser.core().borrow_mut().site_permissions().set(origin, permission, setting)
@@ -581,6 +595,15 @@ mod tests {
         assert!(!holds(true, Some("https://a.example/"), Some("http://a.example/")));
         assert!(!holds(true, Some("https://a.example/"), None));
         assert!(!holds(false, Some("https://a.example/"), Some("https://a.example/")));
+    }
+
+    #[test]
+    fn only_a_block_ends_a_live_screen_share() {
+        let ask = |p| Decision::Ask(vec![p]);
+        assert!(!ends(Permission::ScreenShare, &ask(Permission::ScreenShare)), "a share allowed this time goes on");
+        assert!(ends(Permission::ScreenShare, &Decision::Block));
+        assert!(ends(Permission::Camera, &ask(Permission::Camera)), "a camera grant that ended stops the camera");
+        assert!(!ends(Permission::Camera, &Decision::Allow));
     }
 
     #[test]
