@@ -35,7 +35,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -376,7 +376,7 @@ impl Extensions<'_> {
                 None => Some(existing.as_ref().and_then(|r| r.local_enabled).unwrap_or(true)),
             },
             engine_id: existing.as_ref().filter(|_| same_dir).and_then(|r| r.engine_id.clone()),
-            installed_ms: existing.as_ref().filter(|_| same_dir).map_or_else(now_ms, |r| r.installed_ms),
+            installed_ms: existing.as_ref().filter(|_| same_dir).map_or_else(|| self.p.clock.now_ms() as i64, |r| r.installed_ms),
             id,
             version: manifest.version.clone(),
             dir: dir_text,
@@ -673,10 +673,6 @@ fn remove_whole(path: &Path, staging: &Path) {
     if fs::rename(path, &trash).is_ok() {
         let _ = fs::remove_dir_all(&trash).or_else(|_| fs::remove_file(&trash));
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 fn conversion_error(column: usize, e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {

@@ -3,14 +3,17 @@
 //! `--features testkit`.
 #![cfg(feature = "testkit")]
 
+use std::cell::Cell;
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use vsesvit_core::extensions::manifest::{Manifest, ManifestError};
 use vsesvit_core::extensions::{
     ExtensionId, InstallError, InstallJob, InstallPhase, InstallSource, InstalledExtension, StagedInstall, Verification,
 };
+use vsesvit_core::crdt::TimeSource;
 use vsesvit_core::testkit::{self, CrxKey, PROBE_FILES, write_crx3};
 use vsesvit_core::{Error, OpenOptions, Profile};
 
@@ -35,6 +38,10 @@ impl TempDir {
     }
     fn open(&self) -> Profile {
         Profile::open(&self.profile_root(), OpenOptions::default()).unwrap()
+    }
+    /// With a test clock that reads `now`.
+    fn open_at(&self, now: &Rc<Cell<u64>>) -> Profile {
+        Profile::open(&self.profile_root(), OpenOptions { time: TimeSource::Manual(now.clone()), ..OpenOptions::default() }).unwrap()
     }
 }
 
@@ -607,4 +614,17 @@ fn a_held_file_never_leaves_a_partial_dir_for_a_reinstall_to_reuse() {
     let back =install_file(&t, &mut p, "probe.crx", &testkit::probe_crx()).unwrap().unwrap();
     assert_complete_probe(&back.dir);
     drop(held);
+}
+
+#[test]
+fn install_times_follow_the_profile_clock() {
+    let t = TempDir::new();
+    let now = Rc::new(Cell::new(1_780_000_000_000));
+    let mut p = t.open_at(&now);
+    install_file(&t, &mut p, "probe.crx", &testkit::probe_crx()).unwrap().unwrap();
+    drop(p);
+    let conn = rusqlite::Connection::open(t.profile_root().join("vsesvit.db")).unwrap();
+    let installed_ms: i64 =
+        conn.query_row("SELECT installed_ms FROM extension_installs WHERE id = ?1", [testkit::PROBE_ID], |r| r.get(0)).unwrap();
+    assert_eq!(installed_ms, 1_780_000_000_000);
 }
