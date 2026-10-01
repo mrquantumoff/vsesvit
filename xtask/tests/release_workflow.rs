@@ -38,3 +38,27 @@ fn the_signing_key_is_only_in_a_job_that_runs_no_cargo() {
         assert!(job.contains("xtask sign "), "{name} holds the signing key but does not sign:\n{job}");
     }
 }
+
+/// A tag or branch can be moved to other code, which would then run beside the signing key; a
+/// commit cannot. Every workflow follows the rule, not only this one.
+#[test]
+fn actions_are_pinned_to_commits() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.github/workflows");
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for line in text.lines() {
+            let line = line.trim_start().trim_start_matches("- ");
+            let Some(action) = line.strip_prefix("uses:").map(str::trim) else { continue };
+            if action.starts_with("./") || action.starts_with("docker://") {
+                continue;
+            }
+            let commit = action.split_once('@').map_or("", |(_, rest)| rest.split_whitespace().next().unwrap_or(""));
+            assert!(
+                commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{}: {action} is not pinned to a commit",
+                path.display()
+            );
+        }
+    }
+}

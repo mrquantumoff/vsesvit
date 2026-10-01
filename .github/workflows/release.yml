@@ -7,6 +7,8 @@
 #
 # Secrets: TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD (the key whose public
 # half is in packaging/updater.json) and VERSION_UPDATE_TRIGGER_TOKEN (update server API key).
+# Actions are pinned to commits: the jobs hold the signing key, the update server's key and a
+# token that can write to the repository.
 name: Release
 
 on:
@@ -46,7 +48,7 @@ jobs:
       prerelease: ${{ steps.plan.outputs.prerelease }}
       skip: ${{ steps.plan.outputs.skip }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - id: plan
         # An explicit bash runs with -o pipefail, so a failing plan fails the step despite the tee.
         shell: bash
@@ -88,9 +90,9 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: NSIS
         shell: pwsh
         run: |
@@ -99,7 +101,7 @@ jobs:
           }
       - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
       - run: cargo xtask package nsis
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist-windows
           path: target/dist/*
@@ -121,13 +123,13 @@ jobs:
             libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libglib2.0-bin \
             dpkg-dev rpm libarchive-tools zstd fakeroot squashfs-tools \
             desktop-file-utils appstream
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
       - run: cargo xtask package deb rpm pacman appimage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist-linux
           path: target/dist/*
@@ -145,13 +147,13 @@ jobs:
           sudo apt-get install -y flatpak flatpak-builder
           # flatpak-builder sandboxes each build step with bubblewrap in a user namespace.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
       # Flatpak installs update through Flatpak, so the bundle is not signed or put in latest.json.
       - run: cargo xtask package flatpak
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist-flatpak
           path: target/dist/*
@@ -163,14 +165,14 @@ jobs:
     if: needs.plan.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       # No rust-cache: any job of the run can save a cache entry, so a cached registry or target
       # dir could carry code from the package builds into the binary that later runs with the key.
       # xtask compiles in the version, which each signature's trusted comment carries.
       - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
       - run: cargo build --release --locked -p xtask
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signer
           path: target/release/xtask
@@ -182,15 +184,15 @@ jobs:
     needs: [plan, windows, linux, signer]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: signer
           path: signer
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: dist-windows
           path: target/dist
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: dist-linux
           path: target/dist
@@ -201,7 +203,7 @@ jobs:
         run: |
           chmod +x signer/xtask
           signer/xtask sign target/dist/*-setup.exe target/dist/*.deb target/dist/*.rpm target/dist/*.pkg.tar.zst target/dist/*.AppImage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist-signatures
           path: target/dist/*.sig
@@ -226,11 +228,11 @@ jobs:
       REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: bash scripts/set-version.sh "$VERSION"
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: dist-*
           path: target/dist
