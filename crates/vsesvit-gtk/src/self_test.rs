@@ -382,7 +382,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         gio::prelude::ActionGroupExt::activate_action(window, "bookmark-page", None);
         wait_for(&last, || {
             let starred = browser.core().borrow_mut().bookmarks().is_bookmarked(index_url);
-            let on_bar = window.bookmarks_bar().shows(index_url.as_str());
+            let on_bar = window.bookmarks_bar().button_for(index_url.as_str()).is_some();
             let star = window.action_state("bookmark-page").and_then(|v| v.get::<bool>()).unwrap_or(false);
             if starred && on_bar && star {
                 Ok(())

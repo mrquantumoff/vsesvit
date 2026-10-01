@@ -310,11 +310,6 @@ impl BookmarksBar {
             .and_then(|widget| widget.clone().downcast::<gtk::Button>().ok())
     }
 
-    /// Whether the bar has a button for `url` (used by the self-test).
-    pub(crate) fn shows(&self, url: &str) -> bool {
-        self.button_for(url).is_some()
-    }
-
     /// How many items the bar shows and how many are in the chevron's menu.
     #[cfg_attr(not(any(test, feature = "self-test")), allow(dead_code))]
     pub(crate) fn overflow(&self) -> (usize, usize) {
@@ -427,11 +422,6 @@ fn labelled(icon: gtk::Image, text: String) -> gtk::Box {
     content
 }
 
-/// Parses an `open-bookmark` action target.
-pub(crate) fn url_from_target(target: Option<&glib::Variant>) -> Option<String> {
-    target.and_then(|v| v.get::<String>())
-}
-
 #[cfg(test)]
 mod tests {
     use vsesvit_core::bookmarks::InsertAt;
@@ -493,12 +483,5 @@ mod tests {
         assert!(whole, "every shown item has its natural width");
         assert!(before_chevron, "no item reaches under the chevron");
         assert!(chevron_visible);
-    }
-
-    #[test]
-    fn open_targets_are_strings() {
-        assert_eq!(url_from_target(Some(&"https://x/".to_variant())).as_deref(), Some("https://x/"));
-        assert_eq!(url_from_target(Some(&1u32.to_variant())), None);
-        assert_eq!(url_from_target(None), None);
     }
 }

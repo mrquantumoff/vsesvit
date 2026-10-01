@@ -8,7 +8,6 @@ use vsesvit_core::history::Transition;
 use webkit::prelude::*;
 
 use super::{BrowserWindow, Focus};
-use crate::bookmarks_bar;
 use crate::dialogs;
 use crate::save_page;
 use crate::find_bar::Direction;
@@ -63,7 +62,7 @@ pub(super) fn install(window: &BrowserWindow) {
         ActionEntry::builder("open-bookmark")
             .parameter_type(Some(glib::VariantTy::STRING))
             .activate(|w: &BrowserWindow, _, target| {
-                if let Some(url) = bookmarks_bar::url_from_target(target) {
+                if let Some(url) = target.and_then(|v| v.get::<String>()) {
                     w.navigate_with(&url, Transition::Bookmark);
                 }
             })
@@ -71,7 +70,7 @@ pub(super) fn install(window: &BrowserWindow) {
         ActionEntry::builder("open-in-new-tab")
             .parameter_type(Some(glib::VariantTy::STRING))
             .activate(|w: &BrowserWindow, _, target| {
-                if let Some(url) = bookmarks_bar::url_from_target(target) {
+                if let Some(url) = target.and_then(|v| v.get::<String>()) {
                     w.open_tab(Some(&url), None, Focus::Foreground);
                 }
             })
