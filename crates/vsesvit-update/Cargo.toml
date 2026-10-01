@@ -16,7 +16,7 @@ ureq = "3.4"
 semver = "1"
 minisign-verify = "0.2"
 base64 = "0.23"
-time = { version = "0.3", features = ["parsing"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

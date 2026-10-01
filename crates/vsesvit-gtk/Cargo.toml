@@ -29,7 +29,6 @@ serde_json = { workspace = true }
 log = { workspace = true }
 url = { workspace = true }
 semver = "1"
-time = { version = "0.3", features = ["formatting"] }
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
 # Same glib/gio as gtk4 0.11. `log` routes the `log` crate into g_log; `v2_80` exposes

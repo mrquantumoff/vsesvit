@@ -15,11 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use semver::Version;
-use serde_json::{Value, json};
 use vsesvit_core::prefs::UpdateChannel;
 use vsesvit_update::{
-    Available, Config, Downloaded, Installation, Installed, Release, Update, Updater,
-    remove_stale_downloads,
+    Available, Config, Downloaded, Installation, Update, Updater, cli, remove_stale_downloads,
 };
 
 use crate::browser::{self, Browser};
@@ -659,79 +657,18 @@ fn remove_stale(dir: &Path, keep: Option<&Version>) {
 
 // ---- `--check-for-updates` and `--update` ----
 
-/// Prints one JSON line on stdout: 0 with the result, or 1 with `{"error": ...}`.
+/// Prints what `vsesvit_update::cli` documents. Opens no profile, so it follows the channel this
+/// build was released on, not `updates.channel`.
 pub(crate) fn run_command(command: UpdateCommand) -> ExitCode {
     let installation = Installation::detect();
-    let result = match command {
-        UpdateCommand::Check => check_now(&installation)
-            .map(|available| report(&installation, available.as_ref().map(Available::release))),
-        UpdateCommand::Install => install_now(&installation),
-    };
-    match result {
-        Ok(value) => {
-            println!("{value}");
-            ExitCode::SUCCESS
+    let channel = UpdateChannel::of_build().name();
+    cli::print(match command {
+        UpdateCommand::Check => {
+            cli::check(&installation, &current_version(), channel).map_err(|e| e.to_string())
         }
-        Err(e) => {
-            println!("{}", json!({ "error": e }));
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// Opens no profile, so it follows the channel this build was released on, not `updates.channel`.
-fn check_now(installation: &Installation) -> Result<Option<Available>, String> {
-    Config::builtin()
-        .and_then(|config| Updater::new(config, current_version(), installation.clone()))
-        .and_then(|updater| updater.check(UpdateChannel::of_build().name()))
-        .map_err(|e| e.to_string())
-}
-
-fn install_now(installation: &Installation) -> Result<Value, String> {
-    let available = check_now(installation)?;
-    let mut value = report(installation, available.as_ref().map(Available::release));
-    let Some(available) = available else {
-        value["installed"] = Value::Null;
-        return Ok(value);
-    };
-    let update = available.into_update().map_err(|e| e.to_string())?;
-    let dir = download_dir()?;
-    let mut shown = None;
-    let downloaded = download(&update, &dir, |received, total| {
-        let step = total.map_or(received >> 20, |t| received * 10 / t.max(1));
-        if shown.replace(step) != Some(step) {
-            match total {
-                Some(total) => eprintln!("downloading: {received} of {total} bytes"),
-                None => eprintln!("downloading: {received} bytes"),
-            }
-        }
-    })
-    .map_err(|e| e.to_string())?;
-    let installed = downloaded
-        .install(installation, &[])
-        .map_err(|e| e.to_string())?;
-    value["installed"] = json!(match installed {
-        Installed::ExitNow => "exit_now",
-        Installed::Relaunch => "relaunch",
-        Installed::NextLaunch => "next_launch",
-    });
-    Ok(value)
-}
-
-fn report(installation: &Installation, release: Option<&Release>) -> Value {
-    let available = release.map(|release| {
-        json!({
-            "version": release.version.to_string(),
-            "notes": release.notes,
-            "pub_date": release
-                .pub_date
-                .and_then(|date| date.format(&time::format_description::well_known::Rfc3339).ok()),
-        })
-    });
-    json!({
-        "installation": installation.variant().unwrap_or("unpackaged"),
-        "current": env!("CARGO_PKG_VERSION"),
-        "available": available,
+        UpdateCommand::Install => download_dir().and_then(|dir| {
+            cli::update(&installation, &current_version(), channel, &dir).map_err(|e| e.to_string())
+        }),
     })
 }
 
@@ -1088,18 +1025,5 @@ mod tests {
         assert!(updates.on_channel(began));
         updates.channel_switches.set(began + 1);
         assert!(!updates.on_channel(began));
-    }
-
-    #[test]
-    fn the_report_names_the_installation() {
-        let value = report(&Installation::Unpackaged, None);
-        assert_eq!(
-            value,
-            json!({
-                "installation": "unpackaged",
-                "current": env!("CARGO_PKG_VERSION"),
-                "available": null,
-            })
-        );
     }
 }

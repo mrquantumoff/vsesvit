@@ -30,7 +30,9 @@
 //! | `release`       | pure protocol logic: URL templating, response parsing, key lookup, signatures |
 //! | `updater`       | the network: `check` and `download`                                   |
 //! | `install`       | applying a verified artifact, per format                              |
+//! | [`cli`]         | `--check-for-updates` and `--update`, the JSON both shells print      |
 
+pub mod cli;
 pub mod config;
 pub mod installation;
 mod install;
