@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use serde::Serialize;
 
+use vsesvit_core::Url;
 use vsesvit_core::extensions::InstalledExtension;
 use vsesvit_core::extensions::manifest::RelPath;
 use windows_core::{Interface, Result};
@@ -96,27 +97,12 @@ pub(crate) fn best_icon(icons: &BTreeMap<u32, RelPath>) -> Option<&RelPath> {
         .map(|(_, path)| path)
 }
 
-pub(crate) fn file_uri(path: &Path) -> String {
-    let mut uri = String::from("file:///");
-    for c in path.to_string_lossy().chars() {
-        match c {
-            '\\' => uri.push('/'),
-            ' ' => uri.push_str("%20"),
-            '#' => uri.push_str("%23"),
-            '%' => uri.push_str("%25"),
-            '?' => uri.push_str("%3F"),
-            c => uri.push(c),
-        }
-    }
-    uri
-}
-
 /// An `Image` of the file at `icon`, or the generic extension glyph.
 pub(crate) fn icon_markup(icon: Option<&Path>, size: u32) -> String {
-    match icon {
-        Some(icon) => format!(
+    match icon.and_then(|icon| Url::from_file_path(icon).ok()) {
+        Some(uri) => format!(
             r#"<Image Width="{size}" Height="{size}" Source="{}"/>"#,
-            xaml::escape(&file_uri(icon))
+            xaml::escape(uri.as_str())
         ),
         None => format!(r#"<FontIcon Glyph="&#xEA86;" FontSize="{size}"/>"#),
     }
@@ -340,10 +326,11 @@ mod tests {
     }
 
     #[test]
-    fn file_uris_escape_reserved_characters() {
-        assert_eq!(
-            file_uri(Path::new(r"C:\a b\#1%.png")),
-            "file:///C:/a%20b/%231%25.png"
-        );
+    fn icon_markup_uses_escaped_file_urls() {
+        let markup = |path: &str| icon_markup(Some(Path::new(path)), 16);
+        assert!(markup(r"C:\a b\#1%.png").contains(r#"Source="file:///C:/a%20b/%231%25.png""#));
+        assert!(markup(r"C:\a{b}`\i.png").contains(r#"Source="file:///C:/a%7Bb%7D%60/i.png""#));
+        assert!(markup(r"\\srv\share\i.png").contains(r#"Source="file://srv/share/i.png""#));
+        assert!(markup("rel.png").contains("FontIcon"));
     }
 }
