@@ -172,9 +172,19 @@ impl Browser {
         }
     }
 
+    /// Stops the extension first, so the runtime never runs files the uninstall removes. An
+    /// uninstall the profile refuses runs it again as the profile still has it.
     pub(crate) fn uninstall_extension(&self, id: &ExtensionId) -> Result<(), vsesvit_core::Error> {
         self.unload_from_runtime(id);
-        self.core().borrow_mut().extensions().uninstall(id)
+        let removed = self.core().borrow_mut().extensions().uninstall(id);
+        if removed.is_err() {
+            let kept = self.core().borrow_mut().extensions().get(id);
+            if let Ok(Some(ext)) = kept {
+                // A load failure is kept for the extensions page.
+                let _ = self.load_into_runtime(&ext);
+            }
+        }
+        removed
     }
 
     /// Runs an enabled extension, or stops a disabled one. A load failure is also kept for
