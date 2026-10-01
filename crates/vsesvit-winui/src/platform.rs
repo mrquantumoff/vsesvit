@@ -282,6 +282,61 @@ pub(crate) fn window_handle(window: &Window) -> windows_core::Result<HWND> {
     Ok(hwnd)
 }
 
+/// Where restoring a maximized or minimized window puts it, in screen pixels as `AppWindow`
+/// places windows.
+pub(crate) fn normal_bounds(hwnd: HWND) -> Option<RectInt32> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Placement {
+        length: u32,
+        flags: u32,
+        show: u32,
+        min: [i32; 2],
+        max: [i32; 2],
+        normal: RECT,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct MonitorInfo {
+        size: u32,
+        monitor: RECT,
+        work: RECT,
+        flags: u32,
+    }
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+    windows_core::link!("user32.dll" "system" fn GetWindowPlacement(hwnd: HWND, placement: *mut Placement) -> windows_core::BOOL);
+    windows_core::link!("user32.dll" "system" fn MonitorFromWindow(hwnd: HWND, flags: u32) -> *mut core::ffi::c_void);
+    windows_core::link!("user32.dll" "system" fn GetMonitorInfoW(monitor: *mut core::ffi::c_void, info: *mut MonitorInfo) -> windows_core::BOOL);
+    let mut placement = Placement {
+        length: size_of::<Placement>() as u32,
+        ..Default::default()
+    };
+    let mut info = MonitorInfo {
+        size: size_of::<MonitorInfo>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if !GetWindowPlacement(hwnd, &mut placement).as_bool()
+            || !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info)
+                .as_bool()
+        {
+            return None;
+        }
+    }
+    Some(from_workspace(placement.normal, info.monitor, info.work))
+}
+
+/// `rect` from workspace coordinates, which `GetWindowPlacement` gives and whose origin is the
+/// corner of the work area of `monitor`, the window's, to screen coordinates.
+fn from_workspace(rect: RECT, monitor: RECT, work: RECT) -> RectInt32 {
+    RectInt32 {
+        x: rect.left + work.left - monitor.left,
+        y: rect.top + work.top - monitor.top,
+        width: rect.right - rect.left,
+        height: rect.bottom - rect.top,
+    }
+}
+
 /// Gives the window the exe's icon, which WinUI leaves unset: the taskbar button reads the exe,
 /// but its hover thumbnail and Alt+Tab draw the window's own icons.
 pub(crate) fn set_window_icon(hwnd: HWND) {
@@ -325,4 +380,33 @@ pub(crate) fn copy_text(text: &str) -> windows_core::Result<()> {
 pub(crate) fn held_modifiers() -> Mods {
     let held = |vk: i32| unsafe { GetKeyState(vk) } < 0;
     Mods::of(held(0x11), held(0x10), held(0x12))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    #[test]
+    fn a_maximized_window_saves_the_bounds_it_restores_to() {
+        let monitor = rect(0, 0, 1920, 1080);
+        // The taskbar on the left: the work area, and so workspace coordinates, start at x 48.
+        let work = rect(48, 0, 1920, 1080);
+        let normal = rect(52, 100, 1332, 960);
+        let screen = from_workspace(normal, monitor, work);
+        assert_eq!(
+            (screen.x, screen.y, screen.width, screen.height),
+            (100, 100, 1280, 860)
+        );
+        let screen = from_workspace(normal, monitor, monitor);
+        assert_eq!((screen.x, screen.y), (52, 100));
+    }
 }

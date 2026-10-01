@@ -162,6 +162,9 @@ fn site_look(url: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// A window's position and size in screen pixels, and whether it is maximized.
+type Bounds = ((i32, i32, u32, u32), bool);
+
 pub(crate) struct BrowserWindow {
     browser: Weak<Browser>,
     window: Window,
@@ -185,6 +188,8 @@ pub(crate) struct BrowserWindow {
     shown_tab: Cell<Option<TabId>>,
     split: Cell<Option<Split>>,
     fullscreen: Cell<bool>,
+    /// While fullscreen, the bounds the window had before, which a saved session keeps.
+    windowed_bounds: Cell<Option<Bounds>>,
     /// The toolbar's drag regions last sent to the window; `None` since the layout changed.
     drag_regions: RefCell<Option<Vec<RectInt32>>>,
     /// The address box has the keyboard focus, and so shows the whole URL.
@@ -254,6 +259,7 @@ impl BrowserWindow {
             shown_tab: Cell::new(None),
             split: Cell::new(None),
             fullscreen: Cell::new(false),
+            windowed_bounds: Cell::new(None),
             drag_regions: RefCell::new(None),
             address_focused: Cell::new(false),
             full_urls: Cell::new(prefs.full_urls),
@@ -1462,9 +1468,12 @@ impl BrowserWindow {
     }
 
     fn set_fullscreen(&self, on: bool) {
-        if self.fullscreen.replace(on) == on {
+        if self.fullscreen.get() == on {
             return;
         }
+        self.windowed_bounds
+            .set(if on { self.bounds() } else { None });
+        self.fullscreen.set(on);
         let chrome_visible = !on;
         let _ = xaml::set_visible(&self.ui.toolbar, chrome_visible);
         let _ = xaml::set_visible(
@@ -1495,19 +1504,33 @@ impl BrowserWindow {
 
     // ---- placement ----
 
-    /// Position and size in screen pixels, and whether the window is maximized.
-    pub fn bounds(&self) -> Option<((i32, i32, u32, u32), bool)> {
+    /// The window's bounds; one that is not restored gives the bounds it returns to.
+    pub fn bounds(&self) -> Option<Bounds> {
+        if let Some(windowed) = self.windowed_bounds.get() {
+            return Some(windowed);
+        }
         let app = self.app_window().ok()?;
-        let position = app.Position().ok()?;
-        let size = app.Size().ok()?;
-        let maximized = app
+        let state = app
             .Presenter()
             .and_then(|p| p.cast::<OverlappedPresenter>())
             .and_then(|p| p.State())
-            .is_ok_and(|s| s == OverlappedPresenterState::Maximized);
-        let width = u32::try_from(size.width).ok()?;
-        let height = u32::try_from(size.height).ok()?;
-        Some(((position.x, position.y, width, height), maximized))
+            .ok();
+        let maximized = state == Some(OverlappedPresenterState::Maximized);
+        // A maximized or minimized window is not where Restore Down puts it.
+        let rect = if state.is_some_and(|s| s != OverlappedPresenterState::Restored) {
+            platform::normal_bounds(platform::window_handle(&self.window).ok()?)?
+        } else {
+            let (position, size) = (app.Position().ok()?, app.Size().ok()?);
+            RectInt32 {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+            }
+        };
+        let width = u32::try_from(rect.width).ok()?;
+        let height = u32::try_from(rect.height).ok()?;
+        Some(((rect.x, rect.y, width, height), maximized))
     }
 
     fn apply_bounds(&self, (x, y, width, height): (i32, i32, u32, u32), maximized: bool) {
