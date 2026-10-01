@@ -1,6 +1,6 @@
-//! What a future sync engine calls. Nothing in core calls it, and no engine is built now.
+//! What the sync engine (`vsesvit-sync`) calls. Nothing in core calls it.
 //!
-//! The engine (a later crate `vsesvit-sync` that depends on this one) needs exactly
+//! The engine (`vsesvit-sync`, which depends on this crate) needs exactly
 //! four things:
 //!
 //! 1. `changes_since(kind, cursor, limit)`: local changes to upload.
@@ -10,7 +10,7 @@
 //!    `set_secret_state` for its tokens, sealed by the [`vault`](crate::vault).
 //! 4. `ApplyReport::changed`: what the shell must refresh afterwards.
 //!
-//! There is no trait. There is one implementation (this) and one consumer (the engine),
+//! There is no trait. There is one implementation (this) and one main consumer (the engine),
 //! so the "interface" is these concrete methods.
 //!
 //! Threading follows the same pattern as extension installs: network I/O runs on a

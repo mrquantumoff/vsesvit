@@ -36,7 +36,7 @@
 //! | [`shortcuts`]    | commands, default chords, the user's keymap                           |
 //! | [`extensions`]   | desired set (synced) vs installed set (local), CRX3/XPI/unpacked      |
 //! | [`ext_storage`]  | `chrome.storage.local` / `.sync` backing for the Linux runtime        |
-//! | [`sync`]         | what a future sync engine calls: `changes_since`, `apply`             |
+//! | [`sync`]         | what the sync engine (`vsesvit-sync`) calls: `changes_since`, `apply` |
 //! | [`vault`]        | the profile's OS-protected key that seals secrets (LOCAL)             |
 //! | `db`             | schema, migrations, `Tx` (stamp + seq + clock persistence)            |
 
@@ -80,7 +80,7 @@ use crdt::{Clock, DeviceId, Hlc, TimeSource};
 /// so a borrow is never re-entered.
 ///
 /// `Profile` is `!Send` on purpose. Work that must leave the UI thread (extension
-/// downloads, a future sync engine's network I/O) is shaped as a `Send` value that holds
+/// downloads, the sync engine's network I/O) is shaped as a `Send` value that holds
 /// no database handle, and its result is committed back here on the UI thread. Nothing
 /// is shared between threads, so there are no locks.
 pub struct Profile {

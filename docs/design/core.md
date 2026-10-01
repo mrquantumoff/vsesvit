@@ -204,7 +204,7 @@ async fn sync_webview2_extensions(wvp: &CoreWebView2Profile) -> windows::core::R
 }
 ```
 
-### A future sync engine (not built now)
+### The sync engine (`vsesvit-sync`)
 
 ```rust
 // crates/vsesvit-sync. Network on a worker thread; each call below runs on the UI thread.
