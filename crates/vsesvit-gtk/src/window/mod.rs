@@ -160,11 +160,7 @@ impl BrowserWindow {
         assert!(imp.ui.set(ui).is_ok(), "new runs once per window");
         actions::install(&window);
         window.connect_signals();
-        window.apply_layout(browser.tabs_position());
-        window.set_bookmarks_bar_visible(browser.bookmarks_bar_visible());
-        window.set_home_button_visible(browser.home_button_visible());
-        window.set_compact_address_bar(browser.compact_address_bar());
-        window.set_full_urls(browser.full_urls());
+        window.apply_prefs();
         window.refresh_bookmarks_bar();
         window.refresh_extension_actions();
         if browser.downloads().started_this_session() {
@@ -498,6 +494,16 @@ impl BrowserWindow {
 
     // Layout.
 
+    /// Lays the window out per the window-level preferences, as a new window starts.
+    pub(crate) fn apply_prefs(&self) {
+        let browser = self.browser();
+        self.apply_layout(browser.tabs_position());
+        self.set_bookmarks_bar_visible(browser.bookmarks_bar_visible());
+        self.set_home_button_visible(browser.home_button_visible());
+        self.set_compact_address_bar(browser.compact_address_bar());
+        self.set_full_urls(browser.full_urls());
+    }
+
     /// Places the tabs per the preference, live: the sidebar moves or the tab bar appears
     /// without recreating anything.
     pub(crate) fn apply_layout(&self, position: TabsPosition) {
@@ -828,6 +834,14 @@ impl BrowserWindow {
         }
         self.insert_tab(&tab, opener, focus);
         tab
+    }
+
+    /// Opens a tab for each of `uris` at the end, selecting the first.
+    pub(crate) fn open_tabs<S: AsRef<str>>(&self, uris: &[S]) {
+        for (i, uri) in uris.iter().enumerate() {
+            let focus = if i == 0 { Focus::Foreground } else { Focus::Background };
+            self.open_tab(Some(uri.as_ref()), None, focus);
+        }
     }
 
     /// A new tab page at the end; selecting it puts the focus in the address bar. The page
@@ -1306,6 +1320,58 @@ mod tests {
             .collect();
         assert!(alone, "no other test's window is open");
         assert_eq!(urls, [url]);
+    }
+
+    #[gtk::test]
+    fn synced_preferences_lay_out_an_open_window_like_a_new_one() {
+        use vsesvit_core::sync::Changed;
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.open_tabs(&["about:blank", "about:blank"]);
+        let tabs = window.tabs();
+        let first_selected = tabs.len() == 2 && window.selected_tab().as_ref() == tabs.first();
+
+        let state = |w: &BrowserWindow| {
+            let ui = w.ui();
+            (
+                w.imp().layout.get(),
+                ui.bookmarks_bar.widget().reveals_child(),
+                ui.home.is_visible(),
+                ui.location.maximum_size(),
+            )
+        };
+        let before = state(&window);
+        let changed = |browser: &Browser| {
+            let prefs = [keys::TABS_POSITION.key, keys::SHOW_BOOKMARKS_BAR.key, keys::SHOW_HOME_BUTTON.key, keys::COMPACT_ADDRESS_BAR.key];
+            browser.sync_applied(&Changed { prefs: prefs.map(String::from).to_vec(), ..Default::default() });
+        };
+        {
+            let mut core = browser.core().borrow_mut();
+            let mut prefs = core.prefs();
+            prefs.set(&keys::TABS_POSITION, &TabsPosition::Top).unwrap();
+            prefs.set(&keys::SHOW_BOOKMARKS_BAR, &false).unwrap();
+            prefs.set(&keys::SHOW_HOME_BUTTON, &true).unwrap();
+            prefs.set(&keys::COMPACT_ADDRESS_BAR, &false).unwrap();
+        }
+        changed(&browser);
+        let synced = state(&window);
+        let fresh = BrowserWindow::new(&browser);
+        let new = state(&fresh);
+
+        {
+            let mut core = browser.core().borrow_mut();
+            let mut prefs = core.prefs();
+            prefs.reset(&keys::TABS_POSITION).unwrap();
+            prefs.reset(&keys::SHOW_BOOKMARKS_BAR).unwrap();
+            prefs.reset(&keys::SHOW_HOME_BUTTON).unwrap();
+            prefs.reset(&keys::COMPACT_ADDRESS_BAR).unwrap();
+        }
+        changed(&browser);
+        window.destroy();
+        fresh.destroy();
+        assert!(first_selected, "both tabs open, the first selected");
+        assert_ne!(synced, before, "the sync changed the window");
+        assert_eq!(synced, new);
     }
 
     #[gtk::test]

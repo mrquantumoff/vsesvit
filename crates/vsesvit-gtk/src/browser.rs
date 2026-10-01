@@ -281,10 +281,7 @@ impl Browser {
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| BrowserWindow::new(self));
-            for (i, target) in targets.iter().enumerate() {
-                let focus = if i == 0 { Focus::Foreground } else { Focus::Background };
-                window.open_tab(Some(target.as_str()), None, focus);
-            }
+            window.open_tabs(targets);
             window.present();
         }
         if self.0.welcome.take()
@@ -300,10 +297,7 @@ impl Browser {
         if targets.is_empty() {
             window.new_tab();
         }
-        for (i, target) in targets.iter().enumerate() {
-            let focus = if i == 0 { Focus::Foreground } else { Focus::Background };
-            window.open_tab(Some(target.as_str()), None, focus);
-        }
+        window.open_tabs(targets);
         window.present();
         window
     }
@@ -806,15 +800,8 @@ impl Browser {
         if !changed.prefs.is_empty() {
             self.apply_theme();
             self.engine().apply_prefs(&mut self.core().borrow_mut());
-            let position = self.tabs_position();
-            let (bar, home) = (self.bookmarks_bar_visible(), self.home_button_visible());
-            let (compact, full_urls) = (self.compact_address_bar(), self.full_urls());
             for window in self.windows() {
-                window.apply_layout(position);
-                window.set_bookmarks_bar_visible(bar);
-                window.set_home_button_visible(home);
-                window.set_compact_address_bar(compact);
-                window.set_full_urls(full_urls);
+                window.apply_prefs();
                 window.refresh_extension_actions();
             }
         }
