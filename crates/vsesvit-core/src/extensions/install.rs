@@ -842,7 +842,7 @@ pub enum InstallError {
     IdMismatch { expected: String, actual: String },
     #[error("only unpacked extensions can be reloaded")]
     NotUnpacked,
-    #[error("extension {0} comes from a signed package, and an unverified copy cannot take its id")]
+    #[error("extension {0} comes from a store or a signed package, and an unverified copy cannot take its id")]
     VerifiedIdTaken(String),
     #[error("extension id {id} differs only in letter case from the installed {installed}")]
     IdCaseConflict { id: String, installed: String },

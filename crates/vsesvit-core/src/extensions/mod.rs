@@ -172,6 +172,14 @@ impl StoreRef {
     fn from_column(s: &str) -> Option<StoreRef> {
         [StoreRef::ChromeWebStore, StoreRef::EdgeAddons, StoreRef::Amo].into_iter().find(|store| store.column() == s)
     }
+
+    /// How firmly this store's downloads hold their ids.
+    fn id_hold(&self) -> IdHold {
+        match self {
+            StoreRef::ChromeWebStore | StoreRef::EdgeAddons => IdHold::Key,
+            StoreRef::Amo => IdHold::Store,
+        }
+    }
 }
 
 /// Desired state, synced. Natural key: the extension id. Presence is an LWW register
@@ -218,6 +226,26 @@ impl Verification {
     fn binds_key(&self) -> bool {
         matches!(self, Verification::ChromeWebStore { .. } | Verification::EdgeAddons | Verification::LocalCrx)
     }
+
+    fn id_hold(&self) -> IdHold {
+        match self {
+            _ if self.binds_key() => IdHold::Key,
+            Verification::AmoHash => IdHold::Store,
+            _ => IdHold::Nothing,
+        }
+    }
+}
+
+/// What ties an install to its id, weakest first. An install may not take an id held
+/// more firmly (see `check_id`).
+#[derive(PartialEq, PartialOrd)]
+enum IdHold {
+    /// A local `.xpi` or an unpacked dir: its manifest names the id, and anyone can write one.
+    Nothing,
+    /// AMO served it under that id, and AMO gives each gecko id to one developer.
+    Store,
+    /// The id is the hash of a developer key that signed it.
+    Key,
 }
 
 /// What a shell loads into its engine.
@@ -518,27 +546,23 @@ impl Extensions<'_> {
     }
 
     /// An install may not take:
-    /// - the id of a signature-verified package, installed here or wanted from a CRX store
-    ///   (Chrome Web Store, Edge Add-ons), unless it verified a developer key too (the id
-    ///   is that key's hash, so it is the same key). The id owns the extension's storage
-    ///   and engine identity.
+    /// - an id held more firmly than it would hold it ([`IdHold`]), by an install here or
+    ///   by the store a synced record wants it from. So a signature-verified package's id
+    ///   goes only to a package that verified a developer key too (the id is that key's
+    ///   hash, so it is the same key), and an AMO extension's id is not a local `.xpi`'s
+    ///   or an unpacked dir's. The id owns the extension's storage and engine identity.
     /// - an id that differs from an installed one only in letter case, since on Windows
     ///   both would share `extensions/<id>`.
     fn check_id(&self, id: &ExtensionId, verification: &Verification, existing: Option<&InstallRow>) -> Result<(), Error> {
-        if !verification.binds_key() {
-            let wanted_from_crx_store = self
-                .p
-                .conn
-                .query_row(
-                    "SELECT 1 FROM extensions WHERE id = ?1 AND installed AND store IN ('chrome_web_store', 'edge_addons')",
-                    [id.as_str()],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some();
-            if wanted_from_crx_store || existing.is_some_and(|r| r.verification.binds_key()) {
-                return Err(InstallError::VerifiedIdTaken(id.as_str().to_owned()).into());
-            }
+        let hold = verification.id_hold();
+        let wanted_from: Option<String> = self
+            .p
+            .conn
+            .query_row("SELECT store FROM extensions WHERE id = ?1 AND installed", [id.as_str()], |r| r.get(0))
+            .optional()?;
+        let wanted_hold = wanted_from.as_deref().and_then(StoreRef::from_column).map(|store| store.id_hold());
+        if wanted_hold.is_some_and(|h| h > hold) || existing.is_some_and(|r| r.verification.id_hold() > hold) {
+            return Err(InstallError::VerifiedIdTaken(id.as_str().to_owned()).into());
         }
         let other: Option<String> = self
             .p
@@ -1056,6 +1080,75 @@ mod store_tests {
         assert!(matches!(t.p().extensions().commit(staged), Err(Error::Install(InstallError::VerifiedIdTaken(_)))));
         let ext = t.p().extensions().get(&probe_id()).unwrap().unwrap();
         assert_eq!((ext.version.as_str(), &ext.verification), ("1.0.0", &Verification::ChromeWebStore { publisher_verified: true }));
+    }
+
+    /// What a sync apply does when another device installs `id` from `store`.
+    fn remote_want(t: &mut TempProfile, id: &ExtensionId, store: StoreRef) {
+        t.p()
+            .write(|tx| {
+                let at = tx.stamp();
+                let rec = ExtensionRecord {
+                    id: id.clone(),
+                    store: Lww::new(store, at),
+                    installed: Lww::new(true, at),
+                    enabled: Lww::new(true, at),
+                    extra: Extra::new(),
+                };
+                let seq = tx.seq();
+                ExtensionsTable::store(&tx.sql, &rec, seq)
+            })
+            .unwrap();
+    }
+
+    /// A local `.xpi` whose manifest claims `gecko_id`.
+    fn local_xpi(t: &mut TempProfile, gecko_id: &ExtensionId, version: &str) -> StagedInstall {
+        let manifest = format!(
+            r#"{{"manifest_version": 2, "name": "X", "version": "{version}", "browser_specific_settings": {{"gecko": {{"id": "{}"}}}}}}"#,
+            gecko_id.as_str()
+        );
+        let path = t.dir.join(format!("{version}.xpi"));
+        fs::write(&path, testkit::zip_files(&[("manifest.json", manifest.as_bytes())])).unwrap();
+        let staged = t.p().extensions().prepare_install(InstallSource::XpiFile { path }).unwrap().run(&mut |_| {}).unwrap();
+        assert_eq!((&staged.id, &staged.verification), (gecko_id, &Verification::LocalXpi));
+        staged
+    }
+
+    /// The same files as AMO's download of `gecko_id`, as a reconcile job stages them.
+    fn from_amo(t: &mut TempProfile, gecko_id: &ExtensionId, version: &str) -> StagedInstall {
+        let mut staged = local_xpi(t, gecko_id, version);
+        staged.source = InstallSource::Amo { slug_or_guid: gecko_id.as_str().to_owned() };
+        staged.verification = Verification::AmoHash;
+        staged.intent = Intent::Reconcile;
+        staged
+    }
+
+    #[test]
+    fn a_local_xpi_cannot_take_the_gecko_id_of_an_amo_extension() {
+        let mut t = TempProfile::new();
+        let id = ExtensionId::parse("victim@example.org").unwrap();
+        let taken = |r: Result<Option<InstalledExtension>, Error>| matches!(r, Err(Error::Install(InstallError::VerifiedIdTaken(_))));
+
+        // Wanted from AMO (another device installed it), not here yet.
+        remote_want(&mut t, &id, StoreRef::Amo);
+        let staged = local_xpi(&mut t, &id, "9.0");
+        assert!(taken(t.p().extensions().commit(staged)));
+        assert!(t.p().extensions().list().unwrap().is_empty());
+
+        // Installed from AMO here, with data of its own.
+        let staged = from_amo(&mut t, &id, "1.0");
+        t.p().extensions().commit(staged).unwrap().unwrap();
+        t.p().conn.execute("INSERT INTO ext_storage_local (ext, key, value) VALUES (?1, 'secret', '1')", [id.as_str()]).unwrap();
+        let staged = local_xpi(&mut t, &id, "9.0");
+        assert!(taken(t.p().extensions().commit(staged)));
+        let ext = t.p().extensions().get(&id).unwrap().unwrap();
+        assert_eq!((ext.version.as_str(), &ext.verification), ("1.0", &Verification::AmoHash));
+        let stored: u32 = t.p().conn.query_row("SELECT COUNT(*) FROM ext_storage_local WHERE ext = ?1", [id.as_str()], |r| r.get(0)).unwrap();
+        assert_eq!(stored, 1);
+
+        // AMO still updates its own extension.
+        let staged = from_amo(&mut t, &id, "2.0");
+        let ext = t.p().extensions().commit(staged).unwrap().unwrap();
+        assert_eq!((ext.version.as_str(), &ext.verification), ("2.0", &Verification::AmoHash));
     }
 
     fn schema(conn: &rusqlite::Connection) -> Vec<(String, String, Option<String>)> {
