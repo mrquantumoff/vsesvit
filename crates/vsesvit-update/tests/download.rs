@@ -206,3 +206,40 @@ fn stale_downloads_are_removed_and_the_kept_version_stays() {
     assert_eq!(leftovers(dir.path()), ["notes.txt"]);
     remove_stale_downloads(&dir.path().join("missing"), None).expect("a missing directory has nothing stale");
 }
+
+#[test]
+fn a_partial_download_in_progress_survives_stale_cleanup() {
+    let release = signed(Format::Deb, "0.2.0");
+    let dir = tempfile::tempdir().unwrap();
+    let mut cleaned = false;
+    let downloaded = release
+        .update(Installation::Deb)
+        .download(dir.path(), |_, _| {
+            if !std::mem::replace(&mut cleaned, true) {
+                // Another profile, which found nothing to keep, cleans up meanwhile.
+                remove_stale_downloads(dir.path(), None).unwrap();
+            }
+        })
+        .expect("the cleanup left the partial file alone");
+    assert_eq!(std::fs::read(downloaded.path()).unwrap(), artifact(Format::Deb));
+}
+
+#[test]
+fn two_downloads_of_one_version_into_one_dir_both_succeed() {
+    let release = signed(Format::Deb, "0.2.0");
+    let dir = tempfile::tempdir().unwrap();
+    let update = release.update(Installation::Deb);
+    let mut second = None;
+    let first = update
+        .download(dir.path(), |_, _| {
+            if second.is_none() {
+                // Another profile downloads the same update while this one starts.
+                second = Some(download(&update, dir.path()).expect("the second download succeeds"));
+            }
+        })
+        .expect("the first download succeeds");
+    let second = second.unwrap();
+    assert_eq!(first.path(), second.path());
+    assert_eq!(std::fs::read(first.path()).unwrap(), artifact(Format::Deb));
+    assert_eq!(leftovers(dir.path()), ["vsesvit-0.2.0.deb"]);
+}

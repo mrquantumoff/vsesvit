@@ -2,8 +2,9 @@
 
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use minisign_verify::PublicKey;
@@ -178,22 +179,31 @@ impl Update {
     /// Streams the artifact into `dir`, calling `progress(received, content_length)` as bytes
     /// arrive, then verifies it. A file that grows past 512 MiB or fails verification is
     /// deleted. When `dir` already holds this artifact from an earlier download and it verifies,
-    /// nothing is fetched.
+    /// nothing is fetched. Other processes, such as other profiles, can download into the same
+    /// `dir` at the same time: each writes a partial file of its own.
     pub fn download(&self, dir: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Downloaded, Error> {
-        let name = DownloadName { version: self.release.version.clone(), format: self.format, partial: false };
+        let name = DownloadName { version: self.release.version.clone(), format: self.format };
         let path = dir.join(name.to_string());
         if path.exists() {
-            match self.verify(&path) {
+            match fs::read(&path).map_err(Error::from).and_then(|data| self.verify(&data)) {
                 Ok(()) => return Ok(self.downloaded(path)),
                 Err(e) => log::info!("downloading {} again: {e}", path.display()),
             }
         }
-        let partial = dir.join(DownloadName { partial: true, ..name }.to_string());
-        if let Err(e) = self.fetch_to(&partial, &mut progress).and_then(|()| self.verify(&partial)) {
+        let (mut file, partial) = create_partial(dir, &name)?;
+        if let Err(e) = self.fetch_to(&mut file, &mut progress).and_then(|()| self.verify(&read_back(&mut file)?)) {
             let _ = fs::remove_file(&partial);
             return Err(e);
         }
-        fs::rename(&partial, &path)?;
+        if let Err(e) = fs::rename(&partial, &path) {
+            // Another download of this version can have put its copy there first, and an
+            // installer can be running from it.
+            let _ = fs::remove_file(&partial);
+            return match fs::read(&path).map_err(Error::from).and_then(|data| self.verify(&data)) {
+                Ok(()) => Ok(self.downloaded(path)),
+                Err(_) => Err(e.into()),
+            };
+        }
         Ok(self.downloaded(path))
     }
 
@@ -208,7 +218,7 @@ impl Update {
         }
     }
 
-    fn fetch_to(&self, partial: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<(), Error> {
+    fn fetch_to(&self, file: &mut File, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<(), Error> {
         let response =
             self.agent.get(self.url.as_str()).header("Accept", "application/octet-stream").call().map_err(network_error)?;
         let status = response.status().as_u16();
@@ -217,15 +227,41 @@ impl Update {
         }
         let total = response.body().content_length();
         let reader = response.into_body().into_reader();
-        let mut file = File::create(partial)?;
-        save(reader, total, &mut file, MAX_ARTIFACT_SIZE, progress)?;
+        save(reader, total, file, MAX_ARTIFACT_SIZE, progress)?;
         file.sync_all()?;
         Ok(())
     }
 
-    fn verify(&self, file: &Path) -> Result<(), Error> {
-        verify(&fs::read(file)?, &self.signature, &self.key, &self.release.version, self.format)
+    fn verify(&self, data: &[u8]) -> Result<(), Error> {
+        verify(data, &self.signature, &self.key, &self.release.version, self.format)
     }
+}
+
+/// Creates and locks `<name>.<tag>.part`, a name no other download uses. The lock keeps
+/// [`remove_stale_downloads`] in other processes away from it while it is written.
+fn create_partial(dir: &Path, name: &DownloadName) -> io::Result<(File, PathBuf)> {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    loop {
+        let path = dir.join(format!("{name}.{}-{}.part", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let file = match File::options().read(true).write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        // A cleanup that locked the file before this did has deleted it by the time it lets go.
+        file.lock()?;
+        if path.exists() {
+            return Ok((file, path));
+        }
+    }
+}
+
+/// Reads through the locking handle: on Windows the lock keeps every other handle out.
+fn read_back(file: &mut File) -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    file.rewind()?;
+    file.read_to_end(&mut data)?;
+    Ok(data)
 }
 
 fn verify(data: &[u8], signature: &str, key: &PublicKey, version: &Version, format: Format) -> Result<(), Error> {
@@ -269,8 +305,8 @@ fn save(
 
 /// Deletes what [`Update::download`] left in `dir`: partial downloads, and the artifacts of
 /// every version but `keep`. A file that cannot be deleted, such as an installer that is still
-/// running, stays until the next call. Other files are left alone, and a missing `dir` is not
-/// an error.
+/// running, stays until the next call, and so does a partial download another process is still
+/// writing. Other files are left alone, and a missing `dir` is not an error.
 pub fn remove_stale_downloads(dir: &Path, keep: Option<&Version>) -> io::Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -279,12 +315,20 @@ pub fn remove_stale_downloads(dir: &Path, keep: Option<&Version>) -> io::Result<
     };
     for entry in entries {
         let entry = entry?;
-        let Some(name) = entry.file_name().to_str().and_then(DownloadName::parse) else {
+        let Some((name, partial)) = entry.file_name().to_str().and_then(DownloadName::parse) else {
             continue;
         };
-        if !name.partial && Some(&name.version) == keep {
+        if !partial && Some(&name.version) == keep {
             continue;
         }
+        // Held until the file is gone, so a download cannot take the file up in between.
+        let _lock = match partial.then(|| lock_partial(&entry.path())).transpose() {
+            Ok(lock) => lock,
+            Err(e) => {
+                log::debug!("keeping {}: {e}", entry.path().display());
+                continue;
+            }
+        };
         if let Err(e) = fs::remove_file(entry.path()) {
             log::debug!("keeping {}: {e}", entry.path().display());
         }
@@ -292,35 +336,46 @@ pub fn remove_stale_downloads(dir: &Path, keep: Option<&Version>) -> io::Result<
     Ok(())
 }
 
-/// `vsesvit-<version><format suffix>`, plus `.part` while it downloads.
+/// Locks a partial download, failing when another process holds it.
+fn lock_partial(path: &Path) -> io::Result<File> {
+    let file = File::open(path)?;
+    file.try_lock()?;
+    Ok(file)
+}
+
+/// `vsesvit-<version><format suffix>`, plus `.<tag>.part` while it downloads, where the tag
+/// tells concurrent downloads apart. Older versions wrote `.part` alone.
 #[derive(Debug, PartialEq, Eq)]
 struct DownloadName {
     version: Version,
     format: Format,
-    partial: bool,
 }
 
 impl DownloadName {
-    fn parse(name: &str) -> Option<DownloadName> {
-        let (name, partial) = match name.strip_suffix(".part") {
-            Some(name) => (name, true),
-            None => (name, false),
+    /// The name, and whether it is a partial download.
+    fn parse(name: &str) -> Option<(DownloadName, bool)> {
+        let Some(name) = name.strip_suffix(".part") else {
+            return DownloadName::parse_whole(name).map(|name| (name, false));
         };
+        let untagged = name
+            .rsplit_once('.')
+            .filter(|(_, tag)| !tag.is_empty() && tag.bytes().all(|b| b.is_ascii_digit() || b == b'-'))
+            .and_then(|(name, _)| DownloadName::parse_whole(name));
+        untagged.or_else(|| DownloadName::parse_whole(name)).map(|name| (name, true))
+    }
+
+    fn parse_whole(name: &str) -> Option<DownloadName> {
         let rest = name.strip_prefix("vsesvit-")?;
         Format::ALL.into_iter().find_map(|format| {
             let version = Version::parse(rest.strip_suffix(format.file_suffix())?).ok()?;
-            Some(DownloadName { version, format, partial })
+            Some(DownloadName { version, format })
         })
     }
 }
 
 impl fmt::Display for DownloadName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "vsesvit-{}{}", self.version, self.format.file_suffix())?;
-        if self.partial {
-            f.write_str(".part")?;
-        }
-        Ok(())
+        write!(f, "vsesvit-{}{}", self.version, self.format.file_suffix())
     }
 }
 
@@ -383,9 +438,10 @@ mod tests {
     #[test]
     fn download_names_round_trip() {
         for format in Format::ALL {
-            for partial in [false, true] {
-                let name = DownloadName { version: Version::parse("2.0.0-rc.1").unwrap(), format, partial };
-                assert_eq!(DownloadName::parse(&name.to_string()), Some(name));
+            let name = || DownloadName { version: Version::parse("2.0.0-rc.1").unwrap(), format };
+            assert_eq!(DownloadName::parse(&name().to_string()), Some((name(), false)));
+            for partial in [format!("{}.123-4.part", name()), format!("{}.part", name())] {
+                assert_eq!(DownloadName::parse(&partial), Some((name(), true)), "{partial}");
             }
         }
     }
