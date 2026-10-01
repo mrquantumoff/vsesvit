@@ -301,12 +301,20 @@ pub struct Extensions<'p> {
 
 impl Extensions<'_> {
     /// Access pattern 4. Reads rows only; no disk scan. In install order, which an
-    /// update keeps.
+    /// update keeps. Skips a row this build cannot decode (damaged, or written by another
+    /// version); `on_open` keeps its files.
     pub fn list(&mut self) -> Result<Vec<InstalledExtension>, Error> {
         let sql = format!("{SELECT_INSTALLED} ORDER BY i.installed_ms, i.id");
         let mut stmt = self.p.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], LoadedRow::from_sql)?.collect::<Result<Vec<_>, _>>()?;
-        Ok(rows.into_iter().map(|r| r.into_installed(&self.p.paths.extensions)).collect())
+        let mut installed = Vec::new();
+        for row in stmt.query_map([], LoadedRow::from_sql)? {
+            match row {
+                Ok(row) => installed.push(row.into_installed(&self.p.paths.extensions)),
+                Err(e @ rusqlite::Error::FromSqlConversionFailure(..)) => log::warn!("skipping an installed extension: {e}"),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(installed)
     }
 
     pub fn get(&mut self, id: &ExtensionId) -> Result<Option<InstalledExtension>, Error> {
@@ -732,7 +740,7 @@ impl LoadedRow {
     fn into_installed(self, extensions_root: &Path) -> InstalledExtension {
         let LoadedRow { row, enabled } = self;
         InstalledExtension {
-            dir: row.resolve_dir(extensions_root),
+            dir: resolve_dir(&row.dir, row.is_managed(), extensions_root),
             id: row.id,
             version: row.version,
             manifest: row.manifest,
@@ -747,14 +755,6 @@ impl LoadedRow {
 impl InstallRow {
     fn is_managed(&self) -> bool {
         !matches!(self.source, InstallSource::Unpacked { .. })
-    }
-
-    fn resolve_dir(&self, extensions_root: &Path) -> PathBuf {
-        if self.is_managed() {
-            self.dir.split('/').fold(extensions_root.to_path_buf(), |p, seg| p.join(seg))
-        } else {
-            PathBuf::from(&self.dir)
-        }
     }
 
     fn upsert(&self, tx: &mut Tx<'_>) -> Result<(), Error> {
@@ -779,6 +779,11 @@ impl InstallRow {
     }
 }
 
+/// The `dir` column as a path: under `extensions_root` for a managed install.
+fn resolve_dir(dir: &str, managed: bool, extensions_root: &Path) -> PathBuf {
+    if managed { dir.split('/').fold(extensions_root.to_path_buf(), |p, seg| p.join(seg)) } else { PathBuf::from(dir) }
+}
+
 fn to_json<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("install metadata always serializes")
 }
@@ -791,16 +796,18 @@ pub(crate) fn on_open(p: &mut Profile) -> Result<(), Error> {
     let _ = fs::remove_dir_all(&p.paths.staging);
     fs::create_dir_all(&p.paths.staging)?;
 
-    let rows: Vec<InstallRow> = {
-        let mut stmt = p.conn.prepare(SELECT_INSTALLED)?;
-        stmt.query_map([], |r| LoadedRow::from_sql(r).map(|loaded| loaded.row))?.collect::<Result<_, _>>()?
+    // (id, dir, managed). Only plain columns, so a row whose JSON this build cannot decode
+    // still keeps its dir.
+    let rows: Vec<(String, String, bool)> = {
+        let mut stmt = p.conn.prepare("SELECT id, dir, source_kind <> 'unpacked' FROM extension_installs")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?
     };
-    let (present, vanished): (Vec<InstallRow>, Vec<InstallRow>) =
-        rows.into_iter().partition(|r| r.resolve_dir(&p.paths.extensions).is_dir());
+    let (present, vanished): (Vec<_>, Vec<_>) =
+        rows.into_iter().partition(|(_, dir, managed)| resolve_dir(dir, *managed, &p.paths.extensions).is_dir());
     if !vanished.is_empty() {
         p.write(|tx| {
-            for row in &vanished {
-                tx.sql.execute("DELETE FROM extension_installs WHERE id = ?1", [row.id.as_str()])?;
+            for (id, _, _) in &vanished {
+                tx.sql.execute("DELETE FROM extension_installs WHERE id = ?1", [id])?;
             }
             Ok(())
         })?;
@@ -808,7 +815,8 @@ pub(crate) fn on_open(p: &mut Profile) -> Result<(), Error> {
 
     // Compared ignoring case: on Windows `extensions/<id>` may be an existing dir spelled in
     // another case, and `commit` keeps installed ids distinct ignoring case.
-    let referenced: HashSet<String> = present.iter().filter(|r| r.is_managed()).map(|r| r.dir.to_ascii_lowercase()).collect();
+    let referenced: HashSet<String> =
+        present.iter().filter(|(_, _, managed)| *managed).map(|(_, dir, _)| dir.to_ascii_lowercase()).collect();
     let Ok(id_dirs) = fs::read_dir(&p.paths.extensions) else { return Ok(()) };
     for id_dir in id_dirs.flatten() {
         let id_name = id_dir.file_name().to_string_lossy().into_owned();

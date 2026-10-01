@@ -674,3 +674,27 @@ fn re_adding_an_unpacked_dir_at_a_lower_version_refreshes_it() {
     let moved = install(&mut p, InstallSource::Unpacked { dir: old_checkout.clone() }).unwrap().unwrap();
     assert_eq!((moved.dir, moved.version.as_str()), (std::path::absolute(&old_checkout).unwrap(), "1.0"));
 }
+
+/// A row this build cannot decode (damaged, or written by another version) is skipped,
+/// does not stop synced installs and uninstalls, and its files are kept for a build that
+/// can read it.
+#[test]
+fn a_row_that_does_not_decode_neither_stops_the_profile_opening_nor_loses_its_files() {
+    for (column, value) in [("manifest", r#"{"bogus": 1}"#), ("verification", r#"{"kind": "future_kind"}"#), ("source", "[]")] {
+        let t = TempDir::new();
+        let mut p = t.open();
+        let probe = install_file(&t, &mut p, "probe.crx", &testkit::probe_crx()).unwrap().unwrap();
+        let xpi = raw_zip(&[("manifest.json", &xpi_manifest("x@example.org", "1.0", ""))], &[]);
+        let other = install_file(&t, &mut p, "x.xpi", &xpi).unwrap().unwrap();
+        drop(p);
+        let conn = rusqlite::Connection::open(t.profile_root().join("vsesvit.db")).unwrap();
+        conn.execute(&format!("UPDATE extension_installs SET {column} = ?1 WHERE id = ?2"), [value, testkit::PROBE_ID]).unwrap();
+        drop(conn);
+
+        let mut p = Profile::open(&t.profile_root(), OpenOptions::default()).unwrap_or_else(|e| panic!("{column}: {e}"));
+        let listed: Vec<ExtensionId> = p.extensions().list().unwrap().into_iter().map(|e| e.id).collect();
+        assert_eq!(listed, [other.id], "{column}");
+        p.extensions().reconcile().unwrap_or_else(|e| panic!("{column}: reconcile: {e}"));
+        assert!(probe.dir.join("manifest.json").is_file(), "{column}: its files are not collected");
+    }
+}
