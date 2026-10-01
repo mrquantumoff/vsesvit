@@ -34,8 +34,9 @@ impl From<InstallFailed> for Error {
 
 impl Downloaded {
     /// `relaunch_args` are the arguments the relaunched browser gets, without the program name.
-    /// Only the Windows installer uses them. A successful install consumes the download: the
-    /// package manager is done with it, or the Windows installer is running from it.
+    /// Only the Windows installer uses them. The file is verified again first. A successful
+    /// install consumes the download: the package manager is done with it, or the Windows
+    /// installer is running from it.
     #[expect(clippy::result_large_err, reason = "once per update, and the error carries the download back")]
     pub fn install(self, installation: &Installation, relaunch_args: &[OsString]) -> Result<Installed, InstallFailed> {
         let result = self.apply(installation, relaunch_args);
@@ -48,13 +49,16 @@ impl Downloaded {
     #[expect(clippy::result_large_err, reason = "once per update, and the error carries the download back")]
     pub fn install_on_exit(self, installation: &Installation) -> Result<Installed, InstallFailed> {
         let result = match (installation, self.format) {
-            (Installation::Nsis { .. }, Format::Nsis) => nsis::launch(&self.path, std::ffi::OsStr::new("/S /UPDATE")),
+            (Installation::Nsis { .. }, Format::Nsis) => self
+                .verified_bytes()
+                .and_then(|_| nsis::launch(&self.path, std::ffi::OsStr::new("/S /UPDATE"))),
             _ => Err(mismatch(installation)),
         };
         result.map_err(|error| InstallFailed { error, downloaded: self })
     }
 
     fn apply(&self, installation: &Installation, relaunch_args: &[OsString]) -> Result<Installed, Error> {
+        let data = self.verified_bytes()?;
         match (installation, self.format) {
             (Installation::Nsis { .. }, Format::Nsis) => {
                 #[cfg(windows)]
@@ -70,10 +74,10 @@ impl Downloaded {
             }
             (Installation::AppImage { image }, Format::AppImage) => {
                 #[cfg(unix)]
-                return appimage::replace(&self.path, image);
+                return appimage::replace(&data, &self.path, image);
                 #[cfg(not(unix))]
                 return {
-                    let _ = image;
+                    let _ = (data, image);
                     Err(Error::Install("an AppImage update can only be installed on Linux".into()))
                 };
             }
@@ -140,9 +144,10 @@ mod appimage {
     use super::Installed;
     use crate::Error;
 
-    /// Copies the new image next to the running one and renames it over, so a crash leaves
-    /// either the old image or the new one, never half of one.
-    pub(super) fn replace(new: &Path, image: &Path) -> Result<Installed, Error> {
+    /// Writes the new image, the verified bytes of the download at `new`, next to the running
+    /// one and renames it over, so a crash leaves either the old image or the new one, never
+    /// half of one.
+    pub(super) fn replace(data: &[u8], new: &Path, image: &Path) -> Result<Installed, Error> {
         let fail = |e: io::Error| Error::Install(format!("replacing {}: {e}", image.display()));
         let (Some(dir), Some(name)) = (image.parent(), image.file_name()) else {
             return Err(Error::Install(format!("{} is not a file path", image.display())));
@@ -153,7 +158,7 @@ mod appimage {
         let temp = dir.join(temp_name);
 
         let result = (|| {
-            fs::copy(new, &temp)?;
+            fs::write(&temp, data)?;
             fs::set_permissions(&temp, fs::metadata(image)?.permissions())?;
             File::open(&temp)?.sync_all()?;
             fs::rename(&temp, image)?;

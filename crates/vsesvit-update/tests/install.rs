@@ -86,3 +86,28 @@ fn an_appimage_update_replaces_the_image_for_the_next_launch() {
     assert_eq!(names, ["Vsesvit.AppImage"], "no temporary file is left next to the image");
     assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 0, "the download is removed once applied");
 }
+
+#[test]
+fn a_package_changed_after_download_is_not_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (downloaded, _server) = downloaded(Format::Deb, Installation::Deb, dir.path());
+    std::fs::write(downloaded.path(), b"!<arch>\ndebian-binary tampered").unwrap();
+    let failed = downloaded.install(&Installation::Deb, &[]).unwrap_err();
+    assert!(matches!(failed.error, Error::Signature(_)), "{failed:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_appimage_changed_after_download_does_not_replace_the_image() {
+    let apps = tempfile::tempdir().unwrap();
+    let image = apps.path().join("Vsesvit.AppImage");
+    std::fs::write(&image, b"old image").unwrap();
+    let installation = Installation::AppImage { image: image.clone() };
+
+    let cache = tempfile::tempdir().unwrap();
+    let (downloaded, _server) = downloaded(Format::AppImage, installation.clone(), cache.path());
+    std::fs::write(downloaded.path(), b"tampered").unwrap();
+    let failed = downloaded.install(&installation, &[]).unwrap_err();
+    assert!(matches!(failed.error, Error::Signature(_)), "{failed:?}");
+    assert_eq!(std::fs::read(&image).unwrap(), b"old image");
+}

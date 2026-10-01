@@ -67,7 +67,9 @@ pub struct Update {
 }
 
 /// An artifact on disk whose signature, signed version and magic bytes have been checked. Only
-/// [`Update::download`] makes one, so nothing unverified reaches an installer.
+/// [`Update::download`] makes one, and installing checks the file again first, since anything
+/// running as the user can change it in between. The installer still reads it from a path the
+/// user can write to, so it is only as safe as the user's account.
 #[derive(Debug)]
 pub struct Downloaded {
     pub(crate) path: PathBuf,
@@ -75,6 +77,8 @@ pub struct Downloaded {
     pub(crate) version: Version,
     #[cfg_attr(not(windows), expect(dead_code, reason = "only the Windows installer has modes"))]
     pub(crate) install_mode: WindowsInstallMode,
+    signature: String,
+    key: PublicKey,
 }
 
 impl Updater {
@@ -194,7 +198,14 @@ impl Update {
     }
 
     fn downloaded(&self, path: PathBuf) -> Downloaded {
-        Downloaded { path, format: self.format, version: self.release.version.clone(), install_mode: self.install_mode }
+        Downloaded {
+            path,
+            format: self.format,
+            version: self.release.version.clone(),
+            install_mode: self.install_mode,
+            signature: self.signature.clone(),
+            key: self.key.clone(),
+        }
     }
 
     fn fetch_to(&self, partial: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<(), Error> {
@@ -213,13 +224,16 @@ impl Update {
     }
 
     fn verify(&self, file: &Path) -> Result<(), Error> {
-        let data = fs::read(file)?;
-        release::verify(&data, &self.signature, &self.key, &self.release.version)?;
-        if !self.format.matches_magic(&data) {
-            return Err(Error::WrongArtifactType(self.format));
-        }
-        Ok(())
+        verify(&fs::read(file)?, &self.signature, &self.key, &self.release.version, self.format)
     }
+}
+
+fn verify(data: &[u8], signature: &str, key: &PublicKey, version: &Version, format: Format) -> Result<(), Error> {
+    release::verify(data, signature, key, version)?;
+    if !format.matches_magic(data) {
+        return Err(Error::WrongArtifactType(format));
+    }
+    Ok(())
 }
 
 /// Copies `reader`, whose server announced `total` bytes, into `file`. Fails with
@@ -321,6 +335,13 @@ impl Downloaded {
 
     pub fn format(&self) -> Format {
         self.format
+    }
+
+    /// The file's bytes, checked again as [`Update::download`] checked them.
+    pub(crate) fn verified_bytes(&self) -> Result<Vec<u8>, Error> {
+        let data = fs::read(&self.path)?;
+        verify(&data, &self.signature, &self.key, &self.version, self.format)?;
+        Ok(data)
     }
 }
 
