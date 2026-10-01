@@ -17,10 +17,10 @@
 //! 6. the widget popup's iframe loads in place instead of being blanked and opened as a tab;
 //! 7. the twin popup opens the options page in a tab, where `chrome.*` works
 //!    (storage, `runtime.getURL` on the hashed host, messaging both ways, `tabs.getCurrent`,
-//!    `tabs.onUpdated`); `runtime.sendMessage` reaches every page; `scripting.executeScript`
-//!    injects the content-script API into a tab without a manifest content script, accepts
-//!    `/`-prefixed files, is refused for a tab outside the host permissions until
-//!    `activeTab` grants it and for one still showing such a page while it loads another;
+//!    `tabs.onUpdated`) and its CSP holds; `runtime.sendMessage` reaches every page;
+//!    `scripting.executeScript` injects the content-script API into a tab without a
+//!    manifest content script, accepts `/`-prefixed files, is refused for a tab outside the
+//!    host permissions until `activeTab` grants it and for one still showing such a page while it loads another;
 //!    `tabs.query` hides that tab's URL; `action.setPopup(getURL(..))` and `setIcon('/..')`
 //!    resolve; `tabs.create` resolves relative URLs and `tabs.update` refuses
 //!    `javascript:` and `file:`; a web page cannot navigate a tab to the options page, with
@@ -328,6 +328,9 @@ mod linux {
             self.note("options_page", options_ok, format!("tab {} at {}; page report = {report}", options_tab.id.0, options_tab.url));
             let hashed = url_host.len() == 32 && url_host.bytes().all(|b| b.is_ascii_hexdigit()) && url_host != TWIN_ID;
             self.note("gecko_id_get_url", hashed && get_url == format!("chrome-extension://{url_host}/data.json"), format!("getURL = {get_url}, URL host = {url_host}"));
+            // The extension's CSP applies in a tab as in its own views: no inline script.
+            let inline = self.eval(&options_view, "String(window.__twinInline)", None).await;
+            self.note("tab_page_csp", inline.as_deref() == Some("undefined"), format!("inline script in the options page ran: window.__twinInline = {inline:?}"));
 
             // Events reach a tab-hosted page.
             self.runtime.tab_updated(self.tab);
@@ -744,7 +747,7 @@ log("alive");
             ),
             ("popup.html", "<!doctype html><html><head><meta charset=\"utf-8\"><title>twin</title></head><body><script src=\"popup.js\"></script></body></html>".to_owned()),
             ("popup.js", "document.title = \"twin-popup:\" + chrome.runtime.id;\n".to_owned()),
-            ("options.html", "<!doctype html><html><head><meta charset=\"utf-8\"><title>Twin options</title></head><body><script src=\"options.js\"></script></body></html>".to_owned()),
+            ("options.html", "<!doctype html><html><head><meta charset=\"utf-8\"><title>Twin options</title></head><body><script>window.__twinInline = true;</script><script src=\"options.js\"></script></body></html>".to_owned()),
             (
                 "options.js",
                 r#"(async () => {

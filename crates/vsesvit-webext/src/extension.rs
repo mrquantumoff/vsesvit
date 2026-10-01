@@ -357,11 +357,68 @@ fn largest_icon(dir: &Path, icons: &BTreeMap<u32, RelPath>) -> Option<PathBuf> {
 }
 
 /// `content_security_policy.extension_pages` (MV3) or the MV2 string, else Chrome's default.
+/// Chrome refuses an MV3 policy that lets extension pages run code from elsewhere or from
+/// strings; such a policy gets the default here.
 fn content_security_policy(manifest: &Manifest) -> String {
     let raw = manifest.raw.get("content_security_policy");
     let from_manifest = match manifest.manifest_version {
-        ManifestVersion::V3 => raw.and_then(|v| v.get("extension_pages")).and_then(Value::as_str),
+        ManifestVersion::V3 => raw.and_then(|v| v.get("extension_pages")).and_then(Value::as_str).filter(|csp| {
+            let secure = mv3_policy_is_secure(csp);
+            if !secure {
+                log::warn!("{}: insecure content_security_policy.extension_pages ignored: {csp}", manifest.name);
+            }
+            secure
+        }),
         ManifestVersion::V2 => raw.and_then(Value::as_str),
     };
     from_manifest.map(str::to_owned).unwrap_or_else(|| "script-src 'self'; object-src 'self';".to_owned())
+}
+
+/// Chrome's rule for MV3 extension pages: `script-src` (or `default-src`) must exist, and
+/// it, `object-src` and `worker-src` may name only `'self'`, `'none'`, `'wasm-unsafe-eval'`
+/// and localhost.
+fn mv3_policy_is_secure(csp: &str) -> bool {
+    let directives: Vec<(String, Vec<String>)> = csp
+        .split(';')
+        .filter_map(|d| {
+            let mut words = d.split_whitespace().map(str::to_ascii_lowercase);
+            Some((words.next()?, words.collect()))
+        })
+        .collect();
+    let sources = |name: &str| directives.iter().find(|(n, _)| n == name).or_else(|| directives.iter().find(|(n, _)| n == "default-src")).map(|(_, s)| s);
+    let allowed = |source: &String| {
+        matches!(source.as_str(), "'self'" | "'none'" | "'wasm-unsafe-eval'")
+            || url::Url::parse(source.strip_suffix(":*").unwrap_or(source)).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && matches!(u.host_str(), Some("localhost" | "127.0.0.1")))
+    };
+    sources("script-src").is_some() && ["script-src", "object-src", "worker-src"].iter().all(|d| sources(d).is_none_or(|s| s.iter().all(allowed)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(json: &str) -> Manifest {
+        Manifest::parse(json, &|_| None).expect("test manifest parses")
+    }
+
+    #[test]
+    fn mv3_policies_that_run_code_from_elsewhere_fall_back_to_the_default() {
+        let mv3 = |csp: &str| content_security_policy(&manifest(&json!({ "manifest_version": 3, "name": "t", "version": "1", "content_security_policy": { "extension_pages": csp } }).to_string()));
+        let default = "script-src 'self'; object-src 'self';";
+        for insecure in [
+            "script-src 'self' 'unsafe-eval' https://cdn.example; object-src 'self'",
+            "script-src 'self' 'unsafe-inline'",
+            "default-src *",
+            "script-src 'self'; worker-src https://cdn.example",
+            "img-src 'self'",
+        ] {
+            assert_eq!(mv3(insecure), default, "{insecure}");
+        }
+        for secure in ["script-src 'self' 'wasm-unsafe-eval'; object-src 'self';", "default-src 'self'; img-src *", "SCRIPT-SRC 'SELF' http://localhost:8080 http://127.0.0.1:*"] {
+            assert_eq!(mv3(secure), secure);
+        }
+        let mv2 = content_security_policy(&manifest(r#"{"manifest_version":2,"name":"t","version":"1","content_security_policy":"script-src 'self' 'unsafe-eval'; object-src 'self'"}"#));
+        assert_eq!(mv2, "script-src 'self' 'unsafe-eval'; object-src 'self'");
+        assert_eq!(content_security_policy(&manifest(r#"{"manifest_version":3,"name":"t","version":"1"}"#)), default);
+    }
 }

@@ -66,6 +66,8 @@
 //! - Files served from `chrome-extension://<id>/<path>` (secure, CORS-enabled scheme).
 //!   Documents outside the extension origin may load only `web_accessible_resources`,
 //!   and navigate only to those (with the shell's navigation policy, see above).
+//!   Extension pages keep the manifest's CSP wherever they are shown; an MV3 policy that
+//!   Chrome would refuse (remote or `eval`'d script) gets Chrome's default instead.
 //! - A background context: `background.scripts`, `background.page`, and MV3
 //!   `background.service_worker` (run as a generated page; `type: module` honoured).
 //! - Content scripts with `matches`, `exclude_matches`, `run_at`, `all_frames` and `css`,

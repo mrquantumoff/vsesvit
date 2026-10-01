@@ -1,5 +1,7 @@
 //! `chrome-extension://<host>/<path>`: extension files served from disk, generated
-//! background pages, and the `web_accessible_resources` gate for other origins.
+//! background pages, and the `web_accessible_resources` gate for other origins. Every
+//! file carries the extension's CSP, so its pages keep it in tabs and frames too, not
+//! only in the views the runtime builds.
 
 use std::rc::{Rc, Weak};
 
@@ -16,7 +18,7 @@ pub(crate) fn register(inner: &Rc<Inner>) {
     let weak: Weak<Inner> = Rc::downgrade(inner);
     inner.context.register_uri_scheme(SCHEME, move |request| match weak.upgrade() {
         Some(inner) => serve(&inner, request),
-        None => respond(request, 500, "Service Unavailable", b"", "text/plain", false),
+        None => respond(request, 500, "Service Unavailable", b"", "text/plain", false, None),
     });
     if let Some(manager) = inner.context.security_manager() {
         manager.register_uri_scheme_as_secure(SCHEME);
@@ -27,10 +29,10 @@ pub(crate) fn register(inner: &Rc<Inner>) {
 fn serve(inner: &Inner, request: &webkit::URISchemeRequest) {
     let uri = request.uri().map(String::from).unwrap_or_default();
     let Some((host, path)) = split_uri(&uri) else {
-        return respond(request, 400, "Bad Request", b"", "text/plain", false);
+        return respond(request, 400, "Bad Request", b"", "text/plain", false, None);
     };
     let Some(ext) = inner.extension_by_host(&host) else {
-        return respond(request, 404, "Not Found", b"", "text/plain", false);
+        return respond(request, 404, "Not Found", b"", "text/plain", false, None);
     };
     let requester = request.web_view();
     let view_url = requester.as_ref().and_then(|v| v.uri()).map(String::from).unwrap_or_default();
@@ -39,20 +41,20 @@ fn serve(inner: &Inner, request: &webkit::URISchemeRequest) {
     let (page_url, same_origin) = patterns::requesting_document(&ext.base_url, &view_url, referer.as_deref(), own_view);
     if !same_origin && !ext.web_accessible(&path, page_url) {
         log::debug!("{}: {} refused to {}", ext.id.as_str(), path, page_url);
-        return respond(request, 403, "Forbidden", b"", "text/plain", false);
+        return respond(request, 403, "Forbidden", b"", "text/plain", false, None);
     }
     if path == GENERATED_BACKGROUND
         && let Some(html) = ext.generated_background_page()
     {
-        return respond(request, 200, "OK", html.as_bytes(), "text/html", !same_origin);
+        return respond(request, 200, "OK", html.as_bytes(), "text/html", !same_origin, Some(&ext.csp));
     }
     let body = match RelPath::parse(&path).map(|rel| rel.resolve(&ext.dir)) {
         Ok(file) if file.is_file() => std::fs::read(&file).ok(),
         _ => None,
     };
     match body {
-        Some(bytes) => respond(request, 200, "OK", &bytes, mime::for_path(&path), !same_origin),
-        None => respond(request, 404, "Not Found", b"", "text/plain", false),
+        Some(bytes) => respond(request, 200, "OK", &bytes, mime::for_path(&path), !same_origin, Some(&ext.csp)),
+        None => respond(request, 404, "Not Found", b"", "text/plain", false, None),
     }
 }
 
@@ -90,22 +92,46 @@ fn hex(b: u8) -> Option<u8> {
     (b as char).to_digit(16).map(|d| d as u8)
 }
 
-fn respond(request: &webkit::URISchemeRequest, status: u32, reason: &str, body: &[u8], content_type: &str, cors: bool) {
+fn respond(request: &webkit::URISchemeRequest, status: u32, reason: &str, body: &[u8], content_type: &str, cors: bool, csp: Option<&str>) {
     let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(body));
     let response = webkit::URISchemeResponse::new(&stream, body.len() as i64);
     response.set_status(status, Some(reason));
     response.set_content_type(content_type);
     let headers = soup::MessageHeaders::new(soup::MessageHeadersType::Response);
-    headers.append("Cache-Control", "no-store");
-    if cors {
-        headers.append("Access-Control-Allow-Origin", "*");
+    for (name, value) in response_headers(cors, csp) {
+        headers.append(name, value);
     }
     response.set_http_headers(headers);
     request.finish_with_response(&response);
 }
 
+/// `csp` applies to documents and workers; browsers ignore it on other files.
+fn response_headers(cors: bool, csp: Option<&str>) -> Vec<(&'static str, &str)> {
+    let mut headers = vec![("Cache-Control", "no-store")];
+    if cors {
+        headers.push(("Access-Control-Allow-Origin", "*"));
+    }
+    if let Some(csp) = csp {
+        headers.push(("Content-Security-Policy", csp));
+    }
+    headers
+}
+
 impl Inner {
     pub(crate) fn extension_by_host(&self, host: &str) -> Option<Rc<Extension>> {
         self.extensions.borrow().values().find(|e| e.host == host).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extension_files_carry_the_extension_csp() {
+        let csp = "script-src 'self'; object-src 'self';";
+        assert_eq!(response_headers(false, Some(csp)), [("Cache-Control", "no-store"), ("Content-Security-Policy", csp)]);
+        assert_eq!(response_headers(true, Some(csp)), [("Cache-Control", "no-store"), ("Access-Control-Allow-Origin", "*"), ("Content-Security-Policy", csp)]);
+        assert_eq!(response_headers(false, None), [("Cache-Control", "no-store")]);
     }
 }
