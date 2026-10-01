@@ -16,7 +16,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::crdt::{JsonText, Lattice, Lww, Seq, Stamp};
-use crate::db::{seq_col, stamp_col};
+use crate::db::{opt_json_col, seq_col, stamp_col};
 use crate::search::SearchEngineId;
 use crate::shortcuts::Overrides;
 use crate::sync::{Kind, SyncTable, changed_rows};
@@ -259,11 +259,7 @@ const COLUMNS: &str = "key, value, value_at, synced, seq";
 
 fn row_record(row: &rusqlite::Row<'_>) -> Result<(Seq, PrefRecord), rusqlite::Error> {
     let key: String = row.get(0)?;
-    let value: Option<String> = row.get(1)?;
-    let value = match value {
-        Some(text) => Some(JsonText::parse(&text).ok_or_else(|| crate::db::bad_column(1, "json"))?),
-        None => None,
-    };
+    let value = opt_json_col(row, 1)?;
     let at = stamp_col(row, 2)?;
     Ok((seq_col(row, 4)?, PrefRecord { key, value: Lww::new(value, at) }))
 }

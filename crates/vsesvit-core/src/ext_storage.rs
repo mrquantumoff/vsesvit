@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::crdt::{JsonText, Lattice, Lww, Seq, Stamp};
-use crate::db::{seq_col, stamp_col};
+use crate::db::{json_col, opt_json_col, seq_col, stamp_col};
 use crate::extensions::ExtensionId;
 use crate::sync::{Kind, SyncTable, changed_rows};
 use crate::{Error, Profile};
@@ -152,11 +152,7 @@ impl ExtStorage<'_> {
             Area::Sync => "SELECT key, value FROM ext_storage_sync WHERE ext = ?1 AND value IS NOT NULL",
         };
         let mut stmt = self.p.conn.prepare_cached(sql)?;
-        let rows = stmt.query_map([ext.as_str()], |row| {
-            let key: String = row.get(0)?;
-            let text: String = row.get(1)?;
-            Ok((key, JsonText::parse(&text).ok_or_else(|| crate::db::bad_column(1, "json"))?))
-        })?;
+        let rows = stmt.query_map([ext.as_str()], |row| Ok((row.get::<_, String>(0)?, json_col(row, 1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -225,11 +221,7 @@ fn row_item(row: &rusqlite::Row<'_>) -> Result<(Seq, SyncItemRecord), rusqlite::
     let ext: String = row.get(0)?;
     let ext = ExtensionId::parse(&ext).map_err(|_| crate::db::bad_column(0, "extension id"))?;
     let key: String = row.get(1)?;
-    let value: Option<String> = row.get(2)?;
-    let value = match value {
-        Some(text) => Some(JsonText::parse(&text).ok_or_else(|| crate::db::bad_column(2, "json"))?),
-        None => None,
-    };
+    let value = opt_json_col(row, 2)?;
     let at = stamp_col(row, 3)?;
     Ok((seq_col(row, 4)?, SyncItemRecord { ext, key, value: Lww::new(value, at) }))
 }

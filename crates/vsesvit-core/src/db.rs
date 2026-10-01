@@ -11,7 +11,7 @@ use std::path::Path;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::crdt::{Clock, DeviceId, Hlc, Seq, Stamp};
+use crate::crdt::{Clock, DeviceId, Hlc, JsonText, Seq, Stamp};
 use crate::{Error, OpenError};
 
 pub(crate) const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -206,6 +206,16 @@ pub(crate) fn opt_stamp_col(row: &rusqlite::Row<'_>, idx: usize) -> Result<Optio
     bytes.map(|b| Stamp::from_slice(&b).map_err(|_| bad_column(idx, "stamp"))).transpose()
 }
 
+pub(crate) fn json_col(row: &rusqlite::Row<'_>, idx: usize) -> Result<JsonText, rusqlite::Error> {
+    let text: String = row.get(idx)?;
+    JsonText::parse(&text).ok_or_else(|| bad_column(idx, "json"))
+}
+
+pub(crate) fn opt_json_col(row: &rusqlite::Row<'_>, idx: usize) -> Result<Option<JsonText>, rusqlite::Error> {
+    let text: Option<String> = row.get(idx)?;
+    text.map(|t| JsonText::parse(&t).ok_or_else(|| bad_column(idx, "json"))).transpose()
+}
+
 pub(crate) fn seq_col(row: &rusqlite::Row<'_>, idx: usize) -> Result<Seq, rusqlite::Error> {
     let v: i64 = row.get(idx)?;
     Ok(Seq(v as u64))
@@ -231,4 +241,23 @@ pub(crate) fn bad_column(idx: usize, what: &'static str) -> rusqlite::Error {
         rusqlite::types::Type::Blob,
         Box::new(std::io::Error::other(format!("malformed {what} column"))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_columns_hold_canonical_json_or_fail() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.query_row("SELECT 'not json', NULL, '{\"a\" : 1}'", [], |row| {
+            assert!(matches!(opt_json_col(row, 0), Err(rusqlite::Error::FromSqlConversionFailure(0, ..))));
+            assert!(matches!(json_col(row, 0), Err(rusqlite::Error::FromSqlConversionFailure(0, ..))));
+            assert_eq!(opt_json_col(row, 1).unwrap(), None);
+            assert_eq!(json_col(row, 2).unwrap().as_str(), r#"{"a":1}"#);
+            assert_eq!(opt_json_col(row, 2).unwrap().unwrap().as_str(), r#"{"a":1}"#);
+            Ok(())
+        })
+        .unwrap();
+    }
 }
