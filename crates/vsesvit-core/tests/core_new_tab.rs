@@ -50,6 +50,14 @@ fn hostile_strings_are_escaped() {
     assert!(html.contains(r#"const template = "https://e.example/?q={searchTerms}&x=\u003c/script>\u003cscript>alert(2)\u003c/script>\"";"#));
 }
 
+/// The page's own script has no engine to test it here; this pins that local hosts get the
+/// omnibox's `http://` (`search::classify`) rather than `https://` for everything.
+#[test]
+fn local_hosts_get_http_like_the_omnibox() {
+    let html = new_tab::html(&[], &engine("DuckDuckGo", "https://duckduckgo.com/?q={searchTerms}"));
+    assert!(html.contains(r#"(localHost.test(host[1]) ? "http://" : "https://") + text"#));
+}
+
 #[test]
 fn page_reads_history_and_the_default_engine() {
     let dir = std::env::temp_dir().join(format!("vsesvit-ntp-{}", uuid::Uuid::new_v4()));

@@ -142,16 +142,19 @@ input::placeholder { color: var(--muted); }
 "#;
 
 /// An address: a scheme with `//` or `about:`, else a host (`x.yy`, `localhost`, IPv4,
-/// `[IPv6]`) with an optional port and path. Anything else is a search.
+/// `[IPv6]`) with an optional port and path, opened over `https://` (`http://` for localhost
+/// and IP literals, as [`crate::search::classify`] does). Anything else is a search.
 const SCRIPT: &str = r#"
 const withScheme = /^([a-z][a-z0-9+.-]*:\/\/|about:)/i;
 const hostLike = /^(localhost|[^\/?#:.]+(\.[^\/?#:.]+)*\.[^\/?#:.\d][^\/?#:.]+|\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:.]+\])(:\d+)?([\/?#].*)?$/i;
+const localHost = /^(localhost|\d{1,3}(\.\d{1,3}){3}|\[.*\])$/i;
 document.querySelector("form").addEventListener("submit", (event) => {
   event.preventDefault();
   const text = document.querySelector("input").value.trim();
   if (!text) return;
+  const host = !/\s/.test(text) && text.match(hostLike);
   if (withScheme.test(text)) location.href = text;
-  else if (!/\s/.test(text) && hostLike.test(text)) location.href = "https://" + text;
+  else if (host) location.href = (localHost.test(host[1]) ? "http://" : "https://") + text;
   else location.href = template.replaceAll("{searchTerms}", encodeURIComponent(text));
 });
 "#;
