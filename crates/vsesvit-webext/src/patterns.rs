@@ -40,7 +40,18 @@ pub fn url_matches(pattern: &str, url: &str) -> bool {
     }
     let Some(slash) = rest.find('/') else { return false };
     let (host_pat, path_pat) = rest.split_at(slash);
-    let host_pat = host_pat.rsplit_once(':').map_or(host_pat, |(h, port)| if port == "*" || port.parse::<u16>().is_ok() { h } else { host_pat });
+    // As in Chrome, a pattern without a port (or with `*`) matches any port.
+    let (host_pat, port_pat) = match host_pat.rsplit_once(':') {
+        Some((h, "*")) => (h, None),
+        Some((h, p)) => match p.parse::<u16>() {
+            Ok(n) => (h, Some(n)),
+            Err(_) => (host_pat, None),
+        },
+        None => (host_pat, None),
+    };
+    if port_pat.is_some_and(|p| u.port_or_known_default() != Some(p)) {
+        return false;
+    }
     let host = u.host_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
     let host_ok = match host_pat.to_ascii_lowercase().as_str() {
         "" => u.scheme() == "file",
@@ -170,6 +181,11 @@ mod tests {
         assert!(!url_matches("<all_urls>", "chrome-extension://abc/x"));
         assert!(url_matches("*://*/*", "https://x.test/a?b"));
         assert!(url_matches("http://127.0.0.1/*", "http://127.0.0.1:8080/index.html"));
+        // An explicit port must match; `*` or none matches any.
+        assert!(!url_matches("http://localhost:3000/*", "http://localhost:8080/"));
+        assert!(url_matches("http://localhost:3000/*", "http://localhost:3000/a"));
+        assert!(url_matches("https://a.test:443/*", "https://a.test/"));
+        assert!(url_matches("http://localhost:*/*", "http://localhost:9/"));
         assert!(url_matches("https://*.example.com/*", "https://a.example.com/"));
         assert!(!url_matches("https://*.example.com/*", "https://notexample.com/"));
         assert!(url_matches("https://example.com/foo*", "https://example.com/foobar?q"));
