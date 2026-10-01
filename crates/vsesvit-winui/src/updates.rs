@@ -325,8 +325,9 @@ pub(crate) struct Updates {
     setup: Option<Setup>,
     /// Called after every change of `state`, while their owners (an open Settings) keep them.
     listeners: RefCell<Vec<Weak<dyn Fn()>>>,
-    /// Counts channel switches. A check applies its results only while this is the count it
-    /// started with, so a check or download for the old channel cannot land after a switch.
+    /// Counts channel switches. A check acts on its results only while this is the count it
+    /// started with, so a check or download for the old channel cannot land after a switch, nor
+    /// clean away the new channel's download.
     channel_switches: Cell<u64>,
 }
 
@@ -390,6 +391,11 @@ impl Updates {
         for listener in live {
             listener();
         }
+    }
+
+    /// Whether the channel is still the one a check that saw `switches` channel switches began on.
+    fn on_channel(&self, switches: u64) -> bool {
+        self.channel_switches.get() == switches
     }
 
     fn begin_install(&self) -> Option<(Installation, Downloaded)> {
@@ -496,6 +502,14 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
     };
 
     let checked = exec::background(move || updater.check(channel.name())).await;
+    // The new channel's check shares the updates folder, so a check for a channel the user has
+    // left neither cleans it nor downloads into it.
+    if !browser
+        .upgrade()
+        .is_some_and(|b| b.updates().on_channel(switches))
+    {
+        return;
+    }
     let update = match checked {
         Ok(Some(Available::Update(update))) => update,
         Ok(Some(Available::NotInstallable(release))) => {
@@ -536,7 +550,7 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
             if let Some(queue) = &queue {
                 exec::post(queue, move || {
                     if let Some(b) = browser::current()
-                        && b.updates().channel_switches.get() == switches
+                        && b.updates().on_channel(switches)
                     {
                         apply(&b, Event::Progress { received, total });
                     }
@@ -562,7 +576,7 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
 /// Runs `f` unless the browser is gone or the channel has switched since the check began.
 fn with(browser: &Weak<Browser>, switches: u64, f: impl FnOnce(&Browser)) {
     if let Some(browser) = browser.upgrade()
-        && browser.updates().channel_switches.get() == switches
+        && browser.updates().on_channel(switches)
     {
         f(&browser);
     }
@@ -1069,6 +1083,15 @@ mod tests {
         updates.changed();
         assert_eq!(heard.get(), 1);
         assert!(updates.listeners.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_check_begun_before_a_channel_switch_is_off_channel() {
+        let updates = Updates::disabled("unpackaged".into());
+        let began = updates.channel_switches.get();
+        assert!(updates.on_channel(began));
+        updates.channel_switches.set(began + 1);
+        assert!(!updates.on_channel(began));
     }
 
     #[test]
