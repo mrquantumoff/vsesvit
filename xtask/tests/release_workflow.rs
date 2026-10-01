@@ -62,3 +62,23 @@ fn actions_are_pinned_to_commits() {
         }
     }
 }
+
+/// Only plan, which tags, and release, which publishes, can write to the repository, and no
+/// checkout leaves the token in .git/config for a build script to find.
+#[test]
+fn only_the_jobs_that_tag_and_publish_can_write_to_the_repository() {
+    let workflow = workflow();
+    let (head, _) = workflow.split_once("\njobs:\n").unwrap();
+    let (_, permissions) = head.split_once("\npermissions:\n").expect("workflow-level permissions");
+    let permissions: Vec<_> = permissions.lines().take_while(|line| line.starts_with("  ")).collect();
+    assert_eq!(permissions, ["  contents: read"]);
+
+    let jobs = jobs(&workflow);
+    let writers: Vec<_> = jobs.iter().filter(|(_, job)| job.contains("contents: write")).map(|(name, _)| name).collect();
+    assert_eq!(writers, ["plan", "release"]);
+    for (name, job) in &jobs {
+        for step in job.split("\n      - ").filter(|step| step.contains("actions/checkout@")) {
+            assert!(step.contains("persist-credentials: false"), "{name} leaves the token on disk:\n{step}");
+        }
+    }
+}

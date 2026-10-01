@@ -25,9 +25,9 @@ on:
         options: [nightly, weekly]
         default: nightly
 
+# Build code runs in most jobs, so only the jobs that tag and publish can write.
 permissions:
-  contents: write
-  actions: read # release-plan.sh reads the run's creation date
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}-${{ github.event.schedule || inputs.channel || 'tag' }}
@@ -40,6 +40,9 @@ env:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # the Tag step
+      actions: read # release-plan.sh reads the run's creation date
     outputs:
       version: ${{ steps.plan.outputs.version }}
       channel: ${{ steps.plan.outputs.channel }}
@@ -49,6 +52,8 @@ jobs:
       skip: ${{ steps.plan.outputs.skip }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - id: plan
         # An explicit bash runs with -o pipefail, so a failing plan fails the step despite the tee.
         shell: bash
@@ -91,6 +96,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: NSIS
@@ -124,6 +131,8 @@ jobs:
             dpkg-dev rpm libarchive-tools zstd fakeroot squashfs-tools \
             desktop-file-utils appstream
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -148,6 +157,8 @@ jobs:
           # flatpak-builder sandboxes each build step with bubblewrap in a user namespace.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
@@ -166,6 +177,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       # No rust-cache: any job of the run can save a cache entry, so a cached registry or target
       # dir could carry code from the package builds into the binary that later runs with the key.
@@ -219,6 +232,8 @@ jobs:
       (needs.flatpak.result == 'success' ||
        (needs.plan.outputs.channel == 'nightly' && needs.flatpak.result == 'skipped'))
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       CHANNEL: ${{ needs.plan.outputs.channel }}
@@ -226,9 +241,10 @@ jobs:
       PUBLISH: ${{ needs.plan.outputs.publish }}
       PRERELEASE: ${{ needs.plan.outputs.prerelease }}
       REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: bash scripts/set-version.sh "$VERSION"
@@ -238,12 +254,16 @@ jobs:
           path: target/dist
           merge-multiple: true
       - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh api "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
             --jq .body > "$RUNNER_TEMP/notes.md"
       # Refuses artifacts whose signatures the updater.json key would reject.
       - run: cargo xtask manifest --base-url "https://github.com/$REPO/releases/download/$TAG" --notes "$RUNNER_TEMP/notes.md"
       - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           # The tag was pushed, or made by the plan job; creating it here could be refused.
           flags=(--title "Vsesvit $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag)
