@@ -11,22 +11,13 @@ use serde_json::{Value, json};
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
 
+use super::permission_steps::{open_site_info, text_of};
 use super::{save, shoot, wait_loaded};
 use crate::bindings::*;
 use crate::window::BrowserWindow;
 use crate::{capture, exec};
 
 const SECURE_PAGE: &str = "https://example.com/";
-
-fn headline(popup: &FrameworkElement) -> String {
-    popup
-        .FindName("ConnectionTitle")
-        .ok()
-        .and_then(|t| t.cast::<TextBlock>().ok())
-        .and_then(|t| t.Text().ok())
-        .map(|t| t.to_string())
-        .unwrap_or_default()
-}
 
 fn has(popup: &FrameworkElement, name: &str) -> bool {
     popup.FindName(name).is_ok()
@@ -42,14 +33,6 @@ fn chain_length(popup: &FrameworkElement) -> u32 {
         .unwrap_or(0)
 }
 
-async fn open_popup(window: &Rc<BrowserWindow>) -> Result<FrameworkElement, String> {
-    window.show_connection().map_err(|e| e.to_string())?;
-    exec::sleep(Duration::from_millis(600)).await;
-    window
-        .connection_popup()
-        .ok_or("the popup did not open".into())
-}
-
 pub(super) async fn run(
     window: &Rc<BrowserWindow>,
     server: &FixtureServer,
@@ -61,9 +44,9 @@ pub(super) async fn run(
         .map_err(|e| e.to_string())?;
     match wait_loaded(&tab).await {
         Ok(()) => {
-            let popup = open_popup(window).await?;
+            let popup = open_site_info(window).await?;
             let (title, certificate, tls, chain) = (
-                headline(&popup),
+                text_of(&popup, "ConnectionTitle"),
                 has(&popup, "ConnectionCertificate"),
                 has(&popup, "ConnectionTls"),
                 chain_length(&popup),
@@ -93,8 +76,11 @@ pub(super) async fn run(
     tab.navigate(server.url("/page2.html").as_str());
     exec::sleep(Duration::from_millis(300)).await;
     wait_loaded(&tab).await?;
-    let popup = open_popup(window).await?;
-    let (title, certificate) = (headline(&popup), has(&popup, "ConnectionCertificate"));
+    let popup = open_site_info(window).await?;
+    let (title, certificate) = (
+        text_of(&popup, "ConnectionTitle"),
+        has(&popup, "ConnectionCertificate"),
+    );
     shoot(window, out_dir, "13b-connection-not-secure", steps, |_| {
         json!({
             "title": title,
@@ -108,8 +94,8 @@ pub(super) async fn run(
     tab.navigate("data:text/html,<title>Local</title>local");
     exec::sleep(Duration::from_millis(300)).await;
     wait_loaded(&tab).await?;
-    let popup = open_popup(window).await?;
-    let title = headline(&popup);
+    let popup = open_site_info(window).await?;
+    let title = text_of(&popup, "ConnectionTitle");
     steps.push(json!({
         "name": "13c-connection-local",
         "title": title,

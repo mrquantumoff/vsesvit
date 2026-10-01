@@ -90,7 +90,8 @@ fn in_popup<T: Interface>(popup: &FrameworkElement, name: &str) -> Result<T, Str
         .ok_or_else(|| format!("no {name} in the site-info popup"))
 }
 
-fn text_of(root: &FrameworkElement, name: &str) -> String {
+/// The text of the `TextBlock` named `name` under `root`, or "" without one.
+pub(super) fn text_of(root: &FrameworkElement, name: &str) -> String {
     xaml::find::<TextBlock>(root, name)
         .and_then(|t| t.Text())
         .map(|t| t.to_string())
@@ -108,7 +109,8 @@ fn select(popup: &FrameworkElement, name: &str, index: i32) -> Result<(), String
         .map_err(|e| format!("{name}: {e}"))
 }
 
-async fn open_site_info(window: &Rc<BrowserWindow>) -> Result<FrameworkElement, String> {
+/// The site-info popup, opened from the security icon as a click does.
+pub(super) async fn open_site_info(window: &Rc<BrowserWindow>) -> Result<FrameworkElement, String> {
     window.show_connection().map_err(|e| e.to_string())?;
     exec::sleep(Duration::from_millis(600)).await;
     window
