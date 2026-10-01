@@ -62,10 +62,16 @@ fn suggested_name(view: &webkit::WebView, format: Format) -> String {
 /// Saves what `view` shows to `path`. A file goes through the downloads list, which reports
 /// how it ends; this returns once it has started.
 pub(crate) async fn save(browser: &Browser, view: &webkit::WebView, path: &Path) -> Result<(), String> {
-    match format_of_view(view) {
+    save_as(browser, view, format_of_view(view), view.uri(), path).await
+}
+
+/// [`save`] as `format`, a file from `uri`: what `view` showed when the user chose to save,
+/// so a page that moves on behind the dialog cannot change what lands under the name it offered.
+async fn save_as(browser: &Browser, view: &webkit::WebView, format: Format, uri: Option<glib::GString>, path: &Path) -> Result<(), String> {
+    match format {
         Format::Mhtml => view.save_to_file_future(&gio::File::for_path(path), webkit::SaveMode::Mhtml).await.map_err(|e| e.to_string()),
         Format::File => {
-            let uri = view.uri().ok_or("the tab shows nothing")?;
+            let uri = uri.ok_or("the tab shows nothing")?;
             browser.downloads().download_to(view, &uri, path);
             Ok(())
         }
@@ -76,7 +82,7 @@ pub(crate) async fn save(browser: &Browser, view: &webkit::WebView, path: &Path)
 pub(crate) fn present(window: &BrowserWindow) {
     let Some(tab) = window.selected_tab() else { return };
     let view = tab.web_view().clone();
-    let format = format_of_view(&view);
+    let (format, uri) = (format_of_view(&view), view.uri());
     let dialog = gtk::FileDialog::builder()
         .title("Save Page As")
         .initial_folder(&gio::File::for_path(window.browser().downloads().directory()))
@@ -86,7 +92,7 @@ pub(crate) fn present(window: &BrowserWindow) {
     let window = window.clone();
     glib::spawn_future_local(async move {
         let Some(path) = dialog.save_future(Some(&window)).await.ok().and_then(|file| file.path()) else { return };
-        match save(window.browser(), &view, &path).await {
+        match save_as(window.browser(), &view, format, uri, &path).await {
             Ok(()) if format == Format::Mhtml => window.toast(adw::Toast::new(&format!("Saved “{}”", file_name(&path)))),
             Ok(()) => {}
             Err(e) => window.toast(adw::Toast::new(&format!("Cannot save the page: {e}"))),
@@ -97,6 +103,8 @@ pub(crate) fn present(window: &BrowserWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{Reply, Server, browser, scratch_dir, wait_until};
+    use crate::window::Focus;
 
     #[test]
     fn html_saves_as_mhtml_and_anything_else_as_itself() {
@@ -123,5 +131,30 @@ mod tests {
             assert!(name.len() <= 255, "{} bytes", name.len());
             assert!(name.ends_with(".mhtml"));
         }
+    }
+
+    #[gtk::test]
+    fn a_page_that_moves_on_behind_the_dialog_still_saves_what_it_offered() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/notes.txt" => Reply::Body("text/plain", b"plain words".to_vec()),
+            _ => Reply::Page("Moved on"),
+        });
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let (notes, page) = (server.url("/notes.txt"), server.url("/page"));
+        let tab = window.open_tab(Some(&notes), None, Focus::Foreground);
+        let view = tab.web_view();
+        let shown = |url: &str| tab.committed_uri().as_deref() == Some(url) && !view.is_loading();
+        wait_until("the file", || shown(&notes));
+        let (format, uri) = (format_of_view(view), view.uri());
+        tab.load(&page);
+        wait_until("the page", || shown(&page));
+        let path = scratch_dir("save-page").join("notes.txt");
+        let saved = glib::MainContext::default().block_on(save_as(&browser, view, format, uri, &path));
+        wait_until("the saved file", || std::fs::metadata(&path).is_ok_and(|m| m.len() > 0));
+        let bytes = std::fs::read(&path).unwrap();
+        window.destroy();
+        assert_eq!(saved, Ok(()));
+        assert_eq!(String::from_utf8_lossy(&bytes), "plain words");
     }
 }
