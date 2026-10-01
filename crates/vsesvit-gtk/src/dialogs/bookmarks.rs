@@ -26,8 +26,8 @@ use crate::window::{BrowserWindow, Focus};
 
 const SEARCH_LIMIT: usize = 60;
 
-/// Holds no browser or profile of its own: the widgets' handlers keep this state alive
-/// for as long as the window's widgets exist, which must not keep the profile open.
+/// Holds no browser or profile of its own, which the window must not keep open. The window
+/// holds it until it is destroyed; the widgets' handlers hold it weakly.
 struct State {
     window: glib::WeakRef<BrowserWindow>,
     ui: LibraryWindow,
@@ -188,7 +188,7 @@ fn build(window: &BrowserWindow) -> Rc<State> {
     list.set_factory(Some(&row_factory(Rc::downgrade(&state))));
 
     list.connect_activate(glib::clone!(
-        #[strong]
+        #[weak]
         state,
         move |_, position| {
             let node = state
@@ -202,35 +202,37 @@ fn build(window: &BrowserWindow) -> Rc<State> {
         }
     ));
     state.ui.search.connect_search_changed(glib::clone!(
-        #[strong]
+        #[weak]
         state,
         move |entry| state.search(&entry.text())
     ));
     new_folder.connect_clicked(glib::clone!(
-        #[strong]
+        #[weak]
         state,
         move |_| state.spawn(|s| async move { s.new_folder().await })
     ));
     edit.connect_clicked(glib::clone!(
-        #[strong]
+        #[weak]
         state,
         move |_| state.spawn(|s| async move { s.edit().await })
     ));
     move_to.connect_clicked(glib::clone!(
-        #[strong]
+        #[weak]
         state,
         move |_| state.spawn(|s| async move { s.move_selected().await })
     ));
     delete.connect_clicked(glib::clone!(
-        #[strong]
+        #[weak]
         state,
         move |_| state.spawn(|s| async move { s.delete().await })
     ));
     import.connect_clicked(glib::clone!(
-        #[strong]
+        #[weak]
         state,
         move |_| state.spawn(|s| async move { s.import().await })
     ));
+    let owner = RefCell::new(Some(state.clone()));
+    state.ui.window.connect_unrealize(move |_| drop(owner.take()));
     state
 }
 
@@ -635,7 +637,7 @@ mod tests {
     use vsesvit_core::bookmarks::BookmarkError;
 
     use super::*;
-    use crate::test_support::browser;
+    use crate::test_support::{browser, wait_until};
 
     fn titles(core: &Core, folder: BookmarkId) -> Vec<String> {
         core.borrow_mut().bookmarks().children(folder).into_iter().map(|node| node.title).collect()
@@ -693,5 +695,20 @@ mod tests {
 
         core.borrow_mut().bookmarks().remove(folder).unwrap();
         window.destroy();
+    }
+
+    #[gtk::test]
+    fn closing_the_window_drops_its_state() {
+        let browser = browser();
+        let opener = BrowserWindow::new(&browser);
+        let state = build(&opener);
+        let weak = Rc::downgrade(&state);
+        let window = state.ui.window.clone();
+        drop(state);
+        window.present();
+        window.close();
+        drop(window);
+        wait_until("the state to go", || weak.upgrade().is_none());
+        opener.destroy();
     }
 }

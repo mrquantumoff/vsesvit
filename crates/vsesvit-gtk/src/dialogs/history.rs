@@ -28,8 +28,8 @@ struct Row {
     at_ms: i64,
 }
 
-/// Holds no [`Browser`] or profile of its own: the widgets' handlers keep this state alive
-/// for as long as the window's widgets exist, which must not keep the profile open.
+/// Holds no [`Browser`] or profile of its own, which the window must not keep open. The
+/// window holds it until it is destroyed; the widgets' handlers hold it weakly.
 struct State {
     window: glib::WeakRef<BrowserWindow>,
     ui: LibraryWindow,
@@ -120,18 +120,20 @@ fn build(window: &BrowserWindow) -> adw::Window {
     state.refresh();
 
     state.ui.search.connect_search_changed(glib::clone!(
-        #[strong]
+        #[weak]
         state,
         move |_| state.refresh()
     ));
     clear.connect_clicked(glib::clone!(
-        #[strong]
+        #[weak]
         state,
         move |_| {
             let state = state.clone();
             glib::spawn_future_local(async move { state.clear().await });
         }
     ));
+    let owner = RefCell::new(Some(state.clone()));
+    state.ui.window.connect_unrealize(move |_| drop(owner.take()));
     state.ui.window.clone()
 }
 
@@ -253,7 +255,7 @@ impl State {
             .css_classes(["flat"])
             .build();
         forget.connect_clicked(glib::clone!(
-            #[strong(rename_to = state)]
+            #[weak(rename_to = state)]
             self,
             #[strong]
             url,
@@ -310,6 +312,7 @@ fn synced_ago(ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{browser, wait_until};
 
     #[test]
     fn a_device_says_how_long_ago_it_synced() {
@@ -319,5 +322,17 @@ mod tests {
         assert_eq!(synced_ago(5 * 60_000), "Synced 5 minutes ago");
         assert_eq!(synced_ago(2 * 3_600_000), "Synced 2 hours ago");
         assert_eq!(synced_ago(3 * 86_400_000), "Synced 3 days ago");
+    }
+
+    #[gtk::test]
+    fn a_closed_window_goes() {
+        let opener = BrowserWindow::new(&browser());
+        let window = build(&opener);
+        let weak = window.downgrade();
+        window.present();
+        window.close();
+        drop(window);
+        wait_until("the window to go", || weak.upgrade().is_none());
+        opener.destroy();
     }
 }
