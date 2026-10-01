@@ -91,7 +91,8 @@ fn safe_label(label: &str) -> bool {
 }
 
 /// Decodes runs of percent-escapes that spell non-ASCII UTF-8 text. ASCII escapes stay
-/// escaped, as do invalid UTF-8 and characters that are invisible or change text direction.
+/// escaped, as do invalid UTF-8 and characters that are invisible or change text direction
+/// (see [`visible`]).
 fn decode_escapes(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -152,10 +153,17 @@ fn utf8_len(first: u8) -> usize {
     }
 }
 
+/// Not whitespace, a control, a default-ignorable code point (soft hyphen, variation selectors,
+/// joiners, tags…), a direction mark, a blank Hangul filler or U+FFFD.
 fn visible(c: char) -> bool {
     !c.is_whitespace()
         && !c.is_control()
-        && !matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFFD}')
+        && !matches!(c,
+            '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}'..='\u{1160}' | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}'
+            | '\u{FFA0}' | '\u{FFF0}'..='\u{FFF8}' | '\u{FFFD}' | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E0FFF}')
 }
 
 /// What the address bar shows for a page while the user is not editing it, unless full URLs
