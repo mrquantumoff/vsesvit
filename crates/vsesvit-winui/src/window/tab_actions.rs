@@ -9,9 +9,10 @@
 
 use windows_core::{Interface, Result};
 
-use super::tab_menu::{TabAction, has_link};
+use super::tab_menu::TabAction;
 use super::{BrowserWindow, Placement};
 use crate::bindings::*;
+use crate::omnibox::has_link;
 use crate::tab::{Initial, Tab, TabId};
 use crate::{exec, platform, xaml};
 

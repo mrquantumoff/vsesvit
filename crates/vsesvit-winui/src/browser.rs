@@ -470,7 +470,7 @@ impl Browser {
     }
 
     pub fn remember_closed(&self, tab: ClosedTab) {
-        if tab.url.is_empty() || tab.url == "about:blank" {
+        if !omnibox::has_link(&tab.url) {
             return;
         }
         let mut closed = self.closed_tabs.borrow_mut();

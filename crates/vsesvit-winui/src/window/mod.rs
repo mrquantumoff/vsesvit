@@ -147,7 +147,7 @@ const COMPACT_ADDRESS_WIDTH: f64 = 720.0;
 /// Whether the star shows the page at `url` bookmarked: never a blank tab or the new tab page,
 /// which have no address to bookmark.
 pub(crate) fn starred(url: &str, is_bookmarked: impl FnOnce(&str) -> bool) -> bool {
-    tab_menu::has_link(url) && is_bookmarked(url)
+    omnibox::has_link(url) && is_bookmarked(url)
 }
 
 /// The site icon's glyph and tooltip for a page, from the verdict of its security popup on the
@@ -157,7 +157,7 @@ fn site_look(url: &str, report: Option<&connection::Report>) -> (&'static str, &
     match Headline::of(url, report) {
         Headline::Secure => ("\u{E72E}", "Connection is secure"),
         Headline::NotSecure => ("\u{E7BA}", "Not secure"),
-        Headline::Local if omnibox::display_url(url).is_empty() => {
+        Headline::Local if !omnibox::has_link(url) => {
             ("\u{E721}", "Search or enter web address")
         }
         Headline::Local => (
@@ -649,7 +649,7 @@ impl BrowserWindow {
         self.show_site(&state.url, report.as_ref());
         self.show_zoom(state.zoom);
         self.show_permissions_state();
-        let _ = xaml::set_visible(&self.ui.copy_link, tab_menu::has_link(&state.url));
+        let _ = xaml::set_visible(&self.ui.copy_link, omnibox::has_link(&state.url));
         let title = if state.title.is_empty() || state.url.is_empty() {
             "Vsesvit".to_owned()
         } else {
@@ -771,7 +771,7 @@ impl BrowserWindow {
             return Ok(());
         };
         let url = tab.state().url;
-        if omnibox::display_url(&url).is_empty() {
+        if !omnibox::has_link(&url) {
             return Ok(());
         }
         self.close_suggestions();
@@ -1128,7 +1128,7 @@ impl BrowserWindow {
             return;
         };
         let state = tab.state();
-        if !tab_menu::has_link(&state.url) {
+        if !omnibox::has_link(&state.url) {
             self.show_star(false);
             return;
         }

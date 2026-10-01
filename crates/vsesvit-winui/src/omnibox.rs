@@ -38,6 +38,11 @@ pub(crate) fn display_url(url: &str) -> &str {
     if url == "about:blank" { "" } else { url }
 }
 
+/// Whether `url` is a page's address (not a blank tab or the new tab page).
+pub(crate) fn has_link(url: &str) -> bool {
+    !display_url(url).is_empty()
+}
+
 /// What the address box holds: the page's URL, or the user's edit.
 #[derive(Debug)]
 pub(crate) enum Address {
@@ -338,6 +343,14 @@ mod tests {
     fn blank_page_shows_empty_address() {
         assert_eq!(display_url("about:blank"), "");
         assert_eq!(display_url("https://a.test/"), "https://a.test/");
+    }
+
+    #[test]
+    fn only_pages_with_an_address_have_a_link() {
+        assert!(has_link("https://e.test/") && !has_link("about:blank") && !has_link(""));
+        for url in ["", "about:blank", "https://a.test/", "about:home", "file:///x"] {
+            assert_eq!(has_link(url), !display_url(url).is_empty(), "{url}");
+        }
     }
 
     #[test]

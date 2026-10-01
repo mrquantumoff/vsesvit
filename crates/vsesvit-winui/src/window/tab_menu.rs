@@ -4,6 +4,7 @@ use windows_core::{Interface, Result};
 
 use super::BrowserWindow;
 use crate::bindings::*;
+use crate::omnibox::has_link;
 use crate::exec;
 use crate::tab::TabId;
 
@@ -179,11 +180,6 @@ fn glyph_icon(glyph: &str) -> Result<IconElement> {
     icon.cast()
 }
 
-/// Whether `url` is a page's address (not a blank tab or the new tab page).
-pub(super) fn has_link(url: &str) -> bool {
-    !url.is_empty() && url != "about:blank"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,7 +239,6 @@ mod tests {
             ..TabFacts::default()
         };
         assert!(actions(page).contains(&TabAction::CopyLink));
-        assert!(has_link("https://e.test/") && !has_link("about:blank") && !has_link(""));
     }
 
     #[test]
