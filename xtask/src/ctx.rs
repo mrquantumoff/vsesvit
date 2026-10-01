@@ -9,7 +9,7 @@ pub const BINARY: &str = "vsesvit";
 pub const SUMMARY: &str = "A web browser with Chrome Web Store extensions";
 pub const HOMEPAGE: &str = "https://github.com/mrquantumoff/vsesvit";
 pub const MAINTAINER: &str = "Demir Yerli <demiryerli@gmail.com>";
-pub const LICENSE: &str = "LicenseRef-Proprietary";
+pub const LICENSE: &str = env!("CARGO_PKG_LICENSE");
 
 /// A package format. Its variant string is Tauri's `{{bundle_type}}` and the suffix of its
 /// `latest.json` platform key.
@@ -142,5 +142,13 @@ mod tests {
             assert_eq!(format.package_version("0.1.1"), stable, "{format:?}");
             assert_eq!(format.package_version("0.1.1-nightly.20260927.5"), nightly, "{format:?}");
         }
+    }
+
+    #[test]
+    fn package_license_matches_workspace() {
+        assert_eq!(super::LICENSE, env!("CARGO_PKG_LICENSE"));
+        let metainfo = include_str!("../../packaging/linux/dev.mrquantumoff.vsesvit.metainfo.xml");
+        assert!(metainfo.contains(&format!("<project_license>{}</project_license>", super::LICENSE)));
+        assert!(!metainfo.to_lowercase().contains("licenseref-proprietary"));
     }
 }

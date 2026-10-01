@@ -4,7 +4,7 @@
   <name>Vsesvit</name>
   <summary>Browse the web with Chrome Web Store extensions</summary>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>LicenseRef-proprietary</project_license>
+  <project_license>MIT</project_license>
   <developer id="dev.mrquantumoff">
     <name>Demir Yerli</name>
   </developer>
