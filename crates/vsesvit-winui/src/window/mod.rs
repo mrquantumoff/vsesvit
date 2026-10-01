@@ -18,6 +18,7 @@ mod tab_menu;
 mod wiring;
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::address::{readable_url, simplified_url};
@@ -67,6 +68,8 @@ enum MenuAction {
 enum Placement {
     End,
     After(TabId),
+    /// Opened by this tab's page.
+    FromPage(TabId),
 }
 
 /// The material behind the window's chrome, which is transparent over it.
@@ -170,6 +173,8 @@ pub(crate) struct BrowserWindow {
     progress: progress::Progress,
     tabs_position: Cell<TabsPosition>,
     tabs: RefCell<Vec<Rc<Tab>>>,
+    /// The tab whose page opened each tab, while that still places the tabs it opens next.
+    openers: RefCell<HashMap<TabId, TabId>>,
     /// The page's URL in the address box, or the user's edit and its suggestions.
     address: RefCell<Address>,
     /// The last key pressed in the address box deletes text (see `omnibox::deletes`).
@@ -242,6 +247,7 @@ impl BrowserWindow {
             progress: progress::Progress::default(),
             tabs_position: Cell::new(prefs.tabs),
             tabs: RefCell::new(Vec::new()),
+            openers: RefCell::new(HashMap::new()),
             address: RefCell::new(Address::Page(String::new())),
             address_deleting: Cell::new(false),
             suggestion_list_watch: RefCell::new(None),
@@ -370,9 +376,10 @@ impl BrowserWindow {
         Ok(tab)
     }
 
-    /// A page's new-window request: a tab right after its opener.
+    /// A page's new-window request: a tab right after its opener, or in the background after
+    /// the tabs the page opened before.
     pub fn open_tab_from(&self, opener: TabId, initial: Initial, background: bool) {
-        if let Err(e) = self.open_tab(initial, Placement::After(opener), !background, None) {
+        if let Err(e) = self.open_tab(initial, Placement::FromPage(opener), !background, None) {
             log::error!("open tab: {e}");
         }
     }
@@ -414,7 +421,21 @@ impl BrowserWindow {
         let index = match placement {
             Placement::End => count,
             Placement::After(opener) => self.index_of(opener).map_or(count, |i| i + 1),
+            Placement::FromPage(opener) if foreground => {
+                self.index_of(opener).map_or(count, |i| i + 1)
+            }
+            Placement::FromPage(opener) => {
+                let openers = self.openers.borrow();
+                tab_layout::from_page_index(&self.strip().order(), opener, |t| {
+                    openers.get(&t).copied()
+                })
+                .and_then(|i| u32::try_from(i).ok())
+                .unwrap_or(count)
+            }
         };
+        if let Placement::FromPage(opener) = placement {
+            self.openers.borrow_mut().insert(tab.id, opener);
+        }
         // Only pinned tabs go among the pinned ones.
         let pinned_before = u32::try_from(self.pinned_count(Some(tab.id))).unwrap_or(u32::MAX);
         let index = if pinned {
@@ -478,6 +499,9 @@ impl BrowserWindow {
         }
         tab.close();
         self.tabs.borrow_mut().retain(|t| t.id != tab.id);
+        self.openers
+            .borrow_mut()
+            .retain(|child, opener| *child != tab.id && *opener != tab.id);
         self.forget_split_of(tab.id);
         self.sync_selection();
         self.refresh_media();
@@ -529,6 +553,7 @@ impl BrowserWindow {
         }
         let active_id = active.as_ref().map(|t| t.id);
         if self.shown_tab.replace(active_id) != active_id {
+            self.forget_openers_unless(active_id);
             self.address.replace(Address::Page(String::new()));
             if let Some(tab) = &active {
                 tab.mark_active();
@@ -539,6 +564,24 @@ impl BrowserWindow {
         }
         self.refresh_chrome();
         self.show_permission_prompt();
+    }
+
+    /// Selecting a tab that is neither a page that opened tabs nor one they opened ends where
+    /// those pages put their next tabs, as in Chrome.
+    fn forget_openers_unless(&self, selected: Option<TabId>) {
+        let mut openers = self.openers.borrow_mut();
+        let related = selected.is_some_and(|id| {
+            openers.contains_key(&id) || openers.values().any(|opener| *opener == id)
+        });
+        if !related {
+            openers.clear();
+        }
+    }
+
+    /// A typed or bookmarked navigation in any tab: new tabs from pages go right after them
+    /// again, as in Chrome.
+    pub fn forget_openers(&self) {
+        self.openers.borrow_mut().clear();
     }
 
     fn strip_selection_changed(&self, kind: StripKind) {

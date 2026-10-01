@@ -810,6 +810,11 @@ impl Tab {
             CommitKind::NewDocument => self.transition.borrow_mut().new_document(),
             CommitKind::SameDocument => self.transition.borrow_mut().same_document(),
         };
+        if matches!(transition, Transition::Typed | Transition::Bookmark)
+            && let Some(window) = self.window()
+        {
+            window.forget_openers();
+        }
         if let Some(browser) = self.window().and_then(|w| w.browser()) {
             let starred = browser.navigation_committed(&url, kind, transition);
             self.state.borrow_mut().starred = starred;

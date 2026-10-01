@@ -279,6 +279,21 @@ fn caption_update(
     (!skip).then_some(rects)
 }
 
+/// Where a tab that the page `opener` opened in the background goes in `order`: after the
+/// tabs it opened before, so they stay in the order they were opened, as in Chrome.
+pub(super) fn from_page_index(
+    order: &[TabId],
+    opener: TabId,
+    opener_of: impl Fn(TabId) -> Option<TabId>,
+) -> Option<usize> {
+    let at = order.iter().position(|t| *t == opener)?;
+    let last = order
+        .iter()
+        .rposition(|t| opener_of(*t) == Some(opener))
+        .filter(|&last| last > at);
+    Some(last.unwrap_or(at) + 1)
+}
+
 /// The stretches of `[start, end)` not covered by `spans` (sorted by start).
 fn gaps(start: f64, end: f64, spans: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
@@ -297,8 +312,44 @@ fn gaps(start: f64, end: f64, spans: &[(f64, f64)]) -> Vec<(f64, f64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{caption_update, gaps};
+    use std::collections::HashMap;
+
+    use super::{caption_update, from_page_index, gaps};
     use crate::bindings::RectInt32;
+    use crate::tab::TabId;
+
+    /// Opens `child` from `opener` in the background, as the window does.
+    fn open_from(
+        order: &mut Vec<TabId>,
+        openers: &mut HashMap<TabId, TabId>,
+        opener: TabId,
+        child: TabId,
+    ) {
+        let index = from_page_index(order, opener, |t| openers.get(&t).copied()).unwrap();
+        order.insert(index, child);
+        openers.insert(child, opener);
+    }
+
+    #[test]
+    fn tabs_opened_from_one_page_keep_click_order() {
+        let (x, o, y, a, b, c) = (1, 2, 3, 4, 5, 6);
+        let mut order = vec![x, o, y];
+        let mut openers = HashMap::new();
+        for child in [a, b, c] {
+            open_from(&mut order, &mut openers, o, child);
+        }
+        assert_eq!(order, [x, o, a, b, c, y]);
+        // Once the window forgets them, the next one goes right after the page again.
+        openers.clear();
+        open_from(&mut order, &mut openers, o, 7);
+        assert_eq!(order, [x, o, 7, a, b, c, y]);
+        // A tab the page opened that was moved before it does not count.
+        let mut order = vec![a, o];
+        let openers = HashMap::from([(a, o)]);
+        assert_eq!(from_page_index(&order, o, |t| openers.get(&t).copied()), Some(2));
+        order.clear();
+        assert_eq!(from_page_index(&order, o, |_| None), None);
+    }
 
     const GAP: RectInt32 = RectInt32 {
         x: 10,
