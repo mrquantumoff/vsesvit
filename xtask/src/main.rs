@@ -14,7 +14,7 @@ use ctx::{Ctx, Format};
 
 const USAGE: &str = "\
 Usage: cargo xtask package <nsis|deb|rpm|pacman|appimage|flatpak>... [--sign]
-       cargo xtask manifest --base-url URL [--notes FILE] [--pub-date RFC3339]
+       cargo xtask manifest --base-url URL [--notes FILE] [--pub-date RFC3339] [--allow-unverified]
        cargo xtask sign FILE...
        cargo xtask signer generate -w PRIVATE_KEY_FILE [-p PASSWORD] [--force]
        cargo xtask icons OUT_DIR
@@ -81,5 +81,14 @@ fn run(args: &[String]) -> Result {
             Ok(())
         }
         other => Err(format!("unknown command {other:?}\n\n{USAGE}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn usage_lists_every_subcommand_usage() {
+        assert!(super::USAGE.contains(super::manifest::USAGE));
+        assert!(super::USAGE.contains(super::sign::GENERATE_USAGE));
     }
 }
