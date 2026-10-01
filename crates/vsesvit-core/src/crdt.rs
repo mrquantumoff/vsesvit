@@ -148,26 +148,18 @@ impl Stamp {
 
 impl From<Stamp> for String {
     fn from(s: Stamp) -> String {
-        let mut out = String::with_capacity(32);
-        for b in s.to_bytes() {
-            out.push_str(&format!("{b:02x}"));
-        }
-        out
+        format!("{:032x}", u128::from_be_bytes(s.to_bytes()))
     }
 }
 
 impl TryFrom<String> for Stamp {
     type Error = BadStamp;
     fn try_from(s: String) -> Result<Stamp, BadStamp> {
+        // The guard also rejects the leading '+' that from_str_radix would accept.
         if s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(BadStamp);
         }
-        let mut bytes = [0u8; 16];
-        for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
-            let pair = std::str::from_utf8(chunk).map_err(|_| BadStamp)?;
-            bytes[i] = u8::from_str_radix(pair, 16).map_err(|_| BadStamp)?;
-        }
-        Ok(Stamp::from_bytes(bytes))
+        u128::from_str_radix(&s, 16).map(|n| Stamp::from_bytes(n.to_be_bytes())).map_err(|_| BadStamp)
     }
 }
 
@@ -387,6 +379,16 @@ mod tests {
         assert!(a.to_bytes() < b.to_bytes());
         assert!(String::from(a) < String::from(b));
         assert!(Stamp::try_from("zz".to_owned()).is_err());
+    }
+
+    #[test]
+    fn stamp_hex_is_32_padded_digits_of_either_case() {
+        assert_eq!(String::from(Stamp::ZERO), "0".repeat(32));
+        let a = Stamp { hlc: Hlc(0x0102_0304_0506_0708), device: DeviceId(0x0a0b_0c0d_0e0f_1011) };
+        assert_eq!(Stamp::try_from("01020304050607080A0B0C0D0E0F1011".to_owned()).unwrap(), a);
+        assert!(Stamp::try_from(format!("+{}", "0".repeat(31))).is_err());
+        assert!(Stamp::try_from("0".repeat(31)).is_err());
+        assert!(Stamp::try_from("0".repeat(33)).is_err());
     }
 
     #[test]
