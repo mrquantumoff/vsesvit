@@ -20,6 +20,7 @@
 //!                          nothing persisted              staging dir removed (Drop, or at next open)     ▼
 //!
 //!   desired.installed && no local row          ──reconcile()──▶ InstallJob (Intent::Reconcile)
+//!     (or one holding the id less firmly)
 //!   !desired.installed && local row from store ──reconcile()──▶ uninstalled locally (no new stamp)
 //! ```
 
@@ -248,6 +249,19 @@ enum IdHold {
     Key,
 }
 
+impl IdHold {
+    /// From the `extension_installs.source_kind` column ([`InstallSource::kind`]), which
+    /// fixes the verification, so a row whose `verification` does not decode still has
+    /// one. A kind this build does not know keeps its id.
+    fn of_source_kind(kind: &str) -> IdHold {
+        match kind {
+            "amo" => IdHold::Store,
+            "xpi_file" | "unpacked" => IdHold::Nothing,
+            _ => IdHold::Key,
+        }
+    }
+}
+
 /// What a shell loads into its engine.
 #[derive(Clone, Debug)]
 pub struct InstalledExtension {
@@ -316,7 +330,9 @@ impl Extensions<'_> {
     ///    record no longer wants this extension (it was uninstalled on another device
     ///    while we downloaded). Reconcile commits never touch desired state.
     /// 2. Refuse an id this install may not take (see `check_id`).
-    /// 3. If the staged version is older than the installed one, keep the installed one.
+    /// 3. If the staged version is older than the installed one, keep the installed one,
+    ///    unless that holds its id less firmly (`IdHold`): a store copy replaces an
+    ///    unverified one.
     /// 4. If `extensions/<id>/<version>_<hash32>` exists, it is complete (only a finished
     ///    staging dir is ever renamed into place, and dirs leave by a rename too), so drop
     ///    the staged copy. Otherwise rename the staging root into place (same volume, atomic).
@@ -336,6 +352,7 @@ impl Extensions<'_> {
         self.check_id(&id, &verification, existing.as_ref())?;
         if let Some(row) = &existing
             && cmp_versions(&version, &row.version) == Ordering::Less
+            && verification.id_hold() <= row.verification.id_hold()
         {
             if let Some(store) = wanted_store {
                 self.p.write(|tx| want_installed(tx, &id, store))?;
@@ -424,6 +441,8 @@ impl Extensions<'_> {
 
     /// Called at startup and whenever `ApplyReport::changed.extensions` is set.
     /// desired ∖ actual -> install jobs; actual-from-store ∖ desired -> removed locally.
+    /// A local row that holds the id less firmly than the wanted store would (`IdHold`:
+    /// an unpacked dir carrying a store extension's public key) does not count as actual.
     pub fn reconcile(&mut self) -> Result<Reconcile, Error> {
         let desired: HashMap<ExtensionId, (StoreRef, bool)> = {
             let mut stmt = self.p.conn.prepare("SELECT id, store, installed FROM extensions")?;
@@ -437,21 +456,23 @@ impl Extensions<'_> {
             }
             desired
         };
-        let actual: HashMap<ExtensionId, bool> = {
-            let mut stmt =
-                self.p.conn.prepare("SELECT id, source_kind IN ('chrome_web_store', 'edge_addons', 'amo') FROM extension_installs")?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?;
+        let actual: HashMap<ExtensionId, (bool, IdHold)> = {
+            let mut stmt = self
+                .p
+                .conn
+                .prepare("SELECT id, source_kind IN ('chrome_web_store', 'edge_addons', 'amo'), source_kind FROM extension_installs")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, String>(2)?)))?;
             let mut actual = HashMap::new();
             for row in rows {
-                let (id, from_store) = row?;
-                actual.insert(ExtensionId::parse(&id).map_err(|e| conversion_error(0, e))?, from_store);
+                let (id, from_store, source_kind) = row?;
+                actual.insert(ExtensionId::parse(&id).map_err(|e| conversion_error(0, e))?, (from_store, IdHold::of_source_kind(&source_kind)));
             }
             actual
         };
 
         let mut wanted: Vec<(&ExtensionId, &StoreRef)> = desired
             .iter()
-            .filter(|(id, (_, installed))| *installed && !actual.contains_key(*id))
+            .filter(|(id, (store, installed))| *installed && actual.get(*id).is_none_or(|(_, hold)| *hold < store.id_hold()))
             .map(|(id, (store, _))| (id, store))
             .collect();
         wanted.sort();
@@ -469,7 +490,7 @@ impl Extensions<'_> {
 
         let mut removed: Vec<ExtensionId> = actual
             .iter()
-            .filter(|(id, from_store)| **from_store && !desired.get(*id).is_some_and(|(_, installed)| *installed))
+            .filter(|(id, (from_store, _))| *from_store && !desired.get(*id).is_some_and(|(_, installed)| *installed))
             .map(|(id, _)| id.clone())
             .collect();
         removed.sort();
@@ -1080,6 +1101,29 @@ mod store_tests {
         assert!(matches!(t.p().extensions().commit(staged), Err(Error::Install(InstallError::VerifiedIdTaken(_)))));
         let ext = t.p().extensions().get(&probe_id()).unwrap().unwrap();
         assert_eq!((ext.version.as_str(), &ext.verification), ("1.0.0", &Verification::ChromeWebStore { publisher_verified: true }));
+    }
+
+    #[test]
+    fn a_store_record_arriving_after_an_unpacked_copy_still_installs_the_store_copy() {
+        let mut t = TempProfile::new();
+        let staged = unpacked_with_probe_key(&mut t);
+        t.p().extensions().commit(staged).unwrap().unwrap();
+
+        remote_want(&mut t, &probe_id(), StoreRef::ChromeWebStore);
+        let work = t.p().extensions().reconcile().unwrap();
+        assert!(work.removed.is_empty());
+        let [job] = <[InstallJob; 1]>::try_from(work.install).expect("the unverified copy does not count as installed");
+        assert_eq!(job.source(), &InstallSource::ChromeWebStore { id: probe_id() });
+
+        let staged = staged_from_store(&mut t, Intent::Reconcile);
+        let ext = t.p().extensions().commit(staged).unwrap().unwrap();
+        assert_eq!(
+            (ext.version.as_str(), &ext.verification),
+            ("1.0.0", &Verification::ChromeWebStore { publisher_verified: true }),
+            "the store copy replaces a newer unverified one"
+        );
+        let work = t.p().extensions().reconcile().unwrap();
+        assert!(work.install.is_empty() && work.removed.is_empty());
     }
 
     /// What a sync apply does when another device installs `id` from `store`.
