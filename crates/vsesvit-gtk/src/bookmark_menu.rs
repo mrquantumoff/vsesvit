@@ -381,6 +381,15 @@ fn context_model(widget: &gtk::Widget, target: &Target) -> (gio::Menu, gio::Simp
                 move |window| delete(window, node.clone())
             }));
         }
+        Target::Node(item) if item.node.kind == NodeKind::Separator => {
+            let edits = gio::Menu::new();
+            edits.append(Some("_Delete"), Some("bookmark.delete"));
+            menu.append_section(None, &edits);
+            add("delete", true, Box::new({
+                let node = item.node.clone();
+                move |window| delete(window, node.clone())
+            }));
+        }
         Target::Node(folder) => {
             let links = folder.links();
             let opens = gio::Menu::new();
@@ -525,5 +534,17 @@ mod tests {
 
         core.borrow_mut().bookmarks().remove(folders[1]).expect("the folders are removed");
         window.destroy();
+    }
+
+    #[gtk::test]
+    fn a_separator_can_only_be_deleted() {
+        let core = crate::test_support::browser().core().clone();
+        let id = core.borrow_mut().bookmarks().add_separator(BookmarkId::TOOLBAR, InsertAt::End).expect("a separator");
+        let node = core.borrow_mut().bookmarks().get(id).expect("the separator");
+        let (_, actions) = context_model(gtk::Label::new(None).upcast_ref(), &Target::Node(Item { node, children: Rc::from([]) }));
+        core.borrow_mut().bookmarks().remove(id).expect("the separator is removed");
+        assert!(actions.lookup_action("rename").is_none(), "a separator offers Rename");
+        assert!(actions.lookup_action("open-all").is_none(), "a separator offers Open All");
+        assert!(actions.lookup_action("delete").is_some_and(|delete| delete.is_enabled()));
     }
 }
