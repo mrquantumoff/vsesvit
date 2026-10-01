@@ -38,11 +38,27 @@ impl BarItem {
     }
 }
 
+/// How many folders deep the bookmark views go; a folder deeper still shows as empty. Sync
+/// can nest folders without end, and walking thousands of them would overflow the stack.
+pub(crate) const MAX_DEPTH: usize = 64;
+
 /// The bar's items for the bookmark folder `folder`, in display order. Separators are dropped.
 pub(crate) fn items_from(
     folder: BookmarkId,
     children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>,
 ) -> Vec<BarItem> {
+    items_at(folder, 0, children)
+}
+
+/// The items of `folder`, `depth` folders below the bar.
+fn items_at(
+    folder: BookmarkId,
+    depth: usize,
+    children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>,
+) -> Vec<BarItem> {
+    if depth >= MAX_DEPTH {
+        return Vec::new();
+    }
     children(folder)
         .into_iter()
         .filter_map(|node| match node.kind {
@@ -58,7 +74,7 @@ pub(crate) fn items_from(
             }),
             NodeKind::Folder => Some(BarItem::Folder {
                 id: node.id,
-                children: items_from(node.id, children),
+                children: items_at(node.id, depth + 1, children),
                 title: node.title,
             }),
             NodeKind::Separator => None,
@@ -841,6 +857,21 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn folders_nested_without_end_stop_at_the_maximum_depth() {
+        // Every folder holds another, as a synced chain thousands deep would.
+        let children = |_| vec![node(BookmarkId::OTHER, NodeKind::Folder, "F", None)];
+        let items = items_from(BookmarkId::TOOLBAR, &children);
+        let mut level = items.as_slice();
+        let mut depth = 0;
+        while let [BarItem::Folder { children, .. }] = level {
+            depth += 1;
+            level = children;
+        }
+        assert!(level.is_empty());
+        assert_eq!(depth, MAX_DEPTH);
     }
 
     #[test]

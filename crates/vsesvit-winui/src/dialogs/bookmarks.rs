@@ -16,6 +16,7 @@ use windows_core::{Interface, Result};
 
 use super::{Wired, on_click};
 use crate::bindings::*;
+use crate::bookmarks_bar::MAX_DEPTH;
 use crate::browser::Browser;
 use crate::{exec, pickers, xaml};
 
@@ -228,7 +229,7 @@ impl Editor {
                 ROOTS
                     .iter()
                     .filter_map(|&id| bookmarks.get(id))
-                    .map(|node| Branch::of(node, &children))
+                    .map(|node| Branch::of(node, 0, &children))
                     .collect()
             };
             for branch in &mut roots {
@@ -699,11 +700,16 @@ struct Branch {
 }
 
 impl Branch {
-    fn of(node: BookmarkNode, children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>) -> Self {
-        let kids = if node.kind == NodeKind::Folder {
+    /// `node`, `depth` folders below its root; a folder `MAX_DEPTH` deep shows as empty.
+    fn of(
+        node: BookmarkNode,
+        depth: usize,
+        children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>,
+    ) -> Self {
+        let kids = if node.kind == NodeKind::Folder && depth < MAX_DEPTH {
             children(node.id)
                 .into_iter()
-                .map(|c| Branch::of(c, children))
+                .map(|c| Branch::of(c, depth + 1, children))
                 .collect()
         } else {
             Vec::new()
@@ -766,5 +772,28 @@ mod tests {
         assert_eq!(next_after(&[A, B], A, B), None);
         assert_eq!(next_after(&[A, C, B], A, B), Some(C));
         assert_eq!(next_after(&[A, B, C], C, A), None);
+    }
+
+    #[test]
+    fn folders_nested_without_end_stop_at_the_maximum_depth() {
+        let folder = |id| BookmarkNode {
+            id,
+            kind: NodeKind::Folder,
+            parent: A,
+            index: 0,
+            title: "F".into(),
+            url: None,
+            added_ms: 0,
+        };
+        // Every folder holds another, as a synced chain thousands deep would.
+        let children = |_| vec![folder(B)];
+        let mut branch = &Branch::of(folder(A), 0, &children);
+        let mut depth = 0;
+        while let [child] = branch.children.as_slice() {
+            depth += 1;
+            branch = child;
+        }
+        assert!(branch.children.is_empty());
+        assert_eq!(depth, MAX_DEPTH);
     }
 }

@@ -12,6 +12,7 @@ use vsesvit_core::search::classify_url;
 use windows_core::{Interface, Result};
 
 use crate::bindings::*;
+use crate::bookmarks_bar::MAX_DEPTH;
 use crate::window::BrowserWindow;
 use crate::{exec, xaml};
 
@@ -96,8 +97,8 @@ pub(crate) fn parse_url(text: &str) -> Option<Url> {
 /// A folder the editor offers: its id and its label, indented by depth.
 pub(crate) type FolderChoice = (BookmarkId, String);
 
-/// Every folder under `roots`, depth first, except `exclude` and what is inside it (a folder
-/// cannot move into itself).
+/// Every folder under `roots`, depth first and at most `MAX_DEPTH` deep, except `exclude` and
+/// what is inside it (a folder cannot move into itself).
 pub(crate) fn folder_choices(
     roots: &[BookmarkNode],
     children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>,
@@ -117,8 +118,10 @@ pub(crate) fn folder_choices(
             node.id,
             format!("{}{}", "\u{2003}".repeat(depth), node.title),
         ));
-        for child in children(node.id) {
-            walk(&child, depth + 1, children, exclude, out);
+        if depth < MAX_DEPTH {
+            for child in children(node.id) {
+                walk(&child, depth + 1, children, exclude, out);
+            }
         }
     }
     let mut out = Vec::new();
@@ -459,6 +462,14 @@ mod tests {
             ]
         );
         assert_eq!(labels(Some(a)), ["Bookmarks bar", "Other bookmarks"]);
+    }
+
+    #[test]
+    fn folders_nested_without_end_are_listed_to_the_maximum_depth() {
+        // Every folder holds another, as a synced chain thousands deep would.
+        let children = |_| vec![folder(BookmarkId::OTHER, "F")];
+        let choices = folder_choices(&[folder(BookmarkId::TOOLBAR, "Bar")], &children, None);
+        assert_eq!(choices.len(), MAX_DEPTH + 1);
     }
 
     #[test]
