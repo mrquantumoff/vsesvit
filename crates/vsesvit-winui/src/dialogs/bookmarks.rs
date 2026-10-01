@@ -10,7 +10,6 @@ use std::rc::{Rc, Weak};
 use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
 use vsesvit_core::import::{self, Found, Source};
-use vsesvit_core::search::classify_url;
 use vsesvit_core::sync::Changed;
 use windows_core::{Interface, Result};
 
@@ -18,7 +17,7 @@ use super::{Wired, on_click};
 use crate::bindings::*;
 use crate::bookmarks_bar::MAX_DEPTH;
 use crate::browser::Browser;
-use crate::{exec, pickers, xaml};
+use crate::{bookmark_editor, exec, pickers, xaml};
 
 pub(super) const MARKUP: &str = r#"
   <Grid ColumnSpacing="20">
@@ -223,21 +222,20 @@ impl Editor {
             return;
         };
         let (tree, folders) = browser.core(|p| {
-            let mut roots: Vec<Branch> = {
+            let (mut roots, folders) = {
                 let bookmarks = p.bookmarks();
                 let children = |id| bookmarks.children(id);
-                ROOTS
-                    .iter()
-                    .filter_map(|&id| bookmarks.get(id))
+                let nodes: Vec<BookmarkNode> =
+                    ROOTS.iter().filter_map(|&id| bookmarks.get(id)).collect();
+                let folders = bookmark_editor::folder_choices(&nodes, &children, None);
+                let roots: Vec<Branch> = nodes
+                    .into_iter()
                     .map(|node| Branch::of(node, 0, &children))
-                    .collect()
+                    .collect();
+                (roots, folders)
             };
             for branch in &mut roots {
                 branch.fill_icons(&mut |url| p.favicons().get(url).ok().flatten());
-            }
-            let mut folders = Vec::new();
-            for branch in &roots {
-                branch.folders(0, &mut folders);
             }
             (roots, folders)
         });
@@ -417,13 +415,11 @@ impl Editor {
         let url = match node.kind {
             NodeKind::Url => {
                 let text = self.url.Text().unwrap_or_default();
-                match classify_url(&text) {
-                    Some(target) => Some(target.url().clone()),
-                    None => {
-                        let _ = self.status.SetText("That is not a web address.");
-                        return;
-                    }
-                }
+                let Some(url) = bookmark_editor::parse_url(&text) else {
+                    let _ = self.status.SetText("That is not a web address.");
+                    return;
+                };
+                Some(url)
             }
             _ => None,
         };
@@ -739,20 +735,6 @@ impl Branch {
                 node.url.as_ref().map(Url::to_string).unwrap_or_default()
             }
             NodeKind::Url => node.title.clone(),
-        }
-    }
-
-    /// Every folder, depth first, labelled with its depth.
-    fn folders(&self, depth: usize, out: &mut Vec<(BookmarkId, String)>) {
-        if self.node.kind != NodeKind::Folder {
-            return;
-        }
-        out.push((
-            self.node.id,
-            format!("{}{}", "\u{2003}".repeat(depth), self.node.title),
-        ));
-        for child in &self.children {
-            child.folders(depth + 1, out);
         }
     }
 }
