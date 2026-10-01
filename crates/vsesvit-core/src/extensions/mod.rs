@@ -338,9 +338,10 @@ impl Extensions<'_> {
     ///    staging dir is ever renamed into place, and dirs leave by a rename too), so drop
     ///    the staged copy. Otherwise rename the staging root into place (same volume, atomic).
     /// 5. `Intent::User` with a store source: `installed := true`, `store := ..`. A new
-    ///    record starts `enabled := true`; re-installing keeps the current enabled state.
-    ///    Unchanged registers mint no stamp, so re-running an install of the same
-    ///    version changes nothing and causes no sync traffic.
+    ///    or previously uninstalled record starts `enabled := true`, as Chrome brings a
+    ///    reinstalled extension back enabled; re-installing an installed one keeps its
+    ///    enabled state. Unchanged registers mint no stamp, so re-running an install of
+    ///    the same version changes nothing and causes no sync traffic.
     /// 6. Upsert the `extension_installs` row. Crash after the rename but before the
     ///    commit leaves an unreferenced dir that the next open GCs or the next install reuses.
     pub fn commit(&mut self, staged: StagedInstall) -> Result<Option<InstalledExtension>, Error> {
@@ -609,7 +610,7 @@ fn set_register<T: Ord>(tx: &mut Tx<'_>, register: &mut Lww<T>, value: T) -> boo
 }
 
 /// The desired-state half of a user install: `installed := true`, `store := store`,
-/// and `enabled := true` only for a record that did not exist yet.
+/// and `enabled := true` for a record that did not exist yet or was uninstalled.
 fn want_installed(tx: &mut Tx<'_>, id: &ExtensionId, store: StoreRef) -> Result<(), Error> {
     let record = match ExtensionsTable::load(&tx.sql, id.as_str())? {
         None => {
@@ -623,9 +624,10 @@ fn want_installed(tx: &mut Tx<'_>, id: &ExtensionId, store: StoreRef) -> Result<
             })
         }
         Some(mut rec) => {
-            let installed = set_register(tx, &mut rec.installed, true);
+            let reinstalled = set_register(tx, &mut rec.installed, true);
+            let enabled = reinstalled && set_register(tx, &mut rec.enabled, true);
             let store_changed = set_register(tx, &mut rec.store, store);
-            (installed || store_changed).then_some(rec)
+            (reinstalled || enabled || store_changed).then_some(rec)
         }
     };
     if let Some(record) = record {
@@ -954,6 +956,20 @@ mod store_tests {
         assert!(t.p().extensions().list().unwrap().is_empty());
         let work = t.p().extensions().reconcile().unwrap();
         assert!(work.install.is_empty() && work.removed.is_empty());
+    }
+
+    #[test]
+    fn a_store_reinstall_after_uninstall_comes_back_enabled() {
+        let mut t = TempProfile::new();
+        let staged = staged_from_store(&mut t, Intent::User);
+        let ext = t.p().extensions().commit(staged).unwrap().unwrap();
+        t.p().extensions().set_enabled(&ext.id, false).unwrap();
+        t.p().extensions().uninstall(&ext.id).unwrap();
+
+        let staged = staged_from_store(&mut t, Intent::User);
+        assert!(t.p().extensions().commit(staged).unwrap().unwrap().enabled, "as Chrome brings it back");
+        let (rec, _) = desired(&mut t).unwrap();
+        assert!(rec.installed.v && rec.enabled.v, "other devices install it enabled too");
     }
 
     #[test]
