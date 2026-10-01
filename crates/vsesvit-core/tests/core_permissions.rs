@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use vsesvit_core::crdt::{DeviceId, Hlc, Lww, Seq, Stamp, TimeSource};
 use vsesvit_core::permissions::{
-    prompt, site_rows, Answer, Capturing, Decision, Origin, Permission, Setting, SiteChoice, SitePermissionRecord, SiteRow,
-    SiteSetting, TabGrants,
+    prompt, site_rows, Answer, Capturing, Decision, Origin, Permission, Setting, SiteChoice, SiteGroup, SitePermissionRecord,
+    SiteRow, SiteSetting, TabGrants,
 };
 use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::{Error, OpenOptions, Profile, Url};
@@ -97,6 +97,11 @@ fn permission_keys_and_labels() {
     let labels: Vec<&str> = Permission::ALL.iter().map(|p| p.label()).collect();
     assert_eq!(labels, ["Camera", "Microphone", "Location", "Notifications", "Screen sharing", "Clipboard", "MIDI devices"]);
     assert!(Permission::ALL.iter().all(|p| p.remembers_allow() == (*p != ScreenShare)));
+    assert_eq!(ScreenShare.settings(), [Setting::Block]);
+    for &p in Permission::ALL.iter().filter(|p| **p != ScreenShare) {
+        assert_eq!(p.settings(), [Setting::Allow, Setting::Block]);
+    }
+    assert_eq!([Setting::Allow.label(), Setting::Block.label()], ["Allow", "Block"]);
 }
 
 #[test]
@@ -157,6 +162,29 @@ fn all_is_sorted_by_origin_then_permission() {
             row(&a, Notifications, Setting::Block),
             row(&b, Camera, Setting::Block),
             row(&b, Midi, Setting::Allow),
+        ]
+    );
+}
+
+#[test]
+fn by_site_groups_settings_and_tells_one_host_apart_by_scheme() {
+    let (mut p, _dir) = open(1);
+    let (http, https, meet) = (origin("http://example.com"), origin("https://example.com"), origin("https://meet.example"));
+    p.site_permissions().set(&meet, Location, Some(Setting::Block)).unwrap();
+    p.site_permissions().set(&https, Camera, Some(Setting::Allow)).unwrap();
+    p.site_permissions().set(&http, Camera, Some(Setting::Block)).unwrap();
+    p.site_permissions().set(&https, ScreenShare, Some(Setting::Block)).unwrap();
+    let group = |origin: &Origin, heading: &str, settings: &[(Permission, Setting)]| SiteGroup {
+        origin: origin.clone(),
+        heading: heading.to_owned(),
+        settings: settings.to_vec(),
+    };
+    assert_eq!(
+        p.site_permissions().by_site(),
+        [
+            group(&http, "http://example.com", &[(Camera, Setting::Block)]),
+            group(&https, "https://example.com", &[(Camera, Setting::Allow), (ScreenShare, Setting::Block)]),
+            group(&meet, "meet.example", &[(Location, Setting::Block)]),
         ]
     );
 }

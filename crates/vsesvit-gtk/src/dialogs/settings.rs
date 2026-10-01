@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use vsesvit_core::permissions::{Origin, Permission, Setting, SiteSetting};
+use vsesvit_core::permissions::{Origin, Permission, Setting};
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::search::SearchEngine;
 use vsesvit_core::sync::DataType;
@@ -615,8 +615,8 @@ fn site_permissions_page(browser: &Browser) -> adw::NavigationPage {
 }
 
 fn fill_site_permissions(content: &adw::Bin, browser: &Browser) {
-    let settings = browser.core().borrow_mut().site_permissions().all();
-    if settings.is_empty() {
+    let sites = browser.core().borrow_mut().site_permissions().by_site();
+    if sites.is_empty() {
         let empty = adw::StatusPage::builder()
             .icon_name("security-high-symbolic")
             .title("No Site Permissions")
@@ -626,36 +626,25 @@ fn fill_site_permissions(content: &adw::Bin, browser: &Browser) {
         return;
     }
     let page = adw::PreferencesPage::new();
-    let sites: Vec<&[SiteSetting]> = settings.chunk_by(|a, b| a.origin == b.origin).collect();
-    let hosts: Vec<String> = sites.iter().map(|site| site[0].origin.host_for_display()).collect();
-    for (&site, host) in sites.iter().zip(&hosts) {
-        let group = group(&site_heading(&site[0].origin, host, &hosts));
-        for setting in site {
-            group.add(&site_setting_row(content, browser, setting));
+    for site in &sites {
+        let group = group(&site.heading);
+        for &(permission, setting) in &site.settings {
+            group.add(&site_setting_row(content, browser, &site.origin, permission, setting));
         }
         page.add(&group);
     }
     content.set_child(Some(&page));
 }
 
-/// A site by its host, or by its whole origin when another listed site has the same host
-/// (`http://example.com` and `https://example.com`).
-fn site_heading(origin: &Origin, host: &str, hosts: &[String]) -> String {
-    if hosts.iter().filter(|h| *h == host).count() > 1 { origin.as_str().to_owned() } else { host.to_owned() }
-}
-
-fn site_setting_row(content: &adw::Bin, browser: &Browser, setting: &SiteSetting) -> adw::ComboRow {
-    let choices: Vec<Setting> = [Setting::Allow, Setting::Block]
-        .into_iter()
-        .filter(|s| *s == Setting::Block || setting.permission.remembers_allow())
-        .collect();
-    let names: Vec<&str> = choices.iter().map(|s| if *s == Setting::Allow { "Allow" } else { "Block" }).collect();
+fn site_setting_row(content: &adw::Bin, browser: &Browser, origin: &Origin, permission: Permission, setting: Setting) -> adw::ComboRow {
+    let choices = permission.settings();
+    let names: Vec<&str> = choices.iter().map(|s| s.label()).collect();
     let row = adw::ComboRow::builder()
-        .title(setting.permission.label())
+        .title(permission.label())
         .model(&gtk::StringList::new(&names))
-        .selected(choices.iter().position(|s| *s == setting.setting).and_then(|i| u32::try_from(i).ok()).unwrap_or(0))
+        .selected(choices.iter().position(|s| *s == setting).and_then(|i| u32::try_from(i).ok()).unwrap_or(0))
         .build();
-    let (origin, permission) = (setting.origin.clone(), setting.permission);
+    let origin = origin.clone();
     row.connect_selected_notify(glib::clone!(
         #[weak]
         content,
@@ -1028,13 +1017,5 @@ mod tests {
         assert_eq!(back, DataType::ALL);
         assert!(every_type(&back));
         assert_eq!(toggled(&[DataType::Tabs], DataType::Bookmarks, true), [DataType::Bookmarks, DataType::Tabs]);
-    }
-
-    #[test]
-    fn sites_on_one_host_are_told_apart_by_scheme() {
-        let origins = ["http://example.com", "https://example.com", "https://meet.example"].map(|o| Origin::parse(o).expect("an origin"));
-        let hosts: Vec<String> = origins.iter().map(Origin::host_for_display).collect();
-        let headings: Vec<String> = origins.iter().zip(&hosts).map(|(o, h)| site_heading(o, h, &hosts)).collect();
-        assert_eq!(headings, ["http://example.com", "https://example.com", "meet.example"]);
     }
 }

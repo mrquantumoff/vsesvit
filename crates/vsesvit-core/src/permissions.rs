@@ -95,6 +95,12 @@ impl Permission {
         self != Permission::ScreenShare
     }
 
+    /// The settings a site can have stored for this permission: Allow only where it is
+    /// remembered.
+    pub fn settings(self) -> &'static [Setting] {
+        if self.remembers_allow() { &[Setting::Allow, Setting::Block] } else { &[Setting::Block] }
+    }
+
     /// What the site wants to do, as a verb and its object. Requests that share a verb read
     /// as one phrase: "use your camera and microphone".
     fn request(self) -> (&'static str, &'static str) {
@@ -118,6 +124,13 @@ pub enum Setting {
 }
 
 impl Setting {
+    pub fn label(self) -> &'static str {
+        match self {
+            Setting::Allow => "Allow",
+            Setting::Block => "Block",
+        }
+    }
+
     fn key(self) -> &'static str {
         match self {
             Setting::Allow => "allow",
@@ -468,6 +481,17 @@ pub struct SiteSetting {
     pub setting: Setting,
 }
 
+/// One site's stored settings, for the settings page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteGroup {
+    pub origin: Origin,
+    /// The host, or the whole origin when another listed site has the same host
+    /// (`http://example.com` and `https://example.com`).
+    pub heading: String,
+    /// In [`Permission::ALL`] order.
+    pub settings: Vec<(Permission, Setting)>,
+}
+
 pub struct SitePermissions<'p> {
     pub(crate) p: &'p mut Profile,
 }
@@ -503,6 +527,28 @@ impl SitePermissions<'_> {
             .collect();
         out.sort_by(|a, b| (&a.origin, a.permission).cmp(&(&b.origin, b.permission)));
         out
+    }
+
+    /// Every stored setting, grouped by site in [`all`](Self::all)'s order.
+    pub fn by_site(&mut self) -> Vec<SiteGroup> {
+        let mut sites: Vec<SiteGroup> = Vec::new();
+        for s in self.all() {
+            match sites.last_mut() {
+                Some(site) if site.origin == s.origin => site.settings.push((s.permission, s.setting)),
+                _ => sites.push(SiteGroup {
+                    heading: s.origin.host_for_display(),
+                    origin: s.origin,
+                    settings: vec![(s.permission, s.setting)],
+                }),
+            }
+        }
+        let hosts: Vec<String> = sites.iter().map(|site| site.heading.clone()).collect();
+        for site in &mut sites {
+            if hosts.iter().filter(|h| **h == site.heading).count() > 1 {
+                site.heading = site.origin.as_str().to_owned();
+            }
+        }
+        sites
     }
 
     /// Every setting of the site back to ask, in one transaction.
@@ -567,7 +613,7 @@ impl SitePermissions<'_> {
 }
 
 fn effective(p: Permission, stored: Option<Setting>) -> Option<Setting> {
-    stored.filter(|s| *s == Setting::Block || p.remembers_allow())
+    stored.filter(|s| p.settings().contains(s))
 }
 
 const COLUMNS: &str = "origin, permission, setting, setting_at, seq";
