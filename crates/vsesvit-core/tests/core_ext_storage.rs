@@ -187,6 +187,37 @@ fn remote_apply_reports_only_visible_value_changes() {
     assert!(d.ext_storage().get(&ext(), Area::Sync, None).unwrap().is_empty());
 }
 
+/// Remote applies ignore the item quota, so a server can send any number of keys for one
+/// extension. Each one is found by its key, not by hashing every stored key: the batch stays
+/// linear, and a later record for an old key still merges into it.
+#[test]
+fn remote_apply_of_many_keys_stays_linear() {
+    use sha2::{Digest, Sha256};
+    let wire = |key: &str, value: u32, hlc: u64| {
+        let hash: String = Sha256::digest(key.as_bytes())[..16].iter().map(|b| format!("{b:02x}")).collect();
+        let rec = SyncItemRecord {
+            ext: ext(),
+            key: key.to_owned(),
+            value: Lww::new(Some(JsonText::from_value(&json!(value))), Stamp { hlc: Hlc(hlc), device: DeviceId(9) }),
+        };
+        WireRecord { kind: Kind::ExtStorageSync, id: format!("{}:{hash}", ext().as_str()), body: serde_json::to_vec(&rec).unwrap() }
+    };
+    let (mut p, _d) = open();
+    let n = 10_000;
+    let started = std::time::Instant::now();
+    let report = p.sync().apply((0..n).map(|i| wire(&format!("k{i}"), i, 1)).collect()).unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(report.merged, n as usize);
+    assert!(elapsed < std::time::Duration::from_secs(10), "{n} new keys took {elapsed:?}");
+
+    let report = p.sync().apply(vec![wire("k0", 7, 2)]).unwrap();
+    assert_eq!(report.merged, 1);
+    let [(id, changes)] = &report.changed.ext_storage[..] else { panic!("{:?}", report.changed.ext_storage) };
+    assert_eq!(id, &ext());
+    assert_eq!((changes[0].old_value.as_ref(), changes[0].new_value.as_ref()), (Some(&json!(0)), Some(&json!(7))));
+    assert_eq!(p.ext_storage().get(&ext(), Area::Sync, Some(&keys(&["k0"]))).unwrap()["k0"], json!(7));
+}
+
 fn synced_wire(p: &mut Profile) -> Vec<WireRecord> {
     p.sync().changes_since(Kind::ExtStorageSync, Seq::ZERO, usize::MAX).unwrap().records
 }

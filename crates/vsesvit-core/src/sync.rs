@@ -336,6 +336,11 @@ pub(crate) trait SyncTable {
         Ok(Some(merged))
     }
     fn load(tx: &rusqlite::Transaction<'_>, wire_id: &str) -> Result<Option<Self::Record>, Error>;
+    /// The local record for the same id as `incoming`, which `apply_one` merges into. Kinds
+    /// whose wire id is a hash override it to look up by the key the record carries.
+    fn load_for(tx: &rusqlite::Transaction<'_>, incoming: &Self::Record) -> Result<Option<Self::Record>, Error> {
+        Self::load(tx, &Self::wire_id(incoming))
+    }
     /// Upsert. `seq` is the row's new change sequence: a fresh `tx.seq()` when the row
     /// must be uploaded, `Seq::ZERO` when it holds nothing the server lacks.
     fn store(tx: &rusqlite::Transaction<'_>, rec: &Self::Record, seq: Seq) -> Result<(), Error>;
@@ -364,7 +369,7 @@ pub(crate) enum Applied<R> {
 /// ```
 pub(crate) fn apply_one<T: SyncTable>(tx: &mut Tx<'_>, incoming: T::Record) -> Result<Applied<T::Record>, Error> {
     let id = T::wire_id(&incoming);
-    let local = T::load(&tx.sql, &id)?;
+    let local = T::load_for(&tx.sql, &incoming)?;
     let joined = match &local {
         Some(l) => {
             if let Err(reason) = T::compatible(l, &incoming) {

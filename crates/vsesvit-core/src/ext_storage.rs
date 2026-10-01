@@ -276,6 +276,12 @@ impl SyncTable for StorageTable {
         Ok(None)
     }
 
+    /// By primary key: [`load`](Self::load) hashes every key of the extension, and a remote
+    /// batch (not bound by the item quota) would make that quadratic.
+    fn load_for(tx: &rusqlite::Transaction<'_>, incoming: &SyncItemRecord) -> Result<Option<SyncItemRecord>, Error> {
+        load_item(tx, &incoming.ext, &incoming.key)
+    }
+
     fn store(tx: &rusqlite::Transaction<'_>, rec: &SyncItemRecord, seq: Seq) -> Result<(), Error> {
         store_item(tx, rec, seq)
     }
