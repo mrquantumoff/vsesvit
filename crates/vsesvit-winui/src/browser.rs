@@ -1169,23 +1169,21 @@ impl Browser {
     }
 
     pub fn set_extension_pinned(&self, id: &str, pinned: bool) {
-        let available = self.toolbar_ids();
-        let saved = self.core(|p| p.prefs().get(&toolbar::TOOLBAR));
-        self.write_pref(
-            &toolbar::TOOLBAR,
-            &toolbar::set_pinned(&available, &saved, id, pinned),
-        );
-        self.show_extension_actions();
+        self.change_toolbar(|available, saved| toolbar::set_pinned(available, saved, id, pinned));
     }
 
     /// Moves the pinned action `id` to place `to` among the pinned ones.
     pub fn move_extension(&self, id: &str, to: usize) {
+        self.change_toolbar(|available, saved| toolbar::move_pinned(available, saved, id, to));
+    }
+
+    fn change_toolbar(
+        &self,
+        change: impl FnOnce(&[String], &[toolbar::Entry]) -> Vec<toolbar::Entry>,
+    ) {
         let available = self.toolbar_ids();
         let saved = self.core(|p| p.prefs().get(&toolbar::TOOLBAR));
-        self.write_pref(
-            &toolbar::TOOLBAR,
-            &toolbar::move_pinned(&available, &saved, id, to),
-        );
+        self.write_pref(&toolbar::TOOLBAR, &change(&available, &saved));
         self.show_extension_actions();
     }
 
