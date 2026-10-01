@@ -116,7 +116,7 @@ impl Lattice for PageRecord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DeletionDirective {
     pub id: Uuid,
     /// `None` = every url.
@@ -126,8 +126,13 @@ pub struct DeletionDirective {
 }
 
 impl Lattice for DeletionDirective {
-    /// Immutable: two records with the same id are equal, so join is identity.
-    fn join(&mut self, _other: Self) {}
+    /// Immutable: honest devices never send two bodies under one id. A buggy or hostile
+    /// server can, so the greater body wins and every device settles on one copy.
+    fn join(&mut self, other: Self) {
+        if other > *self {
+            *self = other;
+        }
+    }
 }
 
 pub fn covers(d: &DeletionDirective, url: &Url, v: &Visit) -> bool {

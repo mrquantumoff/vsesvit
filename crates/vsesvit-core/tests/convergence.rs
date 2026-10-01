@@ -551,8 +551,14 @@ fn page_record() -> impl Strategy<Value = PageRecord> {
         .prop_map(|(at, t, visits, extra)| PageRecord { url: url(0), title: Lww::new(format!("t{t}"), at), visits, extra })
 }
 
+/// Bodies differ under one id: honest devices never mint that, but a server can send it.
 fn directive_record() -> impl Strategy<Value = DeletionDirective> {
-    Just(DeletionDirective { id: uuid::Uuid::from_u128(9), url: None, from_ms: 0, to_ms: 10 })
+    (prop::option::of(0u8..2), 0i64..20, 0i64..20).prop_map(|(u, a, b)| DeletionDirective {
+        id: uuid::Uuid::from_u128(9),
+        url: u.map(url),
+        from_ms: a.min(b),
+        to_ms: a.max(b),
+    })
 }
 
 fn session_record() -> impl Strategy<Value = DeviceSessionRecord> {
@@ -703,4 +709,26 @@ proptest! {
         }
         prop_assert_eq!(seen, live);
     }
+}
+
+/// Two devices hold different bodies under one directive id (a buggy or hostile server, or
+/// a reused uuid). They settle on one copy instead of overwriting each other's upload
+/// every round.
+#[test]
+fn differing_directive_bodies_converge() {
+    let base = 1_780_000_000_000u64;
+    let mut devices = [Device::new(0, base), Device::new(1, base)];
+    let mut server = Server::default();
+    let wire = |to_ms| {
+        let d = DeletionDirective { id: uuid::Uuid::from_u128(9), url: None, from_ms: 0, to_ms };
+        WireRecord { kind: Kind::HistoryDeletions, id: d.id.to_string(), body: serde_json::to_vec(&d).unwrap() }
+    };
+    for (d, to_ms) in devices.iter_mut().zip([10, 99]) {
+        let report = d.profile.sync().apply(vec![wire(to_ms)]).unwrap();
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+    }
+    server.upload(vec![wire(10)]);
+    settle(&mut devices, &mut server);
+    let [a, b] = &mut devices;
+    assert_eq!(a.export(), b.export());
 }
