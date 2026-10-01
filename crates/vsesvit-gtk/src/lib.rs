@@ -73,13 +73,16 @@ pub(crate) fn popup(popover: &impl IsA<gtk::Popover>, anchor: &impl IsA<gtk::Wid
     ));
     let anchor = anchor.upcast_ref::<gtk::Widget>().downgrade();
     let unrealize = Cell::new(Some(unrealize));
-    // Unparenting from inside `closed` confuses GTK's popover teardown.
+    // Unparenting from inside `closed` confuses GTK's popover teardown. The anchor keeps
+    // its handler until then, in case it leaves the window first.
     popover.connect_closed(move |popover| {
-        if let (Some(anchor), Some(handler)) = (anchor.upgrade(), unrealize.take()) {
-            anchor.disconnect(handler);
-        }
-        let popover = popover.clone();
-        glib::idle_add_local_once(move || release(&popover));
+        let (popover, anchor, unrealize) = (popover.clone(), anchor.clone(), unrealize.take());
+        glib::idle_add_local_once(move || {
+            release(&popover);
+            if let (Some(anchor), Some(handler)) = (anchor.upgrade(), unrealize) {
+                anchor.disconnect(handler);
+            }
+        });
     });
     if SCRIPTED.get() {
         popover.set_autohide(false);
@@ -152,10 +155,15 @@ mod tests {
         let unrealize = SignalId::lookup("unrealize", gtk::Widget::static_type()).unwrap();
         let left = glib::signal::signal_has_handler_pending(&anchor, unrealize, None, false);
         let open = gtk::Popover::builder().autohide(false).build();
-        popup(&open, &anchor);
-        wait_until("the popover", || open.is_mapped());
+        let closing = gtk::Popover::builder().autohide(false).build();
+        for popover in [&open, &closing] {
+            popup(popover, &anchor);
+            wait_until("the popover", || popover.is_mapped());
+        }
+        closing.popdown();
         window.destroy();
         assert!(!left, "closed popovers leave no handlers on the anchor");
         assert!(open.parent().is_none(), "an open popover leaves with its anchor");
+        assert!(closing.parent().is_none(), "a popover just closed leaves with its anchor too");
     }
 }
