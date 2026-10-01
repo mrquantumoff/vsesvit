@@ -13,7 +13,7 @@ mod stage;
 mod sysroot;
 mod util;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::Result;
@@ -73,8 +73,4 @@ const LIBDIR: &str = "usr/lib/x86_64-linux-gnu";
 
 fn packaging_linux(ctx: &Ctx) -> PathBuf {
     ctx.packaging().join("linux")
-}
-
-fn display(path: &Path) -> String {
-    path.display().to_string()
 }

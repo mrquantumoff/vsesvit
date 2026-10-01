@@ -25,8 +25,8 @@ pub fn build(ctx: &Ctx, artifact: &Path) -> Result {
     util::run(
         Command::new("flatpak-builder")
             .args(["--user", "--force-clean", "--disable-rofiles-fuse", "--install-deps-from=flathub"])
-            .arg(format!("--state-dir={}", super::display(&work.join("state"))))
-            .arg(format!("--repo={}", super::display(&work.join("repo"))))
+            .arg(format!("--state-dir={}", work.join("state").display()))
+            .arg(format!("--repo={}", work.join("repo").display()))
             .arg(work.join("build"))
             .arg(dir.join(format!("{APP_ID}.yml"))),
     )?;
@@ -37,7 +37,7 @@ pub fn build(ctx: &Ctx, artifact: &Path) -> Result {
 /// and the `cargo/config.toml` that points cargo at the vendored copies.
 fn write_cargo_sources(lock: &Path, out: &Path) -> Result {
     let mut sources = Vec::new();
-    for package in packages(&util::read_to_string(lock)?)? {
+    for package in packages(&util::read_to_string(lock)?) {
         let (Some(name), Some(version)) = (package.get("name"), package.get("version")) else {
             return Err(format!("{}: package without name or version", lock.display()));
         };
@@ -76,7 +76,7 @@ fn write_cargo_sources(lock: &Path, out: &Path) -> Result {
 }
 
 /// The `[[package]]` tables of a Cargo.lock as key -> unquoted value maps.
-fn packages(lock: &str) -> Result<Vec<std::collections::HashMap<String, String>>> {
+fn packages(lock: &str) -> Vec<std::collections::HashMap<String, String>> {
     let mut packages = Vec::new();
     for line in lock.lines() {
         if line == "[[package]]" {
@@ -87,5 +87,5 @@ fn packages(lock: &str) -> Result<Vec<std::collections::HashMap<String, String>>
             package.insert(key.to_owned(), value.to_owned());
         }
     }
-    Ok(packages)
+    packages
 }

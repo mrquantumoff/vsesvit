@@ -49,7 +49,7 @@ pub fn build(ctx: &Ctx, stage: &Stage, artifact: &Path) -> Result {
          /usr/share/icons/hicolor/*/apps/{APP_ID}.*\n",
         requires = deps::required(|d| d.rpm).iter().map(|d| format!("Requires: {d}")).collect::<Vec<_>>().join("\n"),
         recommends = deps::optional(|d| d.rpm).iter().map(|d| format!("Recommends: {d}")).collect::<Vec<_>>().join("\n"),
-        root = super::display(&stage.root),
+        root = stage.root.display(),
     );
     let spec_path = topdir.join("SPECS").join(format!("{BINARY}.spec"));
     util::write(&spec_path, spec)?;
@@ -58,9 +58,9 @@ pub fn build(ctx: &Ctx, stage: &Stage, artifact: &Path) -> Result {
         Command::new("rpmbuild")
             .args(["-bb", "--target", "x86_64", "--define", "_rpmformat 4"])
             .arg("--define")
-            .arg(format!("_topdir {}", super::display(&topdir)))
+            .arg(format!("_topdir {}", topdir.display()))
             .arg("--define")
-            .arg(format!("_dbpath {}", super::display(&topdir.join("rpmdb"))))
+            .arg(format!("_dbpath {}", topdir.join("rpmdb").display()))
             .arg(&spec_path),
     )?;
     let built = topdir.join("RPMS/x86_64").join(format!("{BINARY}-{version}-1.x86_64.rpm"));

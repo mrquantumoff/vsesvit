@@ -61,10 +61,6 @@ pub fn prepare(ctx: &Ctx, packages: &[&str]) -> Result<PathBuf> {
     Ok(sysroot)
 }
 
-pub fn path(sysroot: &Path, rel: &str) -> PathBuf {
-    sysroot.join(rel)
-}
-
 /// apt with its lists and cache under a directory of ours, refreshed once per run.
 struct Apt {
     dir: PathBuf,
@@ -82,9 +78,9 @@ impl Apt {
     fn command(&self, program: &str) -> Command {
         let mut cmd = Command::new(program);
         cmd.arg("-o")
-            .arg(format!("Dir::State::Lists={}", super::display(&self.dir.join("lists"))))
+            .arg(format!("Dir::State::Lists={}", self.dir.join("lists").display()))
             .arg("-o")
-            .arg(format!("Dir::Cache={}", super::display(&self.dir.join("cache"))));
+            .arg(format!("Dir::Cache={}", self.dir.join("cache").display()));
         cmd
     }
 

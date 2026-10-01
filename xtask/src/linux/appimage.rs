@@ -185,7 +185,7 @@ impl<'a> Bundle<'a> {
 
     /// Every `*.so` in the sysroot directory `rel`, sorted.
     fn plugins_in(&self, rel: &str) -> Result<Vec<String>> {
-        let dir = sysroot::path(self.sysroot, rel);
+        let dir = self.sysroot.join(rel);
         let mut names: Vec<String> = std::fs::read_dir(&dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
             .filter_map(|entry| entry.ok())
@@ -219,7 +219,7 @@ impl<'a> Bundle<'a> {
             return Ok(());
         }
         let to = self.appdir.join(to_rel);
-        util::copy(&sysroot::path(self.sysroot, from_rel), &to)?;
+        util::copy(&self.sysroot.join(from_rel), &to)?;
         self.add_dependencies(&to)
     }
 
@@ -232,7 +232,7 @@ impl<'a> Bundle<'a> {
             if !seen.insert(rel.clone()) {
                 continue;
             }
-            for soname in elf::needed(&sysroot::path(self.sysroot, &rel))?.unwrap_or_default() {
+            for soname in elf::needed(&self.sysroot.join(&rel))?.unwrap_or_default() {
                 if self.excluded.contains(soname.as_str()) {
                     continue;
                 }
