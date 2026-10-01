@@ -7,6 +7,7 @@
 //! devices", turns Bookmarks off and on again, and gets the bookmark A added just before it
 //! quit. `a-delete`, on A's profile again, deletes the data on the server.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -85,10 +86,70 @@ fn synced_at(browser: &Browser) -> Option<u64> {
     }
 }
 
-/// Waits for a sync that completed at or after `after_ms`.
-async fn synced_after(browser: &Browser, after_ms: i64, limit: Duration) -> Option<u64> {
-    let after = u64::try_from(after_ms / 1000).unwrap_or(0);
-    exec::wait_for(limit, POLL, || synced_at(browser).filter(|at| *at > after)).await
+/// When the last sync that completed started, as seen from the sync state's changes. A change
+/// is uploaded by a sync that started after it; `last_synced`, in whole seconds, cannot tell.
+#[derive(Default)]
+struct Syncs {
+    started: Option<Instant>,
+    completed: Option<Instant>,
+}
+
+impl Syncs {
+    fn saw(&mut self, state: &State, now: Instant) {
+        match state {
+            State::SignedIn { syncing: true, .. } => {
+                self.started.get_or_insert(now);
+            }
+            State::SignedIn {
+                error: None,
+                needs_sign_in: false,
+                ..
+            } => self.completed = self.started.take().or(self.completed),
+            _ => self.started = None,
+        }
+    }
+
+    fn completed_since(&self, since: Instant) -> bool {
+        self.completed.is_some_and(|started| started >= since)
+    }
+}
+
+/// `Syncs` for a browser, kept up to date while this is kept.
+struct Follow {
+    syncs: Rc<RefCell<Syncs>>,
+    _listener: Rc<dyn Fn()>,
+}
+
+impl Follow {
+    fn new(browser: &Rc<Browser>) -> Follow {
+        let syncs = Rc::new(RefCell::new(Syncs::default()));
+        let (browser_ref, seen) = (Rc::downgrade(browser), syncs.clone());
+        let listener: Rc<dyn Fn()> = Rc::new(move || {
+            if let Some(browser) = browser_ref.upgrade() {
+                seen.borrow_mut()
+                    .saw(&browser.sync().state(), Instant::now());
+            }
+        });
+        browser.sync().on_change(&listener);
+        Follow {
+            syncs,
+            _listener: listener,
+        }
+    }
+}
+
+/// Waits for a sync that started at or after `since` to complete.
+async fn synced_since(
+    browser: &Browser,
+    follow: &Follow,
+    since: Instant,
+    limit: Duration,
+) -> Option<u64> {
+    exec::wait_for(limit, POLL, || {
+        let completed = follow.syncs.borrow().completed_since(since);
+        completed.then(|| synced_at(browser)).flatten()
+    })
+    .await
 }
 
 async fn settings_sync_page(window: &Rc<BrowserWindow>) -> Result<Preview> {
@@ -162,13 +223,15 @@ async fn sign_in(
 async fn bookmark_and_upload(
     live: &Live,
     browser: &Browser,
+    follow: &Follow,
     url: &str,
     marker: &str,
     steps: &mut Vec<Value>,
 ) -> std::result::Result<i64, String> {
+    let since = Instant::now();
     browser.bookmark_page(url, url);
     let at = live.mark(marker);
-    let uploaded = synced_after(browser, at, Duration::from_secs(40)).await;
+    let uploaded = synced_since(browser, follow, since, Duration::from_secs(40)).await;
     let after_ms = now_ms() - at;
     steps.push(json!({
         "name": format!("live-{}-{marker}-uploaded", live.role),
@@ -193,9 +256,10 @@ pub(super) async fn run(
         _ => "Live A",
     };
     browser.write_pref(&keys::DEVICE_NAME, &device.to_owned());
+    let follow = Follow::new(browser);
     match live.role.as_str() {
-        "a" => role_a(live, browser, &window, out_dir, steps).await,
-        "b" => role_b(live, browser, &window, out_dir, steps).await,
+        "a" => role_a(live, browser, &follow, &window, out_dir, steps).await,
+        "b" => role_b(live, browser, &follow, &window, out_dir, steps).await,
         "a-delete" => role_delete(live, browser, &window, out_dir, steps).await,
         other => Err(format!("unknown role {other}")),
     }
@@ -204,6 +268,7 @@ pub(super) async fn run(
 async fn role_a(
     live: &Live,
     browser: &Rc<Browser>,
+    follow: &Follow,
     window: &Rc<BrowserWindow>,
     out_dir: &Path,
     steps: &mut Vec<Value>,
@@ -220,6 +285,7 @@ async fn role_a(
     bookmark_and_upload(
         live,
         browser,
+        follow,
         "https://live-one.example/",
         "a-bookmark1",
         steps,
@@ -230,6 +296,7 @@ async fn role_a(
     bookmark_and_upload(
         live,
         browser,
+        follow,
         "https://live-two.example/",
         "a-bookmark2",
         steps,
@@ -248,6 +315,7 @@ async fn role_a(
 async fn role_b(
     live: &Live,
     browser: &Rc<Browser>,
+    follow: &Follow,
     window: &Rc<BrowserWindow>,
     out_dir: &Path,
     steps: &mut Vec<Value>,
@@ -330,8 +398,7 @@ async fn role_b(
     live.mark("b-bookmarks-off");
 
     live.marked("a-bookmark2-uploaded").await?;
-    let uploaded = now_ms();
-    let synced = synced_after(browser, uploaded, ARRIVAL).await;
+    let synced = synced_since(browser, follow, Instant::now(), ARRIVAL).await;
     let absent = !has_bookmark(browser, "https://live-two.example/");
     steps.push(json!({
         "name": "live-b-bookmark2-not-synced-while-off",
@@ -428,4 +495,51 @@ async fn role_delete(
     drop(preview);
     live.mark("a-deleted");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signed_in(syncing: bool, error: Option<&str>) -> State {
+        State::SignedIn {
+            name: None,
+            server: "https://sync.test".into(),
+            last_synced: Some(1000),
+            syncing,
+            error: error.map(str::to_owned),
+            needs_sign_in: false,
+        }
+    }
+
+    #[test]
+    fn a_sync_that_started_with_the_change_counts_however_soon_it_ends() {
+        let since = Instant::now();
+        let mut syncs = Syncs::default();
+        syncs.saw(&signed_in(true, None), since);
+        assert!(!syncs.completed_since(since), "still running");
+        syncs.saw(&signed_in(false, None), since + Duration::from_millis(300));
+        assert!(syncs.completed_since(since));
+    }
+
+    #[test]
+    fn a_sync_running_before_the_change_does_not_count() {
+        let start = Instant::now();
+        let since = start + Duration::from_millis(500);
+        let mut syncs = Syncs::default();
+        syncs.saw(&signed_in(true, None), start);
+        syncs.saw(&signed_in(false, None), since + Duration::from_secs(1));
+        assert!(!syncs.completed_since(since));
+    }
+
+    #[test]
+    fn a_failed_sync_does_not_count() {
+        let since = Instant::now();
+        let mut syncs = Syncs::default();
+        syncs.saw(&signed_in(true, None), since);
+        syncs.saw(&signed_in(false, Some("offline")), since);
+        assert!(!syncs.completed_since(since));
+        syncs.saw(&signed_in(false, None), since);
+        assert!(!syncs.completed_since(since), "no sync ran since");
+    }
 }
