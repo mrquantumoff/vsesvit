@@ -607,7 +607,7 @@ impl Browser {
             if let Err(e) = p.history().record_visit(&url, transition) {
                 log::warn!("history: {e}");
             }
-            p.bookmarks().is_bookmarked(&url)
+            crate::window::starred(url.as_str(), |_| p.bookmarks().is_bookmarked(&url))
         })
     }
 

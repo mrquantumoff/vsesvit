@@ -139,6 +139,12 @@ pub(crate) struct WindowPrefs {
 /// The compact address bar's widest.
 const COMPACT_ADDRESS_WIDTH: f64 = 720.0;
 
+/// Whether the star shows the page at `url` bookmarked: never a blank tab or the new tab page,
+/// which have no address to bookmark.
+pub(crate) fn starred(url: &str, is_bookmarked: impl FnOnce(&str) -> bool) -> bool {
+    tab_menu::has_link(url) && is_bookmarked(url)
+}
+
 /// The site icon's glyph and tooltip for a page: a lock for https, a warning for http, a
 /// search glyph for a blank page and a page glyph for anything else.
 fn site_look(url: &str) -> (&'static str, &'static str) {
@@ -779,7 +785,7 @@ impl BrowserWindow {
         let tabs = self.tabs.borrow().clone();
         for tab in tabs {
             let url = tab.state().url;
-            tab.set_starred(!url.is_empty() && is_bookmarked(&url));
+            tab.set_starred(starred(&url, is_bookmarked));
         }
         self.refresh_chrome();
     }
@@ -1067,7 +1073,7 @@ impl BrowserWindow {
             return;
         };
         let state = tab.state();
-        if state.url.is_empty() {
+        if !tab_menu::has_link(&state.url) {
             self.show_star(false);
             return;
         }
@@ -1635,6 +1641,15 @@ mod tests {
     }
 
     const SCREEN: RectInt32 = rect(0, 0, 1920, 1040);
+
+    #[test]
+    fn blank_pages_are_never_starred() {
+        let bookmarked = |_: &str| true;
+        assert!(starred("https://e.test/", bookmarked));
+        assert!(!starred("https://e.test/", |_| false));
+        assert!(!starred("about:blank", bookmarked));
+        assert!(!starred("", bookmarked));
+    }
 
     #[test]
     fn a_window_on_a_display_stays_where_it_was() {
