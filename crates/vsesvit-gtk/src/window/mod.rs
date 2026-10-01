@@ -484,7 +484,8 @@ impl BrowserWindow {
         if browser.windows().len() <= 1 && !self.tabs().is_empty() {
             browser.save_session_now();
         }
-        for tab in self.tabs() {
+        let popups = self.imp().popups.take();
+        for tab in self.tabs().into_iter().chain(popups) {
             browser.tab_discarded(&tab);
         }
     }
@@ -902,7 +903,9 @@ impl BrowserWindow {
             #[weak]
             popup,
             move |_| {
-                window.forget_popup(&popup);
+                if window.forget_popup(&popup) {
+                    window.browser().tab_discarded(&popup);
+                }
             }
         ));
     }
@@ -1215,6 +1218,30 @@ mod tests {
         let site = url.trim_start_matches("http://").trim_end_matches('/');
         assert!(shown.1.contains(site) && shown.1.contains("Esc"), "{}", shown.1);
         assert!(hidden, "the notice goes with full screen");
+    }
+
+    #[gtk::test]
+    fn a_popup_dropped_before_it_shows_leaves_the_extension_runtime() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        let opener = window.open_tab(None, None, Focus::Foreground);
+        // The runtime hands back a tab's own content manager only while it knows the tab.
+        let known = |tab: &Tab| {
+            let ucm = browser.runtime().user_content_manager(tab.id());
+            tab.web_view().user_content_manager().as_ref() == Some(&ucm)
+        };
+        let closed = Tab::new_related(&browser, &opener);
+        window.adopt_popup(&opener, &closed);
+        let adopted = known(&closed);
+        closed.web_view().emit_by_name::<()>("close", &[]);
+        let dropped = !known(&closed);
+        let pending = Tab::new_related(&browser, &opener);
+        window.adopt_popup(&opener, &pending);
+        window.close();
+        assert!(adopted, "a popup is known from the start");
+        assert!(dropped, "a popup closed before it shows is discarded");
+        assert!(!known(&pending), "a popup still pending when its window closes is discarded");
     }
 
     #[gtk::test]
