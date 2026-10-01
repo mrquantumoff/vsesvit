@@ -3443,6 +3443,7 @@ dependencies = [
 name = "vsesvit-winui"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "log",
  "semver",
  "serde",

@@ -10,6 +10,8 @@ use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use vsesvit_core::extensions::{
     ExtensionId, InstallJob, InstallPhase, InstallSource, InstalledExtension, Verification,
 };
@@ -522,7 +524,7 @@ const ENGINE_KEY_PREFIX: &str = "vsesvit-extension:";
 fn engine_key(ext: &InstalledExtension) -> Option<String> {
     let managed = !matches!(ext.source, InstallSource::Unpacked { .. });
     (managed && ext.manifest.key.is_none())
-        .then(|| base64(format!("{ENGINE_KEY_PREFIX}{}", ext.id.as_str()).as_bytes()))
+        .then(|| STANDARD.encode(format!("{ENGINE_KEY_PREFIX}{}", ext.id.as_str())))
 }
 
 /// Adds `"key": key` as the first member of `dir`'s manifest.json. Inserted as text, so the
@@ -563,25 +565,6 @@ fn object_start(text: &str) -> Option<usize> {
         }
     }
     None
-}
-
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
-        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
-            out.push(if i <= chunk.len() {
-                char::from(ALPHABET[(n >> shift) as usize & 63])
-            } else {
-                '='
-            });
-        }
-    }
-    out
 }
 
 /// Beyond this many characters in an extension's folder path, WebView2 cannot load large
@@ -652,21 +635,6 @@ mod tests {
     }
 
     #[test]
-    fn base64_is_rfc_4648() {
-        for (plain, encoded) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64(plain.as_bytes()), encoded);
-        }
-        assert_eq!(base64(&[0xfb, 0xff]), "+/8=");
-    }
-
-    #[test]
     fn the_key_goes_first_and_the_rest_of_the_manifest_is_kept() {
         let dir = temp_dir("key-first");
         let original = "\u{feff}// made by hand\n/* {not this} */ {\n  \"name\": \"X\", // why\n  \"version\": \"1\"\n}\n";
@@ -685,6 +653,16 @@ mod tests {
         std::fs::write(dir.join("manifest.json"), "[]").unwrap();
         assert!(add_manifest_key(&dir, "a2V5").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_engine_key_is_padded_base64_of_the_id() {
+        let xpi = installed("x@vsesvit.test", r"C:\p\x\1.0_ab", None, true);
+        assert_eq!(
+            engine_key(&xpi).as_deref(),
+            Some("dnNlc3ZpdC1leHRlbnNpb246eEB2c2Vzdml0LnRlc3Q="),
+            "existing installs keep their engine id"
+        );
     }
 
     #[test]

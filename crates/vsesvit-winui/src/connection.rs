@@ -7,6 +7,8 @@
 //! protocol's view of the page's connection: the TLS parameters and the chain as base64 DER);
 //! `vsesvit_core::certificate::parse_der` reads the certificates.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::Value;
 use vsesvit_core::certificate::{self, Certificate};
 use windows_core::{Interface, Result};
@@ -67,35 +69,11 @@ pub(crate) fn parse_report(json: &str) -> Option<Report> {
         .and_then(Value::as_array)
         .map(|list| {
             list.iter()
-                .filter_map(|c| base64_decode(c.as_str()?))
+                .filter_map(|c| STANDARD.decode(c.as_str()?).ok())
                 .collect()
         })
         .unwrap_or_default();
     Some(Report { state, tls, chain })
-}
-
-/// Standard base64 with padding, as the DevTools protocol sends binary data.
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    let (mut bits, mut count) = (0u32, 0u32);
-    for byte in text.bytes().filter(|b| *b != b'=') {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        };
-        bits = bits << 6 | u32::from(value);
-        count += 6;
-        if count >= 8 {
-            count -= 8;
-            out.push((bits >> count) as u8);
-            bits &= (1 << count) - 1;
-        }
-    }
-    Some(out)
 }
 
 /// The popup's headline.
@@ -364,22 +342,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base64_round_trips_the_rfc_vectors() {
-        for (plain, encoded) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64_decode(encoded).as_deref(), Some(plain.as_bytes()));
-        }
-        assert_eq!(base64_decode("+/8="), Some(vec![0xfb, 0xff]));
-        assert_eq!(base64_decode("not base64!"), None);
-    }
-
-    #[test]
     fn a_report_gives_the_tls_parameters_and_the_chain() {
         let json = r#"{"visibleSecurityState":{"securityState":"secure","securityStateIssueIds":[],
             "certificateSecurityState":{"protocol":"TLS 1.3","keyExchange":"","keyExchangeGroup":"X25519",
@@ -395,6 +357,13 @@ mod tests {
             })
         );
         assert_eq!(report.chain, [b"foo".to_vec(), b"bar".to_vec()]);
+    }
+
+    #[test]
+    fn a_malformed_certificate_is_left_out_of_the_chain() {
+        let json = r#"{"visibleSecurityState":{"securityState":"secure",
+            "certificateSecurityState":{"protocol":"TLS 1.3","certificate":["Zm9v","Zm9vY","Zm=9v"]}}}"#;
+        assert_eq!(parse_report(json).unwrap().chain, [b"foo".to_vec()]);
     }
 
     #[test]
