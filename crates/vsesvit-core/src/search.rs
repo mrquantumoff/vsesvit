@@ -34,13 +34,23 @@ impl SearchEngineId {
     }
 }
 
-/// `{searchTerms}` is replaced by the percent-encoded query (OpenSearch convention).
+/// `{searchTerms}` is replaced by the percent-encoded query (OpenSearch convention): form
+/// encoded in the query (a space as `+`), and with a space as `%20` in a path or fragment,
+/// where `+` is a literal plus.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UrlTemplate(pub String);
 
 impl UrlTemplate {
     pub fn expand(&self, terms: &str) -> Option<Url> {
-        let encoded: String = url::form_urlencoded::byte_serialize(terms.as_bytes()).collect();
+        let mut encoded: String = url::form_urlencoded::byte_serialize(terms.as_bytes()).collect();
+        let in_query = self.0.find("{searchTerms}").is_some_and(|at| {
+            let before = &self.0[..at];
+            before.contains('?') && !before.contains('#')
+        });
+        if !in_query {
+            // A typed '+' is already %2B, so every '+' left stands for a space.
+            encoded = encoded.replace('+', "%20");
+        }
         Url::parse(&self.0.replace("{searchTerms}", &encoded)).ok()
     }
 }

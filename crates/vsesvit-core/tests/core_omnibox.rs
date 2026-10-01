@@ -368,6 +368,17 @@ fn a_typed_url_in_history_is_one_row() {
 }
 
 #[test]
+fn search_terms_outside_the_query_encode_a_space_as_percent_20() {
+    let path = UrlTemplate("https://en.wiktionary.org/wiki/{searchTerms}".into());
+    assert_eq!(path.expand("ice cream").unwrap().as_str(), "https://en.wiktionary.org/wiki/ice%20cream");
+    assert_eq!(path.expand("a+b/c?d#e").unwrap().as_str(), "https://en.wiktionary.org/wiki/a%2Bb%2Fc%3Fd%23e");
+    let fragment = UrlTemplate("https://example.com/#{searchTerms}?x".into());
+    assert_eq!(fragment.expand("a b").unwrap().as_str(), "https://example.com/#a%20b?x");
+    let query = UrlTemplate("https://duckduckgo.com/?q={searchTerms}".into());
+    assert_eq!(query.expand("ice cream+x").unwrap().as_str(), "https://duckduckgo.com/?q=ice+cream%2Bx");
+}
+
+#[test]
 fn selection_actions() {
     let ddg = &engines()[0];
     let long = "a".repeat(60);
