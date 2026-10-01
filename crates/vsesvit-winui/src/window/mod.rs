@@ -2,10 +2,11 @@
 //! `TabView` strip in the title bar), the toolbar, the bookmarks bar and the page grid that hosts
 //! every tab's web view.
 //!
-//! With the vertical pane the toolbar sits in the title bar and a strip at its end is the drag
-//! region; with the top strip the strip's footer is. `tabs` only owns the `Tab` values; their
-//! order and the selection live in the live tab list. No `RefCell` borrow is held across a XAML
-//! call, because XAML raises events such as `SelectionChanged` synchronously from inside them.
+//! With the vertical pane the toolbar sits in the title bar and its empty stretches drag the
+//! window (see `update_drag_regions`); with the top strip the strip's footer does. `tabs` only
+//! owns the `Tab` values; their order and the selection live in the live tab list. No `RefCell`
+//! borrow is held across a XAML call, because XAML raises events such as `SelectionChanged`
+//! synchronously from inside them.
 
 mod address;
 mod chrome;
@@ -1606,8 +1607,6 @@ impl BrowserWindow {
     }
 }
 
-/// The bookmarks bar's commands reach the window through `slot`, as it is created after the
-/// bar. They run on the next turn: a command may rebuild the menu or bar entry it came from.
 /// WebView2's Save As dialog for `tab`'s page. A cancel is the user's; anything else that is not
 /// a save says so in the window.
 async fn save_page(window: Weak<BrowserWindow>, tab: Rc<Tab>) {
@@ -1636,6 +1635,8 @@ async fn save_page(window: Weak<BrowserWindow>, tab: Rc<Tab>) {
     }
 }
 
+/// The bookmarks bar's commands reach the window through `slot`, as it is created after the
+/// bar. They run on the next turn: a command may rebuild the menu or bar entry it came from.
 fn bar_host(slot: &wiring::WindowSlot) -> BarHost {
     let slot = slot.clone();
     Rc::new(move |command| {
