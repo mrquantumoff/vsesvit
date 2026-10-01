@@ -250,7 +250,7 @@ impl Syncer {
             });
             match saved {
                 Ok(account) => {
-                    syncer.set_state(signed_in(&account, syncer.0.running.get(), false));
+                    syncer.set_state(signed_in(&account, syncer.0.running.get(), None, false));
                     syncer.sync_now();
                     syncer.schedule(TICK_SECS);
                 }
@@ -388,24 +388,25 @@ async fn on_worker<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static)
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
-fn signed_in(account: &Account, syncing: bool, needs_sign_in: bool) -> State {
+fn signed_in(account: &Account, syncing: bool, error: Option<String>, needs_sign_in: bool) -> State {
     State::SignedIn {
         name: account.name().map(str::to_owned),
         server: account.server().to_owned(),
         last_synced: account.last_synced(),
         syncing,
-        error: None,
+        error,
         needs_sign_in,
     }
 }
 
 /// The profile's account as Settings shows it while nothing runs: at startup, and after a
 /// sign-in that did not finish (`after_sign_in`), which with an account still stored was signing
-/// in again because that account's sign-in expired, as it still is. An account that cannot be
-/// read, such as behind a locked keyring, shows as signed out with the reason.
+/// in again because that account's sign-in expired, as it still is. `error` is why that sign-in
+/// failed. An account that cannot be read, such as behind a locked keyring, shows as signed out
+/// with the reason.
 fn stored_state(profile: &mut Profile, error: Option<String>, after_sign_in: bool) -> State {
     match Account::load(&mut profile.sync()) {
-        Ok(Some(account)) => signed_in(&account, false, after_sign_in),
+        Ok(Some(account)) => signed_in(&account, false, error, after_sign_in),
         Ok(None) => State::SignedOut { error },
         Err(e) => {
             log::warn!("sync account: {e}");
@@ -509,6 +510,26 @@ mod tests {
         let mut state = signed_in_state(true, false);
         settle(&mut state, Err(Error::SignInExpired), None);
         assert_eq!(state, signed_in_state(false, true));
+    }
+
+    #[test]
+    fn a_failed_sign_in_again_says_why() {
+        let root = crate::test_support::scratch_dir("sign-in-again");
+        let options = vsesvit_core::OpenOptions { key_store: vsesvit_core::vault::KeyStore::Basic, ..Default::default() };
+        let mut profile = Profile::open(&root, options).expect("a scratch profile");
+        let account: Account = serde_json::from_value(serde_json::json!({
+            "sign_in": "s", "server": "https://sync.example", "name": null,
+            "limits": { "max_batch": 1, "max_record_bytes": 1, "max_request_bytes": 1 },
+            "download_cursor": 0, "upload_cursors": {}, "last_synced": 100,
+        }))
+        .expect("an account");
+        account.save(&mut profile.sync()).expect("the account is saved");
+        profile.sync().set_secret_state("account.session", b"session").expect("the session is saved");
+        assert!(matches!(Account::load(&mut profile.sync()), Ok(Some(_))), "the account is stored");
+
+        let state = stored_state(&mut profile, FAILED.map(str::to_owned), true);
+        assert_eq!(state, with(100, false, FAILED, true));
+        assert_eq!(stored_state(&mut profile, None, true), with(100, false, None, true), "a cancel says nothing");
     }
 
     #[test]
