@@ -109,12 +109,17 @@ fn state_of(decision: &Decision) -> webkit::PermissionState {
     }
 }
 
-/// A tab's side of site permissions: its one-time grants, and the requests waiting for the
-/// user, oldest first.
+/// Requests a tab keeps waiting for the user at most; a page that asks for more is denied.
+const MAX_WAITING: usize = 8;
+
+/// A tab's side of site permissions: its one-time grants, the requests waiting for the user,
+/// oldest first, and what the user turned down in the document on screen, which it is not
+/// asked for again.
 #[derive(Default)]
 pub(crate) struct TabPermissions {
     grants: TabGrants,
     pending: VecDeque<Pending>,
+    dismissed: Vec<Permission>,
 }
 
 struct Pending {
@@ -151,9 +156,10 @@ pub(crate) fn handle(tab: &Tab, request: &webkit::PermissionRequest) -> bool {
         }
         Ask::Permissions(permissions) => permissions,
     };
-    match decide(browser, tab, origin.as_ref(), &permissions) {
+    match decide_request(browser, tab, origin.as_ref(), &permissions) {
         Decision::Allow => settle(request, true),
         Decision::Block => settle(request, false),
+        Decision::Ask(_) if tab.permissions().borrow().pending.len() >= MAX_WAITING => settle(request, false),
         Decision::Ask(_) => {
             tab.permissions().borrow_mut().pending.push_back(Pending { request: request.clone(), permissions, asked_by });
             window.sync_permission_prompt();
@@ -177,7 +183,7 @@ pub(crate) fn query(tab: &Tab, query: &webkit::PermissionStateQuery) -> bool {
     let state = match (permission, tab.window()) {
         (Some(permission), Some(window)) => {
             let origin = origin_of(requesting_document(tab).as_deref());
-            state_of(&decide(window.browser(), tab, origin.as_ref(), &[permission]))
+            state_of(&decide_request(window.browser(), tab, origin.as_ref(), &[permission]))
         }
         _ => webkit::PermissionState::Prompt,
     };
@@ -214,8 +220,8 @@ pub(crate) fn seed_notifications(browser: &Browser) {
     browser.runtime().web_context().initialize_notification_permissions(&allowed, &blocked);
 }
 
-/// The next prompt `tab` needs. Waiting requests that settings or grants now decide (an
-/// earlier prompt's answer, a change in site info) are answered on the way.
+/// The next prompt `tab` needs. Waiting requests that settings, grants or a dismissal now
+/// decide (an earlier prompt's answer, a change in site info) are answered on the way.
 pub(crate) fn next_prompt(browser: &Browser, tab: &Tab) -> Option<NextPrompt> {
     loop {
         let (request, permissions, origin) = {
@@ -223,7 +229,7 @@ pub(crate) fn next_prompt(browser: &Browser, tab: &Tab) -> Option<NextPrompt> {
             let head = state.pending.front()?;
             (head.request.clone(), head.permissions.clone(), origin_of(head.asked_by.as_deref()))
         };
-        match decide(browser, tab, origin.as_ref(), &permissions) {
+        match decide_request(browser, tab, origin.as_ref(), &permissions) {
             Decision::Ask(asked) => return Some(NextPrompt { prompt: core::prompt(origin.as_ref(), &asked), request, asked }),
             decided => {
                 tab.permissions().borrow_mut().pending.pop_front();
@@ -246,6 +252,9 @@ pub(crate) fn answer(browser: &Browser, tab: &Tab, request: &webkit::PermissionR
     let origin = origin_of(pending.asked_by.as_deref());
     let granted = {
         let mut state = tab.permissions().borrow_mut();
+        if matches!(answer, Answer::Dismiss | Answer::NeverAllow) {
+            state.dismissed.extend_from_slice(asked);
+        }
         browser.core().borrow_mut().site_permissions().answer(origin.as_ref(), asked, answer, &mut state.grants)
     };
     let granted = granted.unwrap_or_else(|e| {
@@ -255,14 +264,18 @@ pub(crate) fn answer(browser: &Browser, tab: &Tab, request: &webkit::PermissionR
     settle(&pending.request, holds(granted, pending.asked_by.as_deref(), tab.committed_uri().as_deref()));
 }
 
-/// Every committed navigation: grants end when the tab leaves their site, and the requests
-/// of the page it left are denied.
+/// Every committed navigation: grants end when the tab leaves their site, the requests of the
+/// page it left are denied, and a new document may ask for what the last one was refused. A
+/// load is in flight as a new document commits, and none for a same-document navigation.
 pub(crate) fn committed(tab: &Tab) {
     let Some(uri) = tab.committed_uri() else { return };
     let left: VecDeque<Pending> = {
         let mut state = tab.permissions().borrow_mut();
         if let Ok(url) = Url::parse(&uri) {
             state.grants.committed(&url);
+        }
+        if tab.web_view().is_loading() {
+            state.dismissed.clear();
         }
         let (stay, left) = state.pending.drain(..).partition(|p| site_of(p.asked_by.as_deref()) == site_of(Some(&uri)));
         state.pending = stay;
@@ -313,6 +326,15 @@ fn ends(permission: Permission, decision: &Decision) -> bool {
 fn decide(browser: &Browser, tab: &Tab, origin: Option<&Origin>, permissions: &[Permission]) -> Decision {
     let state = tab.permissions().borrow();
     browser.core().borrow_mut().site_permissions().decide(origin, permissions, &state.grants)
+}
+
+/// [`decide`] for a request of the page on screen, which is refused what the user turned down
+/// in this document rather than asked again.
+fn decide_request(browser: &Browser, tab: &Tab, origin: Option<&Origin>, permissions: &[Permission]) -> Decision {
+    match decide(browser, tab, origin, permissions) {
+        Decision::Ask(asked) if asked.iter().all(|p| tab.permissions().borrow().dismissed.contains(p)) => Decision::Block,
+        decision => decision,
+    }
 }
 
 /// The page asking is the one on screen. During a provisional load the web view's URI is
@@ -804,7 +826,7 @@ mod tests {
             wait_until("the dismissed request to fail", || title(&tab) == "microphone:NotAllowedError");
             let after_click = (prompt(&window), waiting(&tab));
 
-            run(&tab, MICROPHONE);
+            run(&tab, LOCATION);
             wait_until("the next prompt", || prompt(&window).is_some());
             window.address_bar().prompt().expect("a prompt is shown").popdown();
             wait_until("the closed prompt to count as Not now", || waiting(&tab) == 0);
@@ -814,6 +836,26 @@ mod tests {
             assert_eq!(after_switching, (None, 1), "a click that switches tabs withdraws the prompt");
             assert_eq!(back.as_deref(), Some("Use your microphone?"));
             assert_eq!(after_click, (None, 0), "a click on the page is Not now");
+        }
+
+        #[gtk::test]
+        fn a_dismissed_prompt_is_not_asked_again_by_the_same_document() {
+            let (server, window) = setup();
+            let tab = open(&window, &server.url("/"), Focus::Foreground);
+            run(&tab, MICROPHONE);
+            wait_until("the prompt", || prompt(&window).is_some());
+            press(&window, Answer::Dismiss);
+            wait_until("the dismissed request to fail", || title(&tab) == "microphone:NotAllowedError");
+            run(&tab, "document.title = 'again'; history.pushState(null, '', '/moved'); 'reset'");
+            run(&tab, MICROPHONE);
+            wait_until("the repeat to fail", || title(&tab) == "microphone:NotAllowedError");
+            let asked_again = (prompt(&window), waiting(&tab));
+            tab.load(&server.url("/"));
+            wait_until("the next document", || tab.committed_uri().is_some_and(|u| !u.ends_with("/moved")) && !tab.web_view().is_loading());
+            run(&tab, MICROPHONE);
+            wait_until("a new document to ask", || prompt(&window).is_some());
+            window.destroy();
+            assert_eq!(asked_again, (None, 0), "the same page is not asked again");
         }
 
         #[gtk::test]
