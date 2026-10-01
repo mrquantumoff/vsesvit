@@ -7,7 +7,7 @@
 //! Nothing here knows the provider: no issuer, client id, secret or provider token. The browser
 //! talks to the sync server only.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +25,9 @@ use crate::{Error, Http, network, normalize_base_url, server};
 /// How long the sign-in page may wait for the person.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const REDIRECT_PATH: &str = "/callback";
+/// The most a request line may take, so a stray local client cannot hold up the redirect, or Cancel.
+const MAX_REQUEST_LINE: usize = 8 << 10;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A sign-in waiting for the server to send the browser back. Blocking; `Send`.
 pub struct SignIn {
@@ -116,19 +119,41 @@ impl SignIn {
                         return result;
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(100)),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(100)),
                 Err(e) => log::warn!("sign-in listener: {e}"),
             }
         }
     }
 
-    /// Reads one request. `None` when it was not the redirect (a favicon, a stray visit), so the
-    /// wait goes on.
+    /// Reads one request. `None` when it was not the redirect (a favicon, a stray visit, a client
+    /// too slow or long-winded), so the wait goes on.
     fn answer(&self, mut stream: TcpStream) -> Option<Result<String, Error>> {
         let _ = stream.set_nonblocking(false);
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let mut line = String::new();
-        BufReader::new(&stream).read_line(&mut line).ok()?;
+        let _ = stream.set_write_timeout(Some(REQUEST_TIMEOUT));
+        let started = Instant::now();
+        let mut line = Vec::new();
+        let mut chunk = [0; 1024];
+        let end = loop {
+            if let Some(end) = line.iter().position(|&b| b == b'\n') {
+                break end;
+            }
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Some(Err(Error::Cancelled));
+            }
+            let left = REQUEST_TIMEOUT.checked_sub(started.elapsed())?;
+            if line.len() > MAX_REQUEST_LINE {
+                return None;
+            }
+            // Short reads, so Cancel is seen while a client is slow. Zero would mean no timeout.
+            stream.set_read_timeout(Some(left.clamp(Duration::from_millis(1), Duration::from_millis(100)))).ok()?;
+            match stream.read(&mut chunk) {
+                Ok(0) => return None,
+                Ok(n) => line.extend_from_slice(&chunk[..n]),
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(_) => return None,
+            }
+        };
+        let line = std::str::from_utf8(&line[..end]).ok()?;
         let target = line.split(' ').nth(1)?;
         let url = url::Url::parse(&format!("http://localhost{target}")).ok()?;
         if url.path() != REDIRECT_PATH {
@@ -180,7 +205,70 @@ pub(crate) fn random_token() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+    use std::sync::mpsc;
+
     use super::*;
+
+    /// A sign-in listening for the redirect with state `s`, waiting on a thread of its own.
+    fn waiting() -> (SocketAddr, Arc<AtomicBool>, mpsc::Receiver<Result<String, Error>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let limits = Limits { max_batch: 1, max_record_bytes: 1, max_request_bytes: 1 };
+        let state = "s".to_owned();
+        let sign_in = SignIn { server: String::new(), limits, listener, redirect_uri: String::new(), verifier: String::new(), state, authorize_url: String::new(), cancelled: Arc::default() };
+        let cancelled = sign_in.canceller();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || sender.send(sign_in.wait_for_code()));
+        (address, cancelled, receiver)
+    }
+
+    /// A local client that sends `chunk` every `every`, never ending its request line, for up to 30 s.
+    fn stall(address: SocketAddr, chunk: Vec<u8>, every: Duration) {
+        let mut stream = TcpStream::connect(address).unwrap();
+        std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < until && stream.write_all(&chunk).is_ok() {
+                std::thread::sleep(every);
+            }
+        });
+    }
+
+    /// The browser coming back, just after the stalling client.
+    fn redirect(address: SocketAddr) {
+        std::thread::sleep(Duration::from_millis(100));
+        let mut stream = TcpStream::connect(address).unwrap();
+        std::thread::spawn(move || {
+            stream.write_all(b"GET /callback?state=s&code=abc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+            let _ = stream.read_to_end(&mut Vec::new());
+        });
+    }
+
+    #[test]
+    fn a_trickling_client_does_not_hold_up_the_redirect() {
+        let (address, _, result) = waiting();
+        stall(address, b"G".to_vec(), Duration::from_secs(1));
+        redirect(address);
+        assert_eq!(result.recv_timeout(Duration::from_secs(15)).unwrap().unwrap(), "abc");
+    }
+
+    #[test]
+    fn an_endless_request_line_is_dropped() {
+        let (address, _, result) = waiting();
+        stall(address, vec![b'a'; 64 << 10], Duration::from_millis(50));
+        redirect(address);
+        // Well within the time a request may take: dropped for its length.
+        assert_eq!(result.recv_timeout(Duration::from_secs(3)).unwrap().unwrap(), "abc");
+    }
+
+    #[test]
+    fn cancel_works_while_a_client_stalls() {
+        let (address, cancelled, result) = waiting();
+        stall(address, b"G".to_vec(), Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(1));
+        cancelled.store(true, Ordering::Relaxed);
+        assert!(matches!(result.recv_timeout(Duration::from_secs(2)).unwrap(), Err(Error::Cancelled)));
+    }
 
     #[test]
     fn a_verifier_is_43_unreserved_characters() {
