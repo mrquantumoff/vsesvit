@@ -256,15 +256,15 @@ impl History<'_> {
     }
 
     /// New tab page tiles: the sites of the highest-frecency `http(s)` pages, one per origin,
-    /// best first.
+    /// best first. Reads pages until it has `limit` origins, so many pages of one site
+    /// cannot crowd the rest out.
     pub fn top_sites(&mut self, limit: usize) -> Result<Vec<TopSite>, Error> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let mut stmt = self.p.conn.prepare_cached("SELECT url FROM history_pages ORDER BY frecency DESC, last_visit_ms DESC LIMIT ?1")?;
-        let fetch = i64::try_from(limit.saturating_mul(10)).unwrap_or(i64::MAX);
+        let mut stmt = self.p.conn.prepare_cached("SELECT url FROM history_pages ORDER BY frecency DESC, last_visit_ms DESC")?;
         let mut sites: Vec<TopSite> = Vec::with_capacity(limit);
-        for url in stmt.query_map([fetch], |row| row.get::<_, String>(0))? {
+        for url in stmt.query_map([], |row| row.get::<_, String>(0))? {
             let Some(site) = Url::parse(&url?).ok().as_ref().and_then(TopSite::of) else { continue };
             if !sites.iter().any(|s| s.url == site.url) {
                 sites.push(site);

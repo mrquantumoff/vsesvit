@@ -167,6 +167,27 @@ fn top_sites_are_origins_by_frecency() {
     assert!(p.history().top_sites(0).unwrap().is_empty());
 }
 
+#[test]
+fn top_sites_look_past_one_site_with_many_pages() {
+    let (mut p, time, _dir) = open();
+    let visit = |p: &mut Profile, u: &str| {
+        time.set(time.get() + 1);
+        p.history().record_visit(&url(u), Transition::Link).unwrap();
+    };
+    visit(&mut p, "https://c.example/");
+    for i in 0..100 {
+        visit(&mut p, &format!("file:///C:/n{i}.txt"));
+    }
+    visit(&mut p, "https://b.example/");
+    for i in 0..100 {
+        visit(&mut p, &format!("https://a.example/page{i}"));
+    }
+
+    let sites = p.history().top_sites(8).unwrap();
+    let urls: Vec<&str> = sites.iter().map(|s| s.url.as_str()).collect();
+    assert_eq!(urls, ["https://a.example/", "https://b.example/", "https://c.example/"]);
+}
+
 fn visit(at_ms: i64, device: u64, transition: Transition) -> Visit {
     Visit { at_ms, device: DeviceId(device), transition }
 }
