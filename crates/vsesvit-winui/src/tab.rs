@@ -126,7 +126,7 @@ pub(crate) struct Tab {
     requested: RefCell<String>,
     /// How the navigation the shell started came about, for history. Page-initiated
     /// navigations have none and count as links.
-    transition: Cell<Option<Transition>>,
+    transition: RefCell<PendingTransition>,
     last_active_ms: Cell<i64>,
     favicon_generation: Cell<u64>,
     /// The engine's `Security.visibleSecurityStateChanged` reports: the page's TLS connection
@@ -161,7 +161,7 @@ impl Tab {
             favicon_png: RefCell::new(None),
             background_link: RefCell::new(None),
             requested: RefCell::new(String::new()),
-            transition: Cell::new(None),
+            transition: RefCell::default(),
             last_active_ms: Cell::new(now_ms()),
             favicon_generation: Cell::new(0),
             security: RefCell::default(),
@@ -493,7 +493,10 @@ impl Tab {
 
     /// A navigation the user started from the shell: typed, or a bookmark.
     pub fn navigate_as(&self, url: &str, transition: Transition) {
-        self.transition.set(Some(transition));
+        if self.core.get().is_some() {
+            let loading = self.state.borrow().loading();
+            self.transition.borrow_mut().requested(transition, loading);
+        }
         self.navigate(url);
     }
 
@@ -521,7 +524,10 @@ impl Tab {
 
     pub fn reload(&self) {
         if let Some(core) = self.core.get() {
-            self.transition.set(Some(Transition::Reload));
+            let loading = self.state.borrow().loading();
+            self.transition
+                .borrow_mut()
+                .requested(Transition::Reload, loading);
             let _ = core.Reload();
         }
     }
@@ -636,6 +642,7 @@ impl Tab {
             self,
             |tab, args: &CoreWebView2NavigationStartingEventArgs| {
                 *tab.requested.borrow_mut() = args.Uri().unwrap_or_default();
+                tab.transition.borrow_mut().starting();
                 tab.state.borrow_mut().load = Load::Started;
                 tab.security.borrow_mut().navigation_starting();
                 tab.notify();
@@ -675,6 +682,7 @@ impl Tab {
                         args.WebErrorStatus().map(|s| s.0).unwrap_or(-1)
                     );
                 }
+                tab.transition.borrow_mut().completed();
                 tab.state.borrow_mut().load = Load::Idle;
                 tab.refresh_history();
                 tab.notify();
@@ -799,8 +807,8 @@ impl Tab {
             self.watch_capture();
         }
         let transition = match kind {
-            CommitKind::NewDocument => self.transition.take().unwrap_or(Transition::Link),
-            CommitKind::SameDocument => Transition::Link,
+            CommitKind::NewDocument => self.transition.borrow_mut().new_document(),
+            CommitKind::SameDocument => self.transition.borrow_mut().same_document(),
         };
         if let Some(browser) = self.window().and_then(|w| w.browser()) {
             let starred = browser.navigation_committed(&url, kind, transition);
@@ -1129,9 +1137,123 @@ fn on<A: Interface + 'static>(
     }
 }
 
+/// How the navigation the shell started came about, until it commits or ends without a new
+/// document (a download, Stop, an error). The events here carry no navigation ids: the shell's
+/// navigation is the first to start after it asked, and one already under way then ends first.
+#[derive(Default)]
+struct PendingTransition {
+    transition: Option<Transition>,
+    /// The shell's navigation has started.
+    started: bool,
+    /// Navigations still to end that were under way when the shell asked.
+    superseded: u32,
+}
+
+impl PendingTransition {
+    /// The shell navigates; `loading`: a navigation is under way.
+    fn requested(&mut self, transition: Transition, loading: bool) {
+        // An earlier request that has not started yet ends too, superseded.
+        let waiting = self.transition.is_some() && !self.started;
+        *self = Self {
+            transition: Some(transition),
+            started: false,
+            superseded: u32::from(loading) + u32::from(waiting),
+        };
+    }
+
+    /// `NavigationStarting`, also for each redirect.
+    fn starting(&mut self) {
+        self.started = self.transition.is_some();
+    }
+
+    /// A new document commits.
+    fn new_document(&mut self) -> Transition {
+        if !self.started {
+            return Transition::Link;
+        }
+        std::mem::take(self).transition.unwrap_or(Transition::Link)
+    }
+
+    /// A same-document commit: a typed fragment, which never starts, or the page's own.
+    fn same_document(&mut self) -> Transition {
+        if self.started {
+            return Transition::Link;
+        }
+        std::mem::take(self).transition.unwrap_or(Transition::Link)
+    }
+
+    /// `NavigationCompleted`, whether or not it committed.
+    fn completed(&mut self) {
+        if self.superseded > 0 {
+            self.superseded -= 1;
+        } else if self.started {
+            *self = Self::default();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::display_title;
+    use super::{PendingTransition, Transition, display_title};
+
+    #[test]
+    fn a_typed_address_commits_as_typed_through_redirects() {
+        let mut t = PendingTransition::default();
+        t.requested(Transition::Typed, false);
+        t.starting();
+        t.starting();
+        assert_eq!(t.new_document(), Transition::Typed);
+        t.completed();
+        t.starting();
+        assert_eq!(t.new_document(), Transition::Link);
+    }
+
+    #[test]
+    fn a_typed_download_does_not_mark_the_next_link() {
+        let mut t = PendingTransition::default();
+        t.requested(Transition::Typed, false);
+        t.starting();
+        t.completed();
+        t.starting();
+        assert_eq!(t.new_document(), Transition::Link);
+    }
+
+    #[test]
+    fn the_load_a_typed_address_replaces_ends_unrelated() {
+        let mut t = PendingTransition::default();
+        t.requested(Transition::Typed, true);
+        t.starting();
+        t.completed();
+        assert_eq!(t.new_document(), Transition::Typed);
+    }
+
+    #[test]
+    fn a_page_commit_before_the_typed_navigation_starts_is_a_link() {
+        let mut t = PendingTransition::default();
+        t.requested(Transition::Bookmark, true);
+        assert_eq!(t.new_document(), Transition::Link);
+        t.completed();
+        t.starting();
+        assert_eq!(t.new_document(), Transition::Bookmark);
+    }
+
+    #[test]
+    fn a_typed_fragment_is_typed_once() {
+        let mut t = PendingTransition::default();
+        t.requested(Transition::Typed, false);
+        assert_eq!(t.same_document(), Transition::Typed);
+        t.starting();
+        assert_eq!(t.new_document(), Transition::Link);
+    }
+
+    #[test]
+    fn the_page_changing_its_address_during_a_typed_navigation_is_a_link() {
+        let mut t = PendingTransition::default();
+        t.requested(Transition::Typed, false);
+        t.starting();
+        assert_eq!(t.same_document(), Transition::Link);
+        assert_eq!(t.new_document(), Transition::Typed);
+    }
 
     #[test]
     fn titles_fall_back_to_url_then_new_tab() {
