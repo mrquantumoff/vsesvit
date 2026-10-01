@@ -683,7 +683,7 @@ impl Tab {
                     );
                 }
                 tab.transition.borrow_mut().completed();
-                tab.state.borrow_mut().load = Load::Idle;
+                navigation_ended(&mut tab.state.borrow_mut(), &mut tab.requested.borrow_mut());
                 tab.refresh_history();
                 tab.notify();
             },
@@ -1142,6 +1142,16 @@ fn on<A: Interface + 'static>(
     }
 }
 
+/// `NavigationCompleted`, whether or not the navigation committed. One that committed nothing in
+/// a tab that has shown no page (a download, Stop) leaves no URL for a saved session to load
+/// again; an error page commits.
+fn navigation_ended(state: &mut TabState, requested: &mut String) {
+    if state.load != Load::Committed && state.url.is_empty() {
+        requested.clear();
+    }
+    state.load = Load::Idle;
+}
+
 /// How the navigation the shell started came about, until it commits or ends without a new
 /// document (a download, Stop, an error). The events here carry no navigation ids: the shell's
 /// navigation is the first to start after it asked, and one already under way then ends first.
@@ -1199,7 +1209,26 @@ impl PendingTransition {
 
 #[cfg(test)]
 mod tests {
-    use super::{PendingTransition, Transition, display_title};
+    use super::{Load, PendingTransition, TabState, Transition, display_title, navigation_ended};
+
+    #[test]
+    fn a_first_navigation_that_never_commits_leaves_no_url_to_restore() {
+        let mut state = TabState {
+            load: Load::Started,
+            ..TabState::default()
+        };
+        let mut requested = "https://e.test/file.bin".to_owned();
+        navigation_ended(&mut state, &mut requested);
+        assert_eq!((state.load, requested.as_str()), (Load::Idle, ""));
+
+        let mut state = TabState {
+            load: Load::Committed,
+            ..TabState::default()
+        };
+        let mut requested = "data:text/html,page".to_owned();
+        navigation_ended(&mut state, &mut requested);
+        assert_eq!(requested, "data:text/html,page");
+    }
 
     #[test]
     fn a_typed_address_commits_as_typed_through_redirects() {
