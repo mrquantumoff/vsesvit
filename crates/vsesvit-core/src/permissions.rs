@@ -7,7 +7,8 @@
 //! - **One-time grants** ([`TabGrants`]): "Allow this time", held in memory by one shell tab
 //!   until it leaves the site.
 //! - **The prompt** ([`prompt`]): the words and buttons both shells show, and
-//!   [`SitePermissions::answer`], which applies the button pressed.
+//!   [`SitePermissions::answer`], which applies the button pressed; and the rows of the
+//!   site-info popup's Permissions section ([`site_rows`]).
 //!
 //! A request goes `decide` -> (on [`Decision::Ask`]) `prompt` -> `answer`.
 //!
@@ -267,7 +268,7 @@ fn capitalized(text: &str) -> String {
 }
 
 /// What a tab is capturing right now, as the engine reports it.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct Capturing {
     pub camera: bool,
     pub microphone: bool,
@@ -277,6 +278,16 @@ pub struct Capturing {
 impl Capturing {
     pub fn any(self) -> bool {
         self.camera || self.microphone || self.screen
+    }
+
+    /// Whether this includes `permission`'s capture.
+    pub fn uses(self, permission: Permission) -> bool {
+        match permission {
+            Permission::Camera => self.camera,
+            Permission::Microphone => self.microphone,
+            Permission::ScreenShare => self.screen,
+            _ => false,
+        }
     }
 
     /// The in-use indicator's text: "Using your camera and microphone", "Sharing your screen
@@ -295,6 +306,78 @@ impl Capturing {
             (true, Some(devices)) => Some(format!("Sharing your screen and using your {devices}")),
         }
     }
+}
+
+/// A permission's state in the site-info popup.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SiteChoice {
+    /// Allowed for now with nothing stored: a one-time grant of the tab, or a capture allowed
+    /// for its one request (a screen share is never granted).
+    AllowedThisTime,
+    Ask,
+    Allow,
+    Block,
+}
+
+impl SiteChoice {
+    pub fn label(self) -> &'static str {
+        match self {
+            SiteChoice::AllowedThisTime => "Allowed this time",
+            SiteChoice::Ask => "Ask",
+            SiteChoice::Allow => "Allow",
+            SiteChoice::Block => "Block",
+        }
+    }
+
+    /// What choosing it stores; `None` = ask. [`SiteChoice::AllowedThisTime`] stores nothing.
+    pub fn setting(self) -> Option<Setting> {
+        match self {
+            SiteChoice::Allow => Some(Setting::Allow),
+            SiteChoice::Block => Some(Setting::Block),
+            SiteChoice::AllowedThisTime | SiteChoice::Ask => None,
+        }
+    }
+}
+
+/// One row of the site-info popup's Permissions section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteRow {
+    pub permission: Permission,
+    pub current: SiteChoice,
+    /// In the order the choice box lists them.
+    pub choices: Vec<SiteChoice>,
+    /// The page captures what this permission governs: the row has a Stop button.
+    pub live: bool,
+}
+
+/// A row for every permission the site has a setting for, was granted this time, or uses, in
+/// [`Permission::ALL`] order. `storable`: the page has an origin, so Allow and Block can be
+/// remembered for it; Allow is never offered for what is asked every time.
+pub fn site_rows(storable: bool, stored: &[(Permission, Setting)], granted: &[Permission], capturing: Capturing) -> Vec<SiteRow> {
+    Permission::ALL
+        .iter()
+        .filter_map(|&permission| {
+            let live = capturing.uses(permission);
+            let current = match stored.iter().find(|(p, _)| *p == permission).map(|(_, s)| *s) {
+                Some(Setting::Allow) => SiteChoice::Allow,
+                Some(Setting::Block) => SiteChoice::Block,
+                None if granted.contains(&permission) || live => SiteChoice::AllowedThisTime,
+                None => return None,
+            };
+            let mut choices = Vec::new();
+            if current == SiteChoice::AllowedThisTime {
+                choices.push(SiteChoice::AllowedThisTime);
+            }
+            choices.push(SiteChoice::Ask);
+            if storable && permission.remembers_allow() {
+                choices.push(SiteChoice::Allow);
+            }
+            if storable {
+                choices.push(SiteChoice::Block);
+            }
+            Some(SiteRow { permission, current, choices, live })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

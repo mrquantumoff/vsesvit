@@ -7,7 +7,8 @@ use std::rc::Rc;
 
 use vsesvit_core::crdt::{DeviceId, Hlc, Lww, Seq, Stamp, TimeSource};
 use vsesvit_core::permissions::{
-    prompt, Answer, Capturing, Decision, Origin, Permission, Setting, SitePermissionRecord, SiteSetting, TabGrants,
+    prompt, site_rows, Answer, Capturing, Decision, Origin, Permission, Setting, SiteChoice, SitePermissionRecord, SiteRow,
+    SiteSetting, TabGrants,
 };
 use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::{Error, OpenOptions, Profile, Url};
@@ -349,6 +350,51 @@ fn capturing_wording() {
         assert_eq!(capturing.any(), text.is_some());
     }
     assert!(!Capturing::default().any());
+}
+
+#[test]
+fn capturing_uses_the_permission_of_each_capture() {
+    let all = Capturing { camera: true, microphone: true, screen: true };
+    assert!(Capturing { microphone: true, ..Capturing::default() }.uses(Microphone));
+    assert!(!Capturing { camera: true, ..Capturing::default() }.uses(Microphone));
+    assert!(Capturing { screen: true, ..Capturing::default() }.uses(ScreenShare));
+    let used: Vec<Permission> = Permission::ALL.iter().copied().filter(|&p| all.uses(p)).collect();
+    assert_eq!(used, [Camera, Microphone, ScreenShare]);
+
+    // As the Windows shell's capture script reports it.
+    let parsed: Capturing = serde_json::from_str(r#"{"camera":true,"microphone":false,"screen":true}"#).unwrap();
+    assert_eq!(parsed, Capturing { camera: true, microphone: false, screen: true });
+    assert!(serde_json::from_str::<Capturing>(r#"{"camera":true}"#).is_err());
+}
+
+#[test]
+fn site_info_shows_a_live_capture_as_allowed_this_time() {
+    use SiteChoice::{AllowedThisTime, Ask, Allow, Block};
+    let row = |permission, current, choices: &[SiteChoice], live| SiteRow { permission, current, choices: choices.to_vec(), live };
+    let sharing = Capturing { screen: true, ..Capturing::default() };
+
+    // A screen share is never granted nor stored as Allow: while it runs it is allowed this time.
+    assert_eq!(site_rows(true, &[], &[], sharing), [row(ScreenShare, AllowedThisTime, &[AllowedThisTime, Ask, Block], true)]);
+    assert_eq!(
+        site_rows(true, &[(Location, Setting::Allow), (Notifications, Setting::Block)], &[Camera], sharing),
+        [
+            row(Camera, AllowedThisTime, &[AllowedThisTime, Ask, Allow, Block], false),
+            row(Location, Allow, &[Ask, Allow, Block], false),
+            row(Notifications, Block, &[Ask, Allow, Block], false),
+            row(ScreenShare, AllowedThisTime, &[AllowedThisTime, Ask, Block], true),
+        ]
+    );
+    assert_eq!(
+        site_rows(true, &[(Camera, Setting::Allow), (ScreenShare, Setting::Block)], &[], Capturing { camera: true, ..Capturing::default() }),
+        [row(Camera, Allow, &[Ask, Allow, Block], true), row(ScreenShare, Block, &[Ask, Block], false)]
+    );
+    assert_eq!(site_rows(false, &[], &[Camera], Capturing::default()), [row(Camera, AllowedThisTime, &[AllowedThisTime, Ask], false)], "nothing is stored for an opaque origin");
+    assert!(site_rows(true, &[], &[], Capturing::default()).is_empty());
+
+    let labels: Vec<&str> = [AllowedThisTime, Ask, Allow, Block].iter().map(|c| c.label()).collect();
+    assert_eq!(labels, ["Allowed this time", "Ask", "Allow", "Block"]);
+    let settings: Vec<Option<Setting>> = [AllowedThisTime, Ask, Allow, Block].iter().map(|c| c.setting()).collect();
+    assert_eq!(settings, [None, None, Some(Setting::Allow), Some(Setting::Block)]);
 }
 
 #[test]

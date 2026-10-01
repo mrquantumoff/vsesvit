@@ -16,13 +16,15 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
-use vsesvit_core::permissions::{Answer, Origin, Permission, Prompt, Setting};
+use vsesvit_core::permissions::{
+    Answer, Origin, Permission, Prompt, Setting, SiteChoice, SiteRow, site_rows,
+};
 use windows_core::{Interface, Result};
 
 use super::BrowserWindow;
 use super::wiring::{click, with};
 use crate::bindings::*;
-use crate::permissions::{self, Choice, Row};
+use crate::permissions;
 use crate::tab::{Tab, TabId};
 use crate::{connection, exec, xaml};
 
@@ -48,7 +50,7 @@ pub(super) struct PermissionUi {
     prompt: RefCell<Option<ShownPrompt>>,
     prompts_shown: Cell<u64>,
     /// The rows the open site-info popup lists.
-    rows: RefCell<Vec<Row>>,
+    rows: RefCell<Vec<SiteRow>>,
 }
 
 fn hide(flyout: &Flyout) {
@@ -87,7 +89,7 @@ fn prompt_markup(prompt: &Prompt) -> String {
     )
 }
 
-fn section_markup(rows: &[Row], stored: bool) -> String {
+fn section_markup(rows: &[SiteRow], stored: bool) -> String {
     let rows: String = rows
         .iter()
         .map(|row| {
@@ -389,7 +391,7 @@ impl BrowserWindow {
         }
     }
 
-    fn site_rows(&self, tab: &Tab) -> Vec<Row> {
+    fn site_rows(&self, tab: &Tab) -> Vec<SiteRow> {
         let origin = tab.origin();
         let stored = match (&origin, self.browser()) {
             (Some(origin), Some(browser)) => {
@@ -397,7 +399,7 @@ impl BrowserWindow {
             }
             _ => Vec::new(),
         };
-        permissions::site_rows(
+        site_rows(
             origin.is_some(),
             &stored,
             &tab.permissions().grants(),
@@ -436,7 +438,7 @@ impl BrowserWindow {
         let origin = tab.origin();
         let stored = rows
             .iter()
-            .any(|r| matches!(r.current, Choice::Allow | Choice::Block));
+            .any(|r| matches!(r.current, SiteChoice::Allow | SiteChoice::Block));
         let section: FrameworkElement = xaml::load(&section_markup(&rows, stored))?;
         children.Append(&section.cast::<UIElement>()?)?;
         let first = format!("PermissionChoice{:?}", rows[0].permission);
@@ -523,13 +525,13 @@ fn site_choice(
     tab: &Weak<Tab>,
     origin: Option<&Origin>,
     permission: Permission,
-    choice: Choice,
+    choice: SiteChoice,
 ) {
     let (Some(w), Some(t)) = (window.upgrade(), tab.upgrade()) else {
         return;
     };
     let Some(browser) = w.browser() else { return };
-    if choice == Choice::AllowedThisTime {
+    if choice == SiteChoice::AllowedThisTime {
         return;
     }
     if let Some(origin) = origin
@@ -540,7 +542,7 @@ fn site_choice(
     {
         log::warn!("site permission {permission:?}: {e}");
     }
-    if choice != Choice::Allow {
+    if choice != SiteChoice::Allow {
         t.permissions().revoke(permission);
     }
     if origin.is_none() && choice.setting() == Some(Setting::Block) {

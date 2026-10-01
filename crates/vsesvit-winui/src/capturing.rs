@@ -7,7 +7,6 @@
 //! tampers with the built-ins before the script's snapshot are not seen, so the indicators can
 //! only under-report. Windows' own camera and microphone privacy indicator stays authoritative.
 
-use serde::Deserialize;
 use vsesvit_core::permissions::{Capturing, Permission};
 
 pub(crate) const MAIN_WORLD_SCRIPT: &str = include_str!("js/capture.js");
@@ -31,33 +30,12 @@ pub(crate) fn stop_script(permission: Permission) -> Option<String> {
         .map(|s| format!("window.__vsesvitCapture && window.__vsesvitCapture.stop({s:?})"))
 }
 
-/// Whether `capturing` includes `permission`'s capture.
-pub(crate) fn uses(capturing: Capturing, permission: Permission) -> bool {
-    match permission {
-        Permission::Camera => capturing.camera,
-        Permission::Microphone => capturing.microphone,
-        Permission::ScreenShare => capturing.screen,
-        _ => false,
-    }
-}
-
-#[derive(Deserialize)]
-struct State {
-    camera: bool,
-    microphone: bool,
-    screen: bool,
-}
-
 /// `ExecuteScript`'s JSON result of [`STATE_SCRIPT`]; nothing for a page without the script.
 pub(crate) fn parse_state(json: &str) -> Capturing {
-    match serde_json::from_str::<Option<State>>(json) {
-        Ok(Some(s)) => Capturing {
-            camera: s.camera,
-            microphone: s.microphone,
-            screen: s.screen,
-        },
-        _ => Capturing::default(),
-    }
+    serde_json::from_str::<Option<Capturing>>(json)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -86,19 +64,5 @@ mod tests {
             Some(r#"window.__vsesvitCapture && window.__vsesvitCapture.stop("screen")"#)
         );
         assert_eq!(stop_script(Permission::Location), None);
-        assert!(uses(
-            Capturing {
-                microphone: true,
-                ..Capturing::default()
-            },
-            Permission::Microphone
-        ));
-        assert!(!uses(
-            Capturing {
-                camera: true,
-                ..Capturing::default()
-            },
-            Permission::Microphone
-        ));
     }
 }

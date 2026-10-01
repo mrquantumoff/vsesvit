@@ -1,6 +1,6 @@
 //! Site permissions in the Windows shell, on core's model and words (`vsesvit_core::permissions`):
 //! WebView2's permission requests decided by the stored settings and the tab's one-time grants,
-//! the prompts a tab has waiting, and the rows the site-info popup lists.
+//! and the prompts a tab has waiting.
 //!
 //! Every request core has a permission for gets `SavesInProfile(false)`: the engine never
 //! remembers an answer by itself, so core's settings stay the only record. Pages still read the
@@ -400,9 +400,7 @@ pub(crate) fn settings_changed(browser: &Rc<Browser>) {
             permissions.refresh_site(browser, origin.as_ref());
             let capturing = permissions.capturing();
             for p in CAPTURES {
-                if crate::capturing::uses(capturing, p)
-                    && permissions.blocks(browser, origin.as_ref(), p)
-                {
+                if capturing.uses(p) && permissions.blocks(browser, origin.as_ref(), p) {
                     tab.stop_capture(p);
                 }
             }
@@ -533,144 +531,16 @@ pub(crate) fn stop_captures(browser: &Browser, origin: &Origin, permissions: &[P
         }
         let capturing = tab.permissions().capturing();
         for &permission in permissions {
-            if crate::capturing::uses(capturing, permission) {
+            if capturing.uses(permission) {
                 tab.stop_capture(permission);
             }
         }
     }
 }
 
-/// A site permission's state in the site-info popup.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Choice {
-    AllowedThisTime,
-    Ask,
-    Allow,
-    Block,
-}
-
-impl Choice {
-    pub fn label(self) -> &'static str {
-        match self {
-            Choice::AllowedThisTime => "Allowed this time",
-            Choice::Ask => "Ask",
-            Choice::Allow => "Allow",
-            Choice::Block => "Block",
-        }
-    }
-
-    pub fn setting(self) -> Option<Setting> {
-        match self {
-            Choice::Allow => Some(Setting::Allow),
-            Choice::Block => Some(Setting::Block),
-            Choice::AllowedThisTime | Choice::Ask => None,
-        }
-    }
-}
-
-/// One row of the site-info popup's Permissions section.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Row {
-    pub permission: Permission,
-    pub current: Choice,
-    /// In the order the choice box lists them.
-    pub choices: Vec<Choice>,
-    /// The page captures what this permission governs: the row has a Stop button.
-    pub live: bool,
-}
-
-/// A row for every permission the site has a setting for, was granted this time, or uses.
-/// `storable`: the page has an origin, so Allow and Block can be remembered for it.
-pub(crate) fn site_rows(
-    storable: bool,
-    stored: &[(Permission, Setting)],
-    granted: &[Permission],
-    capturing: Capturing,
-) -> Vec<Row> {
-    Permission::ALL
-        .iter()
-        .filter_map(|&permission| {
-            let setting = stored
-                .iter()
-                .find(|(p, _)| *p == permission)
-                .map(|(_, s)| *s);
-            let granted = granted.contains(&permission);
-            let live = crate::capturing::uses(capturing, permission);
-            let current = match (setting, granted) {
-                (Some(Setting::Allow), _) => Choice::Allow,
-                (Some(Setting::Block), _) => Choice::Block,
-                (None, true) => Choice::AllowedThisTime,
-                (None, false) if live => Choice::Ask,
-                (None, false) => return None,
-            };
-            let mut choices = Vec::new();
-            if current == Choice::AllowedThisTime {
-                choices.push(Choice::AllowedThisTime);
-            }
-            choices.push(Choice::Ask);
-            if storable && permission.remembers_allow() {
-                choices.push(Choice::Allow);
-            }
-            if storable {
-                choices.push(Choice::Block);
-            }
-            Some(Row {
-                permission,
-                current,
-                choices,
-                live,
-            })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rows_list_what_is_stored_granted_or_in_use() {
-        let stored = [
-            (Permission::Location, Setting::Allow),
-            (Permission::Notifications, Setting::Block),
-        ];
-        let capturing = Capturing {
-            screen: true,
-            ..Capturing::default()
-        };
-        let rows = site_rows(true, &stored, &[Permission::Camera], capturing);
-        let summary: Vec<(Permission, Choice, bool)> = rows
-            .iter()
-            .map(|r| (r.permission, r.current, r.live))
-            .collect();
-        assert_eq!(
-            summary,
-            [
-                (Permission::Camera, Choice::AllowedThisTime, false),
-                (Permission::Location, Choice::Allow, false),
-                (Permission::Notifications, Choice::Block, false),
-                (Permission::ScreenShare, Choice::Ask, true),
-            ]
-        );
-        assert_eq!(
-            rows[0].choices,
-            [
-                Choice::AllowedThisTime,
-                Choice::Ask,
-                Choice::Allow,
-                Choice::Block
-            ]
-        );
-        assert_eq!(rows[1].choices, [Choice::Ask, Choice::Allow, Choice::Block]);
-        assert_eq!(rows[3].choices, [Choice::Ask, Choice::Block]);
-        assert!(site_rows(true, &[], &[], Capturing::default()).is_empty());
-    }
-
-    #[test]
-    fn a_page_without_an_origin_offers_nothing_to_remember() {
-        let rows = site_rows(false, &[], &[Permission::Location], Capturing::default());
-        assert_eq!(rows[0].choices, [Choice::AllowedThisTime, Choice::Ask]);
-    }
 
     #[test]
     fn the_engine_gets_exactly_the_stored_settings() {

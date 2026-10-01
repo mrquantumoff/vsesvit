@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 use gtk::glib;
 use url::Url;
-use vsesvit_core::permissions::{self as core, Answer, Capturing, Decision, Origin, Permission, Prompt, Setting, TabGrants};
+use vsesvit_core::permissions::{self as core, Answer, Capturing, Decision, Origin, Permission, Prompt, Setting, SiteChoice, TabGrants};
 use webkit::prelude::*;
 
 use crate::browser::Browser;
@@ -289,7 +289,8 @@ pub(crate) fn enforce(browser: &Browser) {
     for window in browser.windows() {
         for tab in window.tabs() {
             let origin = origin_of(tab.committed_uri().as_deref());
-            for permission in live(capturing(tab.web_view())) {
+            let now = capturing(tab.web_view());
+            for permission in Permission::ALL.iter().copied().filter(|&p| now.uses(p)) {
                 if decide(browser, &tab, origin.as_ref(), &[permission]) != Decision::Allow {
                     stop(tab.web_view(), permission);
                 }
@@ -333,15 +334,6 @@ pub(crate) fn capturing(web_view: &webkit::WebView) -> Capturing {
         microphone: live(web_view.microphone_capture_state()),
         screen: live(web_view.display_capture_state()),
     }
-}
-
-/// The permission each live capture runs under.
-fn live(capturing: Capturing) -> Vec<Permission> {
-    [(capturing.camera, Permission::Camera), (capturing.microphone, Permission::Microphone), (capturing.screen, Permission::ScreenShare)]
-        .into_iter()
-        .filter(|(on, _)| *on)
-        .map(|(_, p)| p)
-        .collect()
 }
 
 pub(crate) fn stop(web_view: &webkit::WebView, permission: Permission) {
@@ -424,53 +416,6 @@ fn wrapped(text: &str, classes: &[&str]) -> gtk::Label {
 
 // The site-info section.
 
-/// A row's choice in the site-info popover.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Choice {
-    /// Allowed for now with nothing stored: a one-time grant of this tab, or a screen share
-    /// allowed for that one request.
-    ThisTime,
-    Ask,
-    Allow,
-    Block,
-}
-
-impl Choice {
-    fn label(self) -> &'static str {
-        match self {
-            Choice::ThisTime => "Allowed this time",
-            Choice::Ask => "Ask",
-            Choice::Allow => "Allow",
-            Choice::Block => "Block",
-        }
-    }
-}
-
-/// A row's choices and the current one. `allowed_now` is a one-time grant or a live capture.
-/// Nothing is stored without an origin, and Allow is never stored for what is asked every
-/// time.
-fn choices(origin: Option<&Origin>, permission: Permission, stored: Option<Setting>, allowed_now: bool) -> (Vec<Choice>, Choice) {
-    let this_time = allowed_now && stored.is_none();
-    let mut choices = Vec::new();
-    if this_time {
-        choices.push(Choice::ThisTime);
-    }
-    choices.push(Choice::Ask);
-    if origin.is_some() {
-        if permission.remembers_allow() {
-            choices.push(Choice::Allow);
-        }
-        choices.push(Choice::Block);
-    }
-    let current = match stored {
-        Some(Setting::Allow) => Choice::Allow,
-        Some(Setting::Block) => Choice::Block,
-        None if this_time => Choice::ThisTime,
-        None => Choice::Ask,
-    };
-    (choices, current)
-}
-
 /// The Permissions section for `tab`'s page: a row for every permission stored for its
 /// site, granted this time or in use. `None` when there is none.
 pub(crate) fn site_info_section(browser: &Browser, tab: &Tab) -> Option<gtk::Box> {
@@ -489,24 +434,16 @@ fn fill_section(section: &gtk::Box, browser: &Browser, tab: &Tab) {
         let state = tab.permissions().borrow();
         state.grants.granted().filter(|&p| state.grants.allows(origin.as_ref(), p)).collect()
     };
-    let in_use = live(capturing(tab.web_view()));
-    let shown: Vec<Permission> = Permission::ALL
-        .iter()
-        .copied()
-        .filter(|p| stored.iter().any(|(q, _)| q == p) || granted.contains(p) || in_use.contains(p))
-        .collect();
-    if shown.is_empty() {
+    let rows = core::site_rows(origin.is_some(), &stored, &granted, capturing(tab.web_view()));
+    if rows.is_empty() {
         return;
     }
     section.append(&gtk::Label::builder().label("Permissions").xalign(0.0).css_classes(["heading"]).build());
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
-    for permission in shown {
-        let setting = stored.iter().find(|(p, _)| *p == permission).map(|(_, s)| *s);
-        let allowed_now = granted.contains(&permission) || in_use.contains(&permission);
-        let (choices, current) = choices(origin.as_ref(), permission, setting, allowed_now);
-        let row = permission_row(section, browser, tab, origin.as_ref(), permission, &choices, current);
-        if in_use.contains(&permission) {
-            row.add_suffix(&stop_button(tab, permission));
+    for site_row in rows {
+        let row = permission_row(section, browser, tab, origin.as_ref(), site_row.permission, &site_row.choices, site_row.current);
+        if site_row.live {
+            row.add_suffix(&stop_button(tab, site_row.permission));
         }
         list.append(&row);
     }
@@ -537,8 +474,8 @@ fn permission_row(
     tab: &Tab,
     origin: Option<&Origin>,
     permission: Permission,
-    choices: &[Choice],
-    current: Choice,
+    choices: &[SiteChoice],
+    current: SiteChoice,
 ) -> adw::ComboRow {
     let labels: Vec<&str> = choices.iter().map(|c| c.label()).collect();
     let row = adw::ComboRow::builder()
@@ -577,13 +514,11 @@ fn stop_button(tab: &Tab, permission: Permission) -> gtk::Button {
     button
 }
 
-fn choose(browser: &Browser, tab: &Tab, origin: Option<&Origin>, permission: Permission, choice: Choice) {
-    let setting = match choice {
-        Choice::ThisTime => return,
-        Choice::Ask => None,
-        Choice::Allow => Some(Setting::Allow),
-        Choice::Block => Some(Setting::Block),
-    };
+fn choose(browser: &Browser, tab: &Tab, origin: Option<&Origin>, permission: Permission, choice: SiteChoice) {
+    if choice == SiteChoice::AllowedThisTime {
+        return;
+    }
+    let setting = choice.setting();
     if setting != Some(Setting::Allow) {
         tab.permissions().borrow_mut().grants.revoke(permission);
     }
@@ -646,20 +581,6 @@ mod tests {
         assert!(!holds(true, Some("https://a.example/"), Some("http://a.example/")));
         assert!(!holds(true, Some("https://a.example/"), None));
         assert!(!holds(false, Some("https://a.example/"), Some("https://a.example/")));
-    }
-
-    #[test]
-    fn site_info_offers_what_can_be_kept() {
-        use Choice::*;
-        let site = Origin::parse("https://meet.example");
-        let site = site.as_ref();
-        assert_eq!(choices(site, Permission::Camera, None, false), (vec![Ask, Allow, Block], Ask));
-        assert_eq!(choices(site, Permission::Camera, Some(Setting::Block), false), (vec![Ask, Allow, Block], Block));
-        assert_eq!(choices(site, Permission::Camera, None, true), (vec![ThisTime, Ask, Allow, Block], ThisTime));
-        assert_eq!(choices(site, Permission::Camera, Some(Setting::Allow), true), (vec![Ask, Allow, Block], Allow));
-        assert_eq!(choices(site, Permission::ScreenShare, None, true), (vec![ThisTime, Ask, Block], ThisTime), "a live share is allowed only now");
-        assert_eq!(choices(site, Permission::ScreenShare, Some(Setting::Block), false), (vec![Ask, Block], Block));
-        assert_eq!(choices(None, Permission::Camera, None, true), (vec![ThisTime, Ask], ThisTime), "nothing is stored for an opaque origin");
     }
 
     #[test]
