@@ -14,6 +14,7 @@ use windows_core::Interface;
 use super::permission_steps::{open_site_info, text_of};
 use super::{save, shoot, wait_loaded};
 use crate::bindings::*;
+use crate::tab::Tab;
 use crate::window::BrowserWindow;
 use crate::{capture, exec};
 
@@ -65,6 +66,7 @@ pub(super) async fn run(
                 steps.push(certificate_viewer(&popup, out_dir).await);
             }
             window.hide_connection();
+            steps.push(secure_after_navigating(window, &tab).await?);
         }
         Err(e) => steps.push(json!({
             "name": "13a-connection-secure",
@@ -104,6 +106,28 @@ pub(super) async fn run(
     window.hide_connection();
     window.close_tab(tab.id);
     Ok(())
+}
+
+/// The report set aside when a navigation starts is replaced by the next page's, so a secure
+/// page reached from a secure page reads as secure again.
+async fn secure_after_navigating(
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+) -> Result<Value, String> {
+    let page = format!("{SECURE_PAGE}?again");
+    tab.navigate(&page);
+    exec::sleep(Duration::from_millis(300)).await;
+    wait_loaded(tab).await?;
+    let popup = open_popup(window).await?;
+    let (title, certificate) = (headline(&popup), has(&popup, "ConnectionCertificate"));
+    window.hide_connection();
+    Ok(json!({
+        "name": "13a2-connection-secure-after-navigating",
+        "url": tab.state().url,
+        "title": title,
+        "certificate": certificate,
+        "ok": tab.state().url == page && title == "Connection is secure" && certificate,
+    }))
 }
 
 /// "Show certificate" opens the Windows certificate viewer with the site's certificate.

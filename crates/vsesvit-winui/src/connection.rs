@@ -4,8 +4,10 @@
 //! certificate viewer.
 //!
 //! Each tab keeps the engine's last `Security.visibleSecurityStateChanged` report (the DevTools
-//! protocol's view of the page's connection: the TLS parameters and the chain as base64 DER);
-//! `vsesvit_core::certificate::parse_der` reads the certificates.
+//! protocol's view of the page's connection: the TLS parameters and the chain as base64 DER),
+//! for as long as the document it came with is the one on screen ([`Reports`]);
+//! `vsesvit_core::certificate::parse_der` reads the certificates. An HTTPS page without one is
+//! not called secure.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -76,6 +78,37 @@ pub(crate) fn parse_report(json: &str) -> Option<Report> {
     Some(Report { state, tls, chain })
 }
 
+/// A tab's engine reports, kept to the document they describe: a report is set aside when a
+/// navigation starts, shown while the page it describes stays on screen, and dropped once
+/// another document commits, until that one's report comes.
+#[derive(Debug, Default)]
+pub(crate) struct Reports {
+    /// The JSON of the last `Security.visibleSecurityStateChanged` event's parameters.
+    current: Option<String>,
+    /// The report of the page being navigated away from.
+    left: Option<String>,
+}
+
+impl Reports {
+    pub fn reported(&mut self, json: Option<String>) {
+        self.current = json;
+    }
+
+    pub fn navigation_starting(&mut self) {
+        if let Some(json) = self.current.take() {
+            self.left = Some(json);
+        }
+    }
+
+    pub fn new_document(&mut self) {
+        self.left = None;
+    }
+
+    pub fn current(&self) -> Option<String> {
+        self.current.clone().or_else(|| self.left.clone())
+    }
+}
+
 /// The popup's headline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Headline {
@@ -101,7 +134,7 @@ impl Headline {
     /// By the scheme of the page's origin, so a blob: page an http site made is not secure.
     pub fn of(url: &str, report: Option<&Report>) -> Self {
         match origin_url(url).split_once(':').map(|(scheme, _)| scheme) {
-            Some("https") if report.is_none_or(|r| r.state == "secure") => Headline::Secure,
+            Some("https") if report.is_some_and(|r| r.state == "secure") => Headline::Secure,
             Some("https" | "http") => Headline::NotSecure,
             _ => Headline::Local,
         }
@@ -402,6 +435,11 @@ mod tests {
             Headline::of("https://a.test/", Some(&broken)),
             Headline::NotSecure
         );
+        assert_eq!(
+            Headline::of("https://a.test/", None),
+            Headline::NotSecure,
+            "no report is no proof"
+        );
         assert_eq!(Headline::of("http://a.test/", None), Headline::NotSecure);
         assert_eq!(Headline::of("file:///C:/a.html", None), Headline::Local);
         assert_eq!(Headline::of("data:text/html,x", None), Headline::Local);
@@ -431,5 +469,42 @@ mod tests {
             "https://a.test/1b2c"
         );
         assert_eq!(origin_url("https://a.test/"), "https://a.test/");
+    }
+
+    #[test]
+    fn a_report_describes_only_the_document_it_came_with() {
+        let mut reports = Reports::default();
+        reports.reported(Some("bank".into()));
+        reports.navigation_starting();
+        assert_eq!(
+            reports.current().as_deref(),
+            Some("bank"),
+            "the bank is still on screen"
+        );
+        reports.new_document();
+        assert_eq!(
+            reports.current(),
+            None,
+            "the next site's report has not come"
+        );
+        reports.reported(Some("next".into()));
+        assert_eq!(reports.current().as_deref(), Some("next"));
+
+        reports.navigation_starting();
+        reports.reported(Some("other".into()));
+        reports.new_document();
+        assert_eq!(
+            reports.current().as_deref(),
+            Some("other"),
+            "a report that came before the commit"
+        );
+
+        reports.navigation_starting();
+        reports.navigation_starting();
+        assert_eq!(
+            reports.current().as_deref(),
+            Some("other"),
+            "navigations that never commit (a download) leave it"
+        );
     }
 }

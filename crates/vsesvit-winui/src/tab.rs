@@ -21,7 +21,7 @@ use crate::store;
 use crate::tab_header::{Audio, TabLook};
 use crate::window::BrowserWindow;
 use crate::media::{self, MediaAction, Playback};
-use crate::{capturing, exec, xaml, zoom};
+use crate::{capturing, connection, exec, xaml, zoom};
 
 /// Identifies a tab within this process.
 pub(crate) type TabId = u64;
@@ -129,9 +129,9 @@ pub(crate) struct Tab {
     transition: Cell<Option<Transition>>,
     last_active_ms: Cell<i64>,
     favicon_generation: Cell<u64>,
-    /// The engine's last `Security.visibleSecurityStateChanged` report, as JSON: the page's
-    /// TLS connection and certificate chain, which the lock's popup shows.
-    security: RefCell<Option<String>>,
+    /// The engine's `Security.visibleSecurityStateChanged` reports: the page's TLS connection
+    /// and certificate chain, which the lock's popup shows.
+    security: RefCell<connection::Reports>,
     /// Pinned tabs lead the tab list.
     pinned: Cell<bool>,
     permissions: TabPermissions,
@@ -164,7 +164,7 @@ impl Tab {
             transition: Cell::new(None),
             last_active_ms: Cell::new(now_ms()),
             favicon_generation: Cell::new(0),
-            security: RefCell::new(None),
+            security: RefCell::default(),
             pinned: Cell::new(false),
             permissions: TabPermissions::default(),
             capture_polled: Cell::new(false),
@@ -261,7 +261,7 @@ impl Tab {
 
     /// The engine's report on the page's connection (`Security.visibleSecurityStateChanged`).
     pub fn security_report(&self) -> Option<String> {
-        self.security.borrow().clone()
+        self.security.borrow().current()
     }
 
     pub fn has_favicon(&self) -> bool {
@@ -359,8 +359,9 @@ impl Tab {
             .DevToolsProtocolEventReceived(on(
                 self,
                 |tab, args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs| {
-                    *tab.security.borrow_mut() =
-                        args.ParameterObjectAsJson().ok().map(|j| j.to_string());
+                    tab.security
+                        .borrow_mut()
+                        .reported(args.ParameterObjectAsJson().ok().map(|j| j.to_string()));
                 },
             ))?
             .forget();
@@ -636,12 +637,14 @@ impl Tab {
             |tab, args: &CoreWebView2NavigationStartingEventArgs| {
                 *tab.requested.borrow_mut() = args.Uri().unwrap_or_default();
                 tab.state.borrow_mut().load = Load::Started;
+                tab.security.borrow_mut().navigation_starting();
                 tab.notify();
             },
         ))?
         .forget();
         core.ContentLoading(on(self, |tab, _: &CoreWebView2ContentLoadingEventArgs| {
             tab.state.borrow_mut().load = Load::Committed;
+            tab.security.borrow_mut().new_document();
             tab.committed(CommitKind::NewDocument);
         }))?
         .forget();
@@ -649,6 +652,7 @@ impl Tab {
             self,
             |tab, args: &CoreWebView2SourceChangedEventArgs| {
                 if args.IsNewDocument().unwrap_or(true) {
+                    tab.security.borrow_mut().new_document();
                     tab.refresh_url();
                 } else {
                     tab.committed(CommitKind::SameDocument);
