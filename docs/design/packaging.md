@@ -21,7 +21,7 @@ Installing, per format:
 | Format | How the update is applied | When |
 |---|---|---|
 | NSIS | Launch the new installer with `/P /UPDATE /R /ARGS <args>` (Tauri's passive mode), then the browser exits. The installer waits for the old process, replaces the files and relaunches. | User clicks "Restart to update", or the browser quits with an update ready (then `/S /UPDATE`, no relaunch). |
-| deb | `pkexec dpkg -i <file>` | User clicks "Update", which asks for the admin password. |
+| deb | `pkexec apt-get install -y --no-install-recommends <absolute path of file>`. Not `dpkg -i`, which unpacks a package whose new dependencies are missing and leaves it unconfigured, so apt refuses to run until it is repaired. | User clicks "Update", which asks for the admin password. |
 | rpm | `pkexec rpm -U <file>` | same |
 | pacman | `pkexec pacman -U --noconfirm <file>` | same |
 | AppImage | Write the new image next to `$APPIMAGE`, copy its mode, `rename` over the old one. | In the background once verified. It takes effect on the next launch. |

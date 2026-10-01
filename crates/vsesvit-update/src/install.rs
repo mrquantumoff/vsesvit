@@ -1,6 +1,7 @@
 //! Applying a verified artifact, per format (docs/design/packaging.md, "Installing, per format").
 
 use std::ffi::OsString;
+use std::path::Path;
 
 use crate::{DisabledReason, Downloaded, Error, Format, Installation};
 
@@ -64,9 +65,9 @@ impl Downloaded {
                     Err(Error::Install("an NSIS update can only be installed on Windows".into()))
                 };
             }
-            (Installation::Deb, Format::Deb) => self.pkexec("dpkg", &["-i"]),
-            (Installation::Rpm, Format::Rpm) => self.pkexec("rpm", &["-U"]),
-            (Installation::Pacman, Format::Pacman) => self.pkexec("pacman", &["-U", "--noconfirm"]),
+            (Installation::Deb, Format::Deb) | (Installation::Rpm, Format::Rpm) | (Installation::Pacman, Format::Pacman) => {
+                self.pkexec()
+            }
             (Installation::AppImage { image }, Format::AppImage) => {
                 #[cfg(unix)]
                 return appimage::replace(&self.path, image);
@@ -80,12 +81,13 @@ impl Downloaded {
         }
     }
 
+    /// Installs a Linux package as root through the package manager [`package_command`] names.
     #[cfg(unix)]
-    fn pkexec(&self, program: &str, args: &[&str]) -> Result<Installed, Error> {
+    fn pkexec(&self) -> Result<Installed, Error> {
+        let command = package_command(self.format, &self.path).expect("a Linux package");
+        let program = command[0].to_string_lossy();
         let status = std::process::Command::new("pkexec")
-            .arg(program)
-            .args(args)
-            .arg(&self.path)
+            .args(&command)
             .status()
             .map_err(|e| Error::Install(format!("could not run pkexec: {e}")))?;
         match status.code() {
@@ -100,9 +102,26 @@ impl Downloaded {
     }
 
     #[cfg(not(unix))]
-    fn pkexec(&self, program: &str, _args: &[&str]) -> Result<Installed, Error> {
-        Err(Error::Install(format!("a {program} package can only be installed on Linux")))
+    fn pkexec(&self) -> Result<Installed, Error> {
+        Err(Error::Install(format!("a {} package can only be installed on Linux", self.format.variant())))
     }
+}
+
+/// The command, program first, that installs the package of `format` at `path`. `None` for the
+/// formats no package manager installs.
+#[cfg_attr(all(not(unix), not(test)), expect(dead_code, reason = "only Linux runs a package manager"))]
+fn package_command(format: Format, path: &Path) -> Option<Vec<OsString>> {
+    let program_and_args: &[&str] = match format {
+        // Not `dpkg -i`, which unpacks a package whose dependencies are missing over the old
+        // version and leaves it unconfigured, so apt refuses to run until it is fixed by hand.
+        Format::Deb => &["apt-get", "install", "-y", "--no-install-recommends"],
+        Format::Rpm => &["rpm", "-U"],
+        Format::Pacman => &["pacman", "-U", "--noconfirm"],
+        Format::Nsis | Format::AppImage => return None,
+    };
+    // apt-get takes an argument for a file only when it starts with `/` or `./`.
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+    Some(program_and_args.iter().map(OsString::from).chain([path.into_os_string()]).collect())
 }
 
 fn mismatch(installation: &Installation) -> Error {
@@ -270,5 +289,27 @@ mod nsis {
                 assert_eq!(escape(OsStr::new(input)), OsString::from(expected), "escaping {input:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deb_installs_through_apt_so_dependencies_resolve() {
+        let command = package_command(Format::Deb, Path::new("updates/vsesvit-1.0.0.deb")).unwrap();
+        assert_eq!(command[..4], ["apt-get", "install", "-y", "--no-install-recommends"]);
+        let path = Path::new(&command[4]);
+        assert!(path.is_absolute(), "apt-get takes a relative name for a package, not a file: {path:?}");
+        assert!(path.ends_with("updates/vsesvit-1.0.0.deb"), "{path:?}");
+    }
+
+    #[test]
+    fn only_linux_packages_have_a_package_manager() {
+        assert_eq!(package_command(Format::Rpm, Path::new("/u/v")).unwrap()[..2], ["rpm", "-U"]);
+        assert_eq!(package_command(Format::Pacman, Path::new("/u/v")).unwrap()[..3], ["pacman", "-U", "--noconfirm"]);
+        assert_eq!(package_command(Format::AppImage, Path::new("/u/v")), None);
+        assert_eq!(package_command(Format::Nsis, Path::new("/u/v")), None);
     }
 }
