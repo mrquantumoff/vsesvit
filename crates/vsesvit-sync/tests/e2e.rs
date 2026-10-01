@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -163,14 +163,53 @@ fn serve(mut stream: TcpStream, issuer: &str, state: &Mutex<ProviderState>) {
 
 struct Server {
     child: Child,
+    command: Command,
     url: String,
-    _dir: TempDir,
+    dir: TempDir,
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// The database files a stopped server leaves, its write-ahead log included.
+const DATABASE_FILES: [&str; 2] = ["sync.db", "sync.db-wal"];
+
+impl Server {
+    /// Copies the database aside, as a backup taken now.
+    fn back_up(&mut self) -> TempDir {
+        let backup = TempDir::new(&format!("{}-backup", self.dir.0.file_name().unwrap().to_string_lossy()));
+        self.restart(&[], |db| {
+            for file in DATABASE_FILES {
+                let _ = std::fs::copy(db.join(file), backup.0.join(file));
+            }
+        });
+        backup
+    }
+
+    /// Puts `backup` in place of the database, sessions and all, and starts again with `settings`
+    /// added.
+    fn restore(&mut self, backup: &TempDir, settings: &[(&str, &str)]) {
+        self.restart(settings, |db| {
+            for file in DATABASE_FILES.into_iter().chain(["sync.db-shm"]) {
+                let _ = std::fs::remove_file(db.join(file));
+                let _ = std::fs::copy(backup.0.join(file), db.join(file));
+            }
+        });
+    }
+
+    /// Stops the server, lets `offline` change its directory, and starts it again at its address.
+    fn restart(&mut self, settings: &[(&str, &str)], offline: impl FnOnce(&Path)) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        offline(&self.dir.0);
+        self.command.envs(settings.iter().copied());
+        let (child, url) = spawn(&mut self.command);
+        self.child = child;
+        assert_eq!(url, self.url);
     }
 }
 
@@ -188,7 +227,8 @@ fn start_server_with(bin: &str, issuer: &str, settings: &[(&str, &str)]) -> Serv
     let dir = TempDir::new(&format!("server-{}", SERVERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let database = format!("sqlite://{}?mode=rwc", dir.0.join("sync.db").display().to_string().replace('\\', "/"));
     let port = free_port();
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .env("DATABASE_URL", database)
         .env("BIND_ADDRESS", format!("127.0.0.1:{port}"))
         .env("PUBLIC_URL", format!("http://127.0.0.1:{port}"))
@@ -199,9 +239,14 @@ fn start_server_with(bin: &str, issuer: &str, settings: &[(&str, &str)]) -> Serv
         .env("NO_COLOR", "1")
         .env("RUST_LOG", "info")
         .envs(settings.iter().copied())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("the server starts");
+        .stdout(Stdio::piped());
+    let (child, url) = spawn(&mut command);
+    Server { child, command, url, dir }
+}
+
+/// Starts the server and waits until it listens. Returns its address.
+fn spawn(command: &mut Command) -> (Child, String) {
+    let mut child = command.spawn().expect("the server starts");
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let address = lines
         .by_ref()
@@ -209,7 +254,7 @@ fn start_server_with(bin: &str, issuer: &str, settings: &[(&str, &str)]) -> Serv
         .find_map(|l| l.split_once("listening on ").map(|(_, a)| a.trim().to_owned()))
         .expect("the server says where it listens");
     std::thread::spawn(move || lines.for_each(drop));
-    Server { child, url: format!("http://{address}"), _dir: dir }
+    (child, format!("http://{address}"))
 }
 
 /// `Basic` keeps each profile's vault key in its database, so a run never touches the developer's
@@ -469,4 +514,98 @@ fn a_device_with_stale_limits_learns_the_servers_after_a_refusal() {
     sign_in(&mut b, &http, &server.url);
     sync_types(&mut b, &http, &[DataType::Bookmarks]);
     assert_eq!(toolbar_titles(&mut b).len(), 20);
+}
+
+#[test]
+fn a_device_ahead_of_a_restored_server_uploads_what_it_lost_though_its_new_changes_go_first() {
+    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
+        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
+        return;
+    };
+    let provider = MockProvider::start();
+    let mut server = start_server(&bin, &provider.issuer);
+    let http = Http::new();
+    let (dir_a, dir_b) = (TempDir::new("restore-a"), TempDir::new("restore-b"));
+    let (mut a, mut b) = (open(&dir_a), open(&dir_b));
+    let url = Url::parse("https://example.com/").unwrap();
+
+    provider.sign_in_as("heidi");
+    sign_in(&mut a, &http, &server.url);
+    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Before", &url).unwrap();
+    sync(&mut a, &http);
+    let backup = server.back_up();
+    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Lost", &url).unwrap();
+    sync(&mut a, &http);
+    server.restore(&backup, &[]);
+
+    // Uploaded first, these pass a's cursor before its download could see that it is ahead.
+    for i in 0..5 {
+        a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, &format!("New {i}"), &url).unwrap();
+    }
+    let http = Http::new();
+    sync(&mut a, &http);
+    sign_in(&mut b, &http, &server.url);
+    sync(&mut b, &http);
+    assert_eq!(toolbar_titles(&mut b), ["Before", "Lost", "New 0", "New 1", "New 2", "New 3", "New 4"]);
+}
+
+/// a and b each upload a bookmark after a backup, and the server goes back to it. b syncs first
+/// and uploads more than a's cursor is ahead by, so a's own cursor no longer shows the restore;
+/// a fresh device c sees what was lost only if a uploads everything again too. With `b_ahead`, b
+/// synced past the backup, so the server sees that b's cursor is ahead.
+fn restored_server_test(name: &str, b_ahead: bool, settings: &[(&str, &str)]) {
+    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
+        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
+        return;
+    };
+    let provider = MockProvider::start();
+    let mut server = start_server(&bin, &provider.issuer);
+    let http = Http::new();
+    let dirs = [TempDir::new(&format!("{name}-a")), TempDir::new(&format!("{name}-b")), TempDir::new(&format!("{name}-c"))];
+    let [mut a, mut b, mut c] = dirs.each_ref().map(open);
+    let url = Url::parse("https://example.com/").unwrap();
+    let add = |profile: &mut Profile, title: &str| {
+        profile.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, title, &url).unwrap();
+    };
+
+    provider.sign_in_as(name);
+    sign_in(&mut a, &http, &server.url);
+    sign_in(&mut b, &http, &server.url);
+    for i in 0..20 {
+        add(&mut a, &format!("Page {i}"));
+    }
+    sync(&mut a, &http);
+    sync(&mut b, &http);
+    let backup = server.back_up();
+    if b_ahead {
+        add(&mut b, "From b");
+        sync(&mut b, &http);
+    }
+    add(&mut a, "From a");
+    sync(&mut a, &http);
+    server.restore(&backup, settings);
+
+    let http = Http::new();
+    if !b_ahead {
+        for i in 0..5 {
+            add(&mut b, &format!("From b {i}"));
+        }
+    }
+    sync(&mut b, &http);
+    sync(&mut a, &http);
+    sign_in(&mut c, &http, &server.url);
+    sync(&mut c, &http);
+    let titles = toolbar_titles(&mut c);
+    assert_eq!(titles.len(), if b_ahead { 22 } else { 26 }, "{titles:?}");
+    assert!(titles.contains(&"From a".to_owned()), "{titles:?}");
+}
+
+#[test]
+fn a_restore_one_device_notices_is_synced_again_by_every_device() {
+    restored_server_test("ivan", true, &[]);
+}
+
+#[test]
+fn a_restore_the_operator_marks_with_epoch_is_synced_again_by_every_device() {
+    restored_server_test("judy", false, &[("EPOCH", "1")]);
 }

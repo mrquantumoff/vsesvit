@@ -57,6 +57,7 @@ Settings come from environment variables, or from a `.env` file in the working d
 | `MAX_REQUEST_BYTES` | `33554432` | One upload request, and roughly one download page. 65536 to 134217728. |
 | `MAX_ACCOUNT_BYTES` | `1073741824` | What one account may store, bodies and ids. An upload that would pass it is refused with 507; one that does not grow the account always passes. |
 | `MAX_ACCOUNT_RECORDS` | `1000000` | Records one account may store. |
+| `EPOCH` | `0` | Raise it after restoring the database from a backup, so every device syncs everything again. |
 | `RUST_LOG` | `info` | |
 
 ## The provider
@@ -83,6 +84,8 @@ Vsesvit signs in to this server, not to the provider. It uses the authorization 
 The provider sees one request per sign-in and no others: requests for records use the session. A session ends when its browser signs out (`DELETE /v1/auth/session`), or after `SESSION_IDLE_DAYS` unused. Disabling someone at the provider does not end their sessions here; delete their rows from `sessions` to do that.
 
 `DELETE /v1/account` deletes an account's records and ends all its sessions, so every device signs in again and then uploads everything it holds. The account stays, so its sequence numbers keep counting.
+
+The database can be restored from a backup. After restoring one, raise `EPOCH` (by one is enough) and restart the server: every device then uploads everything it holds and downloads everything again, so what the backup lacks comes back from the devices that have it. Without that, the server notices a restore only when a device syncs while its cursor is still past every write the backup holds for its account. It answers that device `409`, before an upload stores anything, and then every device of the account syncs everything again. Once other devices' writes have passed those cursors, nothing shows the restore, and what the backup lacks stays lost.
 
 ## Develop
 

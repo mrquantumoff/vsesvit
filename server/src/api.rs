@@ -22,7 +22,7 @@ use vsesvit_sync_proto::{
 use crate::auth::{AuthError, Provider, challenge, random_token};
 use crate::config::Config;
 use crate::entities::logins;
-use crate::store::{self, AccountId, LoginError, NewLogin, Quota, UploadError, token_hash};
+use crate::store::{self, AccountId, DownloadError, LoginError, NewLogin, Quota, UploadError, token_hash};
 
 /// Longest `state` a browser may send through a sign-in.
 const MAX_STATE_BYTES: usize = 1024;
@@ -37,6 +37,8 @@ pub struct AppState {
     pub info: Arc<ServerInfo>,
     pub quota: Quota,
     pub session_idle: chrono::Duration,
+    /// Added to every account's epoch.
+    pub epoch: u64,
 }
 
 impl AppState {
@@ -47,6 +49,7 @@ impl AppState {
             info: Arc::new(ServerInfo { protocol: PROTOCOL, limits: config.limits }),
             quota: config.quota,
             session_idle: config.session_idle,
+            epoch: config.epoch.into(),
         }
     }
 }
@@ -279,7 +282,7 @@ async fn upload(State(state): State<AppState>, caller: Caller, Json(upload): Jso
     if upload.records.iter().any(|r| r.id.is_empty() || r.id.len() > MAX_ID_BYTES) {
         return Err(Error::Bad(StatusCode::BAD_REQUEST, "a record id is empty or too long".to_owned()));
     }
-    let stored = store::upload(&state.db, caller.account, upload.records, state.quota).await?;
+    let stored = store::upload(&state.db, caller.account, upload.records, upload.download_cursor, state.quota).await?;
     Ok(Json(Uploaded { stored }))
 }
 
@@ -294,7 +297,9 @@ async fn download(State(state): State<AppState>, caller: Caller, Query(q): Query
     let max = state.info.limits.max_batch;
     let limit = q.limit.unwrap_or(max).clamp(1, max);
     let budget = state.info.limits.max_request_bytes as usize;
-    Ok(Json(store::download(&state.db, caller.account, q.since, limit, budget).await?))
+    let mut page = store::download(&state.db, caller.account, q.since, limit, budget).await?;
+    page.epoch += state.epoch;
+    Ok(Json(page))
 }
 
 async fn delete_account(State(state): State<AppState>, caller: Caller) -> Result<StatusCode, Error> {
@@ -349,6 +354,16 @@ impl From<UploadError> for Error {
         match e {
             UploadError::Db(e) => Error::Db(e),
             UploadError::OverQuota => Error::Bad(StatusCode::INSUFFICIENT_STORAGE, e.to_string()),
+            UploadError::CursorAhead => Error::Bad(StatusCode::CONFLICT, e.to_string()),
+        }
+    }
+}
+
+impl From<DownloadError> for Error {
+    fn from(e: DownloadError) -> Error {
+        match e {
+            DownloadError::Db(e) => Error::Db(e),
+            DownloadError::CursorAhead => Error::Bad(StatusCode::CONFLICT, e.to_string()),
         }
     }
 }

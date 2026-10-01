@@ -24,7 +24,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
-use vsesvit_sync_proto::{OAuthError, Page, Record, ServerInfo, TokenResponse, Upload, Uploaded};
+use vsesvit_sync_proto::{ApiError, OAuthError, Page, Record, ServerInfo, TokenResponse, Upload, Uploaded};
 use vsesvit_sync_server::api::{self, AppState};
 use vsesvit_sync_server::config::{Config, DatabaseConfig};
 use vsesvit_sync_server::entities::sessions;
@@ -237,7 +237,7 @@ fn record(kind: u8, id: &str, body: &str) -> Record {
 }
 
 async fn upload(app: &TestApp, token: &str, records: Vec<Record>) -> StatusCode {
-    let body = serde_json::to_value(Upload { records }).unwrap();
+    let body = serde_json::to_value(Upload { records, download_cursor: 0 }).unwrap();
     call::<Uploaded>(app, "POST", "/v1/records", Some(token), Some(body)).await.0
 }
 
@@ -394,6 +394,40 @@ async fn a_download_pages_through_writes_in_order_and_sees_each_rewrite_once() {
         assert_eq!(bodies(&third), [(2, "b", "b2")]);
         assert_eq!(download(&app, &alice, third.cursor).await.records, []);
         assert_eq!(bodies(&download(&app, &alice, 0).await), [(1, "a", "a2"), (7, "c", "c1"), (8, "d", "d1")]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_cursor_past_every_write_of_the_account_is_refused_and_starts_a_new_epoch() {
+    each_database(async |app| {
+        let alice = sign_in(&app, "alice").await;
+        upload(&app, &alice, vec![record(1, "a", "x"), record(1, "b", "x")]).await;
+        let page = download(&app, &alice, 0).await;
+        assert_eq!(download(&app, &alice, page.cursor).await.records, []);
+        // As a device holds it after the server was restored from an older backup.
+        let ahead = page.cursor + 1;
+        let (status, error) = call::<ApiError>(&app, "GET", &format!("/v1/records?since={ahead}"), Some(&alice), None).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error:?}");
+        let after = download(&app, &alice, 0).await;
+        assert_ne!(after.epoch, page.epoch, "every device learns of it, not only the one that was ahead");
+
+        // An upload is refused before it stores anything, so its own writes cannot hide the gap.
+        let body = json!({ "records": [record(1, "c", "x"), record(1, "d", "x")], "download_cursor": ahead });
+        let (status, error) = call::<ApiError>(&app, "POST", "/v1/records", Some(&alice), Some(body)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error:?}");
+        assert_eq!(download(&app, &alice, 0).await.records.len(), 2);
+        let body = json!({ "records": [record(1, "c", "x")], "download_cursor": page.cursor });
+        assert_eq!(call::<Uploaded>(&app, "POST", "/v1/records", Some(&alice), Some(body)).await.0, StatusCode::OK);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn every_page_carries_the_epoch_the_operator_set() {
+    each_database_with(&[("EPOCH", "3")], async |app| {
+        let alice = sign_in(&app, "alice").await;
+        assert_eq!(download(&app, &alice, 0).await.epoch, 3);
     })
     .await;
 }

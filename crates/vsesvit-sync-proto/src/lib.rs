@@ -26,6 +26,14 @@
 //! [`Page::cursor`] sees each later write exactly once. Its own uploads come back too, and
 //! `apply` counts them unchanged.
 //!
+//! The server can go back to an older copy of an account, as when its database is restored from a
+//! backup. A client then uploads all it holds and downloads everything again, from `since=0`, when
+//! either of two things tells it so. A download whose `since`, or an upload whose
+//! [`Upload::download_cursor`], is past every write the server holds for the account is answered
+//! `409`; the upload stores nothing, so its own writes cannot hide the gap. And [`Page::epoch`]
+//! changes, for every device of the account, once the server has answered such a `409`, or when
+//! its operator marks a restore.
+//!
 //! Errors are a status code and an [`ApiError`] body.
 
 use base64::Engine as _;
@@ -96,6 +104,9 @@ pub struct Record {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Upload {
     pub records: Vec<Record>,
+    /// The client's [`Page::cursor`]. Older clients leave it out, and 0 is never ahead.
+    #[serde(default)]
+    pub download_cursor: u64,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +122,9 @@ pub struct Page {
     pub cursor: u64,
     /// More records follow `cursor` already.
     pub more: bool,
+    /// Changes when the server's copy of the account went back. Older servers leave it out.
+    #[serde(default)]
+    pub epoch: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

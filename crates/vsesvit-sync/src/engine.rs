@@ -38,11 +38,20 @@ pub struct Account {
     /// passed them, so turning one on starts the download over.
     #[serde(default = "every_type")]
     downloading: BTreeSet<DataType>,
+    /// The [`Page::epoch`] the cursors belong to. `None` while they are at the start, until a page
+    /// comes.
+    #[serde(default = "epoch_before_tracking")]
+    epoch: Option<u64>,
     last_synced: Option<u64>,
 }
 
 fn every_type() -> BTreeSet<DataType> {
     DataType::ALL.into_iter().collect()
+}
+
+/// The epoch of every page before servers had them, so an account saved then still sees a new one.
+fn epoch_before_tracking() -> Option<u64> {
+    Some(0)
 }
 
 impl Account {
@@ -56,6 +65,7 @@ impl Account {
             download_cursor: 0,
             upload_cursors: BTreeMap::new(),
             downloading: every_type(),
+            epoch: None,
             last_synced: None,
         }
     }
@@ -194,7 +204,8 @@ impl Round {
         let Round { mut account, records, upto, mut more_up, types } = self;
         let refused = match upload(http, &account, records) {
             Ok(()) => None,
-            Err(e @ Error::Server { .. }) => Some(e),
+            // 409: the server went back to an older copy of the account, and `finish` starts over.
+            Err(e @ Error::Server { status, .. }) if status != 409 => Some(e),
             Err(e) => return Exchanged { account, upto, more_up, types, refused: None, result: Err(e) },
         };
         if let Some(e) = &refused {
@@ -211,7 +222,7 @@ impl Round {
 
 fn upload(http: &Http, account: &Account, records: Vec<Record>) -> Result<(), Error> {
     for chunk in chunks(records, account.limits) {
-        let upload = Upload { records: chunk };
+        let upload = Upload { records: chunk, download_cursor: account.download_cursor };
         authorized(account, |token| server::upload(http, &account.server, token, &upload))?;
     }
     Ok(())
@@ -298,20 +309,35 @@ impl Exchanged {
             Ok(_) => return Finished { account, result: Err(Error::SignedOut) },
             Err(e) => return Finished { account, result: Err(e) },
         }
-        let mut result = result.and_then(|page| {
-            if refused.is_none() {
-                account.upload_cursors.extend(upto);
-            }
-            let more_down = page.more;
-            let report = apply(store, &mut account, page, &types)?;
-            let again = more_up || more_down || report.merged > 0;
-            match refused {
-                // The refused changes wait for a later sync. Until nothing else is left, each
-                // round's page still shows; then the refusal is what the sync comes to.
-                Some(e) if !again => Err(e),
-                _ => Ok(Synced { report, again }),
-            }
-        });
+        let went_back = match &result {
+            Ok(page) => account.epoch.is_some_and(|epoch| epoch != page.epoch),
+            Err(e) => matches!(e, Error::Server { status: 409, .. }),
+        };
+        let mut result = if went_back {
+            // The server went back to an older copy of the account, as to a backup: everything
+            // goes up and comes down again, which changes nothing this device already has.
+            log::warn!("the sync server lost some of what this device synced with it; syncing everything again");
+            account.upload_cursors.clear();
+            account.download_cursor = 0;
+            account.epoch = None;
+            Ok(Synced { report: ApplyReport::default(), again: true })
+        } else {
+            result.and_then(|page| {
+                if refused.is_none() {
+                    account.upload_cursors.extend(upto);
+                }
+                account.epoch = Some(page.epoch);
+                let more_down = page.more;
+                let report = apply(store, &mut account, page, &types)?;
+                let again = more_up || more_down || report.merged > 0;
+                match refused {
+                    // The refused changes wait for a later sync. Until nothing else is left, each
+                    // round's page still shows; then the refusal is what the sync comes to.
+                    Some(e) if !again => Err(e),
+                    _ => Ok(Synced { report, again }),
+                }
+            })
+        };
         if let Err(e) = account.save(store) {
             log::error!("saving the sync account: {e}");
             if result.is_ok() {

@@ -33,12 +33,26 @@ pub struct Quota {
     pub max_records: i64,
 }
 
+/// A cursor is past the account's sequence number, which only happens when the database went back
+/// to an older copy.
+const CURSOR_AHEAD: &str = "the server holds fewer writes than this cursor has seen; sync everything again";
+
 #[derive(Debug, thiserror::Error)]
 pub enum UploadError {
     #[error(transparent)]
     Db(#[from] DbErr),
     #[error("the account's storage quota is full")]
     OverQuota,
+    #[error("{CURSOR_AHEAD}")]
+    CursorAhead,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DownloadError {
+    #[error(transparent)]
+    Db(#[from] DbErr),
+    #[error("{CURSOR_AHEAD}")]
+    CursorAhead,
 }
 
 pub async fn account(db: &DatabaseConnection, issuer: &str, subject: &str) -> Result<AccountId, DbErr> {
@@ -89,10 +103,29 @@ async fn bump(txn: &DatabaseTransaction, account: AccountId, seq: i64, bytes: i6
     updated.into_iter().next().ok_or_else(|| DbErr::RecordNotFound(format!("account {account}")))
 }
 
+/// Starts a new epoch for the account: a cursor past its sequence number showed that it went back,
+/// and every device of it is to sync everything again.
+async fn went_back(db: &DatabaseConnection, account: AccountId) -> Result<(), DbErr> {
+    tracing::warn!(account, "a cursor is past every write of the account, as after a restore from a backup; its devices sync everything again");
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Epoch, Expr::col(accounts::Column::Epoch).add(1))
+        .filter(accounts::Column::Id.eq(account))
+        .exec(db)
+        .await
+        .map(drop)
+}
+
 /// Stores each record's body over what was there. When one upload holds the same record twice,
 /// the later one wins. An upload that would take the account over `quota` stores nothing; one
-/// that does not grow it is always stored. Returns how many records were stored.
-pub async fn upload(db: &DatabaseConnection, account: AccountId, uploaded: Vec<Record>, quota: Quota) -> Result<u32, UploadError> {
+/// that does not grow it is always stored. One whose `download_cursor` is past every write of the
+/// account stores nothing either. Returns how many records were stored.
+pub async fn upload(
+    db: &DatabaseConnection,
+    account: AccountId,
+    uploaded: Vec<Record>,
+    download_cursor: u64,
+    quota: Quota,
+) -> Result<u32, UploadError> {
     let mut last: HashMap<(u8, &str), usize> = HashMap::new();
     for (i, r) in uploaded.iter().enumerate() {
         last.insert((r.kind, &r.id), i);
@@ -106,6 +139,11 @@ pub async fn upload(db: &DatabaseConnection, account: AccountId, uploaded: Vec<R
     }
     let txn = db.begin().await?;
     let locked = bump(&txn, account, count, 0, 0).await?;
+    if i64::try_from(download_cursor).unwrap_or(i64::MAX) > locked.seq - count {
+        txn.rollback().await?;
+        went_back(db, account).await?;
+        return Err(UploadError::CursorAhead);
+    }
 
     let mut stored: HashMap<(i16, Vec<u8>), i64> = HashMap::new();
     for chunk in records.chunks(CHUNK) {
@@ -172,9 +210,16 @@ pub async fn upload(db: &DatabaseConnection, account: AccountId, uploaded: Vec<R
 
 /// Records written after `since`, oldest write first: at most `limit`, and no more than
 /// `max_bytes` of JSON unless one record alone is larger. Rows are read a few at a time, so a page
-/// holds about `max_bytes` in memory however large the records are.
-pub async fn download(db: &DatabaseConnection, account: AccountId, since: u64, limit: u32, max_bytes: usize) -> Result<Page, DbErr> {
+/// holds about `max_bytes` in memory however large the records are. The page has the account's
+/// epoch.
+pub async fn download(db: &DatabaseConnection, account: AccountId, since: u64, limit: u32, max_bytes: usize) -> Result<Page, DownloadError> {
     let since = i64::try_from(since).unwrap_or(i64::MAX);
+    let row = accounts::Entity::find_by_id(account).one(db).await?;
+    let (seq, epoch) = row.map_or((0, 0), |a| (a.seq, a.epoch as u64));
+    if since > seq {
+        went_back(db, account).await?;
+        return Err(DownloadError::CursorAhead);
+    }
     let mut cursor = since;
     let mut records = Vec::new();
     let mut bytes = 0;
@@ -191,7 +236,7 @@ pub async fn download(db: &DatabaseConnection, account: AccountId, since: u64, l
             // base64 grows a body by a third; the rest is the JSON around it.
             let json = row.body.len().div_ceil(3) * 4 + row.record_id.len() + 64;
             if records.len() == limit as usize || (!records.is_empty() && bytes + json > max_bytes) {
-                return Ok(Page { records, cursor: cursor as u64, more: true });
+                return Ok(Page { records, cursor: cursor as u64, more: true, epoch });
             }
             bytes += json;
             cursor = row.seq;
@@ -200,7 +245,7 @@ pub async fn download(db: &DatabaseConnection, account: AccountId, since: u64, l
             }
         }
         if exhausted {
-            return Ok(Page { records, cursor: cursor as u64, more: false });
+            return Ok(Page { records, cursor: cursor as u64, more: false, epoch });
         }
     }
 }

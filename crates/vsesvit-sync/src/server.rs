@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn a_download_page_over_ten_mebibytes_is_read() {
         let records = (0..12).map(|i| Record { kind: 1, id: i.to_string(), body: vec![b'x'; 1_000_000] }).collect();
-        let page = serde_json::to_vec(&Page { records, cursor: 12, more: false }).unwrap();
+        let page = serde_json::to_vec(&Page { records, cursor: 12, more: false, epoch: 0 }).unwrap();
         assert!(page.len() > 10 << 20);
         let server = serve_once(page);
         let limits = Limits { max_batch: 500, max_record_bytes: 1 << 20, max_request_bytes: 32 << 20 };

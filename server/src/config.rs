@@ -18,6 +18,7 @@
 //! | `MAX_REQUEST_BYTES`       | `33554432`, also a download page's budget |
 //! | `MAX_ACCOUNT_BYTES`       | `1073741824`                              |
 //! | `MAX_ACCOUNT_RECORDS`     | `1000000`                                 |
+//! | `EPOCH`                   | `0`; raise it after restoring the database from a backup |
 //!
 //! Lists are separated by spaces or commas.
 
@@ -39,6 +40,9 @@ pub struct Config {
     pub session_idle: chrono::Duration,
     pub limits: Limits,
     pub quota: Quota,
+    /// Raised by the operator after restoring the database from a backup, so every device syncs
+    /// everything again.
+    pub epoch: u32,
 }
 
 /// The OpenID Connect provider the server signs people in with, as its client.
@@ -152,6 +156,7 @@ impl Config {
             session_idle: chrono::Duration::days(idle_days),
             limits,
             quota,
+            epoch: parse(&var, "EPOCH", 0)?,
         })
     }
 }
@@ -216,6 +221,7 @@ mod tests {
         assert_eq!(c.session_idle, chrono::Duration::days(180));
         assert!(c.database.run_migrations);
         assert_eq!(c.database.max_connections, 10);
+        assert_eq!(c.epoch, 0);
         assert!(!with("RUN_MIGRATIONS", "false").unwrap().database.run_migrations);
         assert_eq!(with("DATABASE_MAX_CONNECTIONS", "3").unwrap().database.max_connections, 3);
         assert_eq!(with("OIDC_CLIENT_SECRET", " s3cret ").unwrap().oidc.client_secret.as_deref(), Some("s3cret"));
@@ -263,6 +269,7 @@ mod tests {
             ("DATABASE_MAX_CONNECTIONS", "0"),
             ("DATABASE_MAX_CONNECTIONS", "-1"),
             ("SESSION_IDLE_DAYS", "0"),
+            ("EPOCH", "-1"),
         ] {
             assert!(with(name, value).is_err(), "{name}={value}");
         }
