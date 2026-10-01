@@ -514,13 +514,16 @@ fn parse_page_message(message: &str, bindings: &Bindings) -> Option<PageMessage>
     }
 }
 
-/// The script every new top-level document runs in the shortcut world. It reads the key sets
-/// at each key press, so `Bindings::keys_script` can change them in a loaded document.
+/// The script every new document runs in the shortcut world. It reads the key sets at each key
+/// press, so `Bindings::keys_script` can change them in a loaded document. Frames report keys
+/// too, since a key pressed in a focused frame never reaches the top document (frames from
+/// other sites run in processes the script does not reach); only the top document reports
+/// links, zoom and store requests.
 fn page_script() -> String {
     format!(
         r#"(() => {{
   const report = globalThis.{BINDING};
-  if (typeof report !== "function" || window !== window.top) return;
+  if (typeof report !== "function") return;
   const none = new Set();
   const keys = (kind) => (globalThis.{KEYS} || {{}})[kind] || none;
   const mods = (e) => (e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0);
@@ -536,6 +539,7 @@ fn page_script() -> String {
     else if (keys("swallowed").has(chord(e))) e.preventDefault();
   }}, true);
   addEventListener("keydown", (e) => {{ if (e.isTrusted && !e.defaultPrevented && keys("overridable").has(chord(e))) send(e); }}, false);
+  if (window !== window.top) return;
   const link = (e) => {{
     const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
     if (a) report(JSON.stringify({{ t: "link", url: a.href }}));
@@ -965,5 +969,18 @@ mod tests {
             !script.source.contains("q7x9secret"),
             "the world's name stays out of the page"
         );
+    }
+
+    #[test]
+    fn the_script_handles_keys_in_every_frame() {
+        let source = PageScript::new("x").source;
+        let top_only = source.find("window !== window.top").unwrap();
+        assert!(
+            top_only > source.rfind(r#"addEventListener("keydown""#).unwrap(),
+            "a focused frame gets the key presses, not the top document"
+        );
+        assert!(top_only < source.find(r#"addEventListener("click""#).unwrap());
+        assert!(top_only < source.find("zoom()").unwrap());
+        assert!(top_only < source.find("vsesvit-store").unwrap());
     }
 }
