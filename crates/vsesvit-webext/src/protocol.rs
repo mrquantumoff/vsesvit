@@ -97,6 +97,7 @@ impl Call {
 pub enum Method {
     RuntimeSendMessage,
     RuntimeOpenOptionsPage,
+    RuntimeReload,
     StorageGet,
     StorageSet,
     StorageRemove,
@@ -132,6 +133,7 @@ impl Method {
         match self {
             Method::RuntimeSendMessage => "runtime.sendMessage",
             Method::RuntimeOpenOptionsPage => "runtime.openOptionsPage",
+            Method::RuntimeReload => "runtime.reload",
             Method::StorageGet => "storage.get",
             Method::StorageSet => "storage.set",
             Method::StorageRemove => "storage.remove",
@@ -163,9 +165,10 @@ impl Method {
         }
     }
 
-    const ALL: [Method; 30] = [
+    const ALL: [Method; 31] = [
         Method::RuntimeSendMessage,
         Method::RuntimeOpenOptionsPage,
+        Method::RuntimeReload,
         Method::StorageGet,
         Method::StorageSet,
         Method::StorageRemove,
@@ -439,6 +442,7 @@ mod tests {
         }
         assert!(Method::StorageSet.allowed_in_content_script());
         assert!(!Method::TabsCreate.allowed_in_content_script());
+        assert!(!Method::RuntimeReload.allowed_in_content_script());
     }
 
     #[test]

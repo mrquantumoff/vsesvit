@@ -122,6 +122,16 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
             reply.finish(storage(inner, ext, &call));
         }
         Method::RuntimeOpenOptionsPage => reply.finish(open_options_page(inner, ext)),
+        Method::RuntimeReload => {
+            reply.ok(None);
+            // Not while the calling page is still handling its own call.
+            let (inner, id) = (Rc::downgrade(inner), ext.id.clone());
+            glib::idle_add_local_once(move || {
+                if let Some(inner) = inner.upgrade() {
+                    crate::runtime::reload(&inner, &id);
+                }
+            });
+        }
         Method::TabsQuery | Method::TabsGet | Method::TabsGetCurrent | Method::TabsCreate | Method::TabsUpdate | Method::TabsRemove | Method::TabsReload => {
             reply.finish(tabs(inner, ext, origin, &call));
         }

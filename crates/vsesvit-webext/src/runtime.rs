@@ -300,6 +300,27 @@ impl Runtime {
     }
 }
 
+/// `runtime.reload()`: load the extension afresh from its install, as a re-enable (Chrome
+/// fires no lifecycle event when a packed extension reloads), so its background, alarms
+/// and content scripts start over. Tabs showing its pages reload onto the new instance,
+/// whose API the old documents can no longer reach.
+pub(crate) fn reload(inner: &Rc<Inner>, id: &ExtensionId) {
+    let installed = inner.profile.borrow_mut().extensions().get(id);
+    let result = match installed {
+        Ok(Some(installed)) => Runtime(inner.clone()).load_with(&installed, LoadReason::Enable).map_err(|e| e.to_string()),
+        Ok(None) => Err("no longer installed".to_owned()),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Err(e) = result {
+        log::warn!("{}: runtime.reload: {e}", id.as_str());
+        return;
+    }
+    let Some(ext) = inner.extension(id) else { return };
+    for (_, view) in inner.page_tab_views(&ext) {
+        view.reload();
+    }
+}
+
 /// Content scripts in the extension's world, the page shim (default world, the
 /// extension's own documents only) and one handler for each, so an extension page the
 /// tab navigates to has its API.

@@ -234,7 +234,7 @@
   if (isPage) {
     runtime.openOptionsPage = bridged("runtime.openOptionsPage");
     runtime.getBackgroundPage = local(() => { throw new Error("runtime.getBackgroundPage is not supported by Vsesvit"); });
-    runtime.reload = () => g.location.reload();
+    runtime.reload = () => { post("runtime.reload", []).catch(() => {}); };
 
     // A classic MV3 service worker runs as the generated background page's script. The
     // page loads what the worker imports by string literal ahead of it (extension.rs), so

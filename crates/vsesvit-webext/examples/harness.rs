@@ -29,7 +29,8 @@
 //!    `javascript:` and `file:`; a web page cannot navigate a tab to the options page, with
 //!    or without a Referer, nor get it by a reload, while going back to it still works;
 //! 8. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
-//!    and an uninstall followed by a reinstall fires `onInstalled(install)` again.
+//!    `runtime.reload()` from a page restarts the background and drops its alarms, and an
+//!    uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
 //! Prints every observation and exits non-zero on failure. Runs under WSLg; the window
 //! is created but not presented unless `--show` is given, so nothing steals focus.
@@ -489,6 +490,28 @@ mod linux {
             let lives = if lives.is_some() { Some(self.twin_lives()) } else { None };
             let enable_ok = lives.as_ref().is_some_and(|l| l.len() == 2 && l.iter().any(|life| life == &["alive".to_owned()]));
             self.note("enable_fires_nothing", enable_ok, format!("background lives after load_with(Enable) = {lives:?}"));
+
+            // runtime.reload() from a page restarts the whole extension: a new background
+            // life (no lifecycle event, as for a packed extension in Chrome), its alarms
+            // gone, and the page reloaded with a working API.
+            let Some(options_url) = self.host.tabs().into_iter().map(|t| t.url).find(|u| u.ends_with("/options.html")) else {
+                self.note("runtime_reload", false, "no options tab to reload from");
+                return;
+            };
+            let page = self.host.create_tab(&options_url, false).expect("options tab");
+            let view = self.host.web_view(page).expect("options tab view");
+            self.wait_for_js(&view, "JSON.stringify(window.__twinOptions || null)", None, |v| v.contains("\"done\":true")).await;
+            let before = self.twin_lives().len();
+            let armed = self.eval_async(&view, "await chrome.alarms.create('before-reload', { delayInMinutes: 5 }); window.__beforeReload = true; chrome.runtime.reload(); return (await chrome.alarms.getAll()).length;").await;
+            let lives = wait_for_value(|| {
+                let lives = self.twin_lives();
+                (lives.len() > before).then_some(lives)
+            }, TIMEOUT).await;
+            let reloaded = self.wait_for_js(&view, "String(!window.__beforeReload && !!(window.__twinOptions && window.__twinOptions.done))", None, |v| v == "true").await;
+            let alarms = self.eval_async(&view, "return (await chrome.alarms.getAll()).map((a) => a.name);").await;
+            let reload_ok = armed == Some(serde_json::json!(1)) && lives.as_ref().is_some_and(|l| l.len() == before + 1) && reloaded.as_deref() == Some("true") && alarms == Some(serde_json::json!([]));
+            self.note("runtime_reload", reload_ok, format!("alarms before = {armed:?}; lives {before} -> {lives:?}; page reloaded = {reloaded:?}; alarms after = {alarms:?}"));
+            self.host.remove_tab(page);
 
             self.runtime.unload(&id);
             if let Err(e) = self.profile.borrow_mut().extensions().uninstall(&id) {
