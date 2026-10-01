@@ -25,6 +25,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use vsesvit_core::ext_storage::Area;
 
 /// Error text Chrome uses when nobody listens for a message.
 pub const NO_RECEIVER: &str = "Could not establish connection. Receiving end does not exist.";
@@ -186,28 +187,21 @@ impl<'de> Deserialize<'de> for Method {
     }
 }
 
-/// `chrome.storage` area names as the shim sends them.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum StorageArea {
-    Local,
-    Sync,
+/// The `chrome.storage` area the shim names.
+pub fn storage_area(v: &Value) -> Result<Area, String> {
+    match v.as_str() {
+        Some("local") => Ok(Area::Local),
+        Some("sync") => Ok(Area::Sync),
+        Some(other) => Err(format!("storage area {other:?} is not supported")),
+        None => Err("storage area must be a string".into()),
+    }
 }
 
-impl StorageArea {
-    pub fn from_arg(v: &Value) -> Result<StorageArea, String> {
-        match v.as_str() {
-            Some("local") => Ok(StorageArea::Local),
-            Some("sync") => Ok(StorageArea::Sync),
-            Some(other) => Err(format!("storage area {other:?} is not supported")),
-            None => Err("storage area must be a string".into()),
-        }
-    }
-
-    pub const fn name(self) -> &'static str {
-        match self {
-            StorageArea::Local => "local",
-            StorageArea::Sync => "sync",
-        }
+/// A `chrome.storage` area's name, as the shim and `storage.onChanged` spell it.
+pub const fn area_name(area: Area) -> &'static str {
+    match area {
+        Area::Local => "local",
+        Area::Sync => "sync",
     }
 }
 
@@ -364,7 +358,7 @@ mod tests {
         let c = Call::from_json(r#"{"m":"storage.get","a":["local",["visits"]],"u":"http://x/","top":true}"#).unwrap();
         assert_eq!(c.method, Method::StorageGet);
         assert_eq!(c.args.len(), 2);
-        assert_eq!(StorageArea::from_arg(c.arg(0)).unwrap(), StorageArea::Local);
+        assert_eq!(storage_area(c.arg(0)).unwrap(), Area::Local);
         assert_eq!(c.arg(1), &json!(["visits"]));
         assert_eq!(c.arg(5), &Value::Null);
         assert!(c.top_frame);
@@ -378,8 +372,16 @@ mod tests {
         let err = Call::from_json(r#"{"m":"tabs.captureVisibleTab","a":[]}"#).unwrap_err();
         assert!(err.contains("tabs.captureVisibleTab is not supported"), "{err}");
         assert!(Call::from_json("nonsense").is_err());
-        assert!(StorageArea::from_arg(&json!("session")).is_err());
-        assert!(StorageArea::from_arg(&json!(1)).is_err());
+        assert!(storage_area(&json!("session")).unwrap_err().contains("not supported"));
+        assert_eq!(storage_area(&json!(1)).unwrap_err(), "storage area must be a string");
+    }
+
+    #[test]
+    fn storage_areas_round_trip_through_their_names() {
+        for area in [Area::Local, Area::Sync] {
+            assert_eq!(storage_area(&json!(area_name(area))).unwrap(), area);
+        }
+        assert_eq!(area_name(Area::Sync), "sync");
     }
 
     #[test]

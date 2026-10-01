@@ -19,7 +19,7 @@ use webkit::prelude::*;
 use webkit::{gio, glib};
 
 use crate::extension::{Alarm, Extension, ViewId};
-use crate::protocol::{self, Call, Dispatched, Method, NO_RECEIVER, Replies, Sender, StorageArea};
+use crate::protocol::{self, Call, Dispatched, Method, NO_RECEIVER, Replies, Sender};
 use crate::runtime::Inner;
 use crate::tabs::{TabId, TabInfo};
 
@@ -185,7 +185,7 @@ pub(crate) fn emit_to_tabs(inner: &Inner, ext: &Extension, event: &str, args: &[
     }
 }
 
-pub(crate) fn storage_changed(inner: &Inner, ext: &Extension, area: StorageArea, changes: &[StorageChange]) {
+pub(crate) fn storage_changed(inner: &Inner, ext: &Extension, area: Area, changes: &[StorageChange]) {
     if changes.is_empty() {
         return;
     }
@@ -200,7 +200,7 @@ pub(crate) fn storage_changed(inner: &Inner, ext: &Extension, area: StorageArea,
         }
         map.insert(c.key.clone(), Value::Object(entry));
     }
-    let args = [Value::Object(map), json!(area.name())];
+    let args = [Value::Object(map), json!(protocol::area_name(area))];
     emit_to_pages(inner, ext, "storage.onChanged", &args);
     emit_to_tabs(inner, ext, "storage.onChanged", &args);
 }
@@ -290,11 +290,7 @@ fn deliver(targets: Vec<Target>, reply: Reply) {
 // --- storage ----------------------------------------------------------------------------
 
 fn storage(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<Value>, String> {
-    let area = StorageArea::from_arg(call.arg(0))?;
-    let core_area = match area {
-        StorageArea::Local => Area::Local,
-        StorageArea::Sync => Area::Sync,
-    };
+    let area = protocol::storage_area(call.arg(0))?;
     let core_err = |e: vsesvit_core::Error| e.to_string();
     let changes = {
         let mut profile = inner.profile.borrow_mut();
@@ -302,24 +298,24 @@ fn storage(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option
         match call.method {
             Method::StorageGet => {
                 let keys = key_list(call.arg(1))?;
-                let items = store.get(&ext.id, core_area, keys.as_deref()).map_err(core_err)?;
+                let items = store.get(&ext.id, area, keys.as_deref()).map_err(core_err)?;
                 return Ok(Some(Value::Object(items.into_iter().collect())));
             }
             Method::StorageGetBytesInUse => {
                 let keys = key_list(call.arg(1))?;
-                let n = store.bytes_in_use(&ext.id, core_area, keys.as_deref()).map_err(core_err)?;
+                let n = store.bytes_in_use(&ext.id, area, keys.as_deref()).map_err(core_err)?;
                 return Ok(Some(json!(n)));
             }
             Method::StorageSet => {
                 let items: BTreeMap<String, Value> =
                     call.arg(1).as_object().ok_or("storage.set: items must be an object")?.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                store.set(&ext.id, core_area, items).map_err(core_err)?
+                store.set(&ext.id, area, items).map_err(core_err)?
             }
             Method::StorageRemove => {
                 let keys = key_list(call.arg(1))?.ok_or("storage.remove: keys required")?;
-                store.remove(&ext.id, core_area, &keys).map_err(core_err)?
+                store.remove(&ext.id, area, &keys).map_err(core_err)?
             }
-            Method::StorageClear => store.clear(&ext.id, core_area).map_err(core_err)?,
+            Method::StorageClear => store.clear(&ext.id, area).map_err(core_err)?,
             _ => unreachable!("not a storage method"),
         }
     };

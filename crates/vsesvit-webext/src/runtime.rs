@@ -8,7 +8,7 @@ use std::time::UNIX_EPOCH;
 
 use serde_json::{Value, json};
 use vsesvit_core::Profile;
-use vsesvit_core::ext_storage::StorageChange;
+use vsesvit_core::ext_storage::{Area, StorageChange};
 use vsesvit_core::extensions::{ExtensionId, InstalledExtension};
 use webkit::glib;
 use webkit::prelude::*;
@@ -16,7 +16,7 @@ use webkit::prelude::*;
 use crate::bridge::{self, Origin};
 use crate::extension::{Extension, ViewKind};
 use crate::lifecycle::{self, InstallEvent, LoadReason};
-use crate::protocol::{Sender, StorageArea};
+use crate::protocol::Sender;
 use crate::tabs::{TabHost, TabId, TabInfo};
 use crate::{filters, patterns, scheme, views};
 
@@ -281,7 +281,7 @@ impl Runtime {
     /// `storage.onChanged` in every context of that extension.
     pub fn storage_sync_changed(&self, ext: &ExtensionId, changes: &[StorageChange]) {
         if let Some(ext) = self.0.extension(ext) {
-            bridge::storage_changed(&self.0, &ext, StorageArea::Sync, changes);
+            bridge::storage_changed(&self.0, &ext, Area::Sync, changes);
         }
     }
 
