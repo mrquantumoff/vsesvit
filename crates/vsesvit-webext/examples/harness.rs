@@ -13,7 +13,8 @@
 //!    page's;
 //! 4. the server saw `/allowed.png` and never `/vsesvit-blocked/pixel.png`;
 //! 5. the probe popup shows `visits=N`; page APIs and events work in it; its
-//!    `scripting.executeScript` is refused (no `scripting` permission);
+//!    `scripting.executeScript` is refused (no `scripting` permission); its `<all_urls>`
+//!    reaches no `file:` page (no content script, no tab URL);
 //! 6. the widget popup's iframe loads in place instead of being blanked and opened as a tab;
 //! 7. the twin popup opens the options page in a tab, where `chrome.*` works
 //!    (storage, `runtime.getURL` on the hashed host, messaging both ways, `tabs.getCurrent`,
@@ -279,6 +280,20 @@ mod linux {
             // The probe has host permissions for everything but not `scripting`.
             let refused = self.eval_async(&popup, "try { await chrome.scripting.executeScript({ target: { tabId: 1 }, func: () => 1 }); return 'ran'; } catch (e) { return String(e.message); }").await;
             self.note("scripting_permission_required", refused.as_ref().and_then(Value::as_str).is_some_and(|s| s.contains("\"scripting\" permission")), format!("{refused:?}"));
+
+            // `<all_urls>` does not reach local files without the user's file-access grant,
+            // which Vsesvit does not offer: no content script there, and the URL stays hidden.
+            let page = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/site/index.html").canonicalize().expect("fixture page");
+            let file_url = format!("file://{}", page.display());
+            let local = self.host.create_tab(&file_url, false).expect("file tab");
+            let local_view = self.host.web_view(local).expect("file tab view");
+            wait_until(|| local_view.title().as_deref() == Some("Vsesvit fixture"), TIMEOUT).await;
+            glib::timeout_future(Duration::from_millis(1000)).await;
+            let injected = self.eval(&local_view, "String(document.documentElement.dataset.vsesvitProbe)", None).await;
+            let listing = self.eval_async(&popup, "return await chrome.tabs.query({});").await;
+            let seen = listing.as_ref().and_then(Value::as_array).and_then(|tabs| tabs.iter().find(|t| t["id"] == local.0).cloned()).unwrap_or(Value::Null);
+            self.note("no_file_access", injected.as_deref() == Some("undefined") && seen["id"] == local.0 && seen.get("url").is_none(), format!("content script on {file_url}: {injected:?}; tabs.query sees {seen}"));
+            self.host.remove_tab(local);
         }
 
         async fn widget_popup(&self) {

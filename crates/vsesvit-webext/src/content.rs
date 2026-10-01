@@ -23,6 +23,11 @@ pub(crate) fn user_content(
     let mut styles = Vec::new();
     for entry in &manifest.content_scripts {
         let allow: Vec<String> = entry.matches.iter().flat_map(|m| patterns::webkit_patterns(m.as_str())).collect();
+        // WebKit injects a script with no allow list everywhere; this entry matches only
+        // what the runtime may not reach (local files).
+        if allow.is_empty() {
+            continue;
+        }
         let block: Vec<String> = entry.exclude_matches.iter().flat_map(|m| patterns::webkit_patterns(m.as_str())).collect();
         let allow: Vec<&str> = allow.iter().map(String::as_str).collect();
         let block: Vec<&str> = block.iter().map(String::as_str).collect();

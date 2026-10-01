@@ -198,15 +198,17 @@ impl Extension {
 
     /// May this extension act on a document at `url` (inject scripts, read the tab's
     /// URL and title)? Its own pages, its host permissions, and an `activeTab` grant on
-    /// `tab` say yes.
+    /// `tab` say yes. Never for a local file: Chrome needs the user's file-access grant
+    /// for that, even with `activeTab`, and this runtime does not offer one.
     pub fn host_access(&self, url: &str, tab: Option<TabId>) -> bool {
-        if self.owns_url(url) || tab.is_some_and(|t| self.active_tabs.borrow().contains(&t)) {
+        if self.owns_url(url) {
             return true;
         }
-        match url::Url::parse(url) {
-            Ok(parsed) => self.manifest.host_permissions.iter().any(|p| p.matches(&parsed)),
-            Err(_) => false,
+        let parsed = url::Url::parse(url);
+        if parsed.as_ref().is_ok_and(|u| u.scheme() == "file") {
+            return false;
         }
+        tab.is_some_and(|t| self.active_tabs.borrow().contains(&t)) || parsed.is_ok_and(|u| self.manifest.host_permissions.iter().any(|p| p.matches(&u)))
     }
 
     /// May this extension see `tab`'s URL and title? The `tabs` permission or host

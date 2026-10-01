@@ -6,10 +6,15 @@
 use vsesvit_core::extensions::manifest::WebAccessible;
 
 /// WebKit's `UserContentURLPattern` has no `<all_urls>` and no `*://` scheme, so both are
-/// expanded. Other schemes pass through unchanged.
+/// expanded. Local files need the user's file-access grant in Chrome, which this runtime
+/// does not offer, so `<all_urls>` leaves `file:` out and a `file:` pattern matches nothing.
+/// Other schemes pass through unchanged.
 pub fn webkit_patterns(source: &str) -> Vec<String> {
     if source == "<all_urls>" {
-        return vec!["http://*/*".into(), "https://*/*".into(), "file://*/*".into()];
+        return vec!["http://*/*".into(), "https://*/*".into()];
+    }
+    if source.starts_with("file:") {
+        return Vec::new();
     }
     match source.strip_prefix("*://") {
         Some(rest) => vec![format!("http://{rest}"), format!("https://{rest}")],
@@ -153,7 +158,8 @@ mod tests {
 
     #[test]
     fn expansion() {
-        assert_eq!(webkit_patterns("<all_urls>"), ["http://*/*", "https://*/*", "file://*/*"]);
+        assert_eq!(webkit_patterns("<all_urls>"), ["http://*/*", "https://*/*"]);
+        assert!(webkit_patterns("file:///*").is_empty());
         assert_eq!(webkit_patterns("*://*.example.com/*"), ["http://*.example.com/*", "https://*.example.com/*"]);
         assert_eq!(webkit_patterns("https://a.test/x*"), ["https://a.test/x*"]);
     }
