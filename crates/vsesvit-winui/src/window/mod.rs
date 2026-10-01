@@ -31,7 +31,7 @@ use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
 use crate::bookmark_editor::{Editor, Target};
-use crate::bookmarks_bar::{Bar, BarCommand, BarHost, BarItem, Disposition};
+use crate::bookmarks_bar::{Bar, BarCommand, BarItem, Disposition};
 use crate::browser::{Browser, ClosedTab};
 use crate::connection::Headline;
 use crate::dialogs::{self, Dialog};
@@ -234,12 +234,14 @@ impl BrowserWindow {
             ui.bookmarks_bar.clone(),
             ui.bookmark_items.clone(),
             ui.bookmarks_overflow.clone(),
-            bar_host(&slot),
+            // The bar and toolbar are created before the window, so their commands reach it
+            // through `slot`.
+            Rc::new(wiring::later(&slot, BrowserWindow::bar_command)),
         )?;
         let toolbar = toolbar::Toolbar::new(
             ui.pinned_extensions.clone(),
             ui.extensions_menu.clone(),
-            toolbar_host(&slot),
+            Rc::new(wiring::later(&slot, BrowserWindow::toolbar_command)),
         )?;
         let events = Rc::new(strip_events(&slot));
         let top = TopStrip::new(ui.tab_view.clone(), &events)?;
@@ -1627,33 +1629,6 @@ async fn save_page(window: Weak<BrowserWindow>, tab: Rc<Tab>) {
     if let Some(window) = window.upgrade() {
         window.show_failure("Could not save the page", &failure);
     }
-}
-
-/// The bookmarks bar's commands reach the window through `slot`, as it is created after the
-/// bar. They run on the next turn: a command may rebuild the menu or bar entry it came from.
-fn bar_host(slot: &wiring::WindowSlot) -> BarHost {
-    let slot = slot.clone();
-    Rc::new(move |command| {
-        let window = slot.get().cloned();
-        exec::spawn(async move {
-            if let Some(window) = window.and_then(|w| w.upgrade()) {
-                window.bar_command(command);
-            }
-        });
-    })
-}
-
-/// The extension toolbar's commands, like the bookmarks bar's (see `bar_host`).
-fn toolbar_host(slot: &wiring::WindowSlot) -> toolbar::Host {
-    let slot = slot.clone();
-    Rc::new(move |command| {
-        let window = slot.get().cloned();
-        exec::spawn(async move {
-            if let Some(window) = window.and_then(|w| w.upgrade()) {
-                window.toolbar_command(command);
-            }
-        });
-    })
 }
 
 /// How much of a restored window's title bar must be on a display for it to stay where it was

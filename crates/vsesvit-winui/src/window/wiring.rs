@@ -252,27 +252,38 @@ impl BrowserWindow {
 /// The window is created after its tab lists, so their events reach it through `slot`.
 pub(super) type WindowSlot = Rc<OnceCell<Weak<BrowserWindow>>>;
 
-pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
-    let on = |slot: &WindowSlot| {
-        let slot = slot.clone();
-        move |f: &dyn Fn(&BrowserWindow)| {
-            if let Some(window) = slot.get().and_then(Weak::upgrade) {
-                f(&window);
-            }
+/// Runs a callback on the window in `slot`, if it is still open.
+fn on(slot: &WindowSlot) -> impl Fn(&dyn Fn(&BrowserWindow)) + 'static {
+    let slot = slot.clone();
+    move |f| {
+        if let Some(window) = slot.get().and_then(Weak::upgrade) {
+            f(&window);
         }
-    };
-    let w = on(slot);
-    let selection_changed = Box::new(move |kind| w(&|w| w.strip_selection_changed(kind)));
-    let w = slot.clone();
-    let close = Box::new(move |id| {
-        // A close button's click must finish before its row goes away.
-        let w = w.get().cloned();
+    }
+}
+
+/// Runs `run` on the window in `slot` on the next turn, so the control that fired it finishes
+/// first: a command may rebuild or remove the menu, button or row it came from.
+pub(super) fn later<C: 'static>(
+    slot: &WindowSlot,
+    run: fn(&BrowserWindow, C),
+) -> impl Fn(C) + 'static {
+    let slot = slot.clone();
+    move |c| {
+        let window = slot.get().cloned();
         exec::spawn(async move {
-            if let Some(w) = w.and_then(|w| w.upgrade()) {
-                w.close_tab(id);
+            if let Some(window) = window.and_then(|w| w.upgrade()) {
+                run(&window, c);
             }
         });
-    });
+    }
+}
+
+pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
+    let w = on(slot);
+    let selection_changed = Box::new(move |kind| w(&|w| w.strip_selection_changed(kind)));
+    // A close button's click must finish before its row goes away.
+    let close = Box::new(later(slot, BrowserWindow::close_tab));
     let w = on(slot);
     let new_tab = Box::new(move || w(&|w| w.run(Command::NewTab)));
     let w = on(slot);
@@ -326,14 +337,6 @@ pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
 }
 
 pub(super) fn player_events(slot: &WindowSlot) -> PlayerEvents {
-    let on = |slot: &WindowSlot| {
-        let slot = slot.clone();
-        move |f: &dyn Fn(&BrowserWindow)| {
-            if let Some(window) = slot.get().and_then(Weak::upgrade) {
-                f(&window);
-            }
-        }
-    };
     let w = on(slot);
     let go_to_tab = Box::new(move || w(&|w| w.player_go_to_tab()));
     let w = on(slot);
