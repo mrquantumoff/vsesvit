@@ -19,6 +19,7 @@ use super::{LibraryWindow, Windowed, confirm, prompt_choice, prompt_text};
 use crate::bookmark_drag::{self, Zone};
 use crate::bookmark_editor::{self, Subject};
 use crate::browser::Browser;
+use crate::downloads::file_name;
 use crate::favicons;
 use crate::profile::Core;
 use crate::tab::display_uri;
@@ -70,8 +71,7 @@ impl From<import::Found> for Import {
 
 impl Import {
     pub(crate) fn file(path: PathBuf) -> Self {
-        let from = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-        Import { folder: import::FILE_FOLDER_TITLE.to_owned(), from, source: Source::File(path) }
+        Import { folder: import::FILE_FOLDER_TITLE.to_owned(), from: file_name(&path), source: Source::File(path) }
     }
 
     /// Reads the source on a worker thread, then adds what it holds. How many items were
