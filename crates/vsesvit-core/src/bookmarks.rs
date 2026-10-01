@@ -900,6 +900,22 @@ impl Bookmarks<'_> {
         if id == parent || self.model().tree.is_ancestor(id, parent) || self.on_raw_chain(id, parent) {
             return Err(BookmarkError::WouldCycle.into());
         }
+        // Dropped back on its own slot: a new position would mint a stamp that re-uploads
+        // the node and beats a concurrent move made elsewhere.
+        if rec.placement.v.parent == parent {
+            let children = self.model().tree.children(parent);
+            if let Some(cur) = children.iter().position(|&c| c == id) {
+                let others = children.len() - 1;
+                let want = match at {
+                    InsertAt::Start => 0,
+                    InsertAt::End => others,
+                    InsertAt::Index(i) => i.min(others),
+                };
+                if cur == want {
+                    return Ok(());
+                }
+            }
+        }
         let pos = self.position_for(parent, at, Some(id));
         let placement = Placement { parent, pos };
         if placement == rec.placement.v {

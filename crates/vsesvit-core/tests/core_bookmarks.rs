@@ -133,8 +133,12 @@ fn move_between_folders_and_reorder() {
     // moving a node onto its own slot changes nothing
     let upto = p.sync().changes_since(Kind::Bookmarks, Seq::ZERO, usize::MAX).unwrap().upto;
     p.bookmarks().move_to(a, f, InsertAt::Index(1)).unwrap();
+    p.bookmarks().move_to(a, f, InsertAt::Index(99)).unwrap();
+    p.bookmarks().move_to(a, f, InsertAt::End).unwrap();
+    p.bookmarks().move_to(b, f, InsertAt::Start).unwrap();
+    p.bookmarks().move_to(b, f, InsertAt::Index(0)).unwrap();
     assert_eq!(titles(&mut p, f), ["B", "A"]);
-    let _ = upto;
+    assert_eq!(p.sync().changes_since(Kind::Bookmarks, Seq::ZERO, usize::MAX).unwrap().upto, upto, "nothing to upload");
     // cycles
     let g = p.bookmarks().add_folder(f, InsertAt::End, "G").unwrap();
     assert!(matches!(p.bookmarks().move_to(f, g, InsertAt::End), Err(Error::Bookmark(BookmarkError::WouldCycle))));
