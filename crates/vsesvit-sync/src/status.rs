@@ -80,7 +80,7 @@ impl State {
                 server_editable: false,
             },
             State::SignedIn { name, server, last_synced, syncing, error, needs_sign_in } => {
-                let host = url::Url::parse(server).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| server.clone());
+                let host = crate::host_of(server);
                 let title = match name {
                     Some(name) => format!("Signed in as {name}"),
                     None => format!("Signed in to {host}"),
@@ -161,6 +161,8 @@ mod tests {
         };
         let s = with(true, None, false);
         assert_eq!((s.title.as_str(), s.subtitle.as_str(), s.busy), ("Signed in to vsesvit-service.mrquantumoff.dev", "Syncing…", true));
+        let s = State::SignedIn { name: None, server: "not a url".to_owned(), last_synced, syncing: false, error: None, needs_sign_in: false }.status(1000);
+        assert_eq!(s.title, "Signed in to not a url");
         assert_eq!(with(false, Some("could not reach x"), false).subtitle, "Sync failed: could not reach x");
         let s = with(false, None, true);
         assert_eq!((s.subtitle.as_str(), s.actions.as_slice()), ("Sign in again to keep syncing.", &[Action::SignIn, Action::SignOut][..]));
