@@ -8,27 +8,28 @@ use vsesvit_core::crdt::Seq;
 use vsesvit_core::sync::{ApplyReport, DataType, Kind, SyncStore, WireRecord};
 use vsesvit_sync_proto::{Limits, Page, Record, Upload};
 
-use crate::oidc::{self, Provider, Tokens};
+use crate::auth;
 use crate::server::{self, Call};
 use crate::{Error, Http, now_secs};
 
 /// The key in core's `sync_state`. An empty value means signed out.
 const STATE_KEY: &str = "account";
-/// The key in core's sealed `sync_secrets`, which holds the tokens apart from the rest.
-const TOKENS_KEY: &str = "account.tokens";
+/// The key in core's sealed `sync_secrets`, which holds the session apart from the rest.
+const SESSION_KEY: &str = "account.session";
+/// Where protocol 1 kept the provider's tokens; cleared on sign-out.
+const OLD_TOKENS_KEY: &str = "account.tokens";
 
 /// A profile's sign-in to one sync server, with how far it has synced. Saved into the profile after
-/// every round: the tokens sealed by the profile's vault, the rest as plain JSON.
+/// every round: the session sealed by the profile's vault, the rest as plain JSON.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     /// Random per sign-in, so a round started before a sign-out cannot save over what came after.
     sign_in: String,
     server: String,
     name: Option<String>,
-    provider: Provider,
-    /// Read from JSON only to move an account saved before the vault into it.
-    #[serde(default, skip_serializing)]
-    tokens: Tokens,
+    /// The server's session, sealed apart from the JSON.
+    #[serde(skip)]
+    session: String,
     limits: Limits,
     download_cursor: u64,
     /// Per `Kind::code`, the `Seq` to pass to `changes_since` next.
@@ -45,13 +46,12 @@ fn every_type() -> BTreeSet<DataType> {
 }
 
 impl Account {
-    pub(crate) fn new(server: String, name: Option<String>, provider: Provider, tokens: Tokens, limits: Limits) -> Account {
+    pub(crate) fn new(server: String, name: Option<String>, session: String, limits: Limits) -> Account {
         Account {
-            sign_in: crate::oidc::random_token(),
+            sign_in: auth::random_token(),
             server,
             name,
-            provider,
-            tokens,
+            session,
             limits,
             download_cursor: 0,
             upload_cursors: BTreeMap::new(),
@@ -75,8 +75,9 @@ impl Account {
         self.last_synced
     }
 
-    /// `Err` when the tokens cannot be unsealed, such as with the system keyring locked: the
-    /// profile is still signed in, and loading again once it is unlocked works.
+    /// `Err` when the session cannot be unsealed, such as with the system keyring locked: the
+    /// profile is still signed in, and loading again once it is unlocked works. An account saved by
+    /// a version that signed in with the provider directly loads as signed out.
     pub fn load(store: &mut SyncStore<'_>) -> Result<Option<Account>, Error> {
         let Some(bytes) = store.engine_state(STATE_KEY)?.filter(|b| !b.is_empty()) else {
             return Ok(None);
@@ -88,24 +89,22 @@ impl Account {
                 return Ok(None);
             }
         };
-        match store.secret_state(TOKENS_KEY)? {
-            Some(sealed) => match serde_json::from_slice(&sealed) {
-                Ok(tokens) => account.tokens = tokens,
-                Err(e) => {
-                    log::warn!("the saved sync tokens are unreadable, so this device is signed out: {e}");
-                    return Ok(None);
-                }
-            },
-            // Saved before the vault, with the tokens in the plain JSON: seal them now.
-            None if !account.tokens.access.is_empty() => account.save(store)?,
-            None => return Ok(None),
+        let Some(sealed) = store.secret_state(SESSION_KEY)? else {
+            log::info!("the saved sync account has no session, so this device signs in again");
+            return Ok(None);
+        };
+        match String::from_utf8(sealed) {
+            Ok(session) if !session.is_empty() => account.session = session,
+            _ => {
+                log::warn!("the saved sync session is unreadable, so this device is signed out");
+                return Ok(None);
+            }
         }
         Ok(Some(account))
     }
 
     pub fn save(&self, store: &mut SyncStore<'_>) -> Result<(), Error> {
-        let tokens = serde_json::to_vec(&self.tokens).expect("the tokens serialize");
-        store.set_secret_state(TOKENS_KEY, &tokens)?;
+        store.set_secret_state(SESSION_KEY, self.session.as_bytes())?;
         let bytes = serde_json::to_vec(self).expect("the account serializes");
         Ok(store.set_engine_state(STATE_KEY, &bytes)?)
     }
@@ -114,21 +113,21 @@ impl Account {
     /// keyring locked: forgetting a sealed value needs no key.
     pub fn forget(store: &mut SyncStore<'_>) -> Result<(), Error> {
         store.set_engine_state(STATE_KEY, &[])?;
-        Ok(store.set_secret_state(TOKENS_KEY, &[])?)
+        store.set_secret_state(OLD_TOKENS_KEY, &[])?;
+        Ok(store.set_secret_state(SESSION_KEY, &[])?)
     }
 
-    /// Worker thread, after [`Account::forget`]: asks the provider to revoke the refresh token, where
-    /// it offers that.
+    /// Worker thread, after [`Account::forget`]: ends the session on the server, best effort.
     pub fn revoke(self, http: &Http) {
-        oidc::revoke(http, &self.provider, &self.tokens);
+        auth::sign_out(http, &self.server, &self.session);
     }
 
     /// Worker thread: deletes everything the server holds for the account. Every device keeps its
     /// copy, but uploads only what changes from then on: a device's cursors say the server has
     /// the rest. Signing in again starts a device's cursors over, and uploads everything it holds.
-    pub fn delete_server_data(mut self, http: &Http) -> Result<Account, Error> {
+    pub fn delete_server_data(self, http: &Http) -> Result<Account, Error> {
         let server = self.server.clone();
-        with_token(http, &mut self, Refresh::Allowed, |token| server::delete_account(http, &server, token))?;
+        authorized(&self, |token| server::delete_account(http, &server, token))?;
         Ok(self)
     }
 }
@@ -186,65 +185,30 @@ impl Round {
         self.records.is_empty()
     }
 
-    /// Worker thread: uploads, then downloads one page. Refreshes the access token when it is
-    /// about to expire or the server refuses it.
+    /// Worker thread: uploads, then downloads one page. Nothing it does needs finishing, so the
+    /// shell may stop waiting for it at any moment, as when the browser quits.
     pub fn run(self, http: &Http) -> Exchanged {
-        self.exchange(http, Refresh::Allowed)
-    }
-
-    /// Worker thread, as the browser quits: [`Round::run`] without ever refreshing the access
-    /// token, so the shell can stop waiting for it at any moment. A refresh rotates the refresh
-    /// token, and a round abandoned after one would lose the new token and sign the profile out.
-    /// When the access token would need refreshing it fails with [`Error::NeedsRefresh`] at once.
-    pub fn run_final(self, http: &Http) -> Exchanged {
-        self.exchange(http, Refresh::Forbidden)
-    }
-
-    fn exchange(self, http: &Http, refresh: Refresh) -> Exchanged {
-        let Round { mut account, records, upto, more_up, types } = self;
-        let result = exchange(http, &mut account, records, refresh);
+        let Round { account, records, upto, more_up, types } = self;
+        let result = exchange(http, &account, records);
         Exchanged { account, upto, more_up, types, result }
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum Refresh {
-    Allowed,
-    Forbidden,
-}
-
-fn exchange(http: &Http, account: &mut Account, records: Vec<Record>, refresh: Refresh) -> Result<Page, Error> {
-    let server = account.server.clone();
+fn exchange(http: &Http, account: &Account, records: Vec<Record>) -> Result<Page, Error> {
+    let server = &account.server;
     let limits = account.limits;
     for chunk in chunks(records, limits) {
         let upload = Upload { records: chunk };
-        with_token(http, account, refresh, |token| server::upload(http, &server, token, &upload))?;
+        authorized(account, |token| server::upload(http, server, token, &upload))?;
     }
     let since = account.download_cursor;
-    with_token(http, account, refresh, |token| server::download(http, &server, token, since, limits.max_batch))
+    authorized(account, |token| server::download(http, server, token, since, limits.max_batch))
 }
 
-/// Calls with a fresh access token, and once more with a refreshed one if the server refuses it.
-fn with_token<T>(
-    http: &Http,
-    account: &mut Account,
-    refresh: Refresh,
-    call: impl Fn(&str) -> Result<Call<T>, Error>,
-) -> Result<T, Error> {
-    if !account.tokens.fresh() {
-        if refresh == Refresh::Forbidden {
-            return Err(Error::NeedsRefresh);
-        }
-        account.tokens = oidc::refresh(http, &account.provider, &account.tokens)?;
-    }
-    if let Call::Done(value) = call(&account.tokens.access)? {
-        return Ok(value);
-    }
-    if refresh == Refresh::Forbidden {
-        return Err(Error::NeedsRefresh);
-    }
-    account.tokens = oidc::refresh(http, &account.provider, &account.tokens)?;
-    match call(&account.tokens.access)? {
+/// Calls with the session. A session the server no longer knows (signed out elsewhere, unused too
+/// long) means signing in again.
+fn authorized<T>(account: &Account, call: impl FnOnce(&str) -> Result<Call<T>, Error>) -> Result<T, Error> {
+    match call(&account.session)? {
         Call::Done(value) => Ok(value),
         Call::Unauthorized => Err(Error::SignInExpired),
     }
@@ -281,7 +245,7 @@ pub struct Exchanged {
     result: Result<Page, Error>,
 }
 
-/// The account to keep (its tokens may be new even when the round failed) and what the round did.
+/// The account to keep and what the round did.
 pub struct Finished {
     pub account: Account,
     pub result: Result<Synced, Error>,

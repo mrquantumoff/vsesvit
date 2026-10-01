@@ -27,7 +27,7 @@ async fn main() -> ExitCode {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env(|name| std::env::var(name).ok())?;
     let db = vsesvit_sync_server::connect(&config.database).await?;
-    tracing::info!(backend = ?db.get_database_backend(), issuer = %config.auth.issuer, "database ready");
+    tracing::info!(backend = ?db.get_database_backend(), issuer = %config.oidc.issuer, public_url = %config.public_url, "database ready");
     let app = api::router(AppState::new(db, &config));
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!("listening on {}", listener.local_addr()?);

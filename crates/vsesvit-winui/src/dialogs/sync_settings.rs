@@ -74,7 +74,7 @@ const DELETE_BUTTON: &str = r#"<Button {ns} x:Name="SyncDeleteServerData" Conten
 pub(super) struct Page {
     browser: Weak<Browser>,
     window: Weak<BrowserWindow>,
-    /// The Settings dialog, hidden once the provider's page opens so the page shows.
+    /// The Settings dialog, hidden once the sign-in page opens so the page shows.
     dialog: FrameworkElement,
     title: TextBlock,
     subtitle: TextBlock,

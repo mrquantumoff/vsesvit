@@ -27,14 +27,15 @@ sea-orm = { version = "2.0.4", default-features = false, features = [
     "with-chrono",
 ] }
 # ring rather than reqwest's default aws-lc-rs, which needs cmake in the image's build stage.
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider", "http2"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls-no-provider", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.23"
 url = "2.5"
 sha2 = "0.11"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+getrandom = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

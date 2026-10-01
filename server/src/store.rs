@@ -11,13 +11,13 @@ use std::collections::HashMap;
 use chrono::Utc;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait, QueryFilter,
-    QueryOrder, QuerySelect, TransactionTrait,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait,
+    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
 };
 use sha2::{Digest, Sha256};
 use vsesvit_sync_proto::{Page, Record};
 
-use crate::entities::{accounts, records};
+use crate::entities::{accounts, logins, records, sessions};
 
 /// Rows per INSERT and per `IN` list, under SQLite's and Postgres's bind parameter limits.
 const CHUNK: usize = 1000;
@@ -213,4 +213,123 @@ pub async fn delete_records(db: &DatabaseConnection, account: AccountId) -> Resu
     records::Entity::delete_many().filter(records::Column::AccountId.eq(account)).exec(&txn).await?;
     bump(&txn, account, 0, -locked.stored_bytes, -locked.record_count).await?;
     txn.commit().await
+}
+
+/// How long a sign-in may take at the provider, and how long its one-time code stays valid.
+pub const LOGIN_LIFETIME: chrono::Duration = chrono::Duration::minutes(10);
+pub const CODE_LIFETIME: chrono::Duration = chrono::Duration::minutes(2);
+/// Sign-ins under way at once, across all accounts: each costs a row until it finishes or expires.
+const MAX_PENDING_LOGINS: u64 = 10_000;
+/// A session's last use is written at most this often, not on every request.
+const TOUCH_EVERY: chrono::Duration = chrono::Duration::hours(1);
+
+pub fn token_hash(token: &str) -> Vec<u8> {
+    Sha256::digest(token.as_bytes()).to_vec()
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LoginError {
+    #[error(transparent)]
+    Db(#[from] DbErr),
+    #[error("too many sign-ins are under way; try again in a few minutes")]
+    Busy,
+}
+
+/// The browser's side of a sign-in, as `/v1/auth/authorize` received it.
+pub struct NewLogin {
+    pub client_redirect: String,
+    pub client_state: String,
+    pub client_challenge: String,
+}
+
+/// Records a sign-in and returns it; its id is the `state` for the provider. Expired sign-ins are
+/// cleared first.
+pub async fn start_login(db: &DatabaseConnection, new: NewLogin, id: String, upstream_verifier: String) -> Result<logins::Model, LoginError> {
+    let now = Utc::now();
+    logins::Entity::delete_many().filter(logins::Column::CreatedAt.lt(now - LOGIN_LIFETIME)).exec(db).await?;
+    if logins::Entity::find().count(db).await? >= MAX_PENDING_LOGINS {
+        return Err(LoginError::Busy);
+    }
+    let row = logins::ActiveModel {
+        id: Set(id),
+        client_redirect: Set(new.client_redirect),
+        client_state: Set(new.client_state),
+        client_challenge: Set(new.client_challenge),
+        upstream_verifier: Set(upstream_verifier),
+        code_hash: Set(None),
+        account_id: Set(None),
+        name: Set(None),
+        created_at: Set(now),
+        authorized_at: Set(None),
+    };
+    Ok(row.insert(db).await?)
+}
+
+/// A sign-in still waiting for the provider, by the `state` the provider sent back.
+pub async fn pending_login(db: &DatabaseConnection, id: &str) -> Result<Option<logins::Model>, DbErr> {
+    let found = logins::Entity::find_by_id(id.to_owned()).one(db).await?;
+    Ok(found.filter(|l| l.authorized_at.is_none() && l.created_at > Utc::now() - LOGIN_LIFETIME))
+}
+
+pub async fn forget_login(db: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
+    logins::Entity::delete_by_id(id.to_owned()).exec(db).await.map(drop)
+}
+
+/// The provider vouched for the person: the sign-in now waits for the browser to trade the
+/// one-time code whose hash this stores.
+pub async fn authorize_login(db: &DatabaseConnection, id: &str, account: AccountId, name: Option<String>, code_hash: Vec<u8>) -> Result<(), DbErr> {
+    logins::Entity::update_many()
+        .col_expr(logins::Column::AccountId, Expr::value(account))
+        .col_expr(logins::Column::Name, Expr::value(name))
+        .col_expr(logins::Column::CodeHash, Expr::value(code_hash))
+        .col_expr(logins::Column::AuthorizedAt, Expr::value(Utc::now()))
+        .filter(logins::Column::Id.eq(id))
+        .exec(db)
+        .await
+        .map(drop)
+}
+
+/// Takes the sign-in a one-time code belongs to: it is deleted, so the code works once. `None` when
+/// no sign-in has it, or it has expired.
+pub async fn take_login(db: &DatabaseConnection, code_hash: &[u8]) -> Result<Option<logins::Model>, DbErr> {
+    let txn = db.begin().await?;
+    let found = logins::Entity::find().filter(logins::Column::CodeHash.eq(code_hash.to_vec())).one(&txn).await?;
+    let Some(login) = found else {
+        txn.commit().await?;
+        return Ok(None);
+    };
+    let deleted = logins::Entity::delete_by_id(login.id.clone()).exec(&txn).await?.rows_affected;
+    txn.commit().await?;
+    let fresh = login.authorized_at.is_some_and(|at| at > Utc::now() - CODE_LIFETIME);
+    Ok((deleted == 1 && fresh).then_some(login))
+}
+
+pub async fn start_session(db: &DatabaseConnection, account: AccountId, token_hash: Vec<u8>) -> Result<(), DbErr> {
+    let now = Utc::now();
+    let row = sessions::ActiveModel { token_hash: Set(token_hash), account_id: Set(account), created_at: Set(now), last_used_at: Set(now) };
+    sessions::Entity::insert(row).exec_without_returning(db).await.map(drop)
+}
+
+/// The account a session token belongs to. A session unused for longer than `idle` ends here.
+pub async fn session_account(db: &DatabaseConnection, token_hash: &[u8], idle: chrono::Duration) -> Result<Option<AccountId>, DbErr> {
+    let Some(session) = sessions::Entity::find_by_id(token_hash.to_vec()).one(db).await? else {
+        return Ok(None);
+    };
+    let now = Utc::now();
+    if session.last_used_at < now - idle {
+        sessions::Entity::delete_by_id(token_hash.to_vec()).exec(db).await?;
+        return Ok(None);
+    }
+    if session.last_used_at < now - TOUCH_EVERY {
+        sessions::Entity::update_many()
+            .col_expr(sessions::Column::LastUsedAt, Expr::value(now))
+            .filter(sessions::Column::TokenHash.eq(token_hash.to_vec()))
+            .exec(db)
+            .await?;
+    }
+    Ok(Some(session.account_id))
+}
+
+pub async fn end_session(db: &DatabaseConnection, token_hash: &[u8]) -> Result<(), DbErr> {
+    sessions::Entity::delete_by_id(token_hash.to_vec()).exec(db).await.map(drop)
 }

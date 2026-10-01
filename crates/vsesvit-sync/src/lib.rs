@@ -1,7 +1,8 @@
 //! # vsesvit-sync
 //!
-//! The client side of `vsesvit_sync_proto`: signing in to a sync server with its OpenID Connect
-//! provider, and the rounds that move records between a profile and the server.
+//! The client side of `vsesvit_sync_proto`: signing in to a sync server, and the rounds that move
+//! records between a profile and the server. It talks to the sync server only: whichever provider
+//! the server signs people in with stays the server's business.
 //!
 //! Work is split the way docs/PLAN.md's threading model asks. What touches the profile runs on
 //! the UI thread; what touches the network is a `Send` value run on a worker thread:
@@ -9,7 +10,7 @@
 //! ```ignore
 //! // Sign in (worker, then UI, then worker).
 //! let pending = SignIn::start(&http, &server_url)?;          // worker
-//! open_tab(pending.authorize_url());                         // UI: the provider's page
+//! open_tab(pending.authorize_url());                         // UI: the server's sign-in page
 //! let account = pending.finish(&http)?;                      // worker: waits for the redirect
 //! account.save(&mut profile.sync())?;                        // UI
 //!
@@ -29,20 +30,20 @@
 //!
 //! | module     | owns                                                                    |
 //! |------------|-------------------------------------------------------------------------|
-//! | `oidc`     | discovery, the authorization code flow with PKCE on a loopback redirect, tokens |
+//! | `auth`     | the authorization code flow with PKCE against the server, on a loopback redirect |
 //! | `server`   | the sync server's routes                                                |
 //! | `engine`   | the account a profile is signed in with, and the round                  |
 //! | [`status`] | what Settings says about each state, for both shells                    |
 
+mod auth;
 mod engine;
-mod oidc;
 mod server;
 pub mod status;
 
 use std::time::Duration;
 
 pub use engine::{Account, Exchanged, Finished, Round, Synced};
-pub use oidc::SignIn;
+pub use auth::SignIn;
 
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
@@ -60,18 +61,16 @@ pub enum Error {
     Protocol(u32),
     #[error("unexpected answer from {0}")]
     Malformed(String),
-    #[error("none of the sign-in ports ({0}) is free")]
+    #[error("could not open a local port to finish signing in: {0}")]
     NoFreePort(String),
     #[error("the sign-in was refused: {0}")]
     Refused(String),
-    #[error("the sign-in expired; sign in again")]
+    #[error("the sync session ended; sign in again")]
     SignInExpired,
     #[error("the sign-in was cancelled")]
     Cancelled,
     #[error("signed out while syncing")]
     SignedOut,
-    #[error("the access token needs refreshing, which a final sync does not do")]
-    NeedsRefresh,
     #[error("the sign-in took too long")]
     TimedOut,
     #[error(transparent)]

@@ -7,11 +7,12 @@
 //! | `RUN_MIGRATIONS`          | `true`; `false` refuses to start on pending migrations |
 //! | `DATABASE_MAX_CONNECTIONS`| `10`                                      |
 //! | `BIND_ADDRESS`            | `0.0.0.0:8080`                            |
+//! | `PUBLIC_URL`              | required: the address browsers reach this server at |
 //! | `OIDC_ISSUER`             | required                                  |
 //! | `OIDC_CLIENT_ID`          | required                                  |
+//! | `OIDC_CLIENT_SECRET`      | none: a public client                     |
 //! | `OIDC_SCOPES`             | `openid profile`                          |
-//! | `OIDC_REDIRECT_URIS`      | `http://127.0.0.1:47801/callback` to `:47805` |
-//! | `OIDC_ALLOWED_CLIENT_IDS` | `OIDC_CLIENT_ID`; `*` accepts tokens of any client |
+//! | `SESSION_IDLE_DAYS`       | `180`                                     |
 //! | `MAX_BATCH`               | `500`                                     |
 //! | `MAX_RECORD_BYTES`        | `1048576`                                 |
 //! | `MAX_REQUEST_BYTES`       | `33554432`, also a download page's budget |
@@ -23,7 +24,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use reqwest::Url;
-use vsesvit_sync_proto::{AuthInfo, Limits};
+use vsesvit_sync_proto::{CALLBACK_PATH, Limits};
 
 use crate::store::Quota;
 
@@ -31,11 +32,40 @@ use crate::store::Quota;
 pub struct Config {
     pub database: DatabaseConfig,
     pub bind: SocketAddr,
-    pub auth: AuthInfo,
-    /// `None` accepts an access token issued to any client.
-    pub allowed_client_ids: Option<Vec<String>>,
+    /// Without a trailing slash.
+    pub public_url: String,
+    pub oidc: Oidc,
+    /// A session unused for this long ends.
+    pub session_idle: chrono::Duration,
     pub limits: Limits,
     pub quota: Quota,
+}
+
+/// The OpenID Connect provider the server signs people in with, as its client.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Oidc {
+    pub issuer: String,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    pub scopes: Vec<String>,
+}
+
+impl std::fmt::Debug for Oidc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Oidc")
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "…"))
+            .field("scopes", &self.scopes)
+            .finish()
+    }
+}
+
+impl Config {
+    /// Where the provider sends people back to this server.
+    pub fn callback(&self) -> String {
+        format!("{}{CALLBACK_PATH}", self.public_url)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,20 +99,17 @@ impl Config {
         if !scopes.iter().any(|s| s == "openid") {
             return Err(invalid("OIDC_SCOPES", &scopes.join(" ")));
         }
-        let redirect_uris = var("OIDC_REDIRECT_URIS")
-            .map_or_else(|| (47801..=47805).map(|port| format!("http://127.0.0.1:{port}/callback")).collect(), |v| list(&v));
-        if redirect_uris.is_empty() {
-            return Err(ConfigError::Missing("OIDC_REDIRECT_URIS"));
+        let client_secret = var("OIDC_CLIENT_SECRET").map(|s| s.trim().to_owned());
+        // The provider sends people back here, so it is the address their browser reaches, never a
+        // guess from a request's Host header, which a client chooses.
+        let public_url = var("PUBLIC_URL").ok_or(ConfigError::Missing("PUBLIC_URL"))?.trim().trim_end_matches('/').to_owned();
+        if !is_secure_url(&public_url) || Url::parse(&public_url).is_ok_and(|u| u.query().is_some()) {
+            return Err(invalid("PUBLIC_URL", &public_url));
         }
-        if let Some(bad) = redirect_uris.iter().find(|uri| !is_loopback_redirect(uri)) {
-            return Err(invalid("OIDC_REDIRECT_URIS", bad));
+        let idle_days: i64 = parse(&var, "SESSION_IDLE_DAYS", 180)?;
+        if !(1..=3650).contains(&idle_days) {
+            return Err(invalid("SESSION_IDLE_DAYS", &idle_days.to_string()));
         }
-        let allowed_client_ids = match var("OIDC_ALLOWED_CLIENT_IDS") {
-            Some(v) if v.trim() == "*" => None,
-            Some(v) if list(&v).is_empty() => return Err(ConfigError::Missing("OIDC_ALLOWED_CLIENT_IDS")),
-            Some(v) => Some(list(&v)),
-            None => Some(vec![client_id.clone()]),
-        };
         let limits = Limits {
             max_batch: parse(&var, "MAX_BATCH", 500)?,
             max_record_bytes: parse(&var, "MAX_RECORD_BYTES", 1 << 20)?,
@@ -119,8 +146,9 @@ impl Config {
                 max_connections,
             },
             bind: parse(&var, "BIND_ADDRESS", "0.0.0.0:8080".parse().expect("valid address"))?,
-            auth: AuthInfo { issuer, client_id, scopes, redirect_uris },
-            allowed_client_ids,
+            public_url,
+            oidc: Oidc { issuer, client_id, client_secret, scopes },
+            session_idle: chrono::Duration::days(idle_days),
             limits,
             quota,
         })
@@ -155,20 +183,6 @@ pub fn is_secure_url(value: &str) -> bool {
     scheme_ok && url.host().is_some() && url.username().is_empty() && url.password().is_none() && url.fragment().is_none()
 }
 
-/// RFC 8252 section 7.3: a native client receives the code over http on a loopback IP literal,
-/// at a port it can listen on.
-fn is_loopback_redirect(value: &str) -> bool {
-    let Ok(url) = Url::parse(value) else { return false };
-    let ip_literal = matches!(url.host(), Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)));
-    url.scheme() == "http"
-        && ip_literal
-        && is_loopback(&url)
-        && url.port().is_some_and(|port| port != 0)
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.fragment().is_none()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,56 +191,59 @@ mod tests {
         Config::from_env(|name| vars.iter().find(|(k, _)| *k == name).map(|(_, v)| (*v).to_owned()))
     }
 
-    const ISSUER: (&str, &str) = ("OIDC_ISSUER", "https://idp.example.com/");
+    const REQUIRED: [(&str, &str); 3] =
+        [("OIDC_CLIENT_ID", "abc"), ("OIDC_ISSUER", "https://idp.example.com/"), ("PUBLIC_URL", "https://sync.example.com/")];
 
     fn with(name: &'static str, value: &'static str) -> Result<Config, ConfigError> {
-        // The first match wins, so `name` overrides the defaults after it.
-        config(&[(name, value), ("OIDC_CLIENT_ID", "abc"), ISSUER])
+        // The first match wins, so `name` overrides the required values after it.
+        let mut vars = vec![(name, value)];
+        vars.extend(REQUIRED);
+        config(&vars)
     }
 
     #[test]
-    fn the_provider_and_the_client_id_are_required() {
-        assert!(matches!(config(&[ISSUER]), Err(ConfigError::Missing("OIDC_CLIENT_ID"))));
-        assert!(matches!(config(&[("OIDC_CLIENT_ID", "abc")]), Err(ConfigError::Missing("OIDC_ISSUER"))));
-        let c = config(&[("OIDC_CLIENT_ID", "abc"), ISSUER]).unwrap();
-        assert_eq!(c.auth.issuer, "https://idp.example.com");
-        assert_eq!(c.auth.scopes, ["openid", "profile"]);
-        assert_eq!(c.auth.redirect_uris.len(), 5);
-        assert_eq!(c.allowed_client_ids, Some(vec!["abc".to_owned()]));
+    fn the_provider_the_client_and_the_public_address_are_required() {
+        for missing in ["OIDC_CLIENT_ID", "OIDC_ISSUER", "PUBLIC_URL"] {
+            let vars: Vec<_> = REQUIRED.into_iter().filter(|(k, _)| *k != missing).collect();
+            assert!(matches!(config(&vars), Err(ConfigError::Missing(m)) if m == missing), "{missing}");
+        }
+        let c = config(&REQUIRED).unwrap();
+        assert_eq!(c.oidc.issuer, "https://idp.example.com");
+        assert_eq!(c.oidc.scopes, ["openid", "profile"]);
+        assert_eq!(c.oidc.client_secret, None);
+        assert_eq!(c.callback(), "https://sync.example.com/v1/auth/callback");
+        assert_eq!(c.session_idle, chrono::Duration::days(180));
         assert!(c.database.run_migrations);
         assert_eq!(c.database.max_connections, 10);
         assert!(!with("RUN_MIGRATIONS", "false").unwrap().database.run_migrations);
         assert_eq!(with("DATABASE_MAX_CONNECTIONS", "3").unwrap().database.max_connections, 3);
+        assert_eq!(with("OIDC_CLIENT_SECRET", " s3cret ").unwrap().oidc.client_secret.as_deref(), Some("s3cret"));
     }
 
     #[test]
-    fn lists_split_on_spaces_and_commas_and_a_star_accepts_every_client() {
-        let c = config(&[("OIDC_CLIENT_ID", "abc"), ISSUER, ("OIDC_SCOPES", "openid, email"), ("OIDC_ALLOWED_CLIENT_IDS", "*")]).unwrap();
-        assert_eq!(c.auth.scopes, ["openid", "email"]);
-        assert_eq!(c.allowed_client_ids, None);
-        assert!(with("OIDC_ALLOWED_CLIENT_IDS", " , ").is_err());
+    fn the_secret_never_shows_in_debug_output() {
+        let c = with("OIDC_CLIENT_SECRET", "s3cret").unwrap();
+        assert!(!format!("{c:?}").contains("s3cret"));
     }
 
     #[test]
-    fn providers_are_https_except_on_loopback() {
+    fn scopes_split_on_spaces_and_commas() {
+        assert_eq!(with("OIDC_SCOPES", "openid, email").unwrap().oidc.scopes, ["openid", "email"]);
+    }
+
+    #[test]
+    fn addresses_are_https_except_on_loopback() {
         assert!(with("OIDC_ISSUER", "http://127.0.0.1:9000/").is_ok());
-        assert!(with("OIDC_ISSUER", "http://idp.example.com").is_err());
-        assert!(with("OIDC_ISSUER", "https://user@idp.example.com").is_err());
-        assert!(with("OIDC_ISSUER", "idp.example.com").is_err());
-    }
-
-    #[test]
-    fn redirects_are_loopback_ip_literals_with_a_port() {
-        assert!(with("OIDC_REDIRECT_URIS", "http://[::1]:47801/cb").is_ok());
-        for bad in [
-            "https://example.com/cb",
-            "http://127.0.0.1:47801@evil.example/callback",
-            "http://localhost:47801/cb",
-            "http://127.0.0.1/cb",
-            "http://10.0.0.1:47801/cb",
-            " , ",
+        assert!(with("PUBLIC_URL", "http://localhost:8080").is_ok());
+        assert_eq!(with("PUBLIC_URL", "https://example.com/sync/").unwrap().callback(), "https://example.com/sync/v1/auth/callback");
+        for (name, value) in [
+            ("OIDC_ISSUER", "http://idp.example.com"),
+            ("OIDC_ISSUER", "https://user@idp.example.com"),
+            ("OIDC_ISSUER", "idp.example.com"),
+            ("PUBLIC_URL", "http://sync.example.com"),
+            ("PUBLIC_URL", "https://sync.example.com/?a=1"),
         ] {
-            assert!(with("OIDC_REDIRECT_URIS", bad).is_err(), "{bad}");
+            assert!(with(name, value).is_err(), "{name}={value}");
         }
     }
 
@@ -243,6 +260,7 @@ mod tests {
             ("MAX_ACCOUNT_RECORDS", "0"),
             ("DATABASE_MAX_CONNECTIONS", "0"),
             ("DATABASE_MAX_CONNECTIONS", "-1"),
+            ("SESSION_IDLE_DAYS", "0"),
         ] {
             assert!(with(name, value).is_err(), "{name}={value}");
         }

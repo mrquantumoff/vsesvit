@@ -547,7 +547,7 @@ impl SyncStep {
         self.server.set_editable(status.server_editable);
     }
 
-    /// Signs in as the Sync page does. The welcome closes once the provider's page opens, so
+    /// Signs in as the Sync page does. The welcome closes once the sign-in page opens, so
     /// that page shows; signing in goes on without it.
     fn start(&self) {
         let Some(browser) = self.browser.upgrade() else {

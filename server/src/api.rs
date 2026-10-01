@@ -1,45 +1,54 @@
-//! The HTTP routes of `vsesvit_sync_proto`.
+//! The HTTP routes of `vsesvit_sync_proto`: signing in (`/v1/auth/*`) and the records.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{DefaultBodyLimit, FromRef, FromRequestParts, Query, State};
+use axum::extract::{DefaultBodyLimit, Form, FromRef, FromRequestParts, Query, State};
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use reqwest::Url;
 use sea_orm::{DatabaseConnection, DbErr};
 use serde::Deserialize;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
-use vsesvit_sync_proto::{ACCOUNT_PATH, ApiError, INFO_PATH, Page, PROTOCOL, RECORDS_PATH, ServerInfo, Upload, Uploaded};
+use vsesvit_sync_proto::{
+    ACCOUNT_PATH, AUTHORIZE_PATH, ApiError, CALLBACK_PATH, INFO_PATH, OAuthError, PROTOCOL, Page, RECORDS_PATH, SESSION_PATH, ServerInfo,
+    TOKEN_PATH, TokenResponse, Upload, Uploaded,
+};
 
-use crate::auth::{AuthError, Verifier};
+use crate::auth::{AuthError, Provider, challenge, random_token};
 use crate::config::Config;
-use crate::store::{self, AccountId, Quota, UploadError};
+use crate::entities::logins;
+use crate::store::{self, AccountId, LoginError, NewLogin, Quota, UploadError, token_hash};
 
 /// Longest record id accepted; core's longest ids are history URLs.
 const MAX_ID_BYTES: usize = 8 * 1024;
-/// A request still running after this is answered 408. Uploads are one transaction, and the first
-/// request of a token also waits on the provider, which gives up after 15 seconds.
+/// Longest `state` a browser may send through a sign-in.
+const MAX_STATE_BYTES: usize = 1024;
+/// A request still running after this is answered 408. Uploads are one transaction, and a sign-in's
+/// callback waits on the provider, which gives up after 15 seconds per call.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: DatabaseConnection,
-    pub verifier: Arc<Verifier>,
+    pub provider: Arc<Provider>,
     pub info: Arc<ServerInfo>,
     pub quota: Quota,
+    pub session_idle: chrono::Duration,
 }
 
 impl AppState {
     pub fn new(db: DatabaseConnection, config: &Config) -> AppState {
         AppState {
             db,
-            verifier: Arc::new(Verifier::new(config.auth.issuer.clone(), config.allowed_client_ids.clone())),
-            info: Arc::new(ServerInfo { protocol: PROTOCOL, auth: config.auth.clone(), limits: config.limits }),
+            provider: Arc::new(Provider::new(config.oidc.clone(), config.callback())),
+            info: Arc::new(ServerInfo { protocol: PROTOCOL, limits: config.limits }),
             quota: config.quota,
+            session_idle: config.session_idle,
         }
     }
 }
@@ -49,8 +58,12 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(INFO_PATH, get(info))
+        .route(AUTHORIZE_PATH, get(authorize))
+        .route(CALLBACK_PATH, get(callback))
+        .route(TOKEN_PATH, post(token))
+        .route(SESSION_PATH, delete(end_session))
         .route(RECORDS_PATH, post(upload).get(download))
-        .route(ACCOUNT_PATH, axum::routing::delete(delete_account))
+        .route(ACCOUNT_PATH, delete(delete_account))
         .layer(DefaultBodyLimit::max(body_limit))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, REQUEST_TIMEOUT))
         .layer(TraceLayer::new_for_http())
@@ -61,16 +74,212 @@ async fn info(State(info): State<Arc<ServerInfo>>) -> Json<ServerInfo> {
     Json((*info).clone())
 }
 
+// Signing in.
+
+#[derive(Deserialize)]
+struct AuthorizeQuery {
+    response_type: Option<String>,
+    redirect_uri: Option<String>,
+    state: Option<String>,
+    code_challenge: Option<String>,
+    code_challenge_method: Option<String>,
+}
+
+/// The browser's sign-in starts here: the server records it and sends the browser on to its
+/// provider. A request it cannot trust gets a page, never a redirect to where it asked.
+async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQuery>) -> Response {
+    let new = match check_authorize(q) {
+        Ok(new) => new,
+        Err(reason) => return page(StatusCode::BAD_REQUEST, &format!("This sign-in link is not valid ({reason}). Start again from Vsesvit's Settings.")),
+    };
+    let (id, verifier) = (random_token(), random_token());
+    if let Err(e) = store::start_login(&state.db, new, id.clone(), verifier.clone()).await {
+        return match e {
+            LoginError::Busy => page(StatusCode::SERVICE_UNAVAILABLE, &format!("{e}.")),
+            LoginError::Db(e) => database_page(e),
+        };
+    }
+    match state.provider.authorize_url(&id, &verifier).await {
+        Ok(url) => Redirect::to(&url).into_response(),
+        Err(e) => {
+            tracing::warn!("{e}");
+            let _ = store::forget_login(&state.db, &id).await;
+            page(StatusCode::BAD_GATEWAY, &format!("Signing in is not possible right now: {e}."))
+        }
+    }
+}
+
+fn check_authorize(q: AuthorizeQuery) -> Result<NewLogin, &'static str> {
+    if q.response_type.as_deref() != Some("code") {
+        return Err("response_type must be code");
+    }
+    if q.code_challenge_method.as_deref() != Some("S256") {
+        return Err("code_challenge_method must be S256");
+    }
+    let challenge = q.code_challenge.filter(|c| is_pkce_value(c)).ok_or("no valid code_challenge")?;
+    let redirect = q.redirect_uri.filter(|r| is_loopback_redirect(r)).ok_or("redirect_uri must be http on a loopback address and port")?;
+    let state = q.state.filter(|s| !s.is_empty() && s.len() <= MAX_STATE_BYTES).ok_or("no valid state")?;
+    Ok(NewLogin { client_redirect: redirect, client_state: state, client_challenge: challenge })
+}
+
+/// RFC 7636 §4.1: 43 to 128 unreserved characters.
+fn is_pkce_value(value: &str) -> bool {
+    (43..=128).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
+}
+
+/// RFC 8252 §7.3: a native app receives the code over http on a loopback IP literal, on whatever
+/// port it could open.
+fn is_loopback_redirect(value: &str) -> bool {
+    let Ok(url) = Url::parse(value) else { return false };
+    let loopback = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+    url.scheme() == "http"
+        && loopback
+        && url.port().is_some_and(|port| port != 0)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+}
+
+#[derive(Deserialize)]
+struct CallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// The provider sends the person back here. The server learns who they are, and sends the browser
+/// a one-time code at its loopback address; only the browser that started the sign-in is listening
+/// there, so a sign-in link someone else started gets them nothing.
+async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>) -> Response {
+    let login = match q.state.as_deref() {
+        Some(id) => match store::pending_login(&state.db, id).await {
+            Ok(login) => login,
+            Err(e) => return database_page(e),
+        },
+        None => None,
+    };
+    let Some(login) = login else {
+        return page(StatusCode::BAD_REQUEST, "This sign-in has expired or was already used. Start again from Vsesvit's Settings.");
+    };
+    let refused = |error: &str, description: String| redirect_to_browser(&login, &[("error", error), ("error_description", &description)]);
+    let code = match (q.error, q.code) {
+        (Some(error), _) => {
+            let _ = store::forget_login(&state.db, &login.id).await;
+            return refused("access_denied", q.error_description.unwrap_or(error));
+        }
+        (None, None) => {
+            let _ = store::forget_login(&state.db, &login.id).await;
+            return refused("server_error", "the provider sent no code".to_owned());
+        }
+        (None, Some(code)) => code,
+    };
+    let person = match state.provider.person(&code, &login.upstream_verifier).await {
+        Ok(person) => person,
+        Err(e) => {
+            tracing::warn!("sign-in: {e}");
+            let _ = store::forget_login(&state.db, &login.id).await;
+            let error = if matches!(e, AuthError::Refused(_)) { "access_denied" } else { "server_error" };
+            return refused(error, e.to_string());
+        }
+    };
+    let one_time = random_token();
+    let authorized = async {
+        let account = store::account(&state.db, state.provider.issuer(), &person.subject).await?;
+        store::authorize_login(&state.db, &login.id, account, person.name, token_hash(&one_time)).await
+    };
+    match authorized.await {
+        Ok(()) => redirect_to_browser(&login, &[("code", &one_time)]),
+        Err(e) => database_page(e),
+    }
+}
+
+fn redirect_to_browser(login: &logins::Model, params: &[(&str, &str)]) -> Response {
+    let mut url = Url::parse(&login.client_redirect).expect("checked when the sign-in started");
+    {
+        let mut query = url.query_pairs_mut();
+        for (name, value) in params {
+            query.append_pair(name, value);
+        }
+        query.append_pair("state", &login.client_state);
+    }
+    Redirect::to(url.as_str()).into_response()
+}
+
+#[derive(Deserialize)]
+struct TokenForm {
+    grant_type: Option<String>,
+    code: Option<String>,
+    redirect_uri: Option<String>,
+    code_verifier: Option<String>,
+}
+
+/// The browser trades its one-time code, with the PKCE verifier only it holds, for a session.
+async fn token(State(state): State<AppState>, Form(form): Form<TokenForm>) -> Response {
+    if form.grant_type.as_deref() != Some("authorization_code") {
+        return oauth_error("unsupported_grant_type", "only authorization_code is supported");
+    }
+    let (Some(code), Some(redirect), Some(verifier)) = (form.code, form.redirect_uri, form.code_verifier) else {
+        return oauth_error("invalid_request", "code, redirect_uri and code_verifier are required");
+    };
+    let login = match store::take_login(&state.db, &token_hash(&code)).await {
+        Ok(Some(login)) => login,
+        Ok(None) => return oauth_error("invalid_grant", "the code is unknown, used or expired"),
+        Err(e) => return Error::Db(e).into_response(),
+    };
+    let account = match login.account_id {
+        Some(account) if login.client_redirect == redirect && challenge(&verifier) == login.client_challenge => account,
+        _ => return oauth_error("invalid_grant", "the code was issued for another sign-in"),
+    };
+    let session = random_token();
+    if let Err(e) = store::start_session(&state.db, account, token_hash(&session)).await {
+        return Error::Db(e).into_response();
+    }
+    let body = TokenResponse { access_token: session, token_type: "Bearer".to_owned(), name: login.name };
+    ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
+}
+
+fn oauth_error(error: &str, description: &str) -> Response {
+    let body = OAuthError { error: error.to_owned(), error_description: Some(description.to_owned()) };
+    (StatusCode::BAD_REQUEST, [(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
+}
+
+async fn end_session(State(state): State<AppState>, caller: Caller) -> Result<StatusCode, Error> {
+    store::end_session(&state.db, &caller.token_hash).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A page for the person in the sign-in tab.
+fn page(status: StatusCode, message: &str) -> Response {
+    let message = message.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Vsesvit sync</title></head>\
+         <body style=\"font-family:system-ui,sans-serif;margin:4em auto;max-width:32em\"><p>{message}</p></body></html>"
+    );
+    (status, [(header::CACHE_CONTROL, "no-store")], Html(body)).into_response()
+}
+
+fn database_page(e: DbErr) -> Response {
+    tracing::error!("database: {e}");
+    page(StatusCode::INTERNAL_SERVER_ERROR, "The sync server could not sign you in because its database failed. Try again later.")
+}
+
+// Records.
+
 async fn upload(State(state): State<AppState>, caller: Caller, Json(upload): Json<Upload>) -> Result<Json<Uploaded>, Error> {
     let limits = state.info.limits;
     if upload.records.len() > limits.max_batch as usize {
-        return Err(Error::bad(StatusCode::PAYLOAD_TOO_LARGE, format!("more than {} records", limits.max_batch)));
+        return Err(Error::Bad(StatusCode::PAYLOAD_TOO_LARGE, format!("more than {} records", limits.max_batch)));
     }
     if let Some(r) = upload.records.iter().find(|r| r.body.len() > limits.max_record_bytes as usize) {
-        return Err(Error::bad(StatusCode::PAYLOAD_TOO_LARGE, format!("record {} is over {} bytes", r.id, limits.max_record_bytes)));
+        return Err(Error::Bad(StatusCode::PAYLOAD_TOO_LARGE, format!("record {} is over {} bytes", r.id, limits.max_record_bytes)));
     }
     if upload.records.iter().any(|r| r.id.is_empty() || r.id.len() > MAX_ID_BYTES) {
-        return Err(Error::bad(StatusCode::BAD_REQUEST, "a record id is empty or too long".to_owned()));
+        return Err(Error::Bad(StatusCode::BAD_REQUEST, "a record id is empty or too long".to_owned()));
     }
     let stored = store::upload(&state.db, caller.account, upload.records, state.quota).await?;
     Ok(Json(Uploaded { stored }))
@@ -101,9 +310,10 @@ impl FromRef<AppState> for Arc<ServerInfo> {
     }
 }
 
-/// The account a request's bearer token belongs to, created on its first request.
+/// The account whose session the request's bearer token is.
 struct Caller {
     account: AccountId,
+    token_hash: Vec<u8>,
 }
 
 impl FromRequestParts<AppState> for Caller {
@@ -117,29 +327,17 @@ impl FromRequestParts<AppState> for Caller {
             .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
             .map(str::trim)
             .filter(|t| !t.is_empty())
-            .ok_or(Error::Auth(AuthError::Unauthorized))?;
-        let subject = state.verifier.subject(token).await?;
-        let account = store::account(&state.db, state.verifier.issuer(), &subject).await?;
-        Ok(Caller { account })
+            .ok_or(Error::Unauthorized)?;
+        let token_hash = token_hash(token);
+        let account = store::session_account(&state.db, &token_hash, state.session_idle).await?.ok_or(Error::Unauthorized)?;
+        Ok(Caller { account, token_hash })
     }
 }
 
 pub enum Error {
-    Auth(AuthError),
+    Unauthorized,
     Db(DbErr),
     Bad(StatusCode, String),
-}
-
-impl Error {
-    fn bad(status: StatusCode, message: String) -> Error {
-        Error::Bad(status, message)
-    }
-}
-
-impl From<AuthError> for Error {
-    fn from(e: AuthError) -> Error {
-        Error::Auth(e)
-    }
 }
 
 impl From<DbErr> for Error {
@@ -160,13 +358,7 @@ impl From<UploadError> for Error {
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            Error::Auth(e @ AuthError::Unauthorized) => (StatusCode::UNAUTHORIZED, e.to_string()),
-            Error::Auth(e @ AuthError::WrongClient) => (StatusCode::FORBIDDEN, e.to_string()),
-            Error::Auth(e @ AuthError::Busy) => (StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
-            Error::Auth(e @ AuthError::Provider(_)) => {
-                tracing::warn!("{e}");
-                (StatusCode::BAD_GATEWAY, e.to_string())
-            }
+            Error::Unauthorized => (StatusCode::UNAUTHORIZED, "the session is unknown or has ended; sign in again".to_owned()),
             Error::Db(e) => {
                 tracing::error!("database: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "the database failed".to_owned())
@@ -178,5 +370,40 @@ impl IntoResponse for Error {
             response.headers_mut().insert(header::WWW_AUTHENTICATE, header::HeaderValue::from_static("Bearer"));
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn query(redirect: &str, challenge: &str, method: &str, state: &str) -> AuthorizeQuery {
+        AuthorizeQuery {
+            response_type: Some("code".to_owned()),
+            redirect_uri: Some(redirect.to_owned()),
+            state: Some(state.to_owned()),
+            code_challenge: Some(challenge.to_owned()),
+            code_challenge_method: Some(method.to_owned()),
+        }
+    }
+
+    const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+    #[test]
+    fn a_sign_in_comes_back_only_to_a_loopback_port_with_s256() {
+        assert!(check_authorize(query("http://127.0.0.1:51234/callback", CHALLENGE, "S256", "s")).is_ok());
+        assert!(check_authorize(query("http://[::1]:51234/", CHALLENGE, "S256", "s")).is_ok());
+        for (redirect, challenge, method, state) in [
+            ("https://evil.example/cb", CHALLENGE, "S256", "s"),
+            ("http://localhost:51234/cb", CHALLENGE, "S256", "s"),
+            ("http://127.0.0.1:51234@evil.example/cb", CHALLENGE, "S256", "s"),
+            ("http://127.0.0.1/cb", CHALLENGE, "S256", "s"),
+            ("http://10.0.0.2:51234/cb", CHALLENGE, "S256", "s"),
+            ("http://127.0.0.1:51234/cb", "short", "S256", "s"),
+            ("http://127.0.0.1:51234/cb", CHALLENGE, "plain", "s"),
+            ("http://127.0.0.1:51234/cb", CHALLENGE, "S256", ""),
+        ] {
+            assert!(check_authorize(query(redirect, challenge, method, state)).is_err(), "{redirect} {challenge} {method} {state:?}");
+        }
     }
 }

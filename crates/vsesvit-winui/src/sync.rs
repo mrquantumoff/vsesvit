@@ -471,7 +471,7 @@ pub(crate) fn final_sync(browser: &Browser) {
     let spawned = std::thread::Builder::new()
         .name("vsesvit-final-sync".into())
         .spawn(move || {
-            let _ = send.send(round.run_final(&http));
+            let _ = send.send(round.run(&http));
         });
     if let Err(e) = spawned {
         log::warn!("final sync: {e}");

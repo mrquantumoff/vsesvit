@@ -1,12 +1,16 @@
 pub use sea_orm_migration::prelude::*;
 
 mod m20260930_000001_create_accounts_and_records;
+mod m20261001_000001_create_sessions_and_logins;
 
 pub struct Migrator;
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(m20260930_000001_create_accounts_and_records::Migration)]
+        vec![
+            Box::new(m20260930_000001_create_accounts_and_records::Migration),
+            Box::new(m20261001_000001_create_sessions_and_logins::Migration),
+        ]
     }
 }

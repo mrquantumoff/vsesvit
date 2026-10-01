@@ -264,7 +264,7 @@ impl Syncer {
         });
     }
 
-    /// Opens the provider's page in a new tab and waits for the user to come back from it.
+    /// Opens the sync server's sign-in page in a new tab and waits for the user to come back from it.
     async fn authorize(&self, attempt: u64, server: String) -> Result<Account, Error> {
         let http = self.0.http.clone();
         let pending = on_worker(move || SignIn::start(&http, &server)).await?;
@@ -327,8 +327,8 @@ impl Syncer {
     }
 
     /// As the browser quits, after the session is saved: one round of what changed since the last
-    /// sync, given at most [`FINAL_SYNC_WAIT`]. A round still out then is abandoned, which
-    /// `Round::run_final` makes safe.
+    /// sync, given at most [`FINAL_SYNC_WAIT`]. A round still out then is abandoned, which is safe:
+    /// a round has nothing it must finish.
     pub(crate) fn final_sync(&self) {
         self.cancel_timer();
         let Some(browser) = self.browser() else { return };
@@ -347,7 +347,7 @@ impl Syncer {
         let (sender, receiver) = std::sync::mpsc::channel();
         let http = self.0.http.clone();
         std::thread::spawn(move || {
-            let _ = sender.send(round.run_final(&http));
+            let _ = sender.send(round.run(&http));
         });
         let Ok(exchanged) = receiver.recv_timeout(FINAL_SYNC_WAIT) else {
             log::info!("final sync: no answer in {FINAL_SYNC_WAIT:?}; quitting without it");

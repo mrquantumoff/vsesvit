@@ -1,14 +1,24 @@
 //! # vsesvit-sync-proto
 //!
-//! The HTTP API between Vsesvit and a sync server, version 1. JSON bodies, bearer tokens from the
-//! OpenID Connect provider the server names in [`ServerInfo`].
+//! The HTTP API between Vsesvit and a sync server, version 2. JSON bodies; bearer tokens are
+//! sessions the server itself issues.
 //!
-//! | route                       | auth   | request          | response        |
-//! |-----------------------------|--------|------------------|-----------------|
-//! | `GET  /v1/info`             | none   |                  | [`ServerInfo`]  |
-//! | `POST /v1/records`          | bearer | [`Upload`]       | [`Uploaded`]    |
-//! | `GET  /v1/records?since=&limit=` | bearer |          | [`Page`]        |
-//! | `DELETE /v1/account`        | bearer |                  | `204`           |
+//! | route                             | auth   | request                | response            |
+//! |-----------------------------------|--------|------------------------|---------------------|
+//! | `GET  /v1/info`                   | none   |                        | [`ServerInfo`]      |
+//! | `GET  /v1/auth/authorize?…`       | none   | a browser tab          | redirects           |
+//! | `POST /v1/auth/token`             | none   | form, RFC 6749 §4.1.3  | [`TokenResponse`]   |
+//! | `DELETE /v1/auth/session`         | bearer |                        | `204`               |
+//! | `POST /v1/records`                | bearer | [`Upload`]             | [`Uploaded`]        |
+//! | `GET  /v1/records?since=&limit=`  | bearer |                        | [`Page`]            |
+//! | `DELETE /v1/account`              | bearer |                        | `204`               |
+//!
+//! Signing in is the OAuth 2.0 authorization code flow with PKCE for a native app (RFC 7636,
+//! RFC 8252), with the sync server as the authorization server: the browser opens
+//! `/v1/auth/authorize` with a loopback `redirect_uri` on any port, the server signs the person in
+//! with its OpenID Connect provider, and redirects back with a code the browser trades at
+//! `/v1/auth/token` for a session. The browser never learns who the provider is, and needs no
+//! client id or secret: it talks to the sync server only.
 //!
 //! The server is the dumbest one `vsesvit_core::sync` is designed for: it keeps the last uploaded
 //! body per `(account, kind, id)` and never merges or reads it. Every stored write takes the
@@ -22,32 +32,41 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 pub const INFO_PATH: &str = "/v1/info";
+pub const AUTHORIZE_PATH: &str = "/v1/auth/authorize";
+pub const TOKEN_PATH: &str = "/v1/auth/token";
+/// Where the provider sends the person back to the server; the browser never calls it itself.
+pub const CALLBACK_PATH: &str = "/v1/auth/callback";
+pub const SESSION_PATH: &str = "/v1/auth/session";
 pub const RECORDS_PATH: &str = "/v1/records";
 pub const ACCOUNT_PATH: &str = "/v1/account";
 
-/// What a client needs before it can sign in. Served without authentication.
+/// What a client learns before it signs in. Served without authentication.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub protocol: u32,
-    pub auth: AuthInfo,
     pub limits: Limits,
 }
 
-/// The OpenID Connect provider whose access tokens the server accepts. A client discovers the
-/// endpoints from `{issuer}/.well-known/openid-configuration`, signs in with the authorization code
-/// flow and PKCE as the public client `client_id`, and asks for `scopes`.
+/// A session, from `/v1/auth/token`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuthInfo {
-    pub issuer: String,
-    pub client_id: String,
-    pub scopes: Vec<String>,
-    /// Loopback redirect URIs registered for `client_id`, in the order to try them. The client
-    /// listens on the first port it can bind. Several, because some providers match the port
-    /// exactly and another program may hold one.
-    pub redirect_uris: Vec<String>,
+pub struct TokenResponse {
+    pub access_token: String,
+    /// Always `Bearer`.
+    pub token_type: String,
+    /// What to call the person, from the provider: a name, a username or an email address.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// An OAuth error body (RFC 6749 §5.2), from `/v1/auth/token`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthError {
+    pub error: String,
+    #[serde(default)]
+    pub error_description: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
