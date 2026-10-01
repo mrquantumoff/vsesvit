@@ -44,7 +44,8 @@ for format in "${formats[@]}"; do
     appimage)
       # A container has no FUSE, so the runtime extracts the image. The self-test
       # (docs/design/self-test.md) must pass; then a page served by a local HTTP server must
-      # reach a normal run, with the WebKit helper processes running out of the image.
+      # reach a normal run, with the WebKit helper processes running out of the image. Both runs
+      # get relative paths from /tmp, which AppRun must resolve there and not inside the image.
       container ubuntu:26.04 "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null
         apt-get install -y -qq xvfb python3 libgl1 libegl1 libgles2 libasound2t64 fontconfig fonts-dejavu-core shared-mime-info procps >/dev/null
         ! { dpkg -l libwebkitgtk-6.0-4 libgtk-4-1 2>/dev/null || true; } | grep -q '^ii' || { echo 'container must not have WebKitGTK'; exit 1; }
@@ -53,15 +54,17 @@ for format in "${formats[@]}"; do
         echo '<title>appimage proof</title><p>hello' > /tmp/site/index.html
         echo '--- --version'; /tmp/app --version
         echo '--- self-test'
-        xvfb-run -a -s '-screen 0 1280x800x24' /tmp/app --self-test /tmp/out || { echo 'self-test failed'; cat /tmp/out/report.json; exit 1; }
+        cd /tmp
+        xvfb-run -a -s '-screen 0 1280x800x24' /tmp/app --self-test out || { echo 'self-test failed'; cat /tmp/out/report.json; exit 1; }
         cat /tmp/out/report.json
         echo '--- page load'
         python3 -m http.server 8000 --bind 127.0.0.1 --directory /tmp/site > /tmp/http.log 2>&1 &
-        xvfb-run -a -s '-screen 0 1280x800x24' /tmp/app http://127.0.0.1:8000/index.html > /tmp/app.log 2>&1 &
+        xvfb-run -a -s '-screen 0 1280x800x24' /tmp/app --profile-dir=profile http://127.0.0.1:8000/index.html > /tmp/app.log 2>&1 &
         sleep 12
         echo '--- app stderr'; awk 'NF && n++ < 20' /tmp/app.log
         pgrep -af 'WebKit(Web|Network|GPU)Process' | cut -d' ' -f1-2 || { echo 'no WebKit helper processes'; exit 1; }
-        grep -m1 'GET /index.html' /tmp/http.log || { echo 'no page request seen'; exit 1; }" ;;
+        grep -m1 'GET /index.html' /tmp/http.log || { echo 'no page request seen'; exit 1; }
+        test -d /tmp/profile || { echo 'the profile is not in /tmp'; exit 1; }" ;;
     flatpak)
       flatpak install --user -y --noninteractive --reinstall "$dist/Vsesvit_${version}_x86_64.flatpak" >/dev/null
       echo "--- flatpak run --version"; flatpak run dev.mrquantumoff.vsesvit --version
