@@ -468,13 +468,23 @@ fn fill_section(section: &gtk::Box, browser: &Browser, tab: &Tab) {
             #[weak]
             tab,
             move |_| {
-                if let Err(e) = browser.core().borrow_mut().site_permissions().reset_site(&origin) {
-                    log::warn!("site permissions: {e}");
-                }
+                reset_site(&browser, &tab, &origin);
                 changed(&section, &browser, &tab);
             }
         ));
         section.append(&reset);
+    }
+}
+
+/// "Reset permissions": every setting of the site back to Ask, and this tab's grants ended, a
+/// screen share allowed this time with them.
+fn reset_site(browser: &Browser, tab: &Tab, origin: &Origin) {
+    tab.permissions().borrow_mut().grants = TabGrants::default();
+    if capturing(tab.web_view()).screen {
+        stop(tab.web_view(), Permission::ScreenShare);
+    }
+    if let Err(e) = browser.core().borrow_mut().site_permissions().reset_site(origin) {
+        log::warn!("site permissions: {e}");
     }
 }
 
@@ -804,6 +814,26 @@ mod tests {
             assert_eq!(after_switching, (None, 1), "a click that switches tabs withdraws the prompt");
             assert_eq!(back.as_deref(), Some("Use your microphone?"));
             assert_eq!(after_click, (None, 0), "a click on the page is Not now");
+        }
+
+        #[gtk::test]
+        fn a_reset_ends_the_tabs_one_time_grants() {
+            let (server, window) = setup();
+            let tab = open(&window, &server.url("/"), Focus::Foreground);
+            let origin = Origin::parse(&server.url("/")).expect("an http origin");
+            let browser = window.browser().clone();
+            {
+                let mut profile = browser.core().borrow_mut();
+                let mut site = profile.site_permissions();
+                site.set(&origin, Permission::Location, Some(Setting::Block)).unwrap();
+                site.answer(Some(&origin), &[Permission::Camera], Answer::AllowThisTime, &mut tab.permissions().borrow_mut().grants).unwrap();
+            }
+            reset_site(&browser, &tab, &origin);
+            let camera = decide(&browser, &tab, Some(&origin), &[Permission::Camera]);
+            let stored = browser.core().borrow_mut().site_permissions().for_site(&origin);
+            window.destroy();
+            assert_eq!(camera, Decision::Ask(vec![Permission::Camera]), "the camera allowed this time is asked for again");
+            assert_eq!(stored, []);
         }
 
         #[gtk::test]
