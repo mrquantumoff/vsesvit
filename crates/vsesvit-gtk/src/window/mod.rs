@@ -334,6 +334,11 @@ impl BrowserWindow {
                 if let Ok(tab) = page.child().downcast::<Tab>() {
                     window.browser().tab_closed(&tab, view.page_position(page));
                 }
+                // The last tab of the last window is saved while it still exists, so that,
+                // as in Chrome, the next start restores it.
+                if view.n_pages() == 1 && window.browser().windows().len() <= 1 {
+                    window.browser().save_session_now();
+                }
                 view.close_page_finish(page, true);
                 glib::Propagation::Stop
             }
@@ -413,11 +418,11 @@ impl BrowserWindow {
         });
     }
 
-    /// The last window saves the session while its tabs still exist; every tab that goes
-    /// with the window leaves the extension runtime.
+    /// The last window saves the session while its tabs still exist (one closed with its last
+    /// tab saved it then); every tab that goes with the window leaves the extension runtime.
     fn before_close(&self) {
         let browser = self.browser();
-        if browser.windows().len() <= 1 {
+        if browser.windows().len() <= 1 && !self.tabs().is_empty() {
             browser.save_session_now();
         }
         for tab in self.tabs() {
@@ -1123,6 +1128,29 @@ mod tests {
         assert!(shown, "the setting shows the button in every window");
         assert_eq!(tabs, 1, "home opens in the selected tab");
         assert!(hidden_again);
+    }
+
+    #[gtk::test]
+    fn closing_the_last_tab_of_the_last_window_keeps_it_in_the_session() {
+        let server = Server::start("127.0.0.1", |_| Reply::Page("Kept"));
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        let url = server.url("/kept");
+        let tab = window.open_tab(Some(&url), None, Focus::Foreground);
+        wait_until("the page", || tab.committed_uri().as_deref() == Some(url.as_str()));
+        let alone = browser.windows().len() == 1;
+        window.close_tab(&tab);
+        wait_until("the window to close", || browser.windows().is_empty());
+        let saved = browser.core().borrow_mut().session().restore().unwrap();
+        let urls: Vec<String> = saved
+            .into_iter()
+            .flat_map(|s| s.windows)
+            .flat_map(|w| w.tabs)
+            .map(|t| t.url.to_string())
+            .collect();
+        assert!(alone, "no other test's window is open");
+        assert_eq!(urls, [url]);
     }
 
     #[gtk::test]
