@@ -230,6 +230,13 @@ impl Tab {
         self.web_view().load_uri(uri);
     }
 
+    /// Stops the load in flight. A stopped load commits nothing, so the transition set for
+    /// it must not go to a later visit.
+    pub(crate) fn stop(&self) {
+        self.imp().pending_transition.take();
+        self.web_view().stop_loading();
+    }
+
     /// The URI of the document on screen, as opposed to one still being requested.
     pub(crate) fn committed_uri(&self) -> Option<String> {
         self.imp().committed_uri.borrow().clone()
@@ -618,6 +625,8 @@ impl Tab {
                     return false;
                 };
                 if response.is_main_frame_main_resource() && !response.is_mime_type_supported() {
+                    // The page stays, so the transition set for this load goes to no visit.
+                    self.imp().pending_transition.take();
                     decision.download();
                     return true;
                 }
@@ -683,7 +692,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
-    use crate::test_support::{Reply, Server, browser, wait_until};
+    use crate::test_support::{Reply, Server, browser, scratch_dir, wait_until};
     use gdk::ModifierType as M;
     use webkit::NavigationType::{LinkClicked, Other};
 
@@ -772,5 +781,73 @@ mod tests {
         window.destroy();
         assert!(loading, "the image held the load open");
         assert_eq!(committed.as_deref(), Some(moved.as_str()));
+    }
+
+    #[gtk::test]
+    fn a_stopped_load_leaves_no_transition_behind() {
+        let asked = Arc::new(AtomicBool::new(false));
+        let server = Server::start("127.0.0.1", {
+            let asked = asked.clone();
+            move |_| {
+                asked.store(true, Ordering::SeqCst);
+                Reply::Hang
+            }
+        });
+        let window = BrowserWindow::new(&browser());
+        let tab = window.open_tab(None, None, Focus::Foreground);
+        window.navigate_with(&server.url("/never"), Transition::Typed);
+        wait_until("the request", || asked.load(Ordering::SeqCst));
+        gtk::gio::prelude::ActionGroupExt::activate_action(&window, "stop", None);
+        wait_until("the load to end", || !tab.web_view().is_loading());
+        let left = tab.take_pending_transition();
+        window.destroy();
+        assert_eq!(left, None, "the next visit would count as typed");
+    }
+
+    #[gtk::test]
+    fn a_download_leaves_no_transition_behind() {
+        use vsesvit_core::prefs::keys;
+
+        let server = Server::start("127.0.0.1", |_| Reply::StalledFile);
+        let browser = browser();
+        let dir = scratch_dir("typed-download");
+        browser.core().borrow_mut().prefs().set(&keys::DOWNLOADS_DIR, &Some(dir.clone())).unwrap();
+        let window = BrowserWindow::new(&browser);
+        let tab = window.open_tab(None, None, Focus::Foreground);
+        window.navigate_with(&server.url("/file.bin"), Transition::Typed);
+        let downloads = browser.downloads().clone();
+        let ours = || downloads.list().into_iter().find(|d| d.path.parent() == Some(dir.as_path()));
+        wait_until("the download", || ours().is_some());
+        wait_until("the load to end", || !tab.web_view().is_loading());
+        let left = tab.take_pending_transition();
+        downloads.cancel(ours().expect("the download").id);
+        window.destroy();
+        browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR).unwrap();
+        assert_eq!(left, None, "the next visit would count as typed");
+    }
+
+    #[gtk::test]
+    fn an_address_typed_over_a_load_still_counts_as_typed() {
+        let asked = Arc::new(AtomicBool::new(false));
+        let server = Server::start("127.0.0.1", {
+            let asked = asked.clone();
+            move |path| match path {
+                "/typed-over" => Reply::Page("Typed"),
+                _ => {
+                    asked.store(true, Ordering::SeqCst);
+                    Reply::Hang
+                }
+            }
+        });
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let tab = window.open_tab(Some(&server.url("/slow")), None, Focus::Foreground);
+        wait_until("the first request", || asked.load(Ordering::SeqCst));
+        let typed = server.url("/typed-over");
+        window.navigate_with(&typed, Transition::Typed);
+        wait_until("the typed page", || tab.committed_uri().as_deref() == Some(typed.as_str()));
+        window.destroy();
+        let found = browser.core().borrow_mut().history().search(&typed, 1).unwrap();
+        assert_eq!(found.first().map(|e| e.typed_count), Some(1));
     }
 }

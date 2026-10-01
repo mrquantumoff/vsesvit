@@ -46,7 +46,7 @@ pub(super) fn install(window: &BrowserWindow) {
             tab.set_pending_transition(Transition::Reload);
             tab.web_view().reload_bypass_cache();
         }),
-        on_tab("stop", |tab| tab.web_view().stop_loading()),
+        on_tab("stop", Tab::stop),
         ActionEntry::builder("home")
             .activate(|w: &BrowserWindow, _, _| w.go_home())
             .build(),
