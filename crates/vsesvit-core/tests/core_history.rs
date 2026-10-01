@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use vsesvit_core::crdt::{DeviceId, Extra, Lww, Seq, Stamp, TimeSource};
-use vsesvit_core::history::{PageRecord, Transition, Visit, MAX_VISITS};
+use vsesvit_core::history::{ClearRange, PageRecord, Transition, Visit, MAX_VISITS};
 use vsesvit_core::prefs::{keys, Theme};
 use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::{OpenOptions, Profile, Url};
@@ -139,6 +139,17 @@ fn delete_url_and_delete_range() {
     p.history().delete_range(0, i64::MAX).unwrap();
     assert!(pages(&mut p).is_empty());
     assert!(p.history().visits_between(0, i64::MAX, 10).unwrap().is_empty());
+}
+
+#[test]
+fn clear_ranges_match_chrome() {
+    let labels = ClearRange::ALL.map(ClearRange::label);
+    assert_eq!(labels, ["Last hour", "Last 24 hours", "Last 7 days", "Last 4 weeks", "All time"]);
+    let now = 30 * 24 * 3_600_000;
+    assert_eq!(ClearRange::LastHour.start(now), now - 3_600_000);
+    assert_eq!(ClearRange::LastFourWeeks.start(now), 2 * 24 * 3_600_000);
+    assert_eq!(ClearRange::AllTime.start(now), 0);
+    assert_eq!(ClearRange::LastWeek.start(1000), 0);
 }
 
 #[test]

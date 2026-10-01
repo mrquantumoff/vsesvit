@@ -307,6 +307,44 @@ impl History<'_> {
     }
 }
 
+/// The time ranges "Clear browsing history" offers, as Chrome does, newest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClearRange {
+    LastHour,
+    LastDay,
+    LastWeek,
+    LastFourWeeks,
+    AllTime,
+}
+
+impl ClearRange {
+    /// Every range, in display order.
+    pub const ALL: [Self; 5] = [Self::LastHour, Self::LastDay, Self::LastWeek, Self::LastFourWeeks, Self::AllTime];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LastHour => "Last hour",
+            Self::LastDay => "Last 24 hours",
+            Self::LastWeek => "Last 7 days",
+            Self::LastFourWeeks => "Last 4 weeks",
+            Self::AllTime => "All time",
+        }
+    }
+
+    /// Where the range starts, for a clear at `now_ms`.
+    pub fn start(self, now_ms: i64) -> i64 {
+        const HOUR: i64 = 60 * 60 * 1000;
+        match self {
+            Self::LastHour => now_ms - HOUR,
+            Self::LastDay => now_ms - 24 * HOUR,
+            Self::LastWeek => now_ms - 7 * 24 * HOUR,
+            Self::LastFourWeeks => now_ms - 28 * 24 * HOUR,
+            Self::AllTime => 0,
+        }
+        .max(0)
+    }
+}
+
 fn like_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }

@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use vsesvit_core::history::HistoryEntry;
+use vsesvit_core::history::{ClearRange, HistoryEntry};
 use vsesvit_core::sync::Changed;
 use windows_core::{IInspectable, Interface, Result};
 
@@ -62,39 +62,6 @@ const SECTIONS: [Category; 2] = [
 
 const SHOWN: usize = 300;
 
-/// Time ranges for "Clear", newest first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Range {
-    LastHour,
-    LastDay,
-    LastWeek,
-    LastFourWeeks,
-    AllTime,
-}
-
-const RANGES: [(Range, &str); 5] = [
-    (Range::LastHour, "Last hour"),
-    (Range::LastDay, "Last 24 hours"),
-    (Range::LastWeek, "Last 7 days"),
-    (Range::LastFourWeeks, "Last 4 weeks"),
-    (Range::AllTime, "All time"),
-];
-
-impl Range {
-    /// Where the range starts, for a clear at `now_ms`.
-    fn start(self, now_ms: i64) -> i64 {
-        const HOUR: i64 = 60 * 60 * 1000;
-        match self {
-            Self::LastHour => now_ms - HOUR,
-            Self::LastDay => now_ms - 24 * HOUR,
-            Self::LastWeek => now_ms - 7 * 24 * HOUR,
-            Self::LastFourWeeks => now_ms - 28 * 24 * HOUR,
-            Self::AllTime => 0,
-        }
-        .max(0)
-    }
-}
-
 struct Page {
     browser: Weak<Browser>,
     window: Weak<BrowserWindow>,
@@ -123,8 +90,8 @@ pub(super) fn wire(
         shown: RefCell::new(Vec::new()),
     });
     let ranges = page.range.cast::<ItemsControl>()?.Items()?;
-    for (_, label) in RANGES {
-        ranges.Append(&xaml::boxed(label)?)?;
+    for range in ClearRange::ALL {
+        ranges.Append(&xaml::boxed(range.label())?)?;
     }
     page.range.cast::<Selector>()?.SetSelectedIndex(0)?;
     page.render();
@@ -246,7 +213,7 @@ impl Page {
             return;
         };
         let index = super::selected_index(&self.range);
-        let Some((range, _)) = index.and_then(|i| RANGES.get(i)) else {
+        let Some(range) = index.and_then(|i| ClearRange::ALL.get(i)) else {
             return;
         };
         let now = now_ms();
@@ -317,14 +284,5 @@ mod tests {
         assert_eq!(ago(now, now - 5 * 3_600_000), "5 hours ago");
         assert_eq!(ago(now, now - 2 * 24 * 3_600_000), "2 days ago");
         assert_eq!(ago(now, now + 1_000), "just now");
-    }
-
-    #[test]
-    fn ranges_start_before_now() {
-        let now = 30 * 24 * 3_600_000;
-        assert_eq!(Range::LastHour.start(now), now - 3_600_000);
-        assert_eq!(Range::LastFourWeeks.start(now), 2 * 24 * 3_600_000);
-        assert_eq!(Range::AllTime.start(now), 0);
-        assert_eq!(Range::LastWeek.start(1000), 0);
     }
 }

@@ -9,7 +9,7 @@ use std::rc::{Rc, Weak};
 use adw::prelude::*;
 use gtk::glib;
 use vsesvit_core::Url;
-use vsesvit_core::history::HistoryEntry;
+use vsesvit_core::history::{ClearRange, HistoryEntry};
 use vsesvit_core::session::TabSnapshot;
 
 use super::{LibraryWindow, Windowed, format_time, prompt_choice};
@@ -21,15 +21,6 @@ use crate::window::{BrowserWindow, Focus};
 
 const RECENT_LIMIT: usize = 300;
 const SEARCH_LIMIT: usize = 100;
-const HOUR_MS: i64 = 60 * 60 * 1000;
-
-/// The ranges offered by "Clear…", in display order.
-const RANGES: [(&str, Option<i64>); 4] = [
-    ("Last hour", Some(HOUR_MS)),
-    ("Last 24 hours", Some(24 * HOUR_MS)),
-    ("Last 7 days", Some(7 * 24 * HOUR_MS)),
-    ("All time", None),
-];
 
 struct Row {
     entry: HistoryEntry,
@@ -288,7 +279,7 @@ impl State {
     }
 
     async fn clear(self: Rc<Self>) {
-        let names: Vec<&str> = RANGES.iter().map(|(name, _)| *name).collect();
+        let names = ClearRange::ALL.map(ClearRange::label);
         let Some(index) = prompt_choice(
             &self.ui.window,
             "Clear Browsing History",
@@ -300,11 +291,10 @@ impl State {
         else {
             return;
         };
-        let Some((_, span)) = RANGES.get(index as usize) else { return };
+        let Some(range) = ClearRange::ALL.get(index as usize) else { return };
         let now = now_ms();
-        let from = span.map_or(0, |span| now - span);
         let Some(browser) = self.browser() else { return };
-        let result = browser.core().borrow_mut().history().delete_range(from, now);
+        let result = browser.core().borrow_mut().history().delete_range(range.start(now), now);
         if let Err(e) = result {
             self.ui.toast(&format!("History: {e}"));
         }
