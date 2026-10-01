@@ -98,14 +98,10 @@ jobs:
             choco install nsis --no-progress -y
           }
       - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
-      - name: Build and sign
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: cargo xtask package nsis --sign
+      - run: cargo xtask package nsis
       - uses: actions/upload-artifact@v4
         with:
-          name: windows
+          name: dist-windows
           path: target/dist/*
           if-no-files-found: error
 
@@ -130,14 +126,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
-      - name: Build and sign
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: cargo xtask package deb rpm pacman appimage --sign
+      - run: cargo xtask package deb rpm pacman appimage
       - uses: actions/upload-artifact@v4
         with:
-          name: linux
+          name: dist-linux
           path: target/dist/*
           if-no-files-found: error
 
@@ -161,17 +153,67 @@ jobs:
       - run: cargo xtask package flatpak
       - uses: actions/upload-artifact@v4
         with:
-          name: flatpak
+          name: dist-flatpak
           path: target/dist/*
           if-no-files-found: error
 
+  # The xtask that signs, built apart from the packages, so no build script of theirs can touch it.
+  signer:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # No rust-cache: any job of the run can save a cache entry, so a cached registry or target
+      # dir could carry code from the package builds into the binary that later runs with the key.
+      # xtask compiles in the version, which each signature's trusted comment carries.
+      - run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
+      - run: cargo build --release --locked -p xtask
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signer
+          path: target/release/xtask
+          if-no-files-found: error
+
+  # Only this job holds the signing key, and it runs no cargo, so no crate's build script or
+  # proc-macro ever runs where it could read the key.
+  sign:
+    needs: [plan, windows, linux, signer]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: signer
+          path: signer
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist-windows
+          path: target/dist
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist-linux
+          path: target/dist
+      - name: Sign
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          chmod +x signer/xtask
+          signer/xtask sign target/dist/*-setup.exe target/dist/*.deb target/dist/*.rpm target/dist/*.pkg.tar.zst target/dist/*.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-signatures
+          path: target/dist/*.sig
+          if-no-files-found: error
+
   release:
-    needs: [plan, windows, linux, flatpak]
+    needs: [plan, windows, linux, flatpak, sign]
     # Nightlies omit Flatpak; all required builds must still succeed.
     if: >-
       always() && !cancelled() &&
       needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' &&
-      needs.windows.result == 'success' && needs.linux.result == 'success' &&
+      needs.windows.result == 'success' && needs.linux.result == 'success' && needs.sign.result == 'success' &&
       (needs.flatpak.result == 'success' ||
        (needs.plan.outputs.channel == 'nightly' && needs.flatpak.result == 'skipped'))
     runs-on: ubuntu-latest
@@ -190,6 +232,7 @@ jobs:
       - run: bash scripts/set-version.sh "$VERSION"
       - uses: actions/download-artifact@v5
         with:
+          pattern: dist-*
           path: target/dist
           merge-multiple: true
       - name: Release notes
