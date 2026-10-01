@@ -14,7 +14,7 @@ use vsesvit_core::{new_tab, session};
 use windows_core::{IInspectable, Interface, Ref, Result};
 
 use crate::bindings::*;
-use crate::browser::CommitKind;
+use crate::browser::{Browser, CommitKind};
 use crate::permissions::{Requested, TabPermissions};
 use crate::shortcuts::{self, PageMessage, PageScript};
 use crate::store;
@@ -320,7 +320,7 @@ impl Tab {
         let settings = core.Settings()?;
         settings.SetAreDevToolsEnabled(true)?;
         settings.SetIsWebMessageEnabled(false)?;
-        if let Some(browser) = self.window().and_then(|w| w.browser()) {
+        if let Some(browser) = self.browser() {
             self.apply_autofill(&settings, browser.autofill());
         }
         self.wire(&core)?;
@@ -473,7 +473,7 @@ impl Tab {
 
     /// The new tab page, loaded as HTML at `about:blank` so the tab still reads as blank.
     fn show_new_tab_page(&self, core: &CoreWebView2) {
-        let shown = match self.window().and_then(|w| w.browser()) {
+        let shown = match self.browser() {
             Some(browser) => browser
                 .core(new_tab::page)
                 .map_err(|e| e.to_string())
@@ -630,6 +630,10 @@ impl Tab {
 
     fn window(&self) -> Option<Rc<BrowserWindow>> {
         self.window.upgrade()
+    }
+
+    fn browser(&self) -> Option<Rc<Browser>> {
+        self.window()?.browser()
     }
 
     fn notify(&self) {
@@ -802,11 +806,6 @@ impl Tab {
         if prompt_gone && let Some(window) = self.window() {
             window.permission_prompt_gone(self.id);
         }
-        if let Some(browser) = self.window().and_then(|w| w.browser()) {
-            self.permissions
-                .refresh_site(&browser, Origin::parse(&url).as_ref());
-            self.watch_capture();
-        }
         let transition = match kind {
             CommitKind::NewDocument => self.transition.borrow_mut().new_document(),
             CommitKind::SameDocument => self.transition.borrow_mut().same_document(),
@@ -816,7 +815,10 @@ impl Tab {
         {
             window.forget_openers();
         }
-        if let Some(browser) = self.window().and_then(|w| w.browser()) {
+        if let Some(browser) = self.browser() {
+            self.permissions
+                .refresh_site(&browser, Origin::parse(&url).as_ref());
+            self.watch_capture();
             let starred = browser.navigation_committed(&url, kind, transition);
             self.state.borrow_mut().starred = starred;
         }
@@ -857,7 +859,7 @@ impl Tab {
         let url = self.state.borrow().url.clone();
         let title = display_title(core.DocumentTitle().unwrap_or_default(), &url);
         self.state.borrow_mut().title = title.clone();
-        if let Some(browser) = self.window().and_then(|w| w.browser()) {
+        if let Some(browser) = self.browser() {
             browser.title_changed(&url, &title);
         }
         self.notify();
@@ -892,7 +894,7 @@ impl Tab {
             })
             .unzip();
         *self.favicon.borrow_mut() = image;
-        if let (Some(png), Some(browser)) = (&png, self.window().and_then(|w| w.browser())) {
+        if let (Some(png), Some(browser)) = (&png, self.browser()) {
             browser.record_favicon(&self.state().url, png);
         }
         *self.favicon_png.borrow_mut() = png;
@@ -939,7 +941,7 @@ impl Tab {
         if !target.HasSelection()? {
             return Ok(());
         }
-        let Some(browser) = self.window().and_then(|w| w.browser()) else {
+        let Some(browser) = self.browser() else {
             return Ok(());
         };
         let Some(action) = browser.selection_action(&target.SelectionText()?) else {
@@ -1005,7 +1007,7 @@ impl Tab {
     }
 
     fn screen_capture_starting(self: &Rc<Self>, args: &CoreWebView2ScreenCaptureStartingEventArgs) {
-        let Some(browser) = self.window().and_then(|w| w.browser()) else {
+        let Some(browser) = self.browser() else {
             return;
         };
         let source = args
