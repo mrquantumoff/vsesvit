@@ -41,7 +41,7 @@ use crate::popup::Activation;
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
-use crate::{app, capture, engine, exec, xaml};
+use crate::{app, capture, engine, exec, selftest, xaml};
 
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const STEP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -364,10 +364,7 @@ async fn zoom_steps(
 pub(crate) fn prepare(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out_dir)?;
     if profile_dir == out_dir.join("profile") {
-        match std::fs::remove_dir_all(profile_dir) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
+        selftest::absent(std::fs::remove_dir_all(profile_dir))?;
     }
     Ok(())
 }

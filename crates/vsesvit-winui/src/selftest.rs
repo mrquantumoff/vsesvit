@@ -56,10 +56,7 @@ const CWS_ID: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
 pub(crate) fn prepare(out_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out_dir)?;
     for dir in ["profile", "downloads"] {
-        match std::fs::remove_dir_all(out_dir.join(dir)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
+        absent(std::fs::remove_dir_all(out_dir.join(dir)))?;
     }
     for file in [
         "report.json",
@@ -68,16 +65,22 @@ pub(crate) fn prepare(out_dir: &Path) -> std::io::Result<()> {
         "settings-shortcuts.png",
         "shortcut-capture.png",
         "omnibox-inline.png",
+        "new-tab.png",
         "saved-page.mhtml",
         "probe.crx",
         "vsesvit.log",
     ] {
-        match std::fs::remove_file(out_dir.join(file)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
+        absent(std::fs::remove_file(out_dir.join(file)))?;
     }
     Ok(())
+}
+
+/// `removed`, with "it was not there" counted as removed.
+pub(crate) fn absent(removed: std::io::Result<()>) -> std::io::Result<()> {
+    match removed {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        removed => removed,
+    }
 }
 
 /// The profile did not open, so nothing else can run.
@@ -763,7 +766,8 @@ fn visits(title: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::visits;
+    use super::{absent, prepare, visits};
+    use std::io::{Error, ErrorKind};
 
     #[test]
     fn popup_titles() {
@@ -771,5 +775,44 @@ mod tests {
         assert_eq!(visits("visits=0"), Some(0));
         assert_eq!(visits("Vsesvit Probe"), None);
         assert_eq!(visits("visits="), None);
+    }
+
+    #[test]
+    fn prepare_removes_what_an_earlier_run_left() {
+        let dir =
+            std::env::temp_dir().join(format!("vsesvit-winui-test-prepare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        prepare(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("profile/x")).unwrap();
+        std::fs::create_dir_all(dir.join("downloads")).unwrap();
+        let files = [
+            "report.json",
+            "window.png",
+            "downloads.png",
+            "settings-shortcuts.png",
+            "shortcut-capture.png",
+            "omnibox-inline.png",
+            "new-tab.png",
+            "saved-page.mhtml",
+            "probe.crx",
+            "vsesvit.log",
+        ];
+        for file in files {
+            std::fs::write(dir.join(file), "old").unwrap();
+        }
+        prepare(&dir).unwrap();
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "left behind: {left:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn absent_counts_only_a_missing_file_as_removed() {
+        assert!(absent(Err(Error::from(ErrorKind::NotFound))).is_ok());
+        let denied = absent(Err(Error::from(ErrorKind::PermissionDenied)));
+        assert_eq!(denied.unwrap_err().kind(), ErrorKind::PermissionDenied);
     }
 }
