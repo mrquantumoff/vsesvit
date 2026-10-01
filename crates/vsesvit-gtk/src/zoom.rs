@@ -1,10 +1,13 @@
 //! Page zoom steps.
 
+pub(crate) use vsesvit_core::zoom::DEFAULT;
+
+/// Chrome's zoom levels, as the Windows shell's are. Two decimals, not thirds: the per-site store
+/// keeps whole percents, so a level read back from it must still be a preset.
 const LEVELS: &[f64] = &[
-    0.3, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0,
+    0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0,
 ];
 const EPSILON: f64 = 0.001;
-pub(crate) const DEFAULT: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Step {
@@ -38,7 +41,16 @@ mod tests {
         assert_eq!(step(1.0, Step::In), 1.1);
         assert_eq!(step(1.0, Step::Out), 0.9);
         assert_eq!(step(5.0, Step::In), 5.0);
-        assert_eq!(step(0.3, Step::Out), 0.3);
+        assert_eq!(step(0.25, Step::Out), 0.25);
+    }
+
+    #[test]
+    fn zoom_out_follows_chromes_presets_below_half() {
+        assert_eq!(step(0.5, Step::Out), 0.33);
+        assert_eq!(step(0.33, Step::Out), 0.25);
+        assert_eq!(step(0.25, Step::In), 0.33);
+        // A level read back from the store's whole percents is still a preset.
+        assert_eq!(step(0.67, Step::Out), 0.5);
     }
 
     #[test]
