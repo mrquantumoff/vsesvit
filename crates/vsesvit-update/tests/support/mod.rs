@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Cursor, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,8 @@ use vsesvit_update::{Config, Format, WindowsInstallMode};
 
 /// Path (query excluded) to status and body.
 type Routes = Mutex<HashMap<String, (u16, Vec<u8>)>>;
+/// Paths that answer `Range` requests, each with the lengths its next responses are cut to.
+type Resumable = Mutex<HashMap<String, VecDeque<usize>>>;
 
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -28,6 +30,7 @@ pub struct Request {
 pub struct Server {
     addr: SocketAddr,
     routes: Arc<Routes>,
+    resumable: Arc<Resumable>,
     requests: Arc<Mutex<Vec<Request>>>,
 }
 
@@ -36,21 +39,30 @@ impl Server {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let routes = Arc::new(Mutex::new(HashMap::new()));
+        let resumable = Arc::new(Mutex::new(HashMap::new()));
         let requests = Arc::new(Mutex::new(Vec::new()));
         std::thread::spawn({
             let routes = Arc::clone(&routes);
+            let resumable = Arc::clone(&resumable);
             let requests = Arc::clone(&requests);
             move || {
                 for stream in listener.incoming().flatten() {
-                    let _ = serve(stream, &routes, &requests);
+                    let _ = serve(stream, &routes, &resumable, &requests);
                 }
             }
         });
-        Server { addr, routes, requests }
+        Server { addr, routes, resumable, requests }
     }
 
     pub fn route(&self, path: &str, status: u16, body: impl Into<Vec<u8>>) {
         self.routes.lock().unwrap().insert(path.to_owned(), (status, body.into()));
+    }
+
+    /// Makes the `200` route at `path` answer `Range: bytes=<start>-` with a `206`, or a `416`
+    /// past its end. Each of its next responses announces its full length but closes the
+    /// connection after the next number of body bytes in `cuts`.
+    pub fn resumable(&self, path: &str, cuts: &[usize]) {
+        self.resumable.lock().unwrap().insert(path.to_owned(), cuts.iter().copied().collect());
     }
 
     pub fn url(&self, path_and_query: &str) -> Url {
@@ -62,7 +74,7 @@ impl Server {
     }
 }
 
-fn serve(mut stream: TcpStream, routes: &Routes, requests: &Mutex<Vec<Request>>) -> std::io::Result<()> {
+fn serve(mut stream: TcpStream, routes: &Routes, resumable: &Resumable, requests: &Mutex<Vec<Request>>) -> std::io::Result<()> {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
@@ -74,24 +86,42 @@ fn serve(mut stream: TcpStream, routes: &Routes, requests: &Mutex<Vec<Request>>)
     let head = String::from_utf8_lossy(&head);
     let mut lines = head.lines();
     let target = lines.next().unwrap_or_default().split_whitespace().nth(1).unwrap_or_default().to_owned();
-    let headers = lines
+    let headers: HashMap<String, String> = lines
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
         .collect();
     let path = target.split('?').next().unwrap_or_default().to_owned();
+    let range_start: Option<usize> = headers.get("range").and_then(|range| range.strip_prefix("bytes=")?.strip_suffix('-')?.parse().ok());
     requests.lock().unwrap().push(Request { target, headers });
 
-    let (status, body) = routes.lock().unwrap().get(&path).cloned().unwrap_or((404, b"not found".to_vec()));
+    let (mut status, mut body) = routes.lock().unwrap().get(&path).cloned().unwrap_or((404, b"not found".to_vec()));
+    let mut extra_headers = String::new();
+    let mut cut_at = None;
+    if let (200, Some(cuts)) = (status, resumable.lock().unwrap().get_mut(&path)) {
+        let len = body.len();
+        match range_start {
+            Some(start) if start < len => {
+                status = 206;
+                extra_headers = format!("Content-Range: bytes {start}-{}/{len}\r\n", len - 1);
+                body.drain(..start);
+            }
+            Some(_) => (status, body) = (416, Vec::new()),
+            None => {}
+        }
+        cut_at = cuts.pop_front();
+    }
     let reason = match status {
         200 => "OK",
         204 => "No Content",
+        206 => "Partial Content",
         404 => "Not Found",
+        416 => "Range Not Satisfiable",
         _ => "Status",
     };
     let content_length = if status == 204 { String::new() } else { format!("Content-Length: {}\r\n", body.len()) };
-    write!(stream, "HTTP/1.1 {status} {reason}\r\n{content_length}Connection: close\r\n\r\n")?;
+    write!(stream, "HTTP/1.1 {status} {reason}\r\n{content_length}{extra_headers}Connection: close\r\n\r\n")?;
     if status != 204 {
-        stream.write_all(&body)?;
+        stream.write_all(&body[..cut_at.unwrap_or(body.len())])?;
     }
     stream.flush()
 }

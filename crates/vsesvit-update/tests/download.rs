@@ -200,7 +200,7 @@ fn stale_downloads_are_removed_and_the_kept_version_stays() {
     remove_stale_downloads(dir.path(), Some(&Version::new(1, 1, 0))).unwrap();
     let mut left = leftovers(dir.path());
     left.sort();
-    assert_eq!(left, ["notes.txt", "vsesvit-1.1.0.deb"]);
+    assert_eq!(left, ["notes.txt", "vsesvit-1.1.0.deb", "vsesvit-1.1.0.deb.part"], "a partial file can be resumed");
 
     remove_stale_downloads(dir.path(), None).unwrap();
     assert_eq!(leftovers(dir.path()), ["notes.txt"]);
@@ -242,4 +242,79 @@ fn two_downloads_of_one_version_into_one_dir_both_succeed() {
     assert_eq!(first.path(), second.path());
     assert_eq!(std::fs::read(first.path()).unwrap(), artifact(Format::Deb));
     assert_eq!(leftovers(dir.path()), ["vsesvit-0.2.0.deb"]);
+}
+
+fn partial_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut partial: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+    partial.retain(|path| path.extension().is_some_and(|ext| ext == "part"));
+    partial
+}
+
+fn artifact_ranges(release: &Release) -> Vec<Option<String>> {
+    let requests = release.server.requests().into_iter().filter(|r| r.target == "/artifact");
+    requests.map(|r| r.headers.get("range").cloned()).collect()
+}
+
+#[test]
+fn a_dropped_download_asks_for_the_rest() {
+    let release = signed(Format::Deb, "0.2.0");
+    let len = artifact(Format::Deb).len();
+    release.server.resumable("/artifact", &[len / 2, len / 4]);
+    let dir = tempfile::tempdir().unwrap();
+    let mut progress = Vec::new();
+    let downloaded =
+        release.update(Installation::Deb).download(dir.path(), |received, total| progress.push((received, total))).unwrap();
+    assert_eq!(std::fs::read(downloaded.path()).unwrap(), artifact(Format::Deb));
+    assert_eq!(leftovers(dir.path()), ["vsesvit-0.2.0.deb"]);
+    let (half, three_quarters) = (len / 2, len / 2 + len / 4);
+    assert_eq!(
+        artifact_ranges(&release),
+        [None, Some(format!("bytes={half}-")), Some(format!("bytes={three_quarters}-"))]
+    );
+    assert!(progress.windows(2).all(|w| w[0].0 <= w[1].0), "progress only grows");
+    assert_eq!(progress.last(), Some(&(len as u64, Some(len as u64))));
+}
+
+#[test]
+fn a_failed_download_resumes_from_the_partial_file() {
+    let release = signed(Format::Deb, "0.2.0");
+    let half = artifact(Format::Deb).len() / 2;
+    // Half the file, then nothing: the download gives up.
+    release.server.resumable("/artifact", &[half, 0]);
+    let dir = tempfile::tempdir().unwrap();
+    let update = release.update(Installation::Deb);
+
+    let err = download(&update, dir.path()).unwrap_err();
+    assert!(matches!(err, Error::Network(_)), "{err:?}");
+    // A check from another profile, which keeps the version being downloaded.
+    remove_stale_downloads(dir.path(), Some(&Version::new(0, 2, 0))).unwrap();
+    let partial = partial_files(dir.path());
+    assert_eq!(partial.len(), 1, "the partial file is kept: {:?}", leftovers(dir.path()));
+    assert_eq!(std::fs::metadata(&partial[0]).unwrap().len(), half as u64);
+
+    let mut progress = Vec::new();
+    let downloaded = update.download(dir.path(), |received, total| progress.push((received, total))).unwrap();
+    assert_eq!(std::fs::read(downloaded.path()).unwrap(), artifact(Format::Deb));
+    assert_eq!(leftovers(dir.path()), ["vsesvit-0.2.0.deb"]);
+    let len = artifact(Format::Deb).len() as u64;
+    assert_eq!(progress.first(), Some(&(half as u64, Some(len))), "progress starts where the first download stopped");
+    let range = Some(format!("bytes={half}-"));
+    assert_eq!(artifact_ranges(&release), [None, range.clone(), range]);
+}
+
+#[test]
+fn a_partial_file_the_server_cannot_resume_is_downloaded_again() {
+    for resumable in [false, true] {
+        let release = signed(Format::Deb, "0.2.0");
+        if resumable {
+            release.server.resumable("/artifact", &[]);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // Longer than the artifact, so a resumable server answers 416, and one that ignores
+        // `Range` sends the whole file.
+        std::fs::write(dir.path().join("vsesvit-0.2.0.deb.1-0.part"), vec![0; artifact(Format::Deb).len() + 1]).unwrap();
+        let downloaded = download(&release.update(Installation::Deb), dir.path()).unwrap();
+        assert_eq!(std::fs::read(downloaded.path()).unwrap(), artifact(Format::Deb), "resumable: {resumable}");
+        assert_eq!(leftovers(dir.path()), ["vsesvit-0.2.0.deb"]);
+    }
 }

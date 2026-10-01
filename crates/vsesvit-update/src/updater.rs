@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -181,6 +181,11 @@ impl Update {
     /// deleted. When `dir` already holds this artifact from an earlier download and it verifies,
     /// nothing is fetched. Other processes, such as other profiles, can download into the same
     /// `dir` at the same time: each writes a partial file of its own.
+    ///
+    /// The connection can drop, or the 30 minutes a response gets run out on a slow link. The
+    /// download then asks for the rest while each attempt gets further, and fails with
+    /// [`Error::Network`] once one gets nowhere. The partial file stays, and the next call
+    /// resumes it.
     pub fn download(&self, dir: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Downloaded, Error> {
         let name = DownloadName { version: self.release.version.clone(), format: self.format };
         let path = dir.join(name.to_string());
@@ -190,8 +195,20 @@ impl Update {
                 Err(e) => log::info!("downloading {} again: {e}", path.display()),
             }
         }
-        let (mut file, partial) = create_partial(dir, &name)?;
-        if let Err(e) = self.fetch_to(&mut file, &mut progress).and_then(|()| self.verify(&read_back(&mut file)?)) {
+        let (mut file, partial) = match resume_partial(dir, &name) {
+            Some(found) => found,
+            None => create_partial(dir, &name)?,
+        };
+        let fetched = loop {
+            let before = file.metadata()?.len();
+            match self.fetch_to(&mut file, &mut progress) {
+                Err(Error::Network(e)) if file.metadata()?.len() > before => log::info!("resuming the download: {e}"),
+                // Unlocked when `file` closes, for the next download to resume.
+                Err(e @ Error::Network(_)) => return Err(e),
+                result => break result,
+            }
+        };
+        if let Err(e) = fetched.and_then(|()| self.verify(&read_back(&mut file)?)) {
             let _ = fs::remove_file(&partial);
             return Err(e);
         }
@@ -218,16 +235,34 @@ impl Update {
         }
     }
 
+    /// Appends the rest of the artifact to what `file` holds, or replaces it when the server
+    /// does not resume.
     fn fetch_to(&self, file: &mut File, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<(), Error> {
-        let response =
-            self.agent.get(self.url.as_str()).header("Accept", "application/octet-stream").call().map_err(network_error)?;
-        let status = response.status().as_u16();
-        if !(200..=299).contains(&status) {
-            return Err(Error::Http(status));
+        let start = file.seek(SeekFrom::End(0))?;
+        let mut request = self.agent.get(self.url.as_str()).header("Accept", "application/octet-stream");
+        if start > 0 {
+            request = request.header("Range", format!("bytes={start}-"));
         }
-        let total = response.body().content_length();
+        let response = request.call().map_err(network_error)?;
+        let status = response.status().as_u16();
+        let start = match status {
+            206 if content_range_start(&response) == Some(start) => start,
+            206 => return Err(Error::BadResponse("the server sent another part of the update".into())),
+            // The partial file is as long as the artifact or longer: it is not a part of it.
+            416 if start > 0 => {
+                file.set_len(0)?;
+                return self.fetch_to(file, progress);
+            }
+            200..=299 => {
+                file.set_len(0)?;
+                file.rewind()?;
+                0
+            }
+            status => return Err(Error::Http(status)),
+        };
+        let total = response.body().content_length().map(|rest| start + rest);
         let reader = response.into_body().into_reader();
-        save(reader, total, file, MAX_ARTIFACT_SIZE, progress)?;
+        save(reader, start, total, file, MAX_ARTIFACT_SIZE, progress)?;
         file.sync_all()?;
         Ok(())
     }
@@ -256,6 +291,19 @@ fn create_partial(dir: &Path, name: &DownloadName) -> io::Result<(File, PathBuf)
     }
 }
 
+/// Locks a partial download of `name` an earlier download left, to resume it.
+fn resume_partial(dir: &Path, name: &DownloadName) -> Option<(File, PathBuf)> {
+    fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        let (found, true) = entry.file_name().to_str().and_then(DownloadName::parse)? else {
+            return None;
+        };
+        let file = (found == *name).then(|| lock_partial(&path).ok()).flatten()?;
+        // A cleanup that locked the file before this did has deleted it by the time it lets go.
+        path.exists().then_some((file, path))
+    })
+}
+
 /// Reads through the locking handle: on Windows the lock keeps every other handle out.
 fn read_back(file: &mut File) -> io::Result<Vec<u8>> {
     let mut data = Vec::new();
@@ -272,11 +320,12 @@ fn verify(data: &[u8], signature: &str, key: &PublicKey, version: &Version, form
     Ok(())
 }
 
-/// Copies `reader`, whose server announced `total` bytes, into `file`. Fails with
-/// [`Error::TooLarge`] without reading when `total` is over `max`, and before writing past `max`
-/// whatever the server announced.
+/// Copies `reader` into `file`, which holds the first `start` bytes of the `total` the server
+/// announced. Fails with [`Error::TooLarge`] without reading when `total` is over `max`, and
+/// before writing past `max` whatever the server announced.
 fn save(
     mut reader: impl Read,
+    start: u64,
     total: Option<u64>,
     file: &mut impl Write,
     max: u64,
@@ -286,7 +335,7 @@ fn save(
         return Err(Error::TooLarge(max));
     }
     let mut chunk = vec![0u8; 64 * 1024];
-    let mut received = 0u64;
+    let mut received = start;
     progress(received, total);
     loop {
         let n = reader.read(&mut chunk).map_err(|e| Error::Network(e.to_string()))?;
@@ -303,10 +352,11 @@ fn save(
     Ok(())
 }
 
-/// Deletes what [`Update::download`] left in `dir`: partial downloads, and the artifacts of
-/// every version but `keep`. A file that cannot be deleted, such as an installer that is still
-/// running, stays until the next call, and so does a partial download another process is still
-/// writing. Other files are left alone, and a missing `dir` is not an error.
+/// Deletes what [`Update::download`] left in `dir` for every version but `keep`: artifacts and
+/// partial downloads. `keep`'s partial downloads stay for a download to resume. A file that
+/// cannot be deleted, such as an installer that is still running, stays until the next call,
+/// and so does a partial download another process is still writing. Other files are left
+/// alone, and a missing `dir` is not an error.
 pub fn remove_stale_downloads(dir: &Path, keep: Option<&Version>) -> io::Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -318,7 +368,7 @@ pub fn remove_stale_downloads(dir: &Path, keep: Option<&Version>) -> io::Result<
         let Some((name, partial)) = entry.file_name().to_str().and_then(DownloadName::parse) else {
             continue;
         };
-        if !partial && Some(&name.version) == keep {
+        if Some(&name.version) == keep {
             continue;
         }
         // Held until the file is gone, so a download cannot take the file up in between.
@@ -338,7 +388,7 @@ pub fn remove_stale_downloads(dir: &Path, keep: Option<&Version>) -> io::Result<
 
 /// Locks a partial download, failing when another process holds it.
 fn lock_partial(path: &Path) -> io::Result<File> {
-    let file = File::open(path)?;
+    let file = File::options().read(true).write(true).open(path)?;
     file.try_lock()?;
     Ok(file)
 }
@@ -424,6 +474,12 @@ fn agent(https_only: bool, current_version: &Version) -> ureq::Agent {
         .into()
 }
 
+/// Where the part a `206` holds starts, from `Content-Range: bytes <start>-<end>/<length>`.
+fn content_range_start(response: &ureq::http::Response<ureq::Body>) -> Option<u64> {
+    let range = response.headers().get("Content-Range")?.to_str().ok()?;
+    range.strip_prefix("bytes ")?.split_once('-')?.0.parse().ok()
+}
+
 fn network_error(e: ureq::Error) -> Error {
     match e {
         ureq::Error::StatusCode(code) => Error::Http(code),
@@ -450,7 +506,7 @@ mod tests {
     fn an_announced_length_over_the_limit_is_refused_before_reading() {
         let mut file = Vec::new();
         let mut body = io::repeat(1).take(10);
-        let err = save(&mut body, Some(1025), &mut file, 1024, &mut |_, _| {}).unwrap_err();
+        let err = save(&mut body, 0, Some(1025), &mut file, 1024, &mut |_, _| {}).unwrap_err();
         assert!(matches!(err, Error::TooLarge(1024)), "{err:?}");
         assert_eq!((file.len(), body.limit()), (0, 10), "nothing is read or written");
     }
@@ -459,12 +515,12 @@ mod tests {
     fn a_body_longer_than_the_limit_is_cut_off() {
         for total in [None, Some(1000)] {
             let mut file = Vec::new();
-            let err = save(io::repeat(1).take(1 << 20), total, &mut file, 1024, &mut |_, _| {}).unwrap_err();
+            let err = save(io::repeat(1).take(1 << 20), 0, total, &mut file, 1024, &mut |_, _| {}).unwrap_err();
             assert!(matches!(err, Error::TooLarge(1024)), "{total:?}: {err:?}");
             assert!(file.len() <= 1024, "{total:?}: wrote {} bytes", file.len());
         }
         let mut file = Vec::new();
-        save(io::repeat(1).take(1024), None, &mut file, 1024, &mut |_, _| {}).expect("exactly the limit is fine");
+        save(io::repeat(1).take(1024), 0, None, &mut file, 1024, &mut |_, _| {}).expect("exactly the limit is fine");
         assert_eq!(file.len(), 1024);
     }
 
