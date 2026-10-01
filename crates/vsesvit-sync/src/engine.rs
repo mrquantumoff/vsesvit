@@ -122,9 +122,9 @@ impl Account {
         auth::sign_out(http, &self.server, &self.session);
     }
 
-    /// Worker thread: deletes everything the server holds for the account. Every device keeps its
-    /// copy, but uploads only what changes from then on: a device's cursors say the server has
-    /// the rest. Signing in again starts a device's cursors over, and uploads everything it holds.
+    /// Worker thread: deletes everything the server holds for the account, and signs every device
+    /// out there. Each keeps its copy; signing in again starts a device's cursors over, and uploads
+    /// everything it holds.
     pub fn delete_server_data(self, http: &Http) -> Result<Account, Error> {
         let server = self.server.clone();
         authorized(&self, |token| server::delete_account(http, &server, token))?;

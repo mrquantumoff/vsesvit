@@ -205,12 +205,14 @@ pub async fn download(db: &DatabaseConnection, account: AccountId, since: u64, l
     }
 }
 
-/// Deletes every record of the account. The account stays, with its sequence number, so a device
-/// still holding a cursor sees what is uploaded afterwards.
+/// Deletes every record of the account, and signs out every device: one that signs in again starts
+/// its cursors over, so it uploads everything it holds. The account stays, with its sequence
+/// number, so a cursor held from before still sees what is uploaded afterwards.
 pub async fn delete_records(db: &DatabaseConnection, account: AccountId) -> Result<(), DbErr> {
     let txn = db.begin().await?;
     let locked = bump(&txn, account, 0, 0, 0).await?;
     records::Entity::delete_many().filter(records::Column::AccountId.eq(account)).exec(&txn).await?;
+    sessions::Entity::delete_many().filter(sessions::Column::AccountId.eq(account)).exec(&txn).await?;
     bump(&txn, account, 0, -locked.stored_bytes, -locked.record_count).await?;
     txn.commit().await
 }

@@ -425,7 +425,23 @@ async fn uploads_over_the_limits_are_refused_whole() {
 }
 
 #[tokio::test]
-async fn deleting_the_records_keeps_the_cursors_other_devices_hold() {
+async fn deleting_the_records_signs_out_every_device_of_the_account() {
+    each_database(async |app| {
+        let (laptop, phone, bob) = (sign_in(&app, "alice").await, sign_in(&app, "alice").await, sign_in(&app, "bob").await);
+        upload(&app, &phone, vec![record(1, "a", "x")]).await;
+        let (status, _) = call::<()>(&app, "DELETE", "/v1/account", Some(&laptop), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        for session in [&laptop, &phone] {
+            let (status, _) = call::<Page>(&app, "GET", "/v1/records", Some(session), None).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "it signs in again, and uploads all it holds");
+        }
+        assert_eq!(download(&app, &bob, 0).await.records, [], "other accounts stay signed in");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn deleting_the_records_keeps_the_accounts_sequence_counting() {
     each_database(async |app| {
         let (alice, bob) = (sign_in(&app, "alice").await, sign_in(&app, "bob").await);
         upload(&app, &alice, vec![record(1, "a", "x"), record(1, "b", "x"), record(1, "c", "x")]).await;
@@ -433,6 +449,7 @@ async fn deleting_the_records_keeps_the_cursors_other_devices_hold() {
         let held = download(&app, &alice, 0).await.cursor;
         let (status, _) = call::<()>(&app, "DELETE", "/v1/account", Some(&alice), None).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
+        let alice = sign_in(&app, "alice").await;
         assert_eq!(download(&app, &alice, 0).await.records, []);
         assert_eq!(bodies(&download(&app, &bob, 0).await), [(1, "a", "y")]);
         upload(&app, &alice, vec![record(1, "a", "again")]).await;
@@ -457,6 +474,7 @@ async fn an_account_stores_up_to_its_quota_and_rewrites_that_do_not_grow_it_alwa
         assert_eq!(upload(&app, &alice, vec![record(1, "c", sixteen)]).await, StatusCode::INSUFFICIENT_STORAGE, "51 bytes");
         assert_eq!(upload(&app, &bob, vec![record(1, "c", sixteen)]).await, StatusCode::OK, "quotas are per account");
         call::<()>(&app, "DELETE", "/v1/account", Some(&alice), None).await;
+        let alice = sign_in(&app, "alice").await;
         assert_eq!(upload(&app, &alice, two).await, StatusCode::OK);
     })
     .await;

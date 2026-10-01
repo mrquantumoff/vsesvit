@@ -82,7 +82,7 @@ Vsesvit signs in to this server, not to the provider. It uses the authorization 
 
 The provider sees one request per sign-in and no others: requests for records use the session. A session ends when its browser signs out (`DELETE /v1/auth/session`), or after `SESSION_IDLE_DAYS` unused. Disabling someone at the provider does not end their sessions here; delete their rows from `sessions` to do that.
 
-`DELETE /v1/account` deletes an account's records but keeps the account, so its sequence numbers keep counting and other devices' cursors stay valid.
+`DELETE /v1/account` deletes an account's records and ends all its sessions, so every device signs in again and then uploads everything it holds. The account stays, so its sequence numbers keep counting.
 
 ## Develop
 

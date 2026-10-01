@@ -32,7 +32,7 @@ pub enum Action {
 /// The confirmation before [`Action::DeleteServerData`]: title, body, and the destructive button.
 pub const DELETE_CONFIRMATION: (&str, &str, &str) = (
     "Delete your data on the sync server?",
-    "Your bookmarks, history, open tabs, extensions and settings are deleted from the server, and this device signs out. They stay on this device and your other devices, which upload them again when they next sign in.",
+    "Your bookmarks, history, open tabs, extensions and settings are deleted from the server, and all your devices sign out. They stay on your devices, which upload them again when they next sign in.",
     "Delete",
 );
 
