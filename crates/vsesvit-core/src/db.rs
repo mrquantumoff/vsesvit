@@ -11,7 +11,7 @@ use std::path::Path;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::crdt::{Clock, DeviceId, Hlc, JsonText, Seq, Stamp};
+use crate::crdt::{Clock, DeviceId, Hlc, JsonText, Lww, Seq, Stamp};
 use crate::{Error, OpenError};
 
 pub(crate) const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -154,6 +154,16 @@ impl<'a> Tx<'a> {
         }
     }
 
+    /// Sets a synced register, minting this transaction's stamp only if the value
+    /// changes. Returns whether it changed.
+    pub(crate) fn set_register<T: Ord>(&mut self, register: &mut Lww<T>, value: T) -> bool {
+        if register.v == value {
+            return false;
+        }
+        let at = self.stamp();
+        register.set(value, at)
+    }
+
     /// The change-sequence value for every row this transaction marks dirty.
     pub(crate) fn seq(&mut self) -> Seq {
         match self.seq {
@@ -246,6 +256,7 @@ pub(crate) fn bad_column(idx: usize, what: &'static str) -> rusqlite::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crdt::TimeSource;
 
     #[test]
     fn json_columns_hold_canonical_json_or_fail() {
@@ -259,5 +270,18 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn set_register_mints_a_stamp_only_for_a_new_value() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let mut clock = Clock::new(TimeSource::System, Hlc::ZERO);
+        let mut next_seq = 1;
+        let mut tx = Tx::begin(&mut conn, &mut clock, DeviceId(1), &mut next_seq).unwrap();
+        let mut register = Lww::new(1, Stamp::ZERO);
+        assert!(!tx.set_register(&mut register, 1));
+        assert_eq!(tx.stamp, None, "an unchanged value mints nothing");
+        assert!(tx.set_register(&mut register, 2));
+        assert_eq!(register, Lww { v: 2, at: tx.stamp() });
     }
 }

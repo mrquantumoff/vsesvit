@@ -472,11 +472,9 @@ impl SitePermissions<'_> {
                     permission,
                     setting: Lww::new(None, Stamp::ZERO),
                 });
-                if rec.setting.v == setting {
+                if !tx.set_register(&mut rec.setting, setting) {
                     continue;
                 }
-                let at = tx.stamp();
-                rec.setting.set(setting, at);
                 let seq = tx.seq();
                 store_record(&tx.sql, &rec, seq)?;
             }

@@ -415,7 +415,7 @@ impl Extensions<'_> {
             }
             let mut rec =
                 ExtensionsTable::load(&tx.sql, id.as_str())?.filter(|rec| row.is_some() || rec.installed.v).ok_or(Error::NotFound)?;
-            if set_register(tx, &mut rec.enabled, enabled) {
+            if tx.set_register(&mut rec.enabled, enabled) {
                 let seq = tx.seq();
                 ExtensionsTable::store(&tx.sql, &rec, seq)?;
             }
@@ -436,7 +436,7 @@ impl Extensions<'_> {
             let mut was_wanted = false;
             if owns_desired && let Some(mut rec) = ExtensionsTable::load(&tx.sql, id.as_str())? {
                 was_wanted = rec.installed.v;
-                if set_register(tx, &mut rec.installed, false) {
+                if tx.set_register(&mut rec.installed, false) {
                     let seq = tx.seq();
                     ExtensionsTable::store(&tx.sql, &rec, seq)?;
                 }
@@ -610,15 +610,6 @@ impl Extensions<'_> {
     }
 }
 
-/// Sets a synced register, minting a stamp only if the value changes.
-fn set_register<T: Ord>(tx: &mut Tx<'_>, register: &mut Lww<T>, value: T) -> bool {
-    if register.v == value {
-        return false;
-    }
-    let at = tx.stamp();
-    register.set(value, at)
-}
-
 /// The desired-state half of a user install: `installed := true`, `store := store`,
 /// and `enabled := true` for a record that did not exist yet or was uninstalled.
 fn want_installed(tx: &mut Tx<'_>, id: &ExtensionId, store: StoreRef) -> Result<(), Error> {
@@ -634,9 +625,9 @@ fn want_installed(tx: &mut Tx<'_>, id: &ExtensionId, store: StoreRef) -> Result<
             })
         }
         Some(mut rec) => {
-            let reinstalled = set_register(tx, &mut rec.installed, true);
-            let enabled = reinstalled && set_register(tx, &mut rec.enabled, true);
-            let store_changed = set_register(tx, &mut rec.store, store);
+            let reinstalled = tx.set_register(&mut rec.installed, true);
+            let enabled = reinstalled && tx.set_register(&mut rec.enabled, true);
+            let store_changed = tx.set_register(&mut rec.store, store);
             (reinstalled || enabled || store_changed).then_some(rec)
         }
     };

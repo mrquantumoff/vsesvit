@@ -243,11 +243,9 @@ impl Prefs<'_> {
             // A Local pref ignores a row sync stored, as `get` does, so writing takes it back.
             let mut rec = load_record(&tx.sql, key, scope == Scope::Local)?
                 .unwrap_or(PrefRecord { key: key.to_owned(), value: Lww::new(None, Stamp::ZERO) });
-            if rec.value.v == value {
+            if !tx.set_register(&mut rec.value, value) {
                 return Ok(());
             }
-            let at = tx.stamp();
-            rec.value.set(value, at);
             // A Local row is never uploaded, so it takes no seq and leaves `change_seq` alone.
             let seq = if scope == Scope::Synced { tx.seq() } else { Seq::ZERO };
             store_record(&tx.sql, &rec, seq, Some(scope == Scope::Synced))

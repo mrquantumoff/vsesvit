@@ -226,11 +226,9 @@ impl History<'_> {
         let url = url.clone();
         self.p.write(|tx| {
             let Some(mut page) = load_page(&tx.sql, &url)? else { return Ok(()) };
-            if page.title.v == title {
+            if !tx.set_register(&mut page.title, title.to_owned()) {
                 return Ok(());
             }
-            let at = tx.stamp();
-            page.title.set(title.to_owned(), at);
             let seq = tx.seq();
             store_page(&tx.sql, &page, seq)
         })
