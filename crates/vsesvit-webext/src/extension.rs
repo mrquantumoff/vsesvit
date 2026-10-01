@@ -300,13 +300,7 @@ impl Extension {
     }
 
     pub fn web_accessible(&self, path: &str, page_url: &str) -> bool {
-        let entries: Vec<(Vec<String>, Vec<String>)> = self
-            .manifest
-            .web_accessible_resources
-            .iter()
-            .map(|w| (w.resources.clone(), w.matches.iter().map(|m| m.as_str().to_owned()).collect()))
-            .collect();
-        crate::patterns::web_accessible(entries.iter().map(|(r, m)| (r.as_slice(), m.as_slice())), path, page_url)
+        patterns::web_accessible(&self.manifest.web_accessible_resources, path, page_url)
     }
 
     pub fn clear_alarms(&self) {

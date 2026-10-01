@@ -1,7 +1,9 @@
 //! Match patterns at the WebKit boundary. Core's `MatchPattern` decides what a pattern
-//! means; this module turns pattern *text* into what WebKit's user-script allow/block
-//! lists and `web_accessible_resources` globs need, without depending on core (so the
-//! tests run on every host).
+//! means; this module turns pattern *text* into WebKit's user-script allow/block lists,
+//! matches the raw patterns `tabs.query({url})` gets from JavaScript, and decides
+//! `web_accessible_resources`. Nothing here needs WebKit, so the tests run on every host.
+
+use vsesvit_core::extensions::manifest::WebAccessible;
 
 /// WebKit's `UserContentURLPattern` has no `<all_urls>` and no `*://` scheme, so both are
 /// expanded. Other schemes pass through unchanged.
@@ -15,9 +17,9 @@ pub fn webkit_patterns(source: &str) -> Vec<String> {
     }
 }
 
-/// Does `url` match the WebExtensions pattern `pattern`? A pure re-implementation of the
-/// pattern grammar for the places that have only text: `tabs.query({url})` and
-/// `web_accessible_resources.matches`. Invalid patterns match nothing.
+/// Does `url` match the WebExtensions pattern `pattern`? A re-implementation of the
+/// pattern grammar for `tabs.query({url})`, whose patterns are raw text from JavaScript
+/// that core never parsed. Invalid patterns match nothing.
 pub fn url_matches(pattern: &str, url: &str) -> bool {
     let Ok(u) = url::Url::parse(url) else { return false };
     if pattern == "<all_urls>" {
@@ -104,14 +106,13 @@ pub fn navigation_url(base_url: &str, caller: Option<&str>, raw: &str) -> Result
     }
 }
 
-/// May a document at `page_url` load `path` (no leading slash) from an extension whose
-/// `web_accessible_resources` entries are `(resources, matches)`? An entry with no
-/// `matches` (MV2 lists only resources) is open to every site.
-pub fn web_accessible<'a>(entries: impl IntoIterator<Item = (&'a [String], &'a [String])>, path: &str, page_url: &str) -> bool {
-    entries.into_iter().any(|(resources, matches)| {
-        resources.iter().any(|r| glob(r.trim_start_matches('/'), path))
-            && (matches.is_empty() || matches.iter().any(|m| url_matches(m, page_url)))
-    })
+/// May a document at `page_url` load `path` (no leading slash) from an extension with
+/// these `web_accessible_resources` entries? Core gives MV2's bare resource list
+/// `<all_urls>`, so an entry with no `matches` (an MV3 entry naming only `extension_ids`)
+/// is open to no web page, as in Chrome.
+pub fn web_accessible(entries: &[WebAccessible], path: &str, page_url: &str) -> bool {
+    let Ok(page) = url::Url::parse(page_url) else { return false };
+    entries.iter().any(|w| w.resources.iter().any(|r| glob(r.trim_start_matches('/'), path)) && w.matches.iter().any(|m| m.matches(&page)))
 }
 
 #[cfg(test)]
@@ -142,14 +143,23 @@ mod tests {
 
     #[test]
     fn accessibility() {
-        let res = ["images/*.png".to_owned(), "public.js".to_owned()];
-        let sites = ["https://*.allowed.test/*".to_owned()];
-        let none: Vec<String> = Vec::new();
-        assert!(web_accessible([(&res[..], &sites[..])], "images/a.png", "https://www.allowed.test/page"));
-        assert!(!web_accessible([(&res[..], &sites[..])], "images/a.png", "https://other.test/"));
-        assert!(!web_accessible([(&res[..], &sites[..])], "secret.js", "https://www.allowed.test/"));
-        assert!(web_accessible([(&res[..], &none[..])], "public.js", "https://anything.test/"));
-        assert!(!web_accessible(std::iter::empty(), "public.js", "https://anything.test/"));
+        use vsesvit_core::extensions::manifest::MatchPattern;
+        let entry = |matches: &[&str]| WebAccessible {
+            resources: vec!["images/*.png".into(), "public.js".into()],
+            matches: matches.iter().map(|m| MatchPattern::parse(m).unwrap()).collect(),
+        };
+        let sites = [entry(&["https://*.allowed.test/*"])];
+        assert!(web_accessible(&sites, "images/a.png", "https://www.allowed.test/page"));
+        assert!(!web_accessible(&sites, "images/a.png", "https://other.test/"));
+        assert!(!web_accessible(&sites, "secret.js", "https://www.allowed.test/"));
+        assert!(!web_accessible(&sites, "images/a.png", ""));
+        // An MV3 entry without `matches` (only `extension_ids`) is open to no web page.
+        assert!(!web_accessible(&[entry(&[])], "public.js", "https://anything.test/"));
+        // MV2's bare list, as core normalizes it.
+        let legacy = [entry(&["<all_urls>"])];
+        assert!(web_accessible(&legacy, "public.js", "http://127.0.0.1:8080/"));
+        assert!(!web_accessible(&legacy, "public.js", "chrome-extension://abc/"));
+        assert!(!web_accessible(&[], "public.js", "https://anything.test/"));
     }
 
     #[test]
