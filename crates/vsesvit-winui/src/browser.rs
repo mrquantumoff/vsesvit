@@ -25,7 +25,7 @@ use vsesvit_core::{Profile, Url, onboarding};
 use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
 use crate::bookmarks_bar::{self, BarItem};
 use crate::config::{Config, Mode};
-use crate::dialogs::Dialog;
+use crate::dialogs::{Dialog, DialogWindow};
 use crate::downloads::Downloads;
 use crate::engine::{self, Engine};
 use crate::extensions::ExtensionHost;
@@ -104,6 +104,8 @@ pub(crate) struct Browser {
     engine: Engine,
     page_script: Rc<shortcuts::PageScript>,
     windows: RefCell<Vec<Rc<BrowserWindow>>>,
+    /// Bookmarks, History, Downloads and Settings, each in a window of its own while open.
+    dialog_windows: RefCell<Vec<Rc<DialogWindow>>>,
     closed_tabs: RefCell<Vec<ClosedTab>>,
     next_tab_id: Cell<u64>,
     prefs: Cell<WindowPrefs>,
@@ -188,6 +190,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         engine,
         page_script,
         windows: RefCell::new(Vec::new()),
+        dialog_windows: RefCell::new(Vec::new()),
         closed_tabs: RefCell::new(Vec::new()),
         next_tab_id: Cell::new(1),
         prefs: Cell::new(prefs),
@@ -409,6 +412,16 @@ impl Browser {
     }
 
     pub fn window_closed(&self, window: &BrowserWindow) {
+        let owned: Vec<_> = self
+            .dialog_windows
+            .borrow()
+            .iter()
+            .filter(|d| d.opened_from(window))
+            .cloned()
+            .collect();
+        for dialog in owned {
+            dialog.close();
+        }
         let closed: Vec<_> = self
             .windows
             .borrow_mut()
@@ -424,6 +437,36 @@ impl Browser {
         } else {
             self.session_changed();
         }
+    }
+
+    /// Shows `kind` in its own window, opened from `opener`, or brings it forward if it is open.
+    pub fn show_dialog_window(&self, kind: Dialog, opener: &Rc<BrowserWindow>) {
+        let open = self
+            .dialog_windows
+            .borrow()
+            .iter()
+            .find(|d| d.kind() == kind)
+            .cloned();
+        if let Some(open) = open {
+            open.raise();
+            return;
+        }
+        let Some(browser) = self.me.upgrade() else {
+            return;
+        };
+        match DialogWindow::open(&browser, opener, kind) {
+            Ok(window) => self.dialog_windows.borrow_mut().push(window),
+            Err(e) => log::error!("{kind:?} window: {e}"),
+        }
+    }
+
+    pub fn dialog_window_closed(&self, window: &DialogWindow) {
+        let closed: Vec<_> = self
+            .dialog_windows
+            .borrow_mut()
+            .extract_if(.., |w| std::ptr::eq(w.as_ref(), window))
+            .collect();
+        drop(closed);
     }
 
     pub fn remember_closed(&self, tab: ClosedTab) {
@@ -912,6 +955,9 @@ impl Browser {
         for window in self.windows() {
             window.apply_theme(theme);
         }
+        for window in self.dialog_windows.borrow().clone() {
+            window.apply_theme(theme);
+        }
     }
 
     pub fn backdrop(&self) -> Backdrop {
@@ -946,6 +992,9 @@ impl Browser {
         self.write_pref(&WINDOW_BACKDROP, &backdrop);
         self.update_prefs(|p| p.backdrop = backdrop);
         for window in self.windows() {
+            window.apply_backdrop(backdrop);
+        }
+        for window in self.dialog_windows.borrow().clone() {
             window.apply_backdrop(backdrop);
         }
     }

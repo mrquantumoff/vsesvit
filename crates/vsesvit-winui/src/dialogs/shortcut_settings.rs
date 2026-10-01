@@ -193,7 +193,10 @@ pub(crate) struct Page {
     scroller: IScrollViewer,
     list: Panel,
     browser: Weak<Browser>,
+    /// Its accelerators are off while a shortcut is captured, for when the page shows over it.
     window: Weak<BrowserWindow>,
+    /// The window the page shows in, its own or `window`.
+    host: HWND,
     capture: Capture,
     me: Weak<Page>,
 }
@@ -213,7 +216,9 @@ pub(super) fn wire(
     root: &FrameworkElement,
     browser: &Rc<Browser>,
     window: &Rc<BrowserWindow>,
+    host: &Window,
 ) -> Result<Rc<Page>> {
+    let host = platform::window_handle(host)?;
     let flyout: Flyout = xaml::load(CAPTURE)?;
     let content: FrameworkElement = xaml::load(CAPTURE_CONTENT)?;
     content.SetRequestedTheme(super::element_theme(browser.theme()))?;
@@ -234,6 +239,7 @@ pub(super) fn wire(
         list,
         browser: Rc::downgrade(browser),
         window: Rc::downgrade(window),
+        host,
         capture,
         me: me.clone(),
     });
@@ -386,7 +392,7 @@ impl Page {
         };
         window.suspend_shortcuts(true);
         let shown = FlyoutShowOptions::new().and_then(|options| {
-            options.SetShowMode(if window.is_foreground() {
+            options.SetShowMode(if unsafe { GetForegroundWindow() } == self.host {
                 FlyoutShowMode::Standard
             } else {
                 FlyoutShowMode::Transient

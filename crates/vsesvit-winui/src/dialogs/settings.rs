@@ -18,10 +18,10 @@ use crate::updates::StatusButton;
 use crate::window::{Backdrop, BrowserWindow};
 use crate::{exec, pickers, xaml};
 
-/// A fixed height, so the dialog keeps its size from one category to the next; each category
-/// scrolls on its own.
+/// Fills the window, which keeps its size from one category to the next; each category scrolls
+/// on its own.
 pub(super) const MARKUP: &str = r#"
-  <Grid Width="760" Height="560" ColumnSpacing="16">
+  <Grid ColumnSpacing="16">
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="200"/>
       <ColumnDefinition Width="*"/>
@@ -325,13 +325,14 @@ pub(super) fn wire(
     root: &FrameworkElement,
     browser: &Rc<Browser>,
     window: &Rc<BrowserWindow>,
+    host: &Window,
 ) -> Result<Wired> {
     let weak = Rc::downgrade(browser);
     wire_categories(root)?;
-    wire_downloads(root, browser, window)?;
+    wire_downloads(root, browser, super::window_id(host)?)?;
     wire_clear_browsing_data(root, browser)?;
     super::site_permissions::wire(root, browser)?;
-    let shortcuts = super::shortcut_settings::wire(root, browser, window)?;
+    let shortcuts = super::shortcut_settings::wire(root, browser, window, host)?;
     let sync = super::sync_settings::wire(root, browser, window)?;
     let mut follow: Follow = Vec::new();
 
@@ -667,34 +668,18 @@ impl DownloadFolder {
     }
 }
 
-/// The Downloads group's folder, with Change and Reset.
-fn wire_downloads(
-    root: &FrameworkElement,
-    browser: &Rc<Browser>,
-    window: &Rc<BrowserWindow>,
-) -> Result<()> {
+/// The Downloads group's folder, with Change and Reset. The folder picker opens over `owner`.
+fn wire_downloads(root: &FrameworkElement, browser: &Rc<Browser>, owner: WindowId) -> Result<()> {
     let folder = Rc::new(DownloadFolder {
         path: xaml::find(root, "DownloadFolder")?,
         reset: xaml::find(root, "DownloadFolderReset")?,
     });
     folder.show(browser);
 
-    let (b, w, f) = (
-        Rc::downgrade(browser),
-        Rc::downgrade(window),
-        folder.clone(),
-    );
+    let (b, f) = (Rc::downgrade(browser), folder.clone());
     on_click(
         &xaml::find::<Button>(root, "DownloadFolderChange")?,
         move || {
-            let Some(window) = w.upgrade() else { return };
-            let owner = match window.window_id() {
-                Ok(owner) => owner,
-                Err(e) => {
-                    log::warn!("picker owner: {e}");
-                    return;
-                }
-            };
             let (b, f) = (b.clone(), f.clone());
             exec::spawn(async move {
                 let picked = pickers::pick_folder(owner).await;

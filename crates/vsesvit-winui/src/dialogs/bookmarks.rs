@@ -17,13 +17,12 @@ use windows_core::{Interface, Result};
 use super::{Wired, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::window::BrowserWindow;
 use crate::{exec, pickers, xaml};
 
 pub(super) const MARKUP: &str = r#"
-  <Grid Width="760" ColumnSpacing="20">
+  <Grid ColumnSpacing="20">
     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="280"/></Grid.ColumnDefinitions>
-    <TreeView x:Name="BookmarksTree" Height="420" SelectionMode="Single" CanDragItems="True"
+    <TreeView x:Name="BookmarksTree" SelectionMode="Single" CanDragItems="True"
               CanReorderItems="True" AllowDrop="True">
       <!-- Each node's content is its icon and label, built in code. -->
       <TreeView.ItemTemplate>
@@ -62,7 +61,8 @@ enum ImportChoice {
 
 struct Editor {
     browser: Weak<Browser>,
-    window: Weak<BrowserWindow>,
+    /// The window the import's file picker opens over.
+    owner: WindowId,
     tree: TreeView,
     name: TextBox,
     url: TextBox,
@@ -97,11 +97,7 @@ enum DropSpot {
 /// A button's handler.
 type Action = fn(&Editor);
 
-pub(super) fn wire(
-    root: &FrameworkElement,
-    browser: &Rc<Browser>,
-    window: &Rc<BrowserWindow>,
-) -> Result<Wired> {
+pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>, host: &Window) -> Result<Wired> {
     let control = |name: &str| xaml::find::<Control>(root, name);
     let mut import_choices: Vec<ImportChoice> = import::installed_browsers()
         .into_iter()
@@ -110,7 +106,7 @@ pub(super) fn wire(
     import_choices.push(ImportChoice::File);
     let editor = Rc::new(Editor {
         browser: Rc::downgrade(browser),
-        window: Rc::downgrade(window),
+        owner: super::window_id(host)?,
         tree: xaml::find(root, "BookmarksTree")?,
         name: xaml::find(root, "BookmarkName")?,
         url: xaml::find(root, "BookmarkUrl")?,
@@ -622,16 +618,7 @@ impl Editor {
     }
 
     fn import_file(self: &Rc<Self>) {
-        let Some(window) = self.window.upgrade() else {
-            return;
-        };
-        let owner = match window.window_id() {
-            Ok(id) => id,
-            Err(e) => {
-                log::warn!("picker owner: {e}");
-                return;
-            }
-        };
+        let owner = self.owner;
         let me = self.clone();
         exec::spawn(async move {
             match pickers::pick_file(owner, &[".html", ".htm", ".json"]).await {

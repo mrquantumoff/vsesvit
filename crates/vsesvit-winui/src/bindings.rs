@@ -12304,6 +12304,12 @@ impl IOverlappedPresenter {
                 .ok()
         }
     }
+    pub fn Restore(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Restore)(windows_core::Interface::as_raw(self))
+                .ok()
+        }
+    }
 }
 #[repr(C)]
 pub struct IOverlappedPresenter_Vtbl {
@@ -12325,6 +12331,53 @@ pub struct IOverlappedPresenter_Vtbl {
         *mut OverlappedPresenterState,
     ) -> windows_core::HRESULT,
     pub Maximize: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+    Minimize: usize,
+    pub Restore: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IOverlappedPresenter3,
+    IOverlappedPresenter3_Vtbl,
+    0x55d26138_4c38_57e7_a0c1_d467b774db8c
+);
+impl windows_core::RuntimeType for IOverlappedPresenter3 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IOverlappedPresenter3 {
+    pub fn SetPreferredMinimumHeight(&self, value: Option<i32>) -> windows_core::Result<()> {
+        let value__ = value.map(<windows_reference::IReference<i32> as From<_>>::from);
+        unsafe {
+            (windows_core::Interface::vtable(self).SetPreferredMinimumHeight)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Param::param(value__.as_ref()).abi(),
+            )
+            .ok()
+        }
+    }
+    pub fn SetPreferredMinimumWidth(&self, value: Option<i32>) -> windows_core::Result<()> {
+        let value__ = value.map(<windows_reference::IReference<i32> as From<_>>::from);
+        unsafe {
+            (windows_core::Interface::vtable(self).SetPreferredMinimumWidth)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Param::param(value__.as_ref()).abi(),
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct IOverlappedPresenter3_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    PreferredMinimumHeight: usize,
+    pub SetPreferredMinimumHeight: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    PreferredMinimumWidth: usize,
+    pub SetPreferredMinimumWidth: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(IPanel, IPanel_Vtbl, 0x27a1b418_56f3_525e_b883_cefed905eed3);
 impl windows_core::RuntimeType for IPanel {

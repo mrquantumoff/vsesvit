@@ -31,7 +31,8 @@ Microsoft.UI.Windowing.IAppWindow::{ShowWithActivation, Resize, SetPresenterByKi
 Microsoft.UI.Windowing.AppWindowPresenter
 Microsoft.UI.Windowing.IAppWindow2::MoveInZOrderAtBottom
 Microsoft.UI.Windowing.OverlappedPresenter
-Microsoft.UI.Windowing.IOverlappedPresenter::{get_State, Maximize}
+Microsoft.UI.Windowing.IOverlappedPresenter::{get_State, Maximize, Restore}
+Microsoft.UI.Windowing.IOverlappedPresenter3::{put_PreferredMinimumWidth, put_PreferredMinimumHeight}
 Microsoft.UI.Windowing.OverlappedPresenterState
 Microsoft.UI.Windowing.AppWindowTitleBar
 Microsoft.UI.Windowing.IAppWindowTitleBar::get_RightInset

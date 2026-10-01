@@ -88,6 +88,37 @@ impl Backdrop {
     }
 }
 
+/// Puts `backdrop` behind `window`'s content.
+pub(crate) fn set_backdrop(window: &Window, backdrop: Backdrop) {
+    let set = xaml::load::<SystemBackdrop>(backdrop.markup()).and_then(|b| {
+        window
+            .cast::<IWindow2>()
+            .and_then(|w| w.SetSystemBackdrop(&b))
+    });
+    if let Err(e) = set {
+        log::warn!("window backdrop {backdrop:?}: {e}");
+    }
+}
+
+/// Gives `window`'s content, `root`, and its title bar buttons `theme`.
+pub(crate) fn set_theme(window: &Window, root: &FrameworkElement, theme: Theme) {
+    let (element, title_bar) = match theme {
+        Theme::System => (ElementTheme::Default, TitleBarTheme::UseDefaultAppMode),
+        Theme::Light => (ElementTheme::Light, TitleBarTheme::Light),
+        Theme::Dark => (ElementTheme::Dark, TitleBarTheme::Dark),
+    };
+    let _ = root.SetRequestedTheme(element);
+    let preferred = window
+        .cast::<IWindow2>()
+        .and_then(|w| w.AppWindow())
+        .and_then(|w| w.TitleBar())
+        .and_then(|t| t.cast::<IAppWindowTitleBar3>())
+        .and_then(|t| t.SetPreferredTheme(title_bar));
+    if let Err(e) = preferred {
+        log::debug!("title bar theme: {e}");
+    }
+}
+
 /// The window's look, from preferences.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WindowPrefs {
@@ -280,6 +311,11 @@ impl BrowserWindow {
 
     pub fn browser(&self) -> Option<Rc<Browser>> {
         self.browser.upgrade()
+    }
+
+    /// The XAML window, which owns the pickers and flyouts opened over it.
+    pub fn xaml_window(&self) -> &Window {
+        &self.window
     }
 
     pub fn xaml_root(&self) -> Result<XamlRoot> {
@@ -944,11 +980,15 @@ impl BrowserWindow {
     }
 
     pub fn show_dialog(&self, dialog: Dialog) {
-        if self
-            .browser()
-            .is_some_and(|b| !b.config().mode.is_interactive())
-        {
+        let Some(browser) = self.browser() else {
+            return;
+        };
+        if !browser.config().mode.is_interactive() {
             self.show_scripted_dialog(dialog);
+            return;
+        }
+        if dialog.windowed() {
+            browser.show_dialog_window(dialog, &self.me());
             return;
         }
         if self.dialog_open.replace(true) {
@@ -1397,31 +1437,11 @@ impl BrowserWindow {
     }
 
     pub fn apply_backdrop(&self, backdrop: Backdrop) {
-        let set = xaml::load::<SystemBackdrop>(backdrop.markup()).and_then(|b| {
-            self.window
-                .cast::<IWindow2>()
-                .and_then(|w| w.SetSystemBackdrop(&b))
-        });
-        if let Err(e) = set {
-            log::warn!("window backdrop {backdrop:?}: {e}");
-        }
+        set_backdrop(&self.window, backdrop);
     }
 
     pub fn apply_theme(&self, theme: Theme) {
-        let (element, title_bar) = match theme {
-            Theme::System => (ElementTheme::Default, TitleBarTheme::UseDefaultAppMode),
-            Theme::Light => (ElementTheme::Light, TitleBarTheme::Light),
-            Theme::Dark => (ElementTheme::Dark, TitleBarTheme::Dark),
-        };
-        let _ = self.ui.root.SetRequestedTheme(element);
-        let preferred = self
-            .app_window()
-            .and_then(|w| w.TitleBar())
-            .and_then(|t| t.cast::<IAppWindowTitleBar3>())
-            .and_then(|t| t.SetPreferredTheme(title_bar));
-        if let Err(e) = preferred {
-            log::debug!("title bar theme: {e}");
-        }
+        set_theme(&self.window, &self.ui.root, theme);
     }
 
     // ---- placement ----

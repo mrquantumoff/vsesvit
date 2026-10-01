@@ -14,9 +14,9 @@ use crate::downloads::{Change, Subscriber};
 use crate::{exec, platform, xaml};
 
 pub(super) const MARKUP: &str = r#"
-  <Grid Width="640" RowSpacing="12">
+  <Grid RowSpacing="12">
     <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/><RowDefinition Height="400"/>
+      <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
     </Grid.RowDefinitions>
     <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
       <Button x:Name="DownloadsOpenFolder" Content="Open download folder"/>

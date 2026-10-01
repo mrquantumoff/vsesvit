@@ -1,9 +1,11 @@
 //! The Bookmarks, History, Downloads, Extensions, Settings and About dialogs and the welcome,
 //! all on vsesvit-core data.
 //!
-//! Each dialog is a `ContentDialog` built from markup, filled and wired by its module. Scripted
-//! runs never show the modal dialog (showing it moves keyboard focus); `preview` puts the same
-//! wired content over the window instead, so it can be captured without taking focus.
+//! Each dialog's content is built from markup, filled and wired by its module. Bookmarks,
+//! History, Downloads and Settings show it in a window of their own (`windowed`); the others in
+//! a `ContentDialog` over the browser window. Scripted runs show neither (showing them moves
+//! keyboard focus); `preview` puts the same wired content over the browser window instead, so it
+//! can be captured without taking focus.
 
 mod about;
 mod bookmarks;
@@ -17,6 +19,7 @@ mod shortcut_settings;
 mod site_permissions;
 mod sync_settings;
 mod welcome;
+mod windowed;
 
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -25,10 +28,12 @@ use vsesvit_core::prefs::Theme;
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
+use crate::browser::Browser;
 use crate::window::{Backdrop, BrowserWindow};
 use crate::xaml;
 
 pub(crate) use settings::CATEGORIES as SETTINGS_CATEGORIES;
+pub(crate) use windowed::DialogWindow;
 #[cfg(feature = "self-test")]
 pub(crate) use {
     bookmarks::import_bookmarks,
@@ -49,6 +54,22 @@ pub(crate) enum Dialog {
 }
 
 impl Dialog {
+    /// Shown in a window of its own rather than over the browser window.
+    pub fn windowed(self) -> bool {
+        self.window_size().is_some()
+    }
+
+    /// The size of its own window, in view pixels, for the dialogs that have one.
+    fn window_size(self) -> Option<(f64, f64)> {
+        match self {
+            Self::Bookmarks => Some((900.0, 640.0)),
+            Self::History => Some((1000.0, 680.0)),
+            Self::Downloads => Some((720.0, 600.0)),
+            Self::Settings => Some((960.0, 720.0)),
+            Self::Extensions | Self::About | Self::Welcome => None,
+        }
+    }
+
     /// The title over the dialog. The welcome has none: its pages have headings.
     fn heading(self) -> Option<&'static str> {
         match self {
@@ -148,20 +169,37 @@ pub(crate) fn build(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Built> {
         .cast::<FrameworkElement>()?
         .SetRequestedTheme(element_theme(browser.theme()))?;
     let root = dialog.cast::<FrameworkElement>()?;
-    let wired = match kind {
-        Dialog::Bookmarks => bookmarks::wire(&root, &browser, window)?,
-        Dialog::History => history::wire(&root, &browser, window)?,
-        Dialog::Downloads => downloads::wire(&root, &browser)?,
-        Dialog::Extensions => extensions::wire(&root, &browser, window)?,
-        Dialog::Settings => settings::wire(&root, &browser, window)?,
-        Dialog::About => about::fill(&root, &browser)?,
-        Dialog::Welcome => welcome::wire(&root, &browser, window)?,
-    };
+    let wired = wire(kind, &root, &browser, window, window.xaml_window())?;
     Ok(Built {
         dialog,
         kind,
         wired,
     })
+}
+
+/// Fills and wires `kind`'s content under `root`. `window` is the browser window it acts on, and
+/// `host` the window it shows in: its own, or `window` itself.
+fn wire(
+    kind: Dialog,
+    root: &FrameworkElement,
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    host: &Window,
+) -> Result<Wired> {
+    match kind {
+        Dialog::Bookmarks => bookmarks::wire(root, browser, host),
+        Dialog::History => history::wire(root, browser, window),
+        Dialog::Downloads => downloads::wire(root, browser),
+        Dialog::Extensions => extensions::wire(root, browser, window),
+        Dialog::Settings => settings::wire(root, browser, window, host),
+        Dialog::About => about::fill(root, browser),
+        Dialog::Welcome => welcome::wire(root, browser, window),
+    }
+}
+
+/// The id pickers opened over `window` take as their owner.
+fn window_id(window: &Window) -> Result<WindowId> {
+    window.cast::<IWindow2>()?.AppWindow()?.Id()
 }
 
 pub(super) fn element_theme(theme: Theme) -> ElementTheme {
@@ -213,6 +251,12 @@ pub(crate) fn preview(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Previe
     let content = built.dialog.cast::<IContentControl>()?;
     let body: UIElement = content.Content()?.cast()?;
     content.SetContent(None::<&IInspectable>)?;
+    if let Some((width, height)) = kind.window_size() {
+        // Its own window would give the content this room, less the title bar and the margins.
+        let body = body.cast::<FrameworkElement>()?;
+        body.SetWidth(width - 2.0 * windowed::MARGIN)?;
+        body.SetHeight(height - windowed::TITLE_BAR_HEIGHT - windowed::MARGIN)?;
+    }
     window.set_overlay(Some((built.kind.heading().unwrap_or_default(), &body)))?;
     Ok(Preview {
         window: window.clone(),

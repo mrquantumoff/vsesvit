@@ -16,7 +16,7 @@ use crate::window::BrowserWindow;
 use crate::xaml;
 
 pub(super) const MARKUP: &str = r#"
-  <Grid Width="880" ColumnSpacing="16">
+  <Grid ColumnSpacing="16">
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="200"/>
       <ColumnDefinition Width="*"/>
@@ -24,7 +24,7 @@ pub(super) const MARKUP: &str = r#"
     <ListView x:Name="HistorySections" AutomationProperties.Name="History sections"/>
     <Grid x:Name="HistoryPanel" Grid.Column="1" RowSpacing="12">
       <Grid.RowDefinitions>
-        <RowDefinition Height="Auto"/><RowDefinition Height="380"/><RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
       </Grid.RowDefinitions>
       <AutoSuggestBox x:Name="HistorySearch" PlaceholderText="Search history" QueryIcon="Find"/>
       <Grid Grid.Row="1">

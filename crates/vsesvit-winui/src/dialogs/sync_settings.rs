@@ -73,9 +73,8 @@ const DELETE_BUTTON: &str = r#"<Button {ns} x:Name="SyncDeleteServerData" Conten
 
 pub(super) struct Page {
     browser: Weak<Browser>,
+    /// Where the sign-in page opens, brought over the Settings window then.
     window: Weak<BrowserWindow>,
-    /// The Settings dialog, hidden once the sign-in page opens so the page shows.
-    dialog: FrameworkElement,
     title: TextBlock,
     subtitle: TextBlock,
     actions: Panel,
@@ -119,7 +118,6 @@ pub(super) fn wire(
         Page {
             browser: Rc::downgrade(browser),
             window: Rc::downgrade(window),
-            dialog: root.clone(),
             title,
             subtitle,
             actions,
@@ -301,10 +299,13 @@ impl Page {
                 if !self.server.apply() {
                     return;
                 }
-                let dialog = self.dialog.clone();
+                let (window, interactive) =
+                    (self.window.clone(), browser.config().mode.is_interactive());
                 sync::sign_in(&browser, self.window.clone(), move || {
-                    if let Err(e) = dialog.cast::<IContentDialog>().and_then(|d| d.Hide()) {
-                        log::warn!("closing Settings for the sign-in page: {e}");
+                    if let Some(window) = window.upgrade()
+                        && interactive
+                    {
+                        window.activate();
                     }
                 });
             }
