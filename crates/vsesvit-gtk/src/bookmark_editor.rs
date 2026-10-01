@@ -10,6 +10,7 @@ use adw::prelude::*;
 use gtk::glib;
 use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, Bookmarks, InsertAt, NodeKind};
+use vsesvit_core::search::classify_url;
 
 use crate::profile::Core;
 use crate::window::BrowserWindow;
@@ -128,8 +129,10 @@ impl Form {
     }
 }
 
+/// The URL field's text as a bookmark URL, if it is one: what the address bar would open as a
+/// URL, so a bare host gains `https://`.
 fn parse_url(text: &str) -> Option<Url> {
-    Url::parse(text.trim()).ok().filter(|url| url.has_host() || !url.cannot_be_a_base() || url.scheme() == "about")
+    classify_url(text).map(|target| target.url().clone())
 }
 
 /// Writes `values` over `subject`. Returns the bookmark's id.
@@ -343,7 +346,8 @@ mod tests {
         assert!(parse_url("https://example.com/").is_some());
         assert!(parse_url("  https://example.com/a  ").is_some());
         assert!(parse_url("about:blank").is_some());
-        assert!(parse_url("example.com").is_none());
+        // Fixed up as the address bar and the Windows shell's editor do.
+        assert_eq!(parse_url("example.com").map(|u| u.to_string()).as_deref(), Some("https://example.com/"));
         assert!(parse_url("not a url").is_none());
         assert!(parse_url("").is_none());
     }
