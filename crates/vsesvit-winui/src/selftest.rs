@@ -30,7 +30,7 @@ use crate::layout;
 use crate::popup::Activation;
 use crate::report::{Check, Report};
 use crate::shortcuts::Command;
-use crate::tab::Tab;
+use crate::tab::{Tab, TabId};
 use crate::window::BrowserWindow;
 use crate::{app, engine, exec, xaml};
 
@@ -528,11 +528,12 @@ async fn checks(
 
     check(report, "new_tab_page", DEFAULT_TIMEOUT, async |p| {
         let origin = server.url("/");
+        let open = tab_ids(&window);
         window.run(Command::NewTab);
         let ntp = until(p, |p| {
             let tabs = window.tabs_in_order();
             p.observe(format!("{} tabs", tabs.len()));
-            tabs.into_iter().find(|t| t.id != tab.id)
+            tabs.into_iter().find(|t| !open.contains(&t.id))
         })
         .await;
         wait_ready(&ntp, p).await;
@@ -705,6 +706,11 @@ async fn expect_layout(window: &Rc<BrowserWindow>, want: TabsPosition, probe: &P
         })
     })
     .await
+}
+
+/// The window's tabs, to tell a tab opened after this from one open before.
+fn tab_ids(window: &BrowserWindow) -> Vec<TabId> {
+    window.tabs_in_order().iter().map(|t| t.id).collect()
 }
 
 /// The bookmarks bar's list entries, in order.

@@ -13,7 +13,7 @@ use vsesvit_core::shortcuts::{Command as Core, Keymap};
 use vsesvit_core::sync::{Kind, WireRecord};
 use windows_core::Interface;
 
-use super::{Probe, eval, until, wait_ready};
+use super::{Probe, eval, tab_ids, until, wait_ready};
 use crate::automation::{invoke, press};
 use crate::browser::Browser;
 use crate::bindings::{
@@ -198,9 +198,13 @@ pub(super) async fn shortcuts(
     exec::sleep(SETTLE).await;
     drop(preview);
     let before = window.tab_count();
+    let open = tab_ids(window);
     press(tab, 0x52, CTRL).await?;
     let opened = exec::wait_for(Duration::from_secs(5), Duration::from_millis(100), || {
-        window.tabs_in_order().into_iter().find(|t| t.id != tab.id)
+        window
+            .tabs_in_order()
+            .into_iter()
+            .find(|t| !open.contains(&t.id))
     })
     .await;
     if let Some(new) = &opened {

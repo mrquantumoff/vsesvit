@@ -2,7 +2,7 @@
 //! with a visited fixture page to complete inline, and the page context menu's search for the
 //! selected text.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use vsesvit_core::search::{SearchEngineId, UrlTemplate};
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
 
-use super::{FIXTURE_TITLE, Probe, eval, until};
+use super::{FIXTURE_TITLE, Probe, eval, tab_ids, until};
 use crate::bindings::ICoreWebView2_11;
 use crate::browser::Browser;
 use crate::exec;
@@ -38,6 +38,16 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// Runs its closure when dropped: when a check returns, and when its timeout drops it at an
+/// `.await` that never completed, where no line after that `.await` runs.
+struct OnDrop<F: FnMut()>(F);
+
+impl<F: FnMut()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+
 /// What the box and its list show, for the report.
 fn describe(window: &BrowserWindow) -> String {
     format!(
@@ -56,11 +66,15 @@ pub(super) async fn address_completion(
     out_dir: &Path,
     p: &Probe,
 ) -> Result<String, String> {
+    let passed = Cell::new(false);
+    let _escape = OnDrop(|| {
+        if !passed.get() {
+            window.address_key_down(ESCAPE, Mods::NONE);
+            window.address_key_down(ESCAPE, Mods::NONE);
+        }
+    });
     let result = keys(window, tab, server, out_dir, p).await;
-    if result.is_err() {
-        window.address_key_down(ESCAPE, Mods::NONE);
-        window.address_key_down(ESCAPE, Mods::NONE);
-    }
+    passed.set(result.is_ok());
     result
 }
 
@@ -164,7 +178,8 @@ async fn keys(
     ok.then_some(detail.clone()).ok_or(detail)
 }
 
-/// With a default search engine on the fixture server, so nothing leaves the machine.
+/// With a default search engine on the fixture server, so nothing leaves the machine. The
+/// previous default comes back, and a tab the Search item opened closes, also on a timeout.
 pub(super) async fn selection_search(
     browser: &Rc<Browser>,
     window: &Rc<BrowserWindow>,
@@ -186,9 +201,16 @@ pub(super) async fn selection_search(
             Ok::<_, vsesvit_core::Error>((engine, previous))
         })
         .map_err(err)?;
-    let result = search_selection(window, tab, &template, server, p).await;
-    restore_engine(browser, &engine, &previous);
-    result
+    let open = tab_ids(window);
+    let _restore = OnDrop(|| {
+        restore_engine(browser, &engine, &previous);
+        for t in window.tabs_in_order() {
+            if !open.contains(&t.id) {
+                window.close_tab(t.id);
+            }
+        }
+    });
+    search_selection(window, tab, &template, server, p).await
 }
 
 fn restore_engine(browser: &Browser, engine: &SearchEngineId, previous: &SearchEngineId) {
