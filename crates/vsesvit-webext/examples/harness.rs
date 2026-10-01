@@ -17,7 +17,8 @@
 //!    reaches no `file:` page (no content script, no tab URL, not in `permissions.contains`);
 //! 6. the widget popup's iframe loads in place instead of being blanked and opened as a tab;
 //! 7. the twin popup answers `permissions.contains` by pattern coverage and Chrome's
-//!    predefined `@@` messages, and opens the options page in a tab, where `chrome.*` works
+//!    predefined `@@` messages, substitutes `getMessage` placeholders in one pass, and
+//!    opens the options page in a tab, where `chrome.*` works
 //!    (storage, `runtime.getURL` on the hashed host, messaging both ways, `tabs.getCurrent`,
 //!    `tabs.onUpdated`) and its CSP holds; `runtime.sendMessage` reaches every page;
 //!    `scripting.executeScript` injects the content-script API into a tab without a
@@ -315,6 +316,9 @@ mod linux {
             let _window = self.park(&popup);
             let title = wait_for_value(|| popup.title().map(String::from).filter(|t| t.starts_with("twin-popup:")), TIMEOUT).await;
             self.note("twin_popup", title.as_deref() == Some(&format!("twin-popup:{TWIN_ID}")), format!("title = {title:?}"));
+            // Substituted values are inserted as they are, `$` signs included.
+            let cost = self.eval_async(&popup, "return chrome.i18n.getMessage('cost', ['$5.00 $$']);").await;
+            self.note("i18n_substitution_single_pass", cost.as_ref().and_then(Value::as_str) == Some("Total: $5.00 $$ $5.00 $$"), format!("getMessage(cost, ['$5.00 $$']) = {cost:?}"));
             // permissions.contains and request answer by pattern coverage, as in Chrome.
             let contains = self
                 .eval_async(&popup, "const ask = (o) => chrome.permissions.contains({ origins: [o] }); return [await ask('http://127.0.0.1/foo/*'), await ask('http://127.0.0.1:8080/*'), await ask('http://127.0.0.2/*'), await ask('*://127.0.0.1/*'), await chrome.permissions.request({ origins: ['http://127.0.0.1/a*'] })];")
@@ -733,6 +737,7 @@ mod linux {
                     "manifest_version": 3,
                     "name": "Vsesvit Twin",
                     "version": "1.0.0",
+                    "default_locale": "en",
                     "browser_specific_settings": { "gecko": { "id": TWIN_ID } },
                     "permissions": ["storage", "scripting", "activeTab"],
                     "host_permissions": ["http://127.0.0.1/*"],
@@ -797,6 +802,7 @@ log("alive");
                 .to_owned(),
             ),
             ("data.json", "{\"twin\":true}".to_owned()),
+            ("_locales/en/messages.json", r#"{"cost":{"message":"Total: $AMOUNT$ $1","placeholders":{"amount":{"content":"$1"}}}}"#.to_owned()),
             (
                 "inject.js",
                 "document.documentElement.dataset.twinInjected = (typeof chrome === \"object\" && chrome.runtime) ? chrome.runtime.id : \"no-chrome\";\n\"injected:\" + document.documentElement.dataset.twinInjected;\n".to_owned(),

@@ -172,13 +172,12 @@
     const placeholders = entry.placeholders || {};
     const byName = {};
     for (const k of Object.keys(placeholders)) byName[k.toLowerCase()] = String(placeholders[k].content == null ? "" : placeholders[k].content);
-    return entry.message
-      .replace(/\$([A-Za-z0-9_@]+)\$/g, (m, ph) => {
-        const content = byName[ph.toLowerCase()];
-        return content === undefined ? m : content.replace(/\$([1-9])/g, (_, d) => sub(d));
-      })
-      .replace(/\$([1-9])/g, (_, d) => sub(d))
-      .replace(/\$\$/g, "$");
+    // One pass over the template, as in Chrome, so substituted text is never rescanned.
+    // Only the message's own placeholder names are `$NAME$`, so `$1$` is still `$1`.
+    const expand = (s) => s.replace(/\$([1-9])|\$\$/g, (m, d) => d ? sub(d) : "$");
+    const names = Object.keys(byName).filter((n) => /^[a-z0-9_@]+$/.test(n));
+    const token = new RegExp((names.length ? "\\$(" + names.join("|") + ")\\$|" : "()") + "\\$([1-9])|\\$\\$", "gi");
+    return entry.message.replace(token, (m, ph, d) => ph ? expand(byName[ph.toLowerCase()]) : d ? sub(d) : "$");
   }
   const i18n = {
     getMessage,
