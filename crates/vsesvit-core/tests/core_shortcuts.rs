@@ -162,6 +162,22 @@ fn a_taken_chord_stays_taken_after_its_taker_lets_go() {
 }
 
 #[test]
+fn offering_a_chord_says_who_holds_it() {
+    let keymap = Keymap::default();
+    let never = |_| false;
+    assert_eq!(keymap.offer(Command::NewTab, c("Ctrl+T"), never), (Some(c("Ctrl+T")), None), "a command's own chord");
+    assert_eq!(keymap.offer(Command::Reload, c("Ctrl+Alt+F12"), never), (Some(c("Ctrl+Alt+F12")), None), "a free chord");
+    assert_eq!(
+        keymap.offer(Command::Reload, c("Ctrl+T"), never),
+        (Some(c("Ctrl+T")), Some("Also used by New tab. Saving moves it here.".to_owned()))
+    );
+    assert_eq!(
+        keymap.offer(Command::Reload, c("Ctrl+T"), |h| h == Command::NewTab),
+        (None, Some("Used by New tab, which cannot be changed".to_owned()))
+    );
+}
+
+#[test]
 fn assigning_a_chord_back_normalizes() {
     let mut keymap = Keymap::default();
     keymap.assign(Command::Find, [c("Ctrl+T")]);

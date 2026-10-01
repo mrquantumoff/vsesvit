@@ -327,6 +327,11 @@ struct Override {
     unparsed: Vec<String>,
 }
 
+/// The shortcut-capture dialog's note for a key pressed without Ctrl or Alt.
+pub const NEEDS_MODIFIER_NOTE: &str = "A shortcut needs Ctrl or Alt, unless it is a function key";
+/// The shortcut-capture dialog's note for a key no shortcut can use.
+pub const NOT_A_KEY_NOTE: &str = "This key cannot be part of a shortcut";
+
 /// A command that lost chords to a [`Keymap::assign`] or [`Keymap::reset`], so the UI can say
 /// "Ctrl+T was taken from New tab". The chords are in the order the loser had them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -397,6 +402,17 @@ impl Keymap {
 
     pub fn is_default(&self, cmd: Command) -> bool {
         self.chords(cmd) == cmd.defaults()
+    }
+
+    /// What the shortcut-capture dialog makes of `chord` pressed for `cmd`: the chord saving
+    /// would assign, if any, and a note about the command that holds it. A chord held by a
+    /// command `fixed` says cannot be changed is not offered.
+    pub fn offer(&self, cmd: Command, chord: Chord, fixed: impl Fn(Command) -> bool) -> (Option<Chord>, Option<String>) {
+        match self.command_for(chord).filter(|&holder| holder != cmd) {
+            Some(holder) if fixed(holder) => (None, Some(format!("Used by {}, which cannot be changed", holder.title()))),
+            Some(holder) => (Some(chord), Some(format!("Also used by {}. Saving moves it here.", holder.title()))),
+            None => (Some(chord), None),
+        }
     }
 
     /// Every command in [`Command::ALL`] order, with its chords, which may be none.

@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gdk, glib};
-use vsesvit_core::shortcuts::{Chord, Command, Keymap, Section};
+use vsesvit_core::shortcuts::{self, Chord, Command, Keymap, Section};
 
 use super::confirm;
 use crate::browser::Browser;
@@ -204,22 +204,17 @@ impl Capture {
             Pressed::Chord(chord) => {
                 self.preview.set_accelerator(&keymap::accelerator(chord));
                 self.preview.set_visible(true);
-                let holder = self.browser.keymap().command_for(chord).filter(|&holder| holder != self.cmd);
-                match holder {
-                    Some(holder) if matches!(keymap::binding(holder), Some(Binding::BuiltIn(_))) => {
-                        self.offer(None, &format!("Used by {}, which cannot be changed", holder.title()));
-                    }
-                    Some(holder) => self.offer(Some(chord), &format!("Also used by {}. Saving moves it here.", holder.title())),
-                    None => self.offer(Some(chord), ""),
-                }
+                let (chord, note) =
+                    self.browser.keymap().offer(self.cmd, chord, |holder| matches!(keymap::binding(holder), Some(Binding::BuiltIn(_))));
+                self.offer(chord, note.as_deref().unwrap_or(""));
             }
             Pressed::NeedsModifier => {
                 self.preview.set_visible(false);
-                self.offer(None, "A shortcut needs Ctrl or Alt, unless it is a function key");
+                self.offer(None, shortcuts::NEEDS_MODIFIER_NOTE);
             }
             Pressed::Unusable => {
                 self.preview.set_visible(false);
-                self.offer(None, "This key cannot be part of a shortcut");
+                self.offer(None, shortcuts::NOT_A_KEY_NOTE);
             }
         }
     }

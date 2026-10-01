@@ -7,7 +7,9 @@
 use std::cell::Cell;
 use std::rc::{Rc, Weak};
 
-use vsesvit_core::shortcuts::{Chord, Command as Core, Key, Keymap, Section};
+use vsesvit_core::shortcuts::{
+    Chord, Command as Core, Key, Keymap, NEEDS_MODIFIER_NOTE, NOT_A_KEY_NOTE, Section,
+};
 use windows_core::{Interface, Result};
 
 use super::on_click;
@@ -454,29 +456,13 @@ impl Page {
             }
             Press::Modifier => {}
             Press::Chord(chord) => {
-                let holder = shortcuts::current().keymap().command_for(chord);
-                match holder.filter(|&h| h != command) {
-                    Some(h) if !shortcuts::listed().any(|c| c == h) => self.show_capture(
-                        None,
-                        Some(&format!("Used by {}, which cannot be changed", h.title())),
-                    ),
-                    Some(h) => self.show_capture(
-                        Some(chord),
-                        Some(&format!(
-                            "Also used by {}. Saving moves it here.",
-                            h.title()
-                        )),
-                    ),
-                    None => self.show_capture(Some(chord), None),
-                }
+                let (chord, note) = shortcuts::current()
+                    .keymap()
+                    .offer(command, chord, |h| !shortcuts::listed().any(|c| c == h));
+                self.show_capture(chord, note.as_deref());
             }
-            Press::NeedsModifier => self.show_capture(
-                None,
-                Some("A shortcut needs Ctrl or Alt, unless it is a function key"),
-            ),
-            Press::NotAKey => {
-                self.show_capture(None, Some("This key cannot be part of a shortcut"))
-            }
+            Press::NeedsModifier => self.show_capture(None, Some(NEEDS_MODIFIER_NOTE)),
+            Press::NotAKey => self.show_capture(None, Some(NOT_A_KEY_NOTE)),
         }
     }
 
