@@ -122,6 +122,11 @@ fn file_paths_become_file_urls() {
     assert_eq!(url_of("C:\\Users\\me\\a b.html").as_deref(), Some("file:///C:/Users/me/a%20b.html"));
     assert_eq!(url_of("D:/x/y").as_deref(), Some("file:///D:/x/y"));
     assert_eq!(url_of("\\\\server\\share\\f.txt").as_deref(), Some("file://server/share/f.txt"));
+    // '#', '?' and '%' are part of a file's name, not URL syntax.
+    assert_eq!(url_of("C:\\Users\\me\\C# notes.txt").as_deref(), Some("file:///C:/Users/me/C%23%20notes.txt"));
+    assert_eq!(url_of("/tmp/what?.txt").as_deref(), Some("file:///tmp/what%3F.txt"));
+    assert_eq!(url_of("/data/100%25.csv").as_deref(), Some("file:///data/100%2525.csv"));
+    assert_eq!(url_of("\\\\server\\share\\#1.txt").as_deref(), Some("file://server/share/%231.txt"));
 }
 
 #[test]

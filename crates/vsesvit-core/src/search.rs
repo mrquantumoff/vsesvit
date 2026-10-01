@@ -549,15 +549,17 @@ fn search_target(engine: &SearchEngine, terms: &str) -> Option<NavTarget> {
 }
 
 /// `C:\dir\f`, `\\server\share\f`, `/usr/share/f` -> `file:` URL. Spaces are allowed,
-/// since real paths have them and the leading shape already rules out prose.
+/// since real paths have them and the leading shape already rules out prose. A `%`, `#` or
+/// `?` is part of a file's name, so it is escaped rather than read as URL syntax.
 fn file_path_url(text: &str) -> Option<Url> {
+    let path = |s: &str| s.replace('\\', "/").replace('%', "%25").replace('#', "%23").replace('?', "%3F");
     let bytes = text.as_bytes();
     let candidate = if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/') {
-        format!("file:///{}", text.replace('\\', "/"))
+        format!("file:///{}", path(text))
     } else if let Some(unc) = text.strip_prefix("\\\\").filter(|r| !r.starts_with('\\') && !r.is_empty()) {
-        format!("file://{}", unc.replace('\\', "/"))
+        format!("file://{}", path(unc))
     } else if text.starts_with('/') && !text.starts_with("//") {
-        format!("file://{text}")
+        format!("file://{}", path(text))
     } else {
         return None;
     };
