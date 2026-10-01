@@ -4,8 +4,10 @@
 //! Store and cannot complete there (it has no install prompt, so the store waits forever).
 //! `js/store.js` replaces it in the stores' main world and sends each request as a DOM event. The
 //! shortcut script's isolated world forwards the event through its binding together with the host
-//! it runs on, which the page cannot fake, so a request only ever speaks for its own origin. The
-//! shell asks the user, installs or removes through core, and answers the page.
+//! it runs on, which the page cannot fake. The host alone would let a plain-HTTP page that a
+//! network attacker serves under a store's name speak for the store, so the shell also requires
+//! the tab to show the store over HTTPS. It asks the user, installs or removes through core, and
+//! answers the page.
 
 use std::rc::Rc;
 
@@ -30,6 +32,15 @@ impl Store {
         match host {
             "chromewebstore.google.com" => Some(Self::Chrome),
             "microsoftedge.microsoft.com" => Some(Self::Edge),
+            _ => None,
+        }
+    }
+
+    /// The store a page on `origin` (as `Origin` serializes it) is: only ever an HTTPS one.
+    fn from_origin(origin: &str) -> Option<Self> {
+        match origin {
+            "https://chromewebstore.google.com" => Some(Self::Chrome),
+            "https://microsoftedge.microsoft.com" => Some(Self::Edge),
             _ => None,
         }
     }
@@ -91,6 +102,14 @@ pub(crate) fn parse_request(host: &str, detail: &str) -> Option<StoreRequest> {
 
 /// Carries out `request` from tab `tab` and answers the page.
 pub(crate) async fn answer(window: Rc<BrowserWindow>, tab: TabId, request: StoreRequest) {
+    let origin = window.tab(tab).and_then(|tab| tab.origin());
+    if origin.as_ref().and_then(|o| Store::from_origin(o.as_str())) != Some(request.store) {
+        log::warn!(
+            "ignoring a store request from {}",
+            origin.as_ref().map_or("an opaque origin", |o| o.as_str())
+        );
+        return;
+    }
     let mut reply = match carry_out(&window, &request).await {
         Ok(reply) => reply,
         Err(error) => json!({ "ok": false, "error": error }),
@@ -130,9 +149,10 @@ async fn carry_out(window: &Rc<BrowserWindow>, request: &StoreRequest) -> Result
                  permissions allow.",
                 request.store.name()
             );
-            let yes = dialogs::confirm(window, &format!("Add “{name}”?"), &question, "Add")
-                .await
-                .map_err(|e| e.message())?;
+            let yes =
+                dialogs::confirm_for_page(window, &format!("Add “{name}”?"), &question, "Add")
+                    .await
+                    .map_err(|e| e.message())?;
             if !yes {
                 return Ok(json!({ "ok": false, "cancelled": true, "error": "User cancelled install" }));
             }
@@ -147,7 +167,7 @@ async fn carry_out(window: &Rc<BrowserWindow>, request: &StoreRequest) -> Result
         StoreOp::Uninstall { id } => {
             let ext = installed(id)?.ok_or("This extension is not installed")?;
             let name = &ext.manifest.name;
-            let yes = dialogs::confirm(window, &format!("Remove “{name}”?"), "", "Remove")
+            let yes = dialogs::confirm_for_page(window, &format!("Remove “{name}”?"), "", "Remove")
                 .await
                 .map_err(|e| e.message())?;
             if !yes {
@@ -205,6 +225,26 @@ mod tests {
                 op: StoreOp::List
             })
         );
+    }
+
+    #[test]
+    fn only_the_stores_https_pages_are_the_stores() {
+        assert_eq!(
+            Store::from_origin("https://chromewebstore.google.com"),
+            Some(Store::Chrome)
+        );
+        assert_eq!(
+            Store::from_origin("https://microsoftedge.microsoft.com"),
+            Some(Store::Edge)
+        );
+        for origin in [
+            "http://microsoftedge.microsoft.com",
+            "http://chromewebstore.google.com",
+            "https://chromewebstore.google.com:8443",
+            "https://example.com",
+        ] {
+            assert_eq!(Store::from_origin(origin), None, "{origin}");
+        }
     }
 
     #[test]

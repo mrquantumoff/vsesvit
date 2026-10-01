@@ -272,16 +272,36 @@ pub(crate) async fn confirm(
     text: &str,
     action: &str,
 ) -> Result<bool> {
-    let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
-    let dialog: ContentDialog = xaml::load(&format!(
+    ask(window, &confirm_markup(title, text, action, "Primary")).await
+}
+
+/// `confirm`, for something a page asked for: Cancel is the default button, so Enter, which the
+/// page can time, does not accept it.
+pub(crate) async fn confirm_for_page(
+    window: &Rc<BrowserWindow>,
+    title: &str,
+    text: &str,
+    action: &str,
+) -> Result<bool> {
+    ask(window, &confirm_markup(title, text, action, "Close")).await
+}
+
+/// `default` is the `DefaultButton`: `Primary` (`action`) or `Close` (Cancel).
+fn confirm_markup(title: &str, text: &str, action: &str, default: &str) -> String {
+    format!(
         r#"<ContentDialog {{ns}} Title="{}" PrimaryButtonText="{}" CloseButtonText="Cancel"
-             DefaultButton="Primary" Style="{{StaticResource DefaultContentDialogStyle}}">
+             DefaultButton="{default}" Style="{{StaticResource DefaultContentDialogStyle}}">
   <TextBlock TextWrapping="Wrap" Text="{}"/>
 </ContentDialog>"#,
         xaml::escape(title),
         xaml::escape(action),
         xaml::escape(text)
-    ))?;
+    )
+}
+
+async fn ask(window: &Rc<BrowserWindow>, markup: &str) -> Result<bool> {
+    let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
+    let dialog: ContentDialog = xaml::load(markup)?;
     dialog
         .cast::<UIElement>()?
         .SetXamlRoot(&window.xaml_root()?)?;
