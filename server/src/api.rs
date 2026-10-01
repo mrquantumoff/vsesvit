@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{DefaultBodyLimit, Form, FromRef, FromRequestParts, Query, State};
+use axum::extract::{DefaultBodyLimit, Form, FromRequestParts, Query, State};
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -74,8 +74,8 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn info(State(info): State<Arc<ServerInfo>>) -> Json<ServerInfo> {
-    Json((*info).clone())
+async fn info(State(state): State<AppState>) -> Json<ServerInfo> {
+    Json((*state.info).clone())
 }
 
 // Signing in.
@@ -300,12 +300,6 @@ async fn download(State(state): State<AppState>, caller: Caller, Query(q): Query
 async fn delete_account(State(state): State<AppState>, caller: Caller) -> Result<StatusCode, Error> {
     store::delete_records(&state.db, caller.account).await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-impl FromRef<AppState> for Arc<ServerInfo> {
-    fn from_ref(state: &AppState) -> Self {
-        state.info.clone()
-    }
 }
 
 /// The account whose session the request's bearer token is.
