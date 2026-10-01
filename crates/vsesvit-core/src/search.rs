@@ -234,6 +234,16 @@ impl From<EngineRecord> for EngineWire {
     }
 }
 
+/// `wanted` among `engines`, else the first live built-in, else any engine.
+fn pick_default(engines: &[SearchEngine], wanted: &SearchEngineId) -> Option<SearchEngine> {
+    engines
+        .iter()
+        .find(|e| &e.id == wanted)
+        .or_else(|| BUILTINS.iter().find_map(|b| engines.iter().find(|e| e.id.0 == b.id)))
+        .or_else(|| engines.first())
+        .cloned()
+}
+
 pub struct SearchEngines<'p> {
     pub(crate) p: &'p mut Profile,
 }
@@ -265,16 +275,7 @@ impl SearchEngines<'_> {
     /// Derived at read time. Nothing is rewritten.
     pub fn default_engine(&mut self) -> Result<SearchEngine, Error> {
         let wanted = self.p.prefs().get(&keys::DEFAULT_SEARCH_ENGINE);
-        let engines = self.list()?;
-        if let Some(e) = engines.iter().find(|e| e.id == wanted) {
-            return Ok(e.clone());
-        }
-        for b in BUILTINS {
-            if let Some(e) = engines.iter().find(|e| e.id.0 == b.id) {
-                return Ok(e.clone());
-            }
-        }
-        engines.into_iter().next().ok_or(Error::NotFound)
+        pick_default(&self.list()?, &wanted).ok_or(Error::NotFound)
     }
 
     pub fn set_default(&mut self, id: &SearchEngineId) -> Result<(), Error> {
@@ -787,10 +788,15 @@ impl Omnibox<'_> {
     /// Access pattern 2: Enter pressed.
     pub fn resolve(&mut self, text: &str) -> Result<Option<NavTarget>, Error> {
         let engines = self.p.search_engines().list()?;
-        match self.p.search_engines().default_engine() {
-            Ok(default) => Ok(classify(text, &engines, &default)),
-            Err(Error::NotFound) => Ok(classify_url(text)),
-            Err(e) => Err(e),
+        Ok(self.classify_with(text, &engines))
+    }
+
+    /// [`classify`] against `engines`, already listed, and the default among them.
+    fn classify_with(&mut self, text: &str, engines: &[SearchEngine]) -> Option<NavTarget> {
+        let wanted = self.p.prefs().get(&keys::DEFAULT_SEARCH_ENGINE);
+        match pick_default(engines, &wanted) {
+            Some(default) => classify(text, engines, &default),
+            None => classify_url(text),
         }
     }
 
@@ -812,7 +818,7 @@ impl Omnibox<'_> {
         let with_bookmarks = self.p.prefs().get(&keys::SUGGEST_BOOKMARKS);
         let with_history = self.p.prefs().get(&keys::SUGGEST_HISTORY);
         let engines = self.p.search_engines().list()?;
-        let typed_row = match self.resolve(typed)? {
+        let typed_row = match self.classify_with(typed, &engines) {
             Some(target @ NavTarget::Url(_)) => {
                 Some(Suggestion { source: SuggestionSource::Typed, title: target.url().to_string(), fill: fill(target.url(), typed), target })
             }
@@ -824,31 +830,29 @@ impl Omnibox<'_> {
             None => None,
         };
         let typed_key = url_key(&typed.to_lowercase());
-        let mut candidates: Vec<(u8, u8, usize, Suggestion)> = Vec::new();
+        let mut candidates: Vec<Candidate> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let bookmarks = if with_bookmarks { self.p.bookmarks().search(typed, limit) } else { Vec::new() };
         for node in bookmarks {
             let Some(url) = node.url else { continue };
             if seen.insert(url.clone()) {
-                let prefix = u8::from(!url_key(url.as_str()).starts_with(&typed_key));
-                let n = candidates.len();
+                let prefix = url_key(url.as_str()).starts_with(&typed_key);
                 let row = Suggestion { source: SuggestionSource::Bookmark, title: node.title, fill: fill(&url, typed), target: NavTarget::Url(url) };
-                candidates.push((prefix, 0, n, row));
+                candidates.push(Candidate { prefix, row });
             }
         }
         let history = if with_history { self.p.history().search(typed, limit)? } else { Vec::new() };
         for entry in history {
             if seen.insert(entry.url.clone()) {
-                let prefix = u8::from(!url_key(entry.url.as_str()).starts_with(&typed_key));
-                let n = candidates.len();
+                let prefix = url_key(entry.url.as_str()).starts_with(&typed_key);
                 let title = if entry.title.is_empty() { entry.url.to_string() } else { entry.title };
                 let row = Suggestion { source: SuggestionSource::History, title, fill: fill(&entry.url, typed), target: NavTarget::Url(entry.url) };
-                candidates.push((prefix, 1, n, row));
+                candidates.push(Candidate { prefix, row });
             }
         }
-        candidates.sort_by_key(|(prefix, source, n, _)| (*prefix, *source, *n));
-        let ranked = candidates.into_iter().map(|(prefix, _, _, row)| Candidate { prefix: prefix == 0, row }).collect();
-        Ok(arrange(text, typed_row, ranked, allow_inline, limit))
+        // stable, so bookmarks stay ahead of history within each group, each in its own order
+        candidates.sort_by_key(|c| !c.prefix);
+        Ok(arrange(text, typed_row, candidates, allow_inline, limit))
     }
 
     /// The page context menu's item for selected text, or None for blank text.

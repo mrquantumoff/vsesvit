@@ -219,6 +219,24 @@ fn suggest_ranks_prefix_then_bookmarks_then_history() {
 }
 
 #[test]
+fn suggest_orders_prefix_matches_first_and_bookmarks_before_history_within_each() {
+    let (mut p, _dir) = open();
+    let url = |s: &str| Url::parse(s).unwrap();
+    for (title, u) in [("prefix history", "https://rust.example/h"), ("other rust history", "https://example.org/h")] {
+        p.history().record_visit(&url(u), Transition::Typed).unwrap();
+        p.history().set_title(&url(u), title).unwrap();
+    }
+    for (title, u) in [("other bookmark", "https://example.org/rust-b"), ("prefix bookmark", "https://rust.example/b")] {
+        p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, title, &url(u)).unwrap();
+    }
+
+    let s = p.omnibox().suggest("rust", 8, false).unwrap().items;
+    assert_eq!(s[0].source, SuggestionSource::Search);
+    let rows: Vec<&str> = s[1..].iter().map(|x| x.title.as_str()).collect();
+    assert_eq!(rows, ["prefix bookmark", "prefix history", "other bookmark", "other rust history"]);
+}
+
+#[test]
 fn suggest_leaves_out_the_sources_turned_off() {
     let (mut p, _dir) = open();
     let marked = Url::parse("https://rust.example/marked").unwrap();
