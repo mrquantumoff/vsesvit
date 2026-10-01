@@ -647,3 +647,30 @@ fn extensions_list_in_install_order_and_an_update_keeps_its_place() {
     assert_ne!(updated.dir, first.dir);
     assert_eq!(ids(&mut p), ["z@example.org", "a@example.org"], "an update in a new dir keeps its place");
 }
+
+/// A developer dir is its own source of truth: loading it again picks up a lower
+/// version too, where a package older than the installed one is ignored.
+#[test]
+fn re_adding_an_unpacked_dir_at_a_lower_version_refreshes_it() {
+    let t = TempDir::new();
+    let mut p = t.open();
+    let at = |version: &'static str| move |m: String| m.replace("\"1.0.0\"", &format!("\"{version}\""));
+    let dev = probe_dir(&t, "dev", at("2.0"));
+    let ext = install(&mut p, InstallSource::Unpacked { dir: dev.clone() }).unwrap().unwrap();
+    assert_eq!(ext.version, "2.0");
+    probe_dir(&t, "dev", at("1.5"));
+    let again = install(&mut p, InstallSource::Unpacked { dir: dev }).unwrap().unwrap();
+    assert_eq!((again.version.as_str(), again.manifest.version.as_str()), ("1.5", "1.5"));
+    assert_eq!(p.extensions().get(&ext.id).unwrap().unwrap().version, "1.5");
+
+    // A second checkout with the same key, at a lower version, moves the install there.
+    let key = base64_spki(&CrxKey::second());
+    let keyed = |version: &'static str| {
+        let key = &key;
+        move |m: String| at(version)(m).replacen('{', &format!("{{\"key\": \"{key}\","), 1)
+    };
+    install(&mut p, InstallSource::Unpacked { dir: probe_dir(&t, "new-checkout", keyed("3.0")) }).unwrap().unwrap();
+    let old_checkout = probe_dir(&t, "old-checkout", keyed("1.0"));
+    let moved = install(&mut p, InstallSource::Unpacked { dir: old_checkout.clone() }).unwrap().unwrap();
+    assert_eq!((moved.dir, moved.version.as_str()), (std::path::absolute(&old_checkout).unwrap(), "1.0"));
+}

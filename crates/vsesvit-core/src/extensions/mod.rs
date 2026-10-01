@@ -331,9 +331,10 @@ impl Extensions<'_> {
     ///    record no longer wants this extension (it was uninstalled on another device
     ///    while we downloaded). Reconcile commits never touch desired state.
     /// 2. Refuse an id this install may not take (see `check_id`).
-    /// 3. If the staged version is older than the installed one, keep the installed one,
+    /// 3. If a staged package is older than the installed one, keep the installed one,
     ///    unless that holds its id less firmly (`IdHold`): a store copy replaces an
-    ///    unverified one.
+    ///    unverified one. An unpacked dir is the developer's own source of truth, so it
+    ///    replaces the installed one at any version.
     /// 4. If `extensions/<id>/<version>_<hash32>` exists, it is complete (only a finished
     ///    staging dir is ever renamed into place, and dirs leave by a rename too), so drop
     ///    the staged copy. Otherwise rename the staging root into place (same volume, atomic).
@@ -353,6 +354,7 @@ impl Extensions<'_> {
         let existing = self.row(&id)?;
         self.check_id(&id, &verification, existing.as_ref())?;
         if let Some(row) = &existing
+            && matches!(files, StagedFiles::Staged { .. })
             && cmp_versions(&manifest.version, &row.version) == Ordering::Less
             && verification.id_hold() <= row.verification.id_hold()
         {
