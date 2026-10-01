@@ -560,20 +560,39 @@ fn now_ms() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
 }
 
+/// Chrome fires an installed extension's alarms no more often than every 30 seconds.
+const MIN_ALARM_MINUTES: f64 = 0.5;
+/// Chrome's limit on one extension's alarms.
+const MAX_ALARMS: usize = 500;
+
+/// `alarms.create`'s first delay (ms from `now`) and period (minutes) from its `info`,
+/// both raised to [`MIN_ALARM_MINUTES`], and whether either was.
+fn alarm_timing(info: &Value, now: f64) -> (f64, Option<f64>, bool) {
+    let minutes = |k: &str| info.get(k).and_then(Value::as_f64);
+    let min_ms = MIN_ALARM_MINUTES * 60_000.0;
+    let period = minutes("periodInMinutes").filter(|p| *p > 0.0);
+    let delay_ms = if let Some(when) = minutes("when") {
+        when - now
+    } else if let Some(d) = minutes("delayInMinutes") {
+        d * 60_000.0
+    } else {
+        period.map(|p| p * 60_000.0).unwrap_or(0.0)
+    };
+    let clamped = delay_ms < min_ms || period.is_some_and(|p| p < MIN_ALARM_MINUTES);
+    (delay_ms.max(min_ms), period.map(|p| p.max(MIN_ALARM_MINUTES)), clamped)
+}
+
 fn alarms(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<Value>, String> {
     match call.method {
         Method::AlarmsCreate => {
             let name = call.arg(0).as_str().unwrap_or("").to_owned();
-            let info = call.arg(1);
-            let minutes = |k: &str| info.get(k).and_then(Value::as_f64);
-            let period = minutes("periodInMinutes").filter(|p| *p > 0.0);
-            let delay_ms = if let Some(when) = minutes("when") {
-                (when - now_ms()).max(0.0)
-            } else if let Some(d) = minutes("delayInMinutes") {
-                d * 60_000.0
-            } else {
-                period.map(|p| p * 60_000.0).unwrap_or(0.0)
-            };
+            if ext.alarms.borrow().len() >= MAX_ALARMS && !ext.alarms.borrow().contains_key(&name) {
+                return Err(format!("This extension already has the maximum of {MAX_ALARMS} alarms."));
+            }
+            let (delay_ms, period, clamped) = alarm_timing(call.arg(1), now_ms());
+            if clamped {
+                log::warn!("{}: alarm \"{name}\" raised to Chrome's minimum of {MIN_ALARM_MINUTES} minutes", ext.id.as_str());
+            }
             clear_alarm(ext, &name);
             ext.alarms.borrow_mut().insert(name.clone(), Alarm { scheduled_time_ms: now_ms() + delay_ms, period_minutes: period, source: None });
             schedule_alarm(inner, ext, name, delay_ms);
@@ -606,15 +625,30 @@ fn clear_alarm(ext: &Extension, name: &str) -> bool {
     }
 }
 
+/// A GLib timeout counts milliseconds in 32 bits, and a longer one would wrap around to
+/// something short, so an alarm over 49 days away waits in legs: this one, and the
+/// milliseconds still to wait after it.
+fn alarm_leg(delay_ms: f64) -> (Duration, Option<f64>) {
+    let delay_ms = delay_ms.round().max(0.0);
+    let leg = delay_ms.min(f64::from(u32::MAX));
+    (Duration::from_millis(leg as u64), (delay_ms > leg).then_some(delay_ms - leg))
+}
+
 fn schedule_alarm(inner: &Rc<Inner>, ext: &Rc<Extension>, name: String, delay_ms: f64) {
     let weak_inner = Rc::downgrade(inner);
     let weak_ext = Rc::downgrade(ext);
-    let delay = Duration::from_millis(delay_ms.round().max(0.0) as u64);
+    let (delay, rest) = alarm_leg(delay_ms);
     let alarm_name = name.clone();
     // A periodic alarm is re-armed with a new one-shot source each time, so a changed
     // period applies.
     let source = glib::timeout_add_local_once(delay, move || {
         let (Some(inner), Some(ext)) = (weak_inner.upgrade(), weak_ext.upgrade()) else { return };
+        if let Some(rest) = rest {
+            if ext.alarms.borrow().contains_key(&alarm_name) {
+                schedule_alarm(&inner, &ext, alarm_name, rest);
+            }
+            return;
+        }
         let next = {
             let mut alarms = ext.alarms.borrow_mut();
             let Some(alarm) = alarms.get_mut(&alarm_name) else { return };
@@ -638,5 +672,33 @@ fn schedule_alarm(inner: &Rc<Inner>, ext: &Rc<Extension>, name: String, delay_ms
     });
     if let Some(alarm) = ext.alarms.borrow_mut().get_mut(&name) {
         alarm.source = Some(source);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alarms_fire_no_sooner_than_chrome_allows() {
+        assert_eq!(alarm_timing(&json!({ "periodInMinutes": 1e-9 }), 0.0), (30_000.0, Some(0.5), true));
+        assert_eq!(alarm_timing(&json!({ "delayInMinutes": 0.0 }), 0.0), (30_000.0, None, true));
+        assert_eq!(alarm_timing(&json!({ "when": 1_000.0 }), 0.0), (30_000.0, None, true));
+        assert_eq!(alarm_timing(&json!({ "delayInMinutes": 1.0, "periodInMinutes": 0.1 }), 0.0), (60_000.0, Some(0.5), true));
+        assert_eq!(alarm_timing(&json!({}), 0.0), (30_000.0, None, true));
+        assert_eq!(alarm_timing(&json!({ "periodInMinutes": 2.0 }), 0.0), (120_000.0, Some(2.0), false));
+        assert_eq!(alarm_timing(&json!({ "when": 100_000.0 }), 10_000.0), (90_000.0, None, false));
+        assert_eq!(alarm_timing(&json!({ "delayInMinutes": 0.5, "periodInMinutes": -1.0 }), 0.0), (30_000.0, None, false));
+    }
+
+    #[test]
+    fn alarms_beyond_a_glib_timeout_wait_in_legs() {
+        let max = f64::from(u32::MAX);
+        assert_eq!(alarm_leg(60_000.0), (Duration::from_millis(60_000), None));
+        assert_eq!(alarm_leg(-5.0), (Duration::ZERO, None));
+        assert_eq!(alarm_leg(max), (Duration::from_millis(u64::from(u32::MAX)), None));
+        // 60 days: one full leg, then the rest.
+        let days_60 = 60.0 * 86_400_000.0;
+        assert_eq!(alarm_leg(days_60), (Duration::from_millis(u64::from(u32::MAX)), Some(days_60 - max)));
     }
 }

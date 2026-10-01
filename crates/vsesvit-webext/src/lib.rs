@@ -81,7 +81,8 @@
 //!   `tabs.query/get/getCurrent/create/update/remove/reload/sendMessage` with
 //!   `onUpdated/onActivated/onRemoved`, `scripting.executeScript/insertCSS`,
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
-//!   `onClicked`), `alarms`, `permissions.contains/getAll`, `extension.getURL`,
+//!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
+//!   `permissions.contains/getAll`, `extension.getURL`,
 //!   `runtime.openOptionsPage`, and `runtime.onInstalled` on the first load of an install
 //!   or version (`runtime.onStartup` on later startups).
 //! - Chrome's permission model for those APIs: `scripting.*` needs the `scripting`
