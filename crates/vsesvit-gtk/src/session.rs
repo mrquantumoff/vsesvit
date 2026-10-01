@@ -74,9 +74,17 @@ fn device_name(browser: &Browser) -> String {
 }
 
 /// Recreates the snapshot's windows and tabs. Returns how many windows were opened.
+///
+/// The active window is created and presented last, so that it is on top and first in
+/// [`Browser::windows`], where command-line URLs go and the next save puts it.
 pub(crate) fn restore(browser: &Browser, snapshot: SessionSnapshot) -> usize {
+    let mut windows = snapshot.windows;
+    if snapshot.active_window < windows.len() {
+        let active = windows.remove(snapshot.active_window);
+        windows.insert(0, active);
+    }
     let mut opened = 0;
-    for saved in snapshot.windows {
+    for saved in windows.into_iter().rev() {
         if saved.tabs.is_empty() {
             continue;
         }
@@ -170,5 +178,41 @@ mod tests {
             .expect("the restored tab is saved");
         assert_eq!(tab.url.as_str(), b);
         assert!(tab.restore_state.is_some(), "its back/forward state was dropped");
+    }
+
+    #[gtk::test]
+    fn a_restored_session_keeps_its_active_window_first() {
+        let server = Server::start("127.0.0.1", |_| Reply::Page("Restored"));
+        let browser = browser();
+        let saved = |path: &str| WindowSnapshot {
+            tabs: vec![TabSnapshot {
+                id: vsesvit_core::session::TabId::new(),
+                url: Url::parse(&server.url(path)).unwrap(),
+                title: String::new(),
+                pinned: false,
+                last_active_ms: 0,
+                restore_state: None,
+            }],
+            active_tab: 0,
+            bounds: None,
+            maximized: false,
+        };
+        let opened = restore(
+            &browser,
+            SessionSnapshot {
+                device_name: String::new(),
+                windows: vec![saved("/a"), saved("/b")],
+                active_window: 0,
+            },
+        );
+        let first = browser.windows()[0].tabs()[0].session_uri();
+        let resaved = snapshot(&browser);
+        for window in browser.windows() {
+            window.destroy();
+        }
+        assert_eq!(opened, 2);
+        assert_eq!(first, Some(server.url("/a")), "the active window comes first");
+        let order: Vec<String> = resaved.windows.iter().map(|w| w.tabs[0].url.to_string()).collect();
+        assert_eq!(order, [server.url("/a"), server.url("/b")], "a save keeps the order");
     }
 }
