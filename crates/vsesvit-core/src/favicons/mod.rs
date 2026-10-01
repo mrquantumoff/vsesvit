@@ -13,7 +13,8 @@
 //!                                                                                                  + failed origins
 //! ```
 //!
-//! A site whose icon could not be fetched is not asked for again for [`RETRY_AFTER_MS`].
+//! A site whose icon could not be fetched is not asked for again for [`RETRY_AFTER_MS`], or
+//! for [`UNREACHABLE_RETRY_MS`] when it did not answer at all (the device was offline, say).
 //!
 //! LOCAL: derived from what this device loads, so never synced.
 
@@ -23,7 +24,7 @@ use std::collections::{HashSet, VecDeque};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub use fetch::{FaviconFetch, Fetched};
+pub use fetch::{FaviconFetch, Fetched, Outcome};
 #[cfg(feature = "testkit")]
 pub use fetch::allow_local_hosts;
 
@@ -35,6 +36,9 @@ pub const MAX_BYTES: usize = 64 * 1024;
 
 /// How long a site whose icon could not be fetched is left alone: 7 days.
 pub const RETRY_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// How long a site that did not answer at all is left alone: an hour.
+pub const UNREACHABLE_RETRY_MS: i64 = 60 * 60 * 1000;
 
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE favicons (                  -- LOCAL
@@ -107,27 +111,29 @@ impl Favicons<'_> {
     }
 
     /// Stores fetched icons (same rules as [`Favicons::record`]) and marks the sites of the
-    /// pages that got none as failed. Returns whether any stored icon changed.
+    /// pages that got none as failed (see [`Outcome`]). Returns whether any stored icon changed.
     pub fn commit_fetched(&mut self, results: Vec<Fetched>) -> Result<bool, Error> {
         let now = self.p.clock.now_ms() as i64;
         let Profile { conn, bookmarks, .. } = &mut *self.p;
         let tx = conn.transaction()?;
         let mut changed = false;
-        for Fetched { page, png } in results {
+        for Fetched { page, outcome } in results {
             let Some(site) = origin(&page) else { continue };
-            match png {
-                Some(png) => {
+            let failed_ms = match outcome {
+                Outcome::Icon(png) => {
                     changed |= store(&tx, &bookmarks.tree, now, &page, &png)?;
                     tx.execute("DELETE FROM favicon_failures WHERE origin = ?1", [site])?;
+                    continue;
                 }
-                None => {
-                    tx.execute(
-                        "INSERT INTO favicon_failures (origin, failed_ms) VALUES (?1, ?2)
-                         ON CONFLICT (origin) DO UPDATE SET failed_ms = ?2",
-                        params![site, now],
-                    )?;
-                }
-            }
+                Outcome::NoIcon => now,
+                // Dated so that `missing` skips the site for UNREACHABLE_RETRY_MS only.
+                Outcome::Unreachable => now - RETRY_AFTER_MS + UNREACHABLE_RETRY_MS,
+            };
+            tx.execute(
+                "INSERT INTO favicon_failures (origin, failed_ms) VALUES (?1, ?2)
+                 ON CONFLICT (origin) DO UPDATE SET failed_ms = ?2",
+                params![site, failed_ms],
+            )?;
         }
         tx.commit()?;
         Ok(changed)

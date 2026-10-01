@@ -42,12 +42,23 @@ pub struct FaviconFetch {
     pages: Vec<Url>,
 }
 
-/// One page's result: a PNG of at most 32x32 and [`MAX_BYTES`], or `None` when the page
-/// has no icon that could be fetched and decoded.
+/// One page's result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fetched {
     pub page: Url,
-    pub png: Option<Vec<u8>>,
+    pub outcome: Outcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// A PNG of at most 32x32 and [`MAX_BYTES`].
+    Icon(Vec<u8>),
+    /// The site answered, but no icon could be fetched and decoded; or the page is not one
+    /// icons are fetched from.
+    NoIcon,
+    /// The site did not answer at all: the device is offline, say, so it is worth asking
+    /// again soon.
+    Unreachable,
 }
 
 impl FaviconFetch {
@@ -59,7 +70,7 @@ impl FaviconFetch {
     pub fn run(self) -> Vec<Fetched> {
         let agent = agent();
         let next = AtomicUsize::new(0);
-        let mut icons = vec![None; self.pages.len()];
+        let mut icons = vec![Outcome::NoIcon; self.pages.len()];
         std::thread::scope(|s| {
             let workers: Vec<_> = (0..WORKERS.min(self.pages.len()))
                 .map(|_| {
@@ -69,19 +80,19 @@ impl FaviconFetch {
                             let i = next.fetch_add(1, Ordering::Relaxed);
                             let Some(page) = self.pages.get(i) else { break };
                             // Decoders of untrusted bytes can panic; that page just gets no icon.
-                            done.push((i, catch_unwind(AssertUnwindSafe(|| page_icon(&agent, page))).ok().flatten()));
+                            done.push((i, catch_unwind(AssertUnwindSafe(|| page_icon(&agent, page))).unwrap_or(Outcome::NoIcon)));
                         }
                         done
                     })
                 })
                 .collect();
             for worker in workers {
-                for (i, png) in worker.join().expect("worker panics are caught") {
-                    icons[i] = png;
+                for (i, outcome) in worker.join().expect("worker panics are caught") {
+                    icons[i] = outcome;
                 }
             }
         });
-        self.pages.into_iter().zip(icons).map(|(page, png)| Fetched { page, png }).collect()
+        self.pages.into_iter().zip(icons).map(|(page, outcome)| Fetched { page, outcome }).collect()
     }
 }
 
@@ -164,9 +175,9 @@ fn is_public(ip: IpAddr) -> bool {
 }
 
 /// The first of the page's candidate icons that fetches and decodes.
-fn page_icon(agent: &ureq::Agent, page: &Url) -> Option<Vec<u8>> {
+fn page_icon(agent: &ureq::Agent, page: &Url) -> Outcome {
     if !matches!(page.scheme(), "http" | "https") {
-        return None;
+        return Outcome::NoIcon;
     }
     let (final_url, html) = match agent.get(page.as_str()).call() {
         Ok(response) => {
@@ -175,6 +186,8 @@ fn page_icon(agent: &ureq::Agent, page: &Url) -> Option<Vec<u8>> {
             let _ = response.into_body().into_reader().take(MAX_PAGE_BYTES).read_to_end(&mut html);
             (final_url, String::from_utf8_lossy(&html).into_owned())
         }
+        // No answer at all. Its `/favicon.ico` would fail the same way.
+        Err(e) if unanswered(&e) => return Outcome::Unreachable,
         Err(_) => (page.clone(), String::new()),
     };
     let mut candidates = icon_links(&html, &final_url);
@@ -183,7 +196,20 @@ fn page_icon(agent: &ureq::Agent, page: &Url) -> Option<Vec<u8>> {
     {
         candidates.push(fallback);
     }
-    candidates.into_iter().take(MAX_ATTEMPTS).find_map(|icon| normalize(&icon_bytes(agent, &icon)?))
+    match candidates.into_iter().take(MAX_ATTEMPTS).find_map(|icon| normalize(&icon_bytes(agent, &icon)?)) {
+        Some(png) => Outcome::Icon(png),
+        None => Outcome::NoIcon,
+    }
+}
+
+/// Whether `e` means the host never answered: no network, no name, no connection, no reply in
+/// time. A host refused as not public counts as an answer, as do HTTP errors.
+fn unanswered(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::Timeout(_) | ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => true,
+        ureq::Error::Io(io) => io.kind() != io::ErrorKind::PermissionDenied,
+        _ => false,
+    }
 }
 
 fn icon_bytes(agent: &ureq::Agent, icon: &Url) -> Option<Vec<u8>> {

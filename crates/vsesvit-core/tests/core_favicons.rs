@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::crdt::TimeSource;
-use vsesvit_core::favicons::{FaviconFetch, Fetched, MAX_BYTES, RETRY_AFTER_MS};
+use vsesvit_core::favicons::{FaviconFetch, Fetched, MAX_BYTES, Outcome, RETRY_AFTER_MS, UNREACHABLE_RETRY_MS};
 use vsesvit_core::testkit::FixtureServer;
 use vsesvit_core::{OpenOptions, Profile, Url};
 
@@ -113,9 +113,9 @@ fn failed_sites_are_retried_after_a_week() {
         p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "t", &url(u)).unwrap();
     }
     let fetched = vec![
-        Fetched { page: url("https://ok.example/"), png: Some(b"png".to_vec()) },
-        Fetched { page: url("https://down.example/"), png: None },
-        Fetched { page: url("https://unbookmarked.example/"), png: Some(b"png".to_vec()) },
+        Fetched { page: url("https://ok.example/"), outcome: Outcome::Icon(b"png".to_vec()) },
+        Fetched { page: url("https://down.example/"), outcome: Outcome::NoIcon },
+        Fetched { page: url("https://unbookmarked.example/"), outcome: Outcome::Icon(b"png".to_vec()) },
     ];
     assert!(p.favicons().commit_fetched(fetched.clone()).unwrap());
     assert!(!p.favicons().commit_fetched(fetched[..1].to_vec()).unwrap(), "the same icon again");
@@ -128,8 +128,25 @@ fn failed_sites_are_retried_after_a_week() {
     clock.set(clock.get() + 1);
     assert_eq!(p.favicons().missing(10).unwrap(), [url("https://down.example/")]);
 
-    assert!(!p.favicons().commit_fetched(vec![Fetched { page: url("https://down.example/"), png: None }]).unwrap());
+    assert!(!p.favicons().commit_fetched(vec![Fetched { page: url("https://down.example/"), outcome: Outcome::NoIcon }]).unwrap());
     assert_eq!(p.favicons().missing(10).unwrap(), [], "failed again: another week");
+}
+
+#[test]
+fn unreachable_sites_are_retried_after_an_hour() {
+    let (mut p, _dir, clock) = open_with_clock();
+    for u in ["https://offline.example/", "https://noicon.example/"] {
+        p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "t", &url(u)).unwrap();
+    }
+    let fetched = vec![
+        Fetched { page: url("https://offline.example/"), outcome: Outcome::Unreachable },
+        Fetched { page: url("https://noicon.example/"), outcome: Outcome::NoIcon },
+    ];
+    assert!(!p.favicons().commit_fetched(fetched).unwrap());
+    assert_eq!(p.favicons().missing(10).unwrap(), [], "not asked again at once");
+
+    clock.set(clock.get() + UNREACHABLE_RETRY_MS as u64);
+    assert_eq!(p.favicons().missing(10).unwrap(), [url("https://offline.example/")]);
 }
 
 #[test]
@@ -140,20 +157,25 @@ fn fetches_the_declared_icon_or_else_favicon_ico() {
     // Loopback and private-network hosts are never asked: the fixture server only answers
     // once the testkit switch for fixture servers is on. Process-wide, so one test does both.
     let refused = FaviconFetch::new(pages.clone()).run();
-    assert_eq!(refused[0].png, None);
+    assert_eq!(refused[0].outcome, Outcome::NoIcon, "refused for good, not unreachable");
     assert_eq!(server.hits(), Vec::<String>::new(), "nothing reached the loopback server");
 
     vsesvit_core::favicons::allow_local_hosts();
     let fetched = FaviconFetch::new(pages.clone()).run();
 
     assert_eq!(fetched.iter().map(|f| f.page.clone()).collect::<Vec<_>>(), pages);
-    let png = fetched[0].png.as_deref().expect("icon.html declares /allowed.png");
+    let Outcome::Icon(png) = &fetched[0].outcome else { panic!("icon.html declares /allowed.png") };
     assert!(png.starts_with(b"\x89PNG") && png.len() <= MAX_BYTES);
-    assert_eq!(fetched[1].png, None, "page2.html declares none and there is no /favicon.ico");
-    assert_eq!(fetched[2].png, None, "only http and https");
+    assert_eq!(fetched[1].outcome, Outcome::NoIcon, "page2.html declares none and there is no /favicon.ico");
+    assert_eq!(fetched[2].outcome, Outcome::NoIcon, "only http and https");
     let hits = server.hits();
     assert!(hits.contains(&"/allowed.png".to_owned()), "{hits:?}");
     assert!(hits.contains(&"/favicon.ico".to_owned()), "{hits:?}");
+
+    // A page that is not found is an answer; a refused connection or an unknown host is not.
+    let pages = vec![server.url("/missing.html"), url("http://127.0.0.1:1/"), url("http://unknown-host.invalid/")];
+    let outcomes: Vec<Outcome> = FaviconFetch::new(pages).run().into_iter().map(|f| f.outcome).collect();
+    assert_eq!(outcomes, [Outcome::NoIcon, Outcome::Unreachable, Outcome::Unreachable]);
 }
 
 #[test]
