@@ -32,6 +32,7 @@ use crate::bindings::*;
 use crate::bookmark_editor::{Editor, Target};
 use crate::bookmarks_bar::{Bar, BarCommand, BarHost, BarItem, Disposition};
 use crate::browser::{Browser, ClosedTab};
+use crate::connection::Headline;
 use crate::dialogs::{self, Dialog};
 use crate::downloads::Indicator;
 use crate::extension_toolbar as toolbar;
@@ -148,14 +149,17 @@ pub(crate) fn starred(url: &str, is_bookmarked: impl FnOnce(&str) -> bool) -> bo
     tab_menu::has_link(url) && is_bookmarked(url)
 }
 
-/// The site icon's glyph and tooltip for a page: a lock for https, a warning for http, a
-/// search glyph for a blank page and a page glyph for anything else.
-fn site_look(url: &str) -> (&'static str, &'static str) {
-    match url.split_once(':').map(|(scheme, _)| scheme) {
-        Some("https") => ("\u{E72E}", "Connection is secure"),
-        Some("http") => ("\u{E7BA}", "Not secure"),
-        _ if omnibox::display_url(url).is_empty() => ("\u{E721}", "Search or enter web address"),
-        _ => (
+/// The site icon's glyph and tooltip for a page, from the verdict of its security popup on the
+/// engine's `report`: a lock for a secure page, a warning for one that is not, a search glyph
+/// for a blank page and a page glyph for anything else.
+fn site_look(url: &str, report: Option<&connection::Report>) -> (&'static str, &'static str) {
+    match Headline::of(url, report) {
+        Headline::Secure => ("\u{E72E}", "Connection is secure"),
+        Headline::NotSecure => ("\u{E7BA}", "Not secure"),
+        Headline::Local if omnibox::display_url(url).is_empty() => {
+            ("\u{E721}", "Search or enter web address")
+        }
+        Headline::Local => (
             "\u{E8A5}",
             "This page is on your device or inside the browser",
         ),
@@ -638,7 +642,9 @@ impl BrowserWindow {
         }
         self.show_progress();
         self.show_star(state.starred);
-        self.show_site(&state.url);
+        let report = self.active_tab().and_then(|t| t.security_report());
+        let report = report.and_then(|json| connection::parse_report(&json));
+        self.show_site(&state.url, report.as_ref());
         self.show_zoom(state.zoom);
         self.show_permissions_state();
         let _ = xaml::set_visible(&self.ui.copy_link, tab_menu::has_link(&state.url));
@@ -713,8 +719,8 @@ impl BrowserWindow {
 
     /// The icon at the start of the address pill: the page's security, or a search glyph for
     /// the new tab page.
-    fn show_site(&self, url: &str) {
-        let (glyph, tip) = site_look(url);
+    fn show_site(&self, url: &str, report: Option<&connection::Report>) {
+        let (glyph, tip) = site_look(url, report);
         let _ = self.ui.site_icon.SetGlyph(glyph);
         let _ =
             xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.site_icon, &tip));
@@ -1707,6 +1713,28 @@ mod tests {
     }
 
     const SCREEN: RectInt32 = rect(0, 0, 1920, 1040);
+
+    #[test]
+    fn the_site_icon_follows_the_engines_verdict() {
+        let report = |state: &str| connection::Report {
+            state: state.to_owned(),
+            ..Default::default()
+        };
+        let broken = report("insecure-broken");
+        assert_eq!(site_look("https://a.test/", Some(&broken)).1, "Not secure");
+        let secure = report("secure");
+        assert_eq!(
+            site_look("https://a.test/", Some(&secure)).1,
+            "Connection is secure"
+        );
+        assert_eq!(site_look("https://a.test/", None).1, "Connection is secure");
+        assert_eq!(site_look("http://a.test/", None).1, "Not secure");
+        assert_eq!(site_look("", None).1, "Search or enter web address");
+        assert_eq!(
+            site_look("file:///C:/a.html", None).1,
+            "This page is on your device or inside the browser"
+        );
+    }
 
     #[test]
     fn blank_pages_are_never_starred() {

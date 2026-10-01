@@ -362,6 +362,7 @@ impl Tab {
                     tab.security
                         .borrow_mut()
                         .reported(args.ParameterObjectAsJson().ok().map(|j| j.to_string()));
+                    tab.notify();
                 },
             ))?
             .forget();
