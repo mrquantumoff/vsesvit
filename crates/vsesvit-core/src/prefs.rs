@@ -163,6 +163,23 @@ pub mod keys {
     /// What this device syncs; every type by default.
     pub const SYNC_TYPES: Pref<Vec<crate::sync::DataType>> =
         Pref { key: super::SYNC_TYPES_KEY, scope: Scope::Local, default: || crate::sync::DataType::ALL.to_vec() };
+
+    /// Every Local pref above, which sync refuses to write (see [`super::remote_may_write`]).
+    pub(crate) const LOCAL_KEYS: &[&str] = &[
+        local(&HARDWARE_ACCELERATION),
+        local(&DEVICE_NAME),
+        local(&UPDATES_AUTOMATIC),
+        local(&UPDATES_CHANNEL),
+        local(&DOWNLOADS_DIR),
+        local(&ONBOARDING_DONE),
+        local(&SYNC_SERVER),
+        local(&SYNC_TYPES),
+    ];
+
+    const fn local<T>(pref: &Pref<T>) -> &'static str {
+        assert!(matches!(pref.scope, Scope::Local), "LOCAL_KEYS lists only Local prefs");
+        pref.key
+    }
 }
 
 /// Local, as Chrome's "Customize sync" is per device.
@@ -190,11 +207,16 @@ pub struct Prefs<'p> {
 
 impl Prefs<'_> {
     /// Primary-key lookup. Falls back to `default()` if the key is missing, reset, or undecodable.
+    /// A Local pref reads only a value this device wrote, never one sync stored.
     pub fn get<T: DeserializeOwned>(&mut self, pref: &Pref<T>) -> T {
+        let sql = match pref.scope {
+            Scope::Synced => "SELECT value FROM prefs WHERE key = ?1",
+            Scope::Local => "SELECT value FROM prefs WHERE key = ?1 AND synced = 0",
+        };
         let stored: Option<Option<String>> = self
             .p
             .conn
-            .query_row("SELECT value FROM prefs WHERE key = ?1", [pref.key], |r| r.get(0))
+            .query_row(sql, [pref.key], |r| r.get(0))
             .optional()
             .ok()
             .flatten();
@@ -218,7 +240,8 @@ impl Prefs<'_> {
 
     fn write(&mut self, key: &str, scope: Scope, value: Option<JsonText>) -> Result<(), Error> {
         self.p.write(|tx| {
-            let mut rec = load_record(&tx.sql, key)?
+            // A Local pref ignores a row sync stored, as `get` does, so writing takes it back.
+            let mut rec = load_record(&tx.sql, key, scope == Scope::Local)?
                 .map(|(r, _)| r)
                 .unwrap_or(PrefRecord { key: key.to_owned(), value: Lww::new(None, Stamp::ZERO) });
             if rec.value.v == value {
@@ -246,8 +269,9 @@ fn row_record(row: &rusqlite::Row<'_>) -> Result<(Seq, (PrefRecord, bool)), rusq
     Ok((seq_col(row, 4)?, (PrefRecord { key, value: Lww::new(value, at) }, synced == 1)))
 }
 
-fn load_record(conn: &rusqlite::Connection, key: &str) -> Result<Option<(PrefRecord, bool)>, Error> {
-    let rec = conn.query_row(&format!("SELECT {COLUMNS} FROM prefs WHERE key = ?1"), [key], row_record).optional()?;
+fn load_record(conn: &rusqlite::Connection, key: &str, local_only: bool) -> Result<Option<(PrefRecord, bool)>, Error> {
+    let filter = if local_only { " AND synced = 0" } else { "" };
+    let rec = conn.query_row(&format!("SELECT {COLUMNS} FROM prefs WHERE key = ?1{filter}"), [key], row_record).optional()?;
     Ok(rec.map(|(_, r)| r))
 }
 
@@ -266,6 +290,16 @@ fn store_record(conn: &rusqlite::Connection, rec: &PrefRecord, seq: Seq, synced:
     Ok(())
 }
 
+/// Whether a record from sync may write `key`: never a Local pref, whether this build declares
+/// it ([`keys::LOCAL_KEYS`]) or this device stored it as local (a shell's, or a newer build's).
+pub(crate) fn remote_may_write(conn: &rusqlite::Connection, key: &str) -> Result<bool, Error> {
+    if keys::LOCAL_KEYS.contains(&key) {
+        return Ok(false);
+    }
+    let synced: Option<i64> = conn.query_row("SELECT synced FROM prefs WHERE key = ?1", [key], |r| r.get(0)).optional()?;
+    Ok(synced != Some(0))
+}
+
 pub(crate) struct PrefsTable;
 
 impl SyncTable for PrefsTable {
@@ -281,7 +315,7 @@ impl SyncTable for PrefsTable {
     }
 
     fn load(tx: &rusqlite::Transaction<'_>, wire_id: &str) -> Result<Option<PrefRecord>, Error> {
-        Ok(load_record(tx, wire_id)?.map(|(r, _)| r))
+        Ok(load_record(tx, wire_id, false)?.map(|(r, _)| r))
     }
 
     fn store(tx: &rusqlite::Transaction<'_>, rec: &PrefRecord, seq: Seq) -> Result<(), Error> {
@@ -317,5 +351,13 @@ mod tests {
         for channel in UpdateChannel::ALL {
             assert_eq!(serde_json::to_value(channel).unwrap(), channel.name());
         }
+    }
+
+    /// `LOCAL_KEYS` holds only Local prefs (checked as it is built); this checks it holds them all.
+    #[test]
+    fn local_keys_lists_every_local_pref() {
+        let source = include_str!("prefs.rs");
+        let keys = &source[source.find("pub mod keys").unwrap()..source.find("const fn local").unwrap()];
+        assert_eq!(keys.matches("scope: Scope::Local").count(), keys::LOCAL_KEYS.len());
     }
 }

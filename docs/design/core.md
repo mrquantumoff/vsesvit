@@ -258,7 +258,7 @@ satisfies "apply in any order, idempotently".
 | Sessions (4) | DeviceId | whole `SessionSnapshot` in one `Lww<Option<..>>`, **one writer per record** | `None` = forgotten device |
 | Extensions (5) | extension id | desired state only: `store`, `installed`, `enabled` LWW | `installed = false` (reinstall allowed) |
 | ExtStorageSync (6) | (ext, key) | `Lww<Option<JsonText>>` per key, which is Chrome's own semantics | `None` |
-| Prefs (7) | key | `Lww<Option<JsonText>>`; `Scope::Local` rows never exported | `None` = default |
+| Prefs (7) | key | `Lww<Option<JsonText>>`; `Scope::Local` rows never exported, and records for them rejected on apply (a shell's Local key with no local row yet stores one, which reads and writes of the pref ignore) | `None` = default |
 | SearchEngines (8) | `builtin:*` or UUID | name/keyword/urls LWW; built-ins are code at `Stamp::ZERO`, never seeded | terminal tombstone |
 | ReadingList (9) | URL | title/present/read LWW, `added_ms` min | `present = false` (re-add allowed) |
 | Passwords (10), Autofill (11) | reserved | same table conventions; secret columns hold ciphertext sealed by a DPAPI/libsecret key. The lattice works on ciphertext unchanged | terminal tombstone |

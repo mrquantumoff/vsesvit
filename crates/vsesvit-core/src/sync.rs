@@ -38,7 +38,7 @@ use crate::ext_storage::{StorageChange, StorageTable, SyncItemRecord};
 use crate::extensions::{ExtensionId, ExtensionsTable};
 use crate::history::{DeletionDirective, DeletionsTable, PagesTable};
 use crate::permissions::SitePermissionsTable;
-use crate::prefs::{PrefRecord, PrefsTable};
+use crate::prefs::{self, PrefRecord, PrefsTable};
 use crate::search::EnginesTable;
 use crate::session::SessionsTable;
 use crate::{Error, Profile, vault};
@@ -438,6 +438,10 @@ fn apply_wire(tx: &mut Tx<'_>, wire: &WireRecord, report: &mut ApplyReport, effe
             }
         }
         Kind::Prefs => {
+            if !prefs::remote_may_write(&tx.sql, &wire.id)? {
+                report.rejected.push(Rejected { kind: wire.kind, id: wire.id.clone(), reason: "device-local preference".into() });
+                return Ok(());
+            }
             if let Some((_, Some(after))) = apply_typed::<PrefsTable>(tx, wire, report)? {
                 let PrefRecord { key, .. } = after;
                 report.changed.prefs.push(key);

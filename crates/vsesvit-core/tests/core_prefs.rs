@@ -144,3 +144,58 @@ fn the_extension_toolbar_list_round_trips_and_syncs() {
     let (_, record) = exported(&mut p).into_iter().find(|(key, _)| key == TOOLBAR.key).expect("synced");
     assert_eq!(record.value.v.unwrap().as_str(), r#"[{"id":"b","pinned":true},{"id":"a","pinned":false}]"#);
 }
+
+/// Local prefs are this device's alone. A sync server or another device sending one (an honest
+/// peer never uploads them) must not set it, with or without a row here, so a server cannot pick
+/// where downloads land, which server this device signs in to, or what it syncs.
+#[test]
+fn remote_records_never_write_local_prefs() {
+    use vsesvit_core::sync::DataType;
+    let (mut p, _dir) = open();
+    p.prefs().set(&keys::DOWNLOADS_DIR, &Some(PathBuf::from("/home/me/Incoming"))).unwrap();
+    let shell_local: Pref<u32> = Pref { key: "shell.local", scope: Scope::Local, default: || 0 };
+    p.prefs().set(&shell_local, &7).unwrap();
+    let at = Stamp { hlc: Hlc(1_780_000_000_000 << 16), device: DeviceId(9) };
+    let rec = |key: &str, value: serde_json::Value| PrefRecord { key: key.into(), value: Lww::new(Some(JsonText::from_value(&value)), at) };
+    let wire = |r: PrefRecord| WireRecord { kind: Kind::Prefs, id: r.key.clone(), body: serde_json::to_vec(&r).unwrap() };
+    let report = p
+        .sync()
+        .apply(vec![
+            wire(rec("downloads.directory", serde_json::json!("/attacker/autostart"))),
+            wire(rec("sync.server", serde_json::json!("https://evil.example"))),
+            wire(rec("sync.types", serde_json::json!(["history"]))),
+            wire(rec("shell.local", serde_json::json!(9))),
+            wire(rec("theme", serde_json::json!("dark"))),
+        ])
+        .unwrap();
+    let rejected: Vec<_> = report.rejected.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(rejected, ["downloads.directory", "sync.server", "sync.types", "shell.local"]);
+    assert_eq!((report.merged, &report.changed.prefs[..]), (1, &["theme".to_owned()][..]));
+    assert_eq!(p.prefs().get(&keys::THEME), Theme::Dark);
+    assert_eq!(p.prefs().get(&keys::DOWNLOADS_DIR), Some(PathBuf::from("/home/me/Incoming")));
+    assert_eq!(p.prefs().get(&keys::SYNC_SERVER), vsesvit_core::prefs::DEFAULT_SYNC_SERVER);
+    assert_eq!(p.prefs().get(&keys::SYNC_TYPES), DataType::ALL.to_vec());
+    assert_eq!(p.prefs().get(&shell_local), 7);
+    let keys: Vec<_> = exported(&mut p).into_iter().map(|(k, _)| k).collect();
+    assert_eq!(keys, ["theme"]);
+}
+
+/// A Local pref declared outside core (a shell's) that this device never wrote has no row to
+/// guard it, so a remote record for it is stored like any unknown key; reading the pref still
+/// ignores it, and writing it, even to the stored value, takes the row back as local.
+#[test]
+fn a_local_pref_reads_only_what_this_device_wrote() {
+    let (mut p, _dir) = open();
+    let shell_local: Pref<u32> = Pref { key: "shell.fresh", scope: Scope::Local, default: || 0 };
+    let at = Stamp { hlc: Hlc(1 << 16), device: DeviceId(9) };
+    let rec = PrefRecord { key: shell_local.key.into(), value: Lww::new(Some(JsonText::from_value(&serde_json::json!(9))), at) };
+    let wire = WireRecord { kind: Kind::Prefs, id: rec.key.clone(), body: serde_json::to_vec(&rec).unwrap() };
+    assert_eq!(p.sync().apply(vec![wire]).unwrap().merged, 1);
+    assert_eq!(p.prefs().get(&shell_local), 0);
+    p.prefs().set(&shell_local, &9).unwrap();
+    assert_eq!(p.prefs().get(&shell_local), 9, "setting the value sync stored still sticks");
+    assert!(exported(&mut p).is_empty(), "the local write takes the row back from sync");
+    p.prefs().set(&shell_local, &5).unwrap();
+    assert_eq!(p.prefs().get(&shell_local), 5);
+    assert!(exported(&mut p).is_empty(), "the local write takes the row back from sync");
+}
