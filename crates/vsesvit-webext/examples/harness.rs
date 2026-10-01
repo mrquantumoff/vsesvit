@@ -14,9 +14,10 @@
 //! 4. the server saw `/allowed.png` and never `/vsesvit-blocked/pixel.png`;
 //! 5. the probe popup shows `visits=N`; page APIs and events work in it; its
 //!    `scripting.executeScript` is refused (no `scripting` permission); its `<all_urls>`
-//!    reaches no `file:` page (no content script, no tab URL);
+//!    reaches no `file:` page (no content script, no tab URL, not in `permissions.contains`);
 //! 6. the widget popup's iframe loads in place instead of being blanked and opened as a tab;
-//! 7. the twin popup opens the options page in a tab, where `chrome.*` works
+//! 7. the twin popup answers `permissions.contains` by pattern coverage and opens the
+//!    options page in a tab, where `chrome.*` works
 //!    (storage, `runtime.getURL` on the hashed host, messaging both ways, `tabs.getCurrent`,
 //!    `tabs.onUpdated`) and its CSP holds; `runtime.sendMessage` reaches every page;
 //!    `scripting.executeScript` injects the content-script API into a tab without a
@@ -287,6 +288,8 @@ mod linux {
             let listing = self.eval_async(&popup, "return await chrome.tabs.query({});").await;
             let seen = listing.as_ref().and_then(Value::as_array).and_then(|tabs| tabs.iter().find(|t| t["id"] == local.0).cloned()).unwrap_or(Value::Null);
             self.note("no_file_access", injected.as_deref() == Some("undefined") && seen["id"] == local.0 && seen.get("url").is_none(), format!("content script on {file_url}: {injected:?}; tabs.query sees {seen}"));
+            let contains = self.eval_async(&popup, "return [await chrome.permissions.contains({ origins: ['https://example.com/*'] }), await chrome.permissions.contains({ origins: ['file:///*'] })];").await;
+            self.note("all_urls_contains", contains == Some(serde_json::json!([true, false])), format!("permissions.contains(https://example.com/*, file:///*) under <all_urls> = {contains:?}"));
             self.host.remove_tab(local);
         }
 
@@ -312,6 +315,11 @@ mod linux {
             let _window = self.park(&popup);
             let title = wait_for_value(|| popup.title().map(String::from).filter(|t| t.starts_with("twin-popup:")), TIMEOUT).await;
             self.note("twin_popup", title.as_deref() == Some(&format!("twin-popup:{TWIN_ID}")), format!("title = {title:?}"));
+            // permissions.contains and request answer by pattern coverage, as in Chrome.
+            let contains = self
+                .eval_async(&popup, "const ask = (o) => chrome.permissions.contains({ origins: [o] }); return [await ask('http://127.0.0.1/foo/*'), await ask('http://127.0.0.1:8080/*'), await ask('http://127.0.0.2/*'), await ask('*://127.0.0.1/*'), await chrome.permissions.request({ origins: ['http://127.0.0.1/a*'] })];")
+                .await;
+            self.note("permissions_contains_patterns", contains == Some(serde_json::json!([true, true, false, false, true])), format!("contains/request under http://127.0.0.1/* = {contains:?}"));
 
             // Options page in a tab.
             let opened = self.eval_async(&popup, "await chrome.runtime.openOptionsPage(); return true;").await;

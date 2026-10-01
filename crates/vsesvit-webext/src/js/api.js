@@ -176,8 +176,30 @@
   // --- permissions (answered from the manifest) --------------------------------------
   const grantedPermissions = new Set(config.permissions || []);
   const grantedOrigins = config.hostPermissions || [];
+  // A requested origin pattern is granted when a host permission covers every URL it
+  // matches. As in patterns.rs, `<all_urls>` leaves `file:` out and a `file:` pattern
+  // covers nothing: local files need a file-access grant this runtime does not offer.
+  const webSchemes = ["http", "https", "ws", "wss"];
+  function parsePattern(s) {
+    if (s === "<all_urls>") return { schemes: webSchemes.concat("ftp"), host: "*", port: "*", path: "/*" };
+    const m = /^(\*|[a-z][a-z0-9+.-]*):\/\/([^/]*)(\/.*)$/.exec(String(s));
+    if (!m || m[1] === "file") return null;
+    const hp = /^(.*?)(?::(\*|\d+))?$/.exec(m[2].toLowerCase());
+    return { schemes: m[1] === "*" ? webSchemes : [m[1]], host: hp[1], port: hp[2] || "*", path: m[3] };
+  }
+  function hostCovers(g, r) {
+    if (g === "*") return true;
+    if (!g.startsWith("*.")) return g === r;
+    const d = g.slice(2), h = r.startsWith("*.") ? r.slice(2) : r;
+    return h === d || h.endsWith("." + d);
+  }
+  function covers(g, r) {
+    const path = new RegExp("^" + g.path.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
+    return r.schemes.every((s) => g.schemes.includes(s)) && hostCovers(g.host, r.host) && (g.port === "*" || g.port === r.port) && path.test(r.path);
+  }
   function originGranted(pattern) {
-    return grantedOrigins.includes(pattern) || grantedOrigins.includes("<all_urls>") || grantedOrigins.includes("*://*/*");
+    const r = parsePattern(pattern);
+    return !!r && grantedOrigins.some((g) => { const gp = parsePattern(g); return !!gp && covers(gp, r); });
   }
   function contains(perms) {
     const p = (perms && perms.permissions) || [];
