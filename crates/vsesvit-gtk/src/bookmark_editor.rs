@@ -348,6 +348,7 @@ mod tests {
         assert!(parse_url("about:blank").is_some());
         // Fixed up as the address bar and the Windows shell's editor do.
         assert_eq!(parse_url("example.com").map(|u| u.to_string()).as_deref(), Some("https://example.com/"));
+        assert!(parse_url("ftp://example.com/").is_none());
         assert!(parse_url("not a url").is_none());
         assert!(parse_url("").is_none());
     }
