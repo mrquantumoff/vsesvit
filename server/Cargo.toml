@@ -18,7 +18,7 @@ vsesvit-sync-proto = { path = "../crates/vsesvit-sync-proto" }
 migration = { path = "migration" }
 axum = "0.8.9"
 tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
-tower-http = { version = "0.7.1", features = ["trace", "limit", "timeout"] }
+tower-http = { version = "0.7.1", features = ["trace", "timeout"] }
 sea-orm = { version = "2.0.4", default-features = false, features = [
     "macros",
     "runtime-tokio-rustls",
@@ -27,7 +27,7 @@ sea-orm = { version = "2.0.4", default-features = false, features = [
     "with-chrono",
 ] }
 # ring rather than reqwest's default aws-lc-rs, which needs cmake in the image's build stage.
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls-no-provider", "http2"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["form", "rustls-no-provider", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
