@@ -617,10 +617,6 @@ impl BrowserWindow {
         }
     }
 
-    pub fn in_foreground(&self) -> bool {
-        self.is_foreground()
-    }
-
     /// The sharing bar's "Stop sharing".
     pub fn stop_sharing_button(&self) -> Button {
         self.ui.share_stop.clone()

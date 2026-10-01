@@ -688,7 +688,7 @@ async fn keyboard_guard(
     let name = "24o2-enter-and-space-on-the-prompt-answer-nothing";
     window.activate();
     let foreground = exec::wait_for(Duration::from_secs(3), Duration::from_millis(50), || {
-        window.in_foreground().then_some(())
+        window.is_foreground().then_some(())
     })
     .await;
     // Skipped, the step leaves the waiting prompt as it found it.
@@ -706,7 +706,7 @@ async fn keyboard_guard(
     let mut sent = Vec::new();
     for pause in [0, 700] {
         exec::sleep(Duration::from_millis(pause)).await;
-        let ours = window.in_foreground();
+        let ours = window.is_foreground();
         if ours {
             send_keys(&[VK_RETURN, VK_SPACE]);
         }
@@ -730,14 +730,14 @@ async fn keyboard_guard(
 async fn typed_list_makes_way(window: &Rc<BrowserWindow>, tab: &Rc<Tab>) -> Value {
     const TYPED: [u16; 3] = [0x46, 0x49, 0x58];
     let name = "24o3-a-prompt-closes-the-list-typing-opened";
-    if !window.in_foreground() {
+    if !window.is_foreground() {
         return json!({ "name": name, "skipped": "the window is not in the foreground", "ok": true });
     }
     window.close_prompt_flyout();
     exec::sleep(Duration::from_millis(600)).await;
     window.run(Command::FocusAddress);
     exec::sleep(Duration::from_millis(300)).await;
-    if !window.in_foreground() {
+    if !window.is_foreground() {
         return json!({ "name": name, "error": "the window left the foreground", "ok": false });
     }
     send_keys(&TYPED);
