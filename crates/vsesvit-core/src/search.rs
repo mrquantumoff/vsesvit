@@ -417,42 +417,28 @@ fn load_record(conn: &rusqlite::Connection, id: &SearchEngineId) -> Result<Optio
 
 fn store_record(conn: &rusqlite::Connection, rec: &EngineRecord, seq: Seq) -> Result<(), Error> {
     let sql = format!("INSERT OR REPLACE INTO search_engines ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)");
-    match &rec.state {
-        Record::Live(f) => conn.execute(
-            &sql,
-            params![
-                rec.id.0,
-                f.name.v,
-                f.name.at.to_vec(),
-                f.keyword.v,
-                f.keyword.at.to_vec(),
-                f.search_url.v.0,
-                f.search_url.at.to_vec(),
-                f.suggest_url.v.as_ref().map(|u| u.0.as_str()),
-                f.suggest_url.at.to_vec(),
-                Option::<Vec<u8>>::None,
-                extra_text(&f.extra),
-                seq.0 as i64,
-            ],
-        )?,
-        Record::Tombstone(at) => conn.execute(
-            &sql,
-            params![
-                rec.id.0,
-                Option::<String>::None,
-                Option::<Vec<u8>>::None,
-                Option::<String>::None,
-                Option::<Vec<u8>>::None,
-                Option::<String>::None,
-                Option::<Vec<u8>>::None,
-                Option::<String>::None,
-                Option::<Vec<u8>>::None,
-                at.to_vec(),
-                "{}",
-                seq.0 as i64,
-            ],
-        )?,
+    let live = rec.state.live();
+    let deleted_at = match &rec.state {
+        Record::Tombstone(at) => Some(at.to_vec()),
+        Record::Live(_) => None,
     };
+    conn.execute(
+        &sql,
+        params![
+            rec.id.0,
+            live.map(|f| f.name.v.as_str()),
+            live.map(|f| f.name.at.to_vec()),
+            live.and_then(|f| f.keyword.v.as_deref()),
+            live.map(|f| f.keyword.at.to_vec()),
+            live.map(|f| f.search_url.v.0.as_str()),
+            live.map(|f| f.search_url.at.to_vec()),
+            live.and_then(|f| f.suggest_url.v.as_ref().map(|u| u.0.as_str())),
+            live.map(|f| f.suggest_url.at.to_vec()),
+            deleted_at,
+            live.map_or_else(|| "{}".to_owned(), |f| extra_text(&f.extra)),
+            seq.0 as i64,
+        ],
+    )?;
     Ok(())
 }
 

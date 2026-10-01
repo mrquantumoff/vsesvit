@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use vsesvit_core::crdt::{DeviceId, Extra, Hlc, Lww, Record, Seq, Stamp, TimeSource};
+use vsesvit_core::crdt::{DeviceId, Extra, Hlc, JsonText, Lww, Record, Seq, Stamp, TimeSource};
 use vsesvit_core::search::{EngineEdit, EngineFields, EngineRecord, NavTarget, SearchEngineId, UrlTemplate};
 use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::{Error, OpenOptions, Profile};
@@ -137,4 +137,32 @@ fn editing_a_builtin_back_to_a_stale_stored_value_takes_effect() {
     assert_eq!(shown(&mut p).name, "Old Bing");
     let Record::Live(f) = &records(&mut p)[0].state else { panic!("live") };
     assert_ne!(f.search_url.at, Stamp::ZERO);
+}
+
+#[test]
+fn a_synced_engine_reads_back_whole_and_its_removal_keeps_a_tombstone() {
+    let (mut p, _dir) = open();
+    let at = |n: u64| Stamp { hlc: Hlc((1_779_000_000_000 << 16) + n), device: DeviceId(9) };
+    let mine = id("synced-crates");
+    let mut extra = Extra::default();
+    extra.insert("icon".into(), Lww::new(JsonText::from_value(&serde_json::json!("crates.png")), at(5)));
+    let live = EngineRecord {
+        id: mine.clone(),
+        state: Record::Live(EngineFields {
+            name: Lww::new("Crates".into(), at(1)),
+            keyword: Lww::new(Some("c".into()), at(2)),
+            search_url: Lww::new(UrlTemplate("https://crates.io/search?q={searchTerms}".into()), at(3)),
+            suggest_url: Lww::new(Some(UrlTemplate("https://crates.io/suggest?q={searchTerms}".into())), at(4)),
+            extra,
+        }),
+    };
+    let wire = WireRecord { kind: Kind::SearchEngines, id: mine.0.clone(), body: serde_json::to_vec(&live).unwrap() };
+    p.sync().apply(vec![wire]).unwrap();
+    assert_eq!(records(&mut p), [live]);
+
+    p.search_engines().remove(&mine).unwrap();
+    let recs = records(&mut p);
+    let [EngineRecord { id: gone, state: Record::Tombstone(deleted) }] = recs.as_slice() else { panic!("one tombstone: {recs:?}") };
+    assert_eq!(gone, &mine);
+    assert!(*deleted > at(5));
 }
