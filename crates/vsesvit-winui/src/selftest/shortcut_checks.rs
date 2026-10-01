@@ -90,6 +90,48 @@ async fn dialog_opened(window: &BrowserWindow, limit: Duration) -> Option<Dialog
     shown
 }
 
+/// The chords stored for History.
+fn history_chords(browser: &Browser) -> Vec<String> {
+    browser
+        .core(|c| c.prefs().keymap())
+        .chords(Core::ShowHistory)
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// What the window's bindings run on `vk` with `mods`, and how the page may override it.
+fn binding(vk: u16, mods: Mods) -> Option<(Command, InPage)> {
+    shortcuts::current()
+        .list()
+        .iter()
+        .find(|b| b.vk == vk && b.mods == mods)
+        .map(|b| (b.command, b.in_page))
+}
+
+/// With History moved to Ctrl+Shift+Y: that chord opens it from the loaded page, Ctrl+H no
+/// longer does, and neither reloads the page.
+async fn history_moved(
+    window: &BrowserWindow,
+    tab: &Tab,
+    p: &Probe,
+    detail: &mut Vec<String>,
+) -> Result<(), String> {
+    p.observe("Ctrl+Shift+Y and Ctrl+H in the page");
+    press(tab, 0x59, CTRL | SHIFT).await?;
+    let new_chord = dialog_opened(window, Duration::from_secs(5)).await;
+    press(tab, 0x48, CTRL).await?;
+    let old_chord = dialog_opened(window, Duration::from_millis(1500)).await;
+    let kept = marked(tab).await;
+    detail.push(format!(
+        "in the loaded page Ctrl+Shift+Y opened {new_chord:?}, Ctrl+H opened {old_chord:?}, page not reloaded {kept}"
+    ));
+    if new_chord != Some(Dialog::History) || old_chord.is_some() || !kept {
+        return Err(detail.join("; "));
+    }
+    Ok(())
+}
+
 pub(super) async fn shortcuts(
     window: &Rc<BrowserWindow>,
     tab: &Rc<Tab>,
@@ -141,12 +183,7 @@ pub(super) async fn shortcuts(
     let kept_scroll =
         scrolled > 0.0 && (scroller.VerticalOffset().map_err(err)? - scrolled).abs() < 1.0;
     drop(preview);
-    let stored: Vec<String> = browser
-        .core(|c| c.prefs().keymap())
-        .chords(Core::ShowHistory)
-        .iter()
-        .map(ToString::to_string)
-        .collect();
+    let stored = history_chords(&browser);
     let xaml_y = has_accelerator(window, 0x59, ACCEL_CTRL | ACCEL_SHIFT);
     let xaml_h = has_accelerator(window, 0x48, ACCEL_CTRL);
     detail.push(format!(
@@ -163,18 +200,7 @@ pub(super) async fn shortcuts(
         return Err(detail.join("; "));
     }
 
-    p.observe("Ctrl+Shift+Y and Ctrl+H in the page");
-    press(tab, 0x59, CTRL | SHIFT).await?;
-    let new_chord = dialog_opened(window, Duration::from_secs(5)).await;
-    press(tab, 0x48, CTRL).await?;
-    let old_chord = dialog_opened(window, Duration::from_millis(1500)).await;
-    let kept = marked(tab).await;
-    detail.push(format!(
-        "in the loaded page Ctrl+Shift+Y opened {new_chord:?}, Ctrl+H opened {old_chord:?}, page not reloaded {kept}"
-    ));
-    if new_chord != Some(Dialog::History) || old_chord.is_some() || !kept {
-        return Err(detail.join("; "));
-    }
+    history_moved(window, tab, p, &mut detail).await?;
 
     p.observe("giving Ctrl+R to New tab");
     let (preview, page) = shortcuts_page(window).await?;
@@ -218,11 +244,7 @@ pub(super) async fn shortcuts(
     exec::sleep(Duration::from_millis(300)).await;
     let f5 = eval(tab, "__keys.join(' ')").await?;
     let hidden = eval(tab, "typeof globalThis.vsesvitKeys").await?;
-    let kind = shortcuts::current()
-        .list()
-        .iter()
-        .find(|b| b.vk == 0x45 && b.mods == Mods::of(true, true, false))
-        .map(|b| (b.command, b.in_page));
+    let kind = binding(0x45, Mods::of(true, true, false));
     press(tab, 0x45, CTRL | SHIFT).await?;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut reloaded = false;
@@ -270,11 +292,7 @@ pub(super) async fn shortcuts(
         .await;
         toggled.push(changed.is_some());
     }
-    let save = shortcuts::current()
-        .list()
-        .iter()
-        .find(|b| b.vk == 0x53 && b.mods == Mods::of(true, true, false))
-        .map(|b| (b.command, b.in_page));
+    let save = binding(0x53, Mods::of(true, true, false));
     press(tab, 0x48, CTRL).await?;
     let history = dialog_opened(window, Duration::from_secs(5)).await;
     detail.push(format!(
@@ -342,12 +360,7 @@ pub(super) async fn shortcuts_sync(
     p.observe("applying a remote record moving History to Ctrl+Shift+Y");
     let record = remote_shortcuts(&browser, Some(json!({"show-history": ["Ctrl+Shift+Y"]})))?;
     let changed = apply_remote(&browser, record).await?;
-    let stored: Vec<String> = browser
-        .core(|c| c.prefs().keymap())
-        .chords(Core::ShowHistory)
-        .iter()
-        .map(ToString::to_string)
-        .collect();
+    let stored = history_chords(&browser);
     let xaml_y = has_accelerator(window, 0x59, ACCEL_CTRL | ACCEL_SHIFT);
     let xaml_h = has_accelerator(window, 0x48, ACCEL_CTRL);
     detail.push(format!(
@@ -357,18 +370,7 @@ pub(super) async fn shortcuts_sync(
         return Err(detail.join("; "));
     }
 
-    p.observe("Ctrl+Shift+Y and Ctrl+H in the page");
-    press(tab, 0x59, CTRL | SHIFT).await?;
-    let new_chord = dialog_opened(window, Duration::from_secs(5)).await;
-    press(tab, 0x48, CTRL).await?;
-    let old_chord = dialog_opened(window, Duration::from_millis(1500)).await;
-    let kept = marked(tab).await;
-    detail.push(format!(
-        "in the loaded page Ctrl+Shift+Y opened {new_chord:?}, Ctrl+H opened {old_chord:?}, page not reloaded {kept}"
-    ));
-    if new_chord != Some(Dialog::History) || old_chord.is_some() || !kept {
-        return Err(detail.join("; "));
-    }
+    history_moved(window, tab, p, &mut detail).await?;
 
     p.observe("applying a newer remote record resetting the shortcuts");
     let record = remote_shortcuts(&browser, None)?;
