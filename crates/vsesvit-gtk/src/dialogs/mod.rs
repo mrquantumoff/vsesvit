@@ -166,6 +166,7 @@ mod tests {
     #[gtk::test]
     fn a_window_of_its_own_opens_once_and_closes_with_its_browser_window() {
         let browser = browser();
+        let open_before = browser.windows().len();
         let first = BrowserWindow::new(&browser);
         let second = BrowserWindow::new(&browser);
         first.present();
@@ -174,7 +175,7 @@ mod tests {
         let history = browser.windowed(Windowed::History).expect("History has a window");
         history::present(&second);
         assert_eq!(browser.windowed(Windowed::History), Some(history.clone()), "asking again from any window shows the same one");
-        assert_eq!(browser.windows().len(), 2, "it is no browser window");
+        assert_eq!(browser.windows().len(), open_before + 2, "it is no browser window");
 
         second.destroy();
         assert!(history.is_visible(), "it stays open while the window it was opened from does");
