@@ -1,7 +1,7 @@
 //! Editing a bookmark's name, URL and folder, in two places: the bubble the star opens
 //! ("Bookmark added" for a page it just bookmarked, "Edit bookmark" for one already
 //! bookmarked) and the dialog that Edit…, Rename… and Add Page… open from the bookmarks bar
-//! and the Bookmarks dialog. Both use one form and save through core's `rename`, `set_url`
+//! and the Bookmarks window. Both use one form and save through core's `rename`, `set_url`
 //! and `move_to`. A URL that does not parse disables saving and marks the field.
 
 use std::rc::Rc;

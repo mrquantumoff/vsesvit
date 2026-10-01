@@ -1,7 +1,7 @@
-//! The Bookmarks dialog: the tree (folders expand in place), a flat search, the edits core
+//! The Bookmarks window: the tree (folders expand in place), a flat search, the edits core
 //! supports (new folder, edit name, URL and folder, move by menu or by dragging rows,
 //! delete) and import from another browser or a bookmarks file. Every edit is one core
-//! call followed by a rebuild of the tree from the merged records, so the dialog always
+//! call followed by a rebuild of the tree from the merged records, so the window always
 //! shows the tree every device would show.
 
 use std::cell::{OnceCell, RefCell};
@@ -15,7 +15,7 @@ use vsesvit_core::Profile;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
 use vsesvit_core::import::{self, Source};
 
-use super::{LibraryDialog, confirm, prompt_choice, prompt_text};
+use super::{LibraryWindow, Windowed, confirm, prompt_choice, prompt_text};
 use crate::bookmark_drag::{self, Zone};
 use crate::bookmark_editor::{self, Subject};
 use crate::browser::Browser;
@@ -27,10 +27,10 @@ use crate::window::{BrowserWindow, Focus};
 const SEARCH_LIMIT: usize = 60;
 
 /// Holds no browser or profile of its own: the widgets' handlers keep this state alive
-/// for as long as the dialog's widgets exist, which must not keep the profile open.
+/// for as long as the window's widgets exist, which must not keep the profile open.
 struct State {
     window: glib::WeakRef<BrowserWindow>,
-    ui: LibraryDialog,
+    ui: LibraryWindow,
     root: gio::ListStore,
     tree: gtk::TreeListModel,
     selection: gtk::SingleSelection,
@@ -38,7 +38,7 @@ struct State {
     results: gtk::ListBox,
     result_rows: RefCell<Vec<gtk::Widget>>,
     /// Rebuilds the tree after any bookmark change (an edit on the bar, icons that
-    /// arrived), for as long as the dialog exists.
+    /// arrived), for as long as the window exists.
     watch: OnceCell<Rc<dyn Fn()>>,
 }
 
@@ -50,7 +50,7 @@ struct Entry {
 }
 
 pub(crate) fn present(window: &BrowserWindow) {
-    build(window).ui.dialog.present(Some(window));
+    super::present_window(window, Windowed::Bookmarks, || build(window).ui.window.clone());
 }
 
 /// Bookmarks to bring in from another browser's profile or a file, into a new folder on
@@ -90,7 +90,7 @@ impl Import {
     }
 }
 
-pub(crate) async fn pick_bookmarks_file(parent: Option<&BrowserWindow>) -> Option<PathBuf> {
+pub(crate) async fn pick_bookmarks_file(parent: Option<&gtk::Window>) -> Option<PathBuf> {
     let filter = gtk::FileFilter::new();
     filter.set_name(Some("Bookmarks (.html, .json)"));
     for suffix in ["html", "htm", "json"] {
@@ -152,7 +152,7 @@ fn build(window: &BrowserWindow) -> Rc<State> {
     let move_to = tool_button("go-jump-symbolic", "Move To…");
     let delete = tool_button("user-trash-symbolic", "Delete");
     let import = tool_button("document-open-symbolic", "Import Bookmarks…");
-    let ui = LibraryDialog::new(
+    let ui = LibraryWindow::new(
         "Bookmarks",
         "Search bookmarks",
         &[
@@ -358,7 +358,7 @@ impl State {
         let mut names: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
         names.push("Bookmarks File (HTML)…");
         let Some(index) = prompt_choice(
-            &self.ui.dialog,
+            &self.ui.window,
             "Import Bookmarks",
             "The bookmarks go into a new folder on the bookmarks bar.",
             &names,
@@ -371,7 +371,7 @@ impl State {
         let import = match found.into_iter().nth(index as usize) {
             Some(found) => Import::from(found),
             None => {
-                let Some(path) = pick_bookmarks_file(self.window.upgrade().as_ref()).await else { return };
+                let Some(path) = pick_bookmarks_file(Some(self.ui.window.upcast_ref())).await else { return };
                 Import::file(path)
             }
         };
@@ -391,7 +391,7 @@ impl State {
             Some(node) => node.parent,
             None => BookmarkId::TOOLBAR,
         };
-        let Some(title) = prompt_text(&self.ui.dialog, "New Folder", "New Folder", "_Create").await else {
+        let Some(title) = prompt_text(&self.ui.window, "New Folder", "New Folder", "_Create").await else {
             return;
         };
         let Some(core) = self.core() else { return };
@@ -411,7 +411,7 @@ impl State {
             return;
         };
         let Some(core) = self.core() else { return };
-        match bookmark_editor::edit(&self.ui.dialog, &core, Subject::Existing(node)).await {
+        match bookmark_editor::edit(&self.ui.window, &core, Subject::Existing(node)).await {
             Ok(false) => {}
             result => self.report(result.map(drop)),
         }
@@ -434,7 +434,7 @@ impl State {
         };
         let names: Vec<&str> = folders.iter().map(|(_, path)| path.as_str()).collect();
         let Some(index) =
-            prompt_choice(&self.ui.dialog, "Move To", &format!("Move “{}” into:", node.title), &names, "_Move").await
+            prompt_choice(&self.ui.window, "Move To", &format!("Move “{}” into:", node.title), &names, "_Move").await
         else {
             return;
         };
@@ -451,7 +451,7 @@ impl State {
         };
         if node.kind == NodeKind::Folder {
             let ok = confirm(
-                &self.ui.dialog,
+                &self.ui.window,
                 "Delete Folder?",
                 &format!("“{}” and everything in it will be deleted.", node.title),
                 "_Delete",

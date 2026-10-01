@@ -1,9 +1,9 @@
-//! The Settings dialog, bound to core's preferences: General (startup, downloads, scrolling and
+//! The Settings window, bound to core's preferences: General (startup, downloads, scrolling and
 //! the GPU, updates, the profile folder), Sync (the account, what it syncs and its server),
 //! Appearance (theme, tabs, bars and buttons), Search (the engine, the address bar and what it
 //! suggests), Privacy (pop-ups, site permissions, browsing data) and Shortcuts
-//! (`shortcut_settings`). Every change applies at once, in every window, and an open dialog
-//! follows what sync changes.
+//! (`shortcut_settings`). Every change applies at once, in every window, and an open Settings
+//! window follows what sync changes.
 //!
 //! WebKitGTK keeps no passwords and fills no forms, so `autofill.*` has no rows here.
 
@@ -18,7 +18,7 @@ use vsesvit_core::search::SearchEngine;
 use vsesvit_core::sync::DataType;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
 
-use super::confirm;
+use super::{Windowed, confirm};
 use crate::browser::Browser;
 use crate::permissions;
 use crate::session::now_ms;
@@ -59,21 +59,46 @@ const CHANNELS: [(UpdateChannel, &str); 4] = [
 ];
 
 pub(crate) fn present(window: &BrowserWindow) {
-    // Wide enough that the six page names fit in the header rather than a bar at the bottom.
-    let dialog = adw::PreferencesDialog::builder()
-        .title("Settings")
-        .content_width(1040)
-        .build();
-    dialog.add(&general_page(window));
-    dialog.add(&sync_page(window.browser()));
-    dialog.add(&appearance_page(window.browser()));
-    dialog.add(&search_page(window.browser()));
-    dialog.add(&privacy_page(window));
-    dialog.add(&super::shortcut_settings::page(window.browser()));
-    dialog.present(Some(window));
+    super::present_window(window, Windowed::Settings, || build(window).upcast());
 }
 
-/// `name` is what `AdwPreferencesDialog:visible-page-name` selects it by.
+/// `AdwPreferencesDialog` cannot be a window of its own that stays open beside the browser, so
+/// Settings keeps to the deprecated `AdwPreferencesWindow`, which has the same pages, search and
+/// subpages.
+#[allow(deprecated)]
+fn build(window: &BrowserWindow) -> adw::PreferencesWindow {
+    // Wide enough that the six page names fit in the header rather than a bar at the bottom.
+    let settings = adw::PreferencesWindow::builder()
+        .title("Settings")
+        .default_width(1040)
+        .default_height(760)
+        .build();
+    settings.add(&general_page(window));
+    settings.add(&sync_page(window.browser()));
+    settings.add(&appearance_page(window.browser()));
+    settings.add(&search_page(window.browser()));
+    settings.add(&privacy_page(window));
+    settings.add(&super::shortcut_settings::page(window.browser()));
+    settings
+}
+
+/// Shows `text` over the Settings window `widget` is in.
+#[allow(deprecated)]
+fn toast(widget: &impl IsA<gtk::Widget>, text: &str) {
+    if let Some(settings) = widget.root().and_downcast::<adw::PreferencesWindow>() {
+        settings.add_toast(adw::Toast::new(text));
+    }
+}
+
+/// Opens `page` in the Settings window `widget` is in.
+#[allow(deprecated)]
+fn push_subpage(widget: &impl IsA<gtk::Widget>, page: &adw::NavigationPage) {
+    if let Some(settings) = widget.root().and_downcast::<adw::PreferencesWindow>() {
+        settings.push_subpage(page);
+    }
+}
+
+/// `name` is what `AdwPreferencesWindow:visible-page-name` selects it by.
 fn page(name: &str, title: &str, icon: &str, groups: &[adw::PreferencesGroup]) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::builder()
         .name(name)
@@ -223,10 +248,8 @@ fn delete_server_data_group(syncer: &Syncer) -> adw::PreferencesGroup {
                 row.set_sensitive(false);
                 let deleted = syncer.delete_server_data().await;
                 row.set_sensitive(true);
-                if let Err(e) = deleted
-                    && let Some(dialog) = row.ancestor(adw::PreferencesDialog::static_type()).and_downcast::<adw::PreferencesDialog>()
-                {
-                    dialog.add_toast(adw::Toast::new(&format!("Could not delete the data on the server: {e}")));
+                if let Err(e) = deleted {
+                    toast(&row, &format!("Could not delete the data on the server: {e}"));
                 }
             });
         }
@@ -565,7 +588,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
                 let browser = window.browser();
                 let result = browser.core().borrow_mut().history().delete_range(0, now_ms());
                 if let Err(e) = result {
-                    window.toast(adw::Toast::new(&format!("History: {e}")));
+                    toast(&row, &format!("History: {e}"));
                 }
                 if let Some(manager) = browser.engine().session().website_data_manager() {
                     manager.clear(
@@ -579,7 +602,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
                         },
                     );
                 }
-                window.toast(adw::Toast::new("Browsing data cleared"));
+                toast(&row, "Browsing data cleared");
             });
         }
     ));
@@ -599,9 +622,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
         #[strong(rename_to = browser)]
         window.browser(),
         move |row| {
-            if let Some(dialog) = row.ancestor(adw::PreferencesDialog::static_type()).and_downcast::<adw::PreferencesDialog>() {
-                dialog.push_subpage(&site_permissions_page(&browser));
-            }
+            push_subpage(row, &site_permissions_page(&browser));
         }
     ));
     let permissions = group("Permissions");
@@ -966,15 +987,15 @@ fn download_folder_row(window: &BrowserWindow) -> adw::ActionRow {
         window,
         #[strong]
         show,
-        move |_| {
-            let show = show.clone();
+        move |button| {
+            let (show, settings) = (show.clone(), button.root().and_downcast::<gtk::Window>());
             let dialog = gtk::FileDialog::builder()
                 .title("Download Folder")
                 .initial_folder(&gio::File::for_path(window.browser().downloads().directory()))
                 .modal(true)
                 .build();
             glib::spawn_future_local(async move {
-                let Ok(folder) = dialog.select_folder_future(Some(&window)).await else { return };
+                let Ok(folder) = dialog.select_folder_future(settings.as_ref()).await else { return };
                 let Some(path) = folder.path() else { return };
                 let set = window.browser().core().borrow_mut().prefs().set(&keys::DOWNLOADS_DIR, &Some(path));
                 if let Err(e) = set {

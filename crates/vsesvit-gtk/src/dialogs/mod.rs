@@ -1,5 +1,6 @@
-//! Dialogs opened from the primary menu, all on core data: Bookmarks, History, Downloads,
-//! Extensions and Settings, plus About, the keyboard shortcuts and the first-run welcome.
+//! What the primary menu opens, all on core data: Bookmarks, History, Downloads and Settings,
+//! each in a window of its own, and the Extensions, About, keyboard shortcuts and first-run
+//! welcome dialogs.
 
 pub(crate) mod about;
 pub(crate) mod bookmarks;
@@ -14,16 +15,47 @@ pub(crate) mod welcome;
 use adw::prelude::*;
 use gtk::glib;
 
-/// A searchable list dialog: header bar with extra buttons, a search entry, toasts, and a
+use crate::window::BrowserWindow;
+
+/// What opens in a window of its own, one of each at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Windowed {
+    Bookmarks,
+    History,
+    Downloads,
+    Settings,
+}
+
+/// Brings `kind`'s window forward, or shows the one `build` makes. The window belongs to
+/// `opener`, the browser window it acts on, and closes with it.
+pub(crate) fn present_window(opener: &BrowserWindow, kind: Windowed, build: impl FnOnce() -> adw::Window) {
+    let browser = opener.browser();
+    if let Some(window) = browser.windowed(kind) {
+        window.present();
+        return;
+    }
+    let window = build();
+    window.set_application(Some(browser.app()));
+    // Destroying a window unrealizes it at once; its `destroy` waits for every reference to go.
+    opener.connect_unrealize(glib::clone!(
+        #[weak]
+        window,
+        move |_| window.close()
+    ));
+    browser.add_windowed(kind, &window);
+    window.present();
+}
+
+/// A searchable list window: header bar with extra buttons, a search entry, toasts, and a
 /// content slot the caller fills.
-pub(crate) struct LibraryDialog {
-    pub(crate) dialog: adw::Dialog,
+pub(crate) struct LibraryWindow {
+    pub(crate) window: adw::Window,
     pub(crate) search: gtk::SearchEntry,
     pub(crate) content: adw::Bin,
     pub(crate) toasts: adw::ToastOverlay,
 }
 
-impl LibraryDialog {
+impl LibraryWindow {
     pub(crate) fn new(title: &str, search_placeholder: &str, header_end: &[&gtk::Widget]) -> Self {
         let header = adw::HeaderBar::new();
         for widget in header_end {
@@ -47,13 +79,13 @@ impl LibraryDialog {
         toolbar.add_top_bar(&header);
         toolbar.add_top_bar(&search_row);
         toolbar.set_content(Some(&toasts));
-        let dialog = adw::Dialog::builder()
+        let window = adw::Window::builder()
             .title(title)
-            .content_width(640)
-            .content_height(680)
-            .child(&toolbar)
+            .default_width(640)
+            .default_height(680)
+            .content(&toolbar)
             .build();
-        LibraryDialog { dialog, search, content, toasts }
+        LibraryWindow { window, search, content, toasts }
     }
 
     pub(crate) fn toast(&self, text: &str) {
@@ -125,4 +157,31 @@ pub(crate) fn format_time(unix_ms: i64) -> String {
         .and_then(|t| t.format("%x %H:%M").ok())
         .map(|s| s.to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{browser, wait_until};
+
+    #[gtk::test]
+    fn a_window_of_its_own_opens_once_and_closes_with_its_browser_window() {
+        let browser = browser();
+        let first = BrowserWindow::new(&browser);
+        let second = BrowserWindow::new(&browser);
+        first.present();
+        second.present();
+        history::present(&first);
+        let history = browser.windowed(Windowed::History).expect("History has a window");
+        history::present(&second);
+        assert_eq!(browser.windowed(Windowed::History), Some(history.clone()), "asking again from any window shows the same one");
+        assert_eq!(browser.windows().len(), 2, "it is no browser window");
+
+        second.destroy();
+        assert!(history.is_visible(), "it stays open while the window it was opened from does");
+        first.destroy();
+        wait_until("History closes with its browser window", || !history.is_visible());
+        drop(history);
+        assert_eq!(browser.windowed(Windowed::History), None);
+    }
 }

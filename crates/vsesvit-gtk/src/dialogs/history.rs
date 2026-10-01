@@ -1,4 +1,4 @@
-//! The History dialog: recent visits or a search over core's history, opening a page in a
+//! The History window: recent visits or a search over core's history, opening a page in a
 //! new tab, forgetting one URL, and clearing a time range (which writes a synced
 //! deletion directive). Above the visits, Chrome's "Tabs from other devices" lists what the
 //! devices syncing with this one have open.
@@ -12,7 +12,7 @@ use vsesvit_core::Url;
 use vsesvit_core::history::HistoryEntry;
 use vsesvit_core::session::TabSnapshot;
 
-use super::{LibraryDialog, format_time, prompt_choice};
+use super::{LibraryWindow, Windowed, format_time, prompt_choice};
 use crate::browser::Browser;
 use crate::favicons;
 use crate::session::now_ms;
@@ -38,10 +38,10 @@ struct Row {
 }
 
 /// Holds no [`Browser`] or profile of its own: the widgets' handlers keep this state alive
-/// for as long as the dialog's widgets exist, which must not keep the profile open.
+/// for as long as the window's widgets exist, which must not keep the profile open.
 struct State {
     window: glib::WeakRef<BrowserWindow>,
-    ui: LibraryDialog,
+    ui: LibraryWindow,
     list: gtk::ListBox,
     stack: gtk::Stack,
     rows: RefCell<Vec<gtk::Widget>>,
@@ -53,13 +53,17 @@ struct State {
 }
 
 pub(crate) fn present(window: &BrowserWindow) {
+    super::present_window(window, Windowed::History, || build(window));
+}
+
+fn build(window: &BrowserWindow) -> adw::Window {
     let clear = gtk::Button::builder()
         .label("_Clear…")
         .use_underline(true)
         .tooltip_text("Clear browsing history")
         .css_classes(["destructive-action"])
         .build();
-    let ui = LibraryDialog::new("History", "Search history", &[clear.upcast_ref()]);
+    let ui = LibraryWindow::new("History", "Search history", &[clear.upcast_ref()]);
 
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -137,7 +141,7 @@ pub(crate) fn present(window: &BrowserWindow) {
             glib::spawn_future_local(async move { state.clear().await });
         }
     ));
-    state.ui.dialog.present(Some(window));
+    state.ui.window.clone()
 }
 
 impl State {
@@ -286,7 +290,7 @@ impl State {
     async fn clear(self: Rc<Self>) {
         let names: Vec<&str> = RANGES.iter().map(|(name, _)| *name).collect();
         let Some(index) = prompt_choice(
-            &self.ui.dialog,
+            &self.ui.window,
             "Clear Browsing History",
             "Visits in the chosen range are forgotten on this device and on every synced device.",
             &names,

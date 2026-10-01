@@ -299,8 +299,9 @@ fn install_actions(app: &adw::Application, slot: &Slot) {
 /// - `app.debug-apply-sync(path)` applies a JSON file of wire records
 ///   (`[{"kind": "prefs", "id": "theme", "body": {...}}, ...]`) through core's sync store
 ///   and refreshes the UI the way a sync engine would.
-/// - `app.debug-set-tabs-position(left|right|top)` is what the Settings dialog does.
-/// - `app.debug-close-dialog()` closes the active window's dialog, if one is open.
+/// - `app.debug-set-tabs-position(left|right|top)` is what the Settings window does.
+/// - `app.debug-close-dialog()` closes the active window's dialog, if one is open, or the
+///   active window itself when it is Bookmarks, History, Downloads or Settings.
 #[cfg(debug_assertions)]
 fn install_debug_actions(app: &adw::Application, slot: &Slot) {
     app.add_action_entries([
@@ -370,15 +371,17 @@ fn install_debug_actions(app: &adw::Application, slot: &Slot) {
             .build(),
         ActionEntry::builder("debug-close-dialog")
             .activate(|app: &adw::Application, _, _| {
-                let dialog = app
-                    .active_window()
+                let window = app.active_window();
+                let dialog = window
+                    .clone()
                     .and_downcast::<adw::ApplicationWindow>()
                     .and_then(|window| window.visible_dialog());
-                match dialog {
-                    Some(dialog) => {
+                match (dialog, window) {
+                    (Some(dialog), _) => {
                         dialog.close();
                     }
-                    None => log::warn!("debug-close-dialog: no dialog is open"),
+                    (None, Some(window)) if !window.is::<BrowserWindow>() => window.close(),
+                    _ => log::warn!("debug-close-dialog: no dialog is open"),
                 }
             })
             .build(),
@@ -437,6 +440,7 @@ fn load_css() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dialogs::Windowed;
     use crate::test_support::{registered_app, scratch_dir};
 
     const CHILD: &str = "app::tests::releasing_the_profile_frees_its_lock";
@@ -469,18 +473,21 @@ mod tests {
         browser.start();
         let window = BrowserWindow::new(&browser);
         window.new_tab();
-        // The library dialogs, one of them still open, as they can be when the user restarts.
+        // The library windows, one of them still open, and the dialogs, as they can be when
+        // the user restarts.
+        dialogs::history::present(&window);
+        dialogs::bookmarks::present(&window);
+        dialogs::downloads::present(&window);
+        for kind in [Windowed::History, Windowed::Bookmarks] {
+            if let Some(windowed) = browser.windowed(kind) {
+                windowed.close();
+            }
+        }
         let close_dialog = |window: &BrowserWindow| {
             if let Some(dialog) = window.visible_dialog() {
                 dialog.force_close();
             }
         };
-        dialogs::history::present(&window);
-        close_dialog(&window);
-        dialogs::bookmarks::present(&window);
-        close_dialog(&window);
-        dialogs::downloads::present(&window);
-        close_dialog(&window);
         dialogs::welcome::present(&window);
         close_dialog(&window);
         dialogs::extensions::present(&window);

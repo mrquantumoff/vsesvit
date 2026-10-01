@@ -1,4 +1,4 @@
-//! The Downloads dialog: core's list, newest first, following the downloads in progress
+//! The Downloads window: core's list, newest first, following the downloads in progress
 //! while it is open. A finished file can be opened or shown in its folder; an entry can
 //! leave the list without its file.
 
@@ -9,11 +9,12 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::downloads::{Download, DownloadId, State as DownloadState, status_line};
 
+use super::Windowed;
 use crate::downloads::{self, Change, Downloads};
 use crate::window::BrowserWindow;
 
 /// Holds no [`crate::browser::Browser`] or profile of its own: the widgets' handlers keep
-/// this state alive for as long as the dialog's widgets exist, which must not keep the
+/// this state alive for as long as the window's widgets exist, which must not keep the
 /// profile open.
 struct State {
     window: glib::WeakRef<BrowserWindow>,
@@ -31,6 +32,10 @@ struct Row {
 }
 
 pub(crate) fn present(window: &BrowserWindow) {
+    super::present_window(window, Windowed::Downloads, || build(window));
+}
+
+fn build(window: &BrowserWindow) -> adw::Window {
     let open_folder = gtk::Button::builder()
         .icon_name("folder-open-symbolic")
         .tooltip_text("Open Download Folder")
@@ -69,11 +74,11 @@ pub(crate) fn present(window: &BrowserWindow) {
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&stack));
-    let dialog = adw::Dialog::builder()
+    let downloads_window = adw::Window::builder()
         .title("Downloads")
-        .content_width(560)
-        .content_height(560)
-        .child(&toolbar)
+        .default_width(560)
+        .default_height(560)
+        .content(&toolbar)
         .build();
 
     let downloads = window.browser().downloads();
@@ -96,7 +101,7 @@ pub(crate) fn present(window: &BrowserWindow) {
         }
     });
     let weak_downloads = Rc::downgrade(downloads);
-    dialog.connect_closed(move |_| {
+    downloads_window.connect_destroy(move |_| {
         if let Some(downloads) = weak_downloads.upgrade() {
             downloads.unsubscribe(subscription);
         }
@@ -116,7 +121,7 @@ pub(crate) fn present(window: &BrowserWindow) {
             }
         }
     ));
-    dialog.present(Some(window));
+    downloads_window
 }
 
 impl State {

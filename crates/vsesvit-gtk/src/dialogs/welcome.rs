@@ -363,7 +363,7 @@ fn import_page(window: &BrowserWindow) -> adw::StatusPage {
     file.on_click(move || {
         let weak = weak.clone();
         async move {
-            let Some(path) = pick_bookmarks_file(weak.upgrade().as_ref()).await else {
+            let Some(path) = pick_bookmarks_file(weak.upgrade().as_ref().map(|w| w.upcast_ref())).await else {
                 return Ok(None);
             };
             let window = weak.upgrade().ok_or("The window is closed")?;

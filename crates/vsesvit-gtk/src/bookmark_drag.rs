@@ -1,5 +1,5 @@
-//! Dragging bookmarks within the bookmarks bar and the Bookmarks dialog. The payload is the
-//! dragged node's id as a string, and a drop is one core `move_to`, so the bar, the dialog
+//! Dragging bookmarks within the bookmarks bar and the Bookmarks window. The payload is the
+//! dragged node's id as a string, and a drop is one core `move_to`, so the bar, the window
 //! and every other device agree on the result.
 
 use std::rc::Rc;

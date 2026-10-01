@@ -1,6 +1,6 @@
 //! Favicons of bookmarked pages: kept in the profile as PNG when a tab shows one (core
 //! decides whether the page or its site is bookmarked), shown by the bookmarks bar and the
-//! Bookmarks dialog in place of the generic page icon.
+//! Bookmarks window in place of the generic page icon.
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};

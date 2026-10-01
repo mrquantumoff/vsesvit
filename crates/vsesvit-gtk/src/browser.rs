@@ -27,6 +27,7 @@ use vsesvit_webext::{Runtime, TabHost, TabId, TabInfo};
 use webkit::prelude::*;
 
 use crate::closed_tabs::ClosedTabs;
+use crate::dialogs::Windowed;
 use crate::downloads::Downloads;
 use crate::engine::Engine;
 use crate::profile::{self, Core};
@@ -64,13 +65,15 @@ pub(crate) struct Inner {
     /// Set once the application has shut down: the session saved then is final.
     shut_down: Cell<bool>,
     favicon_fetch: Cell<FetchState>,
-    /// What else shows bookmarks (an open Bookmarks dialog), refreshed with the bars.
+    /// What else shows bookmarks (an open Bookmarks window), refreshed with the bars.
     bookmark_views: RefCell<Vec<Weak<dyn Fn()>>>,
-    /// An open History dialog, refreshed when sync brings history or other devices' tabs.
+    /// An open History window, refreshed when sync brings history or other devices' tabs.
     history_views: RefCell<Vec<Weak<dyn Fn()>>>,
     /// Open Settings controls, shown again when sync changes a preference; each is dropped once
     /// it returns false.
     pref_views: RefCell<Vec<PrefView>>,
+    /// Bookmarks, History, Downloads and Settings, each in a window of its own while open.
+    windowed: RefCell<Vec<(Windowed, glib::WeakRef<adw::Window>)>>,
     updates: Option<Updates>,
     sync: Syncer,
     /// This run created the profile: the first window opens the welcome, once.
@@ -123,6 +126,7 @@ impl Browser {
                 bookmark_views: RefCell::new(Vec::new()),
                 history_views: RefCell::new(Vec::new()),
                 pref_views: RefCell::new(Vec::new()),
+                windowed: RefCell::new(Vec::new()),
                 updates: Updates::new(app, updates_automatic, updates_channel),
                 sync,
                 welcome: Cell::new(welcome),
@@ -303,12 +307,30 @@ impl Browser {
     }
 
     pub(crate) fn present(&self) {
-        match self.0.app.active_window() {
+        match self.windows().into_iter().next() {
             Some(window) => window.present(),
             None => {
                 self.open_window(&[]);
             }
         }
+    }
+
+    /// `kind`'s own window, while it is open. A closed one can outlive its closing for as long
+    /// as its widgets' handlers hold it.
+    pub(crate) fn windowed(&self, kind: Windowed) -> Option<adw::Window> {
+        self.0
+            .windowed
+            .borrow()
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .and_then(|(_, window)| window.upgrade())
+            .filter(|window| window.is_visible())
+    }
+
+    pub(crate) fn add_windowed(&self, kind: Windowed, window: &adw::Window) {
+        let mut windowed = self.0.windowed.borrow_mut();
+        windowed.retain(|(k, w)| *k != kind && w.upgrade().is_some_and(|w| w.is_visible()));
+        windowed.push((kind, window.downgrade()));
     }
 
     /// Called from the application's `shutdown`: the last session write, then the final sync.
