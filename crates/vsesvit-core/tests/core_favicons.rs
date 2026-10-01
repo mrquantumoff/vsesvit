@@ -136,6 +136,14 @@ fn failed_sites_are_retried_after_a_week() {
 fn fetches_the_declared_icon_or_else_favicon_ico() {
     let server = FixtureServer::start().unwrap();
     let pages = vec![server.url("/icon.html"), server.url("/page2.html"), url("ftp://files.example/")];
+
+    // Loopback and private-network hosts are never asked: the fixture server only answers
+    // once the testkit switch for fixture servers is on. Process-wide, so one test does both.
+    let refused = FaviconFetch::new(pages.clone()).run();
+    assert_eq!(refused[0].png, None);
+    assert_eq!(server.hits(), Vec::<String>::new(), "nothing reached the loopback server");
+
+    vsesvit_core::favicons::allow_local_hosts();
     let fetched = FaviconFetch::new(pages.clone()).run();
 
     assert_eq!(fetched.iter().map(|f| f.page.clone()).collect::<Vec<_>>(), pages);

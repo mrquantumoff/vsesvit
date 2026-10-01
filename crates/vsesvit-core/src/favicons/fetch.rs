@@ -2,17 +2,23 @@
 //! `/favicon.ico`), decoded and scaled down to the PNG [`super::Favicons::record`] keeps.
 //!
 //! Everything here reads untrusted bytes from the network, so every size is capped: the
-//! page, the icon file, the decoded image's dimensions and allocations.
+//! page, the icon file, the decoded image's dimensions and allocations. Requests go to public
+//! addresses only (see [`PublicOnly`]).
 
 use std::borrow::Cow;
-use std::io::{Cursor, Read};
+use std::io::{self, Cursor, Read};
+use std::net::IpAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
 use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 use ureq::ResponseExt;
+use ureq::config::Config;
+use ureq::http::Uri;
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 use super::MAX_BYTES;
 use crate::Url;
@@ -79,12 +85,82 @@ impl FaviconFetch {
     }
 }
 
+/// Set by [`allow_local_hosts`] only.
+static ALLOW_LOCAL: AtomicBool = AtomicBool::new(false);
+
+/// Lets [`FaviconFetch`] reach loopback and private-network hosts from now on, for tests that
+/// serve their pages from a local fixture server. Process-wide.
+#[cfg(feature = "testkit")]
+pub fn allow_local_hosts() {
+    ALLOW_LOCAL.store(true, Ordering::Relaxed);
+}
+
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
+    let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .user_agent(USER_AGENT)
-        .build()
-        .into()
+        .build();
+    ureq::Agent::with_parts(config, DefaultConnector::default(), PublicOnly::default())
+}
+
+/// Resolves host names as ureq does, keeping public addresses only. Checking the addresses
+/// connected to covers every redirect and icon link a page names, and a name that resolves
+/// to a public address once and a local one later: a bookmark (synced, imported, or a public
+/// page's redirect) never makes the browser send requests into the local network unasked.
+/// Through a proxy the user configured, the proxy resolves the target host instead, and what
+/// it reaches is up to the proxy.
+#[derive(Debug, Default)]
+struct PublicOnly(DefaultResolver);
+
+impl Resolver for PublicOnly {
+    fn resolve(&self, uri: &Uri, config: &Config, timeout: NextTimeout) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        let addrs = self.0.resolve(uri, config, timeout)?;
+        // A proxy the user configured may well be local.
+        if ALLOW_LOCAL.load(Ordering::Relaxed) || config.proxy().is_some_and(|p| p.uri() == uri) {
+            return Ok(addrs);
+        }
+        let mut public = self.empty();
+        for addr in addrs.iter().filter(|a| is_public(a.ip())) {
+            public.push(*addr);
+        }
+        if public.is_empty() {
+            return Err(ureq::Error::Io(io::Error::new(io::ErrorKind::PermissionDenied, "not a public address")));
+        }
+        Ok(public)
+    }
+}
+
+/// Whether `ip` is on the public internet: not loopback, private, link-local, shared (CGNAT),
+/// unique-local, multicast or otherwise reserved.
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || a == 0
+                || a >= 240
+                || (a == 100 && b & 0xC0 == 64)
+                || (a == 192 && b == 0 && c == 0))
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            match v6.to_ipv4() {
+                // IPv4-mapped and -compatible addresses: by the address inside.
+                Some(v4) if !v6.is_loopback() => is_public(IpAddr::V4(v4)),
+                _ => {
+                    !(v6.is_loopback()
+                        || v6.is_unspecified()
+                        || v6.is_multicast()
+                        || first & 0xFE00 == 0xFC00
+                        || first & 0xFFC0 == 0xFE80
+                        || first & 0xFFC0 == 0xFEC0)
+                }
+            }
+        }
+    }
 }
 
 /// The first of the page's candidate icons that fetches and decodes.
@@ -441,6 +517,20 @@ mod tests {
         let icon = decoded(&normalize(&ico).unwrap());
         assert_eq!(icon.dimensions(), (32, 32));
         assert_eq!(icon.get_pixel(16, 16), &Rgba([0, 255, 0, 255]), "the 48px entry");
+    }
+
+    #[test]
+    fn only_public_addresses_are_fetched_from() {
+        for ip in [
+            "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0",
+            "192.0.0.1", "255.255.255.255", "224.0.0.1", "::1", "::", "fd00::1", "fe80::1", "::ffff:127.0.0.1",
+            "::ffff:192.168.0.1", "ff02::1",
+        ] {
+            assert!(!is_public(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["93.184.216.34", "100.128.0.1", "172.32.0.1", "2606:4700::1", "::ffff:93.184.216.34"] {
+            assert!(is_public(ip.parse().unwrap()), "{ip}");
+        }
     }
 
     #[test]
