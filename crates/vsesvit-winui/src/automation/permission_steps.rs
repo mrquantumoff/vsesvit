@@ -13,7 +13,7 @@ use vsesvit_core::permissions::{Origin, Permission, Setting};
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
 
-use super::{STEP_TIMEOUT, devtools, eval, settings_on, shoot, wait_loaded};
+use super::{STEP_TIMEOUT, devtools, eval, page_value, settings_on, shoot, wait_loaded};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::shortcuts::Command;
@@ -35,19 +35,6 @@ const OPEN_CAMERA: &str = "window.__gum = ''; window.__ended = 0; \
 const SHARE_SCREEN: &str = "window.__gdm = ''; \
     navigator.mediaDevices.getDisplayMedia({ video: true }).then(s => { \
       window.__screen = s; window.__gdm = 'ok'; }, e => window.__gdm = e.name); 0";
-
-/// The page's value of `expression` once it is not `""`, as JSON.
-async fn page_value(tab: &Tab, expression: &str) -> Option<String> {
-    let deadline = Instant::now() + STEP_TIMEOUT;
-    while Instant::now() < deadline {
-        let value = eval(tab, expression).await.unwrap_or_default();
-        if !value.is_empty() && value != "\"\"" && value != "null" {
-            return Some(value.trim_matches('"').to_owned());
-        }
-        exec::sleep(Duration::from_millis(100)).await;
-    }
-    None
-}
 
 /// A screenshot of what these steps show, which the address box's suggestion list must not
 /// cover.

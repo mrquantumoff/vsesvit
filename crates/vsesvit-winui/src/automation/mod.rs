@@ -950,22 +950,14 @@ async fn xpi_update(
         tab.navigate(server.url("/index.html").as_str());
         exec::sleep(Duration::from_millis(300)).await;
         let _ = wait_loaded(tab).await;
-        let mut seen = String::new();
-        let deadline = Instant::now() + STEP_TIMEOUT;
-        while Instant::now() < deadline {
-            seen = eval(
+        visits.push(
+            page_value(
                 tab,
                 "document.documentElement.dataset.vsesvitXpiVisits || ''",
             )
             .await
-            .unwrap_or_default();
-            if seen.trim_matches('"').is_empty() {
-                exec::sleep(Duration::from_millis(200)).await;
-            } else {
-                break;
-            }
-        }
-        visits.push(seen.trim_matches('"').to_owned());
+            .unwrap_or_default(),
+        );
     }
     let loaded = match browser.engine_profile().await {
         Some(profile) => exec::timeout(STEP_TIMEOUT, engine::extensions(&profile))
@@ -1012,17 +1004,17 @@ async fn second_launch(browser: &Browser, url: &str) -> Result<String, String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(format!("exit code {}", status.code().unwrap_or(-1))),
-            Ok(None) if Instant::now() < deadline => exec::sleep(Duration::from_millis(100)).await,
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("the second process did not exit within 20 s".into());
-            }
-            Err(e) => return Err(e.to_string()),
+    match exec::wait_for(Duration::from_secs(20), Duration::from_millis(100), || {
+        child.try_wait().transpose()
+    })
+    .await
+    {
+        Some(Ok(status)) => Ok(format!("exit code {}", status.code().unwrap_or(-1))),
+        Some(Err(e)) => Err(e.to_string()),
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err("the second process did not exit within 20 s".into())
         }
     }
 }
@@ -1119,6 +1111,19 @@ async fn eval(tab: &Tab, script: &str) -> Result<String, String> {
         .await
         .ok_or_else(|| format!("script timed out in tab {}", tab.id))?
         .map_err(|e| e.to_string())
+}
+
+/// The page's value of `expression` once it is not `""`, as JSON.
+async fn page_value(tab: &Tab, expression: &str) -> Option<String> {
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    while Instant::now() < deadline {
+        let value = eval(tab, expression).await.unwrap_or_default();
+        if !value.is_empty() && value != "\"\"" && value != "null" {
+            return Some(value.trim_matches('"').to_owned());
+        }
+        exec::sleep(Duration::from_millis(100)).await;
+    }
+    None
 }
 
 pub(super) async fn shoot(
