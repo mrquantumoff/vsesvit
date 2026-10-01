@@ -63,11 +63,7 @@ impl BrowserWindow {
         xaml::set_visible(&self.ui.toolbar_drag, vertical)?;
         let pane = self.side.element().cast::<UIElement>()?;
         for host in [&self.ui.left_host, &self.ui.right_host] {
-            let children = host.Children()?;
-            let mut index = 0;
-            if children.IndexOf(&pane, &mut index)? {
-                children.RemoveAt(index)?;
-            }
+            xaml::remove_child(host, &pane)?;
         }
         let host = match position {
             TabsPosition::Left => Some(&self.ui.left_host),

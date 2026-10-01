@@ -178,6 +178,16 @@ pub(crate) fn is_visible(element: &impl Interface) -> bool {
         .is_ok_and(|v| v == Visibility::Visible)
 }
 
+/// Takes `child` out of `panel`, if it is there.
+pub(crate) fn remove_child(panel: &Panel, child: &UIElement) -> Result<()> {
+    let children = panel.Children()?;
+    let mut index = 0;
+    if children.IndexOf(child, &mut index)? {
+        children.RemoveAt(index)?;
+    }
+    Ok(())
+}
+
 /// COM identity: two references to the same object compare equal as `IUnknown`.
 pub(crate) fn same_object(a: &impl Interface, b: &impl Interface) -> bool {
     match (a.cast::<IUnknown>(), b.cast::<IUnknown>()) {

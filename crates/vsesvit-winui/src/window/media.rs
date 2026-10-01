@@ -14,11 +14,11 @@ use windows_core::{Interface, Result};
 
 use super::BrowserWindow;
 use crate::bindings::*;
-use crate::exec;
 use crate::layout::StripKind;
 use crate::media::{MediaAction, Playback};
 use crate::player::PlayerLook;
 use crate::tab::{Tab, TabId};
+use crate::{exec, xaml};
 
 /// What the picture-in-picture box shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,7 +167,7 @@ impl BrowserWindow {
     fn attach_pip(&self, id: TabId) -> Result<()> {
         let tab = self.tab(id).ok_or_else(windows_core::Error::empty)?;
         let view = tab.view().cast::<UIElement>()?;
-        remove_child(&self.ui.pages, &view)?;
+        xaml::remove_child(&self.ui.pages, &view)?;
         if let Ok(element) = view.cast::<FrameworkElement>() {
             Grid::SetColumn(&element, 0)?;
             Grid::SetColumnSpan(&element, 1)?;
@@ -185,7 +185,7 @@ impl BrowserWindow {
     fn release_pip(&self, id: TabId) {
         let Some(tab) = self.tab(id) else { return };
         let moved = tab.view().cast::<UIElement>().and_then(|view| {
-            remove_child(self.player.pip_host(), &view)?;
+            xaml::remove_child(self.player.pip_host(), &view)?;
             view.SetVisibility(Visibility::Collapsed)?;
             self.ui.pages.Children()?.Append(&view)
         });
@@ -267,15 +267,6 @@ impl BrowserWindow {
     }
 
     pub fn player_shown(&self) -> bool {
-        crate::xaml::is_visible(self.player.element())
+        xaml::is_visible(self.player.element())
     }
-}
-
-fn remove_child(panel: &Panel, child: &UIElement) -> Result<()> {
-    let children = panel.Children()?;
-    let mut index = 0;
-    if children.IndexOf(child, &mut index)? {
-        children.RemoveAt(index)?;
-    }
-    Ok(())
 }

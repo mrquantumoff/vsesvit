@@ -502,12 +502,7 @@ impl BrowserWindow {
             strip.remove(tab.id)?;
         }
         self.media_tab_closing(tab.id);
-        let children = self.ui.pages.Children()?;
-        let view = tab.view().cast::<UIElement>()?;
-        let mut index = 0;
-        if children.IndexOf(&view, &mut index)? {
-            children.RemoveAt(index)?;
-        }
+        xaml::remove_child(&self.ui.pages, &tab.view().cast::<UIElement>()?)?;
         tab.close();
         self.tabs.borrow_mut().retain(|t| t.id != tab.id);
         self.openers
