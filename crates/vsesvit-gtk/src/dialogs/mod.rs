@@ -88,8 +88,14 @@ impl LibraryWindow {
     }
 
     pub(crate) fn toast(&self, text: &str) {
-        self.toasts.add_toast(adw::Toast::new(text));
+        self.toasts.add_toast(plain_toast(text));
     }
+}
+
+/// A toast showing `text` as written. Adwaita parses a toast's title as markup by default, so a
+/// file or extension name, or an error a server sent, would otherwise be read as markup.
+pub(crate) fn plain_toast(text: &str) -> adw::Toast {
+    adw::Toast::builder().title(text).use_markup(false).build()
 }
 
 /// Asks for a line of text. `None` when cancelled or left empty.
@@ -172,6 +178,13 @@ pub(crate) fn format_time(unix_ms: i64) -> String {
 mod tests {
     use super::*;
     use crate::test_support::{browser, wait_until};
+
+    #[gtk::test]
+    fn a_toast_shows_a_name_as_written() {
+        let toast = plain_toast("Imported 2 items from Q&A <b>.html");
+        assert!(!toast.uses_markup());
+        assert_eq!(toast.title().as_deref(), Some("Imported 2 items from Q&A <b>.html"));
+    }
 
     #[gtk::test]
     fn a_window_of_its_own_opens_once_and_closes_with_its_browser_window() {

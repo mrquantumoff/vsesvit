@@ -11,6 +11,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::extensions::{InstallSource, InstalledExtension, SourceParseError};
 
+use super::plain_toast;
 use crate::browser::Browser;
 use crate::extensions::{
     EnableFailure, InstallFailure, icon_path, progress_to, unsupported_notice,
@@ -110,7 +111,7 @@ impl State {
     }
 
     fn toast(&self, text: &str) {
-        self.dialog.add_toast(adw::Toast::new(text));
+        self.dialog.add_toast(plain_toast(text));
     }
 
     fn install(self: &Rc<Self>, source: Result<InstallSource, SourceParseError>) {

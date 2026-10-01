@@ -18,7 +18,7 @@ use vsesvit_core::search::SearchEngine;
 use vsesvit_core::sync::DataType;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
 
-use super::confirm;
+use super::{confirm, plain_toast};
 use crate::browser::Browser;
 use crate::permissions;
 use crate::session::now_ms;
@@ -212,7 +212,7 @@ fn delete_server_data_group(syncer: &Syncer) -> adw::PreferencesGroup {
                 if let Err(e) = deleted
                     && let Some(dialog) = row.ancestor(adw::PreferencesDialog::static_type()).and_downcast::<adw::PreferencesDialog>()
                 {
-                    dialog.add_toast(adw::Toast::new(&format!("Could not delete the data on the server: {e}")));
+                    dialog.add_toast(plain_toast(&format!("Could not delete the data on the server: {e}")));
                 }
             });
         }
@@ -549,7 +549,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
                 let browser = window.browser();
                 let result = browser.core().borrow_mut().history().delete_range(0, now_ms());
                 if let Err(e) = result {
-                    window.toast(adw::Toast::new(&format!("History: {e}")));
+                    window.toast(plain_toast(&format!("History: {e}")));
                 }
                 if let Some(manager) = browser.engine().session().website_data_manager() {
                     manager.clear(
@@ -563,7 +563,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
                         },
                     );
                 }
-                window.toast(adw::Toast::new("Browsing data cleared"));
+                window.toast(plain_toast("Browsing data cleared"));
             });
         }
     ));
@@ -842,6 +842,7 @@ fn download_folder_row(window: &BrowserWindow) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
         .title("Download Folder")
         .subtitle_selectable(true)
+        .use_markup(false)
         .build();
     let reset = gtk::Button::builder()
         .label("Use Default")
@@ -903,6 +904,7 @@ fn profile_folder_row(browser: &Browser) -> adw::ActionRow {
         .title("Profile Folder")
         .subtitle(&root)
         .subtitle_selectable(true)
+        .use_markup(false)
         .build()
 }
 
@@ -937,5 +939,28 @@ mod tests {
                 .collect();
             assert!(order.is_sorted(), "{state:?} lists {actions:?}");
         }
+    }
+
+    /// What the labels under `widget` show.
+    fn shown_text(widget: &gtk::Widget) -> Vec<String> {
+        let mut shown: Vec<String> = widget.downcast_ref::<gtk::Label>().map(|l| l.text().to_string()).into_iter().collect();
+        for child in std::iter::successors(widget.first_child(), |child| child.next_sibling()) {
+            shown.extend(shown_text(&child));
+        }
+        shown
+    }
+
+    #[gtk::test]
+    fn a_download_folder_shows_as_named_not_as_markup() {
+        let browser = crate::test_support::browser();
+        let window = BrowserWindow::new(&browser);
+        let folder = "/tmp/R&D <x>";
+        let set = browser.core().borrow_mut().prefs().set(&keys::DOWNLOADS_DIR, &Some(folder.into()));
+        set.unwrap();
+        let row = download_folder_row(&window);
+        browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR).unwrap();
+        let shown = shown_text(row.upcast_ref());
+        assert!(shown.iter().any(|text| text == folder), "the row shows {shown:?}");
+        window.destroy();
     }
 }

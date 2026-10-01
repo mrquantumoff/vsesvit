@@ -23,6 +23,7 @@ use vsesvit_update::{
     remove_stale_downloads,
 };
 
+use crate::dialogs::plain_toast;
 use crate::sync::Repeating;
 use crate::window::BrowserWindow;
 pub(crate) use lifecycle::{Banner, Status, StatusButton};
@@ -233,7 +234,7 @@ impl Updates {
                     .active_window()
                     .and_then(|w| w.downcast::<BrowserWindow>().ok());
                 if let Some(window) = window.or_else(|| self.windows().into_iter().next()) {
-                    window.toast(adw::Toast::new(&message));
+                    window.toast(plain_toast(&message));
                 }
             }
         }

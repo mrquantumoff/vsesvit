@@ -18,7 +18,7 @@ use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, Bookmarks, InsertAt, NodeKind};
 
 use crate::bookmark_editor::{self, Subject};
-use crate::dialogs::{confirm, prompt_text};
+use crate::dialogs::{confirm, plain_toast, prompt_text};
 use crate::favicons;
 use crate::profile::Core;
 use crate::window::{BrowserWindow, Focus};
@@ -435,7 +435,7 @@ fn edit(window: &BrowserWindow, subject: Subject) {
         match bookmark_editor::edit(&window, window.browser().core(), subject).await {
             Ok(true) => window.browser().bookmarks_changed(),
             Ok(false) => {}
-            Err(e) => window.toast(adw::Toast::new(&format!("Cannot change the bookmark: {e}"))),
+            Err(e) => window.toast(plain_toast(&format!("Cannot change the bookmark: {e}"))),
         }
     });
 }
@@ -454,7 +454,7 @@ fn delete(window: &BrowserWindow, node: BookmarkNode) {
         }
         let removed = window.browser().core().borrow_mut().bookmarks().remove(node.id);
         if let Err(e) = removed {
-            window.toast(adw::Toast::new(&format!("Cannot delete the bookmark: {e}")));
+            window.toast(plain_toast(&format!("Cannot delete the bookmark: {e}")));
         }
         window.browser().bookmarks_changed();
     });
@@ -466,7 +466,7 @@ fn add_folder(window: &BrowserWindow, parent: BookmarkId) {
         let Some(title) = prompt_text(&window, "Add Folder", "New Folder", "_Add").await else { return };
         let added = window.browser().core().borrow_mut().bookmarks().add_folder(parent, InsertAt::End, &title);
         if let Err(e) = added {
-            window.toast(adw::Toast::new(&format!("Cannot add the folder: {e}")));
+            window.toast(plain_toast(&format!("Cannot add the folder: {e}")));
         }
         window.browser().bookmarks_changed();
     });

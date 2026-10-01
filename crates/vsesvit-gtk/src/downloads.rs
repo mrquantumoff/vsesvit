@@ -16,6 +16,7 @@ use vsesvit_core::downloads::{Download, DownloadId, State, sanitize, unique_dest
 use vsesvit_core::prefs::keys;
 use webkit::prelude::*;
 
+use crate::dialogs::plain_toast;
 use crate::profile::Core;
 use crate::session::now_ms;
 use crate::window::BrowserWindow;
@@ -253,7 +254,7 @@ impl Downloads {
                     downloads.ended(id, state, download);
                 }
                 if !cancelled && let Some(window) = downloads.window_for(download) {
-                    window.toast(adw::Toast::new(&format!("Download of “{}” failed", describe(download))));
+                    window.toast(plain_toast(&format!("Download of “{}” failed", describe(download))));
                 }
             }
         ));
@@ -336,6 +337,7 @@ impl Downloads {
         if let Some(window) = self.window_for(download) {
             let toast = adw::Toast::builder()
                 .title(format!("Downloading “{}”", file_name(destination)))
+                .use_markup(false)
                 .button_label("Show")
                 .action_name("win.show-downloads")
                 .build();
@@ -377,6 +379,7 @@ impl Downloads {
         let path = PathBuf::from(destination.as_str());
         let toast = adw::Toast::builder()
             .title(format!("“{}” downloaded", file_name(&path)))
+            .use_markup(false)
             .button_label("Open")
             .build();
         toast.connect_button_clicked(glib::clone!(
@@ -411,7 +414,7 @@ const NOT_UTF8: &str = "Cannot save the download: its path is not valid UTF-8";
 fn refuse(window: Option<BrowserWindow>, download: &webkit::Download, why: &str) {
     log::warn!("download refused: {why}");
     if let Some(window) = window {
-        window.toast(adw::Toast::builder().title(why).use_markup(false).build());
+        window.toast(plain_toast(why));
     }
     download.cancel();
 }

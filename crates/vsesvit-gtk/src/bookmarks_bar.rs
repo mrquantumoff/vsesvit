@@ -18,6 +18,7 @@ use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode};
 
 use crate::bookmark_drag::{self, Zone};
 use crate::bookmark_menu::{self, Item, Target, label_for};
+use crate::dialogs::plain_toast;
 use crate::favicons;
 use crate::profile::Core;
 use crate::window::BrowserWindow;
@@ -364,7 +365,7 @@ fn move_dropped(window: &BrowserWindow, id: BookmarkId, target: &BookmarkNode, z
     match bookmark_drag::apply(browser.core(), id, target, zone) {
         Ok(true) => browser.bookmarks_changed(),
         Ok(false) => {}
-        Err(e) => window.toast(adw::Toast::new(&format!("Cannot move the bookmark: {e}"))),
+        Err(e) => window.toast(plain_toast(&format!("Cannot move the bookmark: {e}"))),
     }
 }
 

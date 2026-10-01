@@ -12,6 +12,7 @@ use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, Bookmarks, InsertAt, NodeKind};
 use vsesvit_core::search::classify_url;
 
+use crate::dialogs::plain_toast;
 use crate::profile::Core;
 use crate::window::BrowserWindow;
 
@@ -274,7 +275,7 @@ pub(crate) fn bubble(window: &BrowserWindow, node: BookmarkNode, added: bool) ->
                 bookmarks.find_by_url(url).iter().try_for_each(|node| bookmarks.remove(node.id))
             });
             if let Err(e) = removed {
-                window.toast(adw::Toast::new(&format!("Cannot remove the bookmark: {e}")));
+                window.toast(plain_toast(&format!("Cannot remove the bookmark: {e}")));
             }
             window.browser().bookmarks_changed();
             if let Some(popover) = popover.upgrade() {
@@ -288,7 +289,7 @@ pub(crate) fn bubble(window: &BrowserWindow, node: BookmarkNode, added: bool) ->
         move |_| {
             let (Some(window), Some(values)) = (window.upgrade(), form.read()) else { return };
             if let Err(e) = save(&core, &subject, &values) {
-                window.toast(adw::Toast::new(&format!("Cannot change the bookmark: {e}")));
+                window.toast(plain_toast(&format!("Cannot change the bookmark: {e}")));
             }
             window.browser().bookmarks_changed();
             if let Some(popover) = popover.upgrade() {
