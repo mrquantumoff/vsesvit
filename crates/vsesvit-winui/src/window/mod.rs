@@ -191,6 +191,8 @@ pub(crate) struct BrowserWindow {
     suggestion_list_watch: RefCell<Option<windows_core::EventRevoker>>,
     /// The tab the toolbar currently shows.
     shown_tab: Cell<Option<TabId>>,
+    /// A tab's row is being moved in the strip: its selection changes are not the user's.
+    reordering: Cell<bool>,
     split: Cell<Option<Split>>,
     fullscreen: Cell<bool>,
     /// While fullscreen, the bounds the window had before, which a saved session keeps.
@@ -264,6 +266,7 @@ impl BrowserWindow {
             address_deleting: Cell::new(false),
             suggestion_list_watch: RefCell::new(None),
             shown_tab: Cell::new(None),
+            reordering: Cell::new(false),
             split: Cell::new(None),
             fullscreen: Cell::new(false),
             windowed_bounds: Cell::new(None),
@@ -604,7 +607,7 @@ impl BrowserWindow {
     }
 
     fn strip_selection_changed(&self, kind: StripKind) {
-        if kind == StripKind::of(self.tabs_position.get()) {
+        if kind == StripKind::of(self.tabs_position.get()) && !self.reordering.get() {
             self.sync_selection();
         }
     }

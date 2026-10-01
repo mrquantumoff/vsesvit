@@ -268,13 +268,20 @@ impl BrowserWindow {
             return Ok(());
         };
         let selected = strip.selected() == Some(id);
-        strip.remove(id)?;
-        strip.insert(u32::try_from(index).unwrap_or(u32::MAX), id, &tab.look())?;
-        if selected {
-            strip.select(id)?;
-        }
+        // Removing the selected row moves the strip's selection to a neighbour for a moment;
+        // that must not switch tabs.
+        self.reordering.set(true);
+        let moved = (|| {
+            strip.remove(id)?;
+            strip.insert(u32::try_from(index).unwrap_or(u32::MAX), id, &tab.look())?;
+            if selected {
+                strip.select(id)?;
+            }
+            Ok(())
+        })();
+        self.reordering.set(false);
         self.sync_selection();
-        Ok(())
+        moved
     }
 
     /// Copies a tab's address, without its tracking parameters if `clean`, and flashes the
