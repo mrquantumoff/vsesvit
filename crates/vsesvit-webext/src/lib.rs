@@ -80,7 +80,10 @@
 //!   after the user invoked the action on that tab); tab URLs and titles are visible
 //!   only with the `tabs` permission or host access to the tab's URL.
 //! - declarativeNetRequest static rulesets as one WebKit content blocker per extension,
-//!   attached to every tab. Rules WebKit cannot express are logged and skipped.
+//!   attached to every tab. Rules WebKit cannot express are logged and skipped. As in
+//!   Chrome, rulesets need the `declarativeNetRequest` permission, and redirect and
+//!   modifyHeaders rules (every rule, with `declarativeNetRequestWithHostAccess`) act only
+//!   on requests to hosts the extension has host permissions for.
 //!
 //! Known limits: events reach a tab's top frame only (`tabs.sendMessage`, `storage.onChanged`
 //! in subframes); no `runtime.connect` ports; no `webRequest`; one runtime per process;

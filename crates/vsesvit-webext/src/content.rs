@@ -64,8 +64,16 @@ fn injection_time(entry: &ContentScript) -> webkit::UserScriptInjectionTime {
 }
 
 /// The merged content-blocker JSON of every enabled static ruleset, or `None` when the
-/// extension declares none (or every rule was inexpressible).
+/// extension declares none, lacks the permission for them (see [`dnr::Grants`]), or every
+/// rule was inexpressible.
 pub(crate) fn dnr_json(dir: &Path, manifest: &Manifest, base_url: &str) -> Result<Option<String>, LoadError> {
+    let host_permissions: Vec<String> = manifest.host_permissions.iter().map(|p| p.as_str().to_owned()).collect();
+    let Some(grants) = dnr::Grants::from_manifest(&manifest.permissions, &host_permissions) else {
+        if manifest.dnr_rulesets.iter().any(|r| r.enabled) {
+            log::warn!("{}: declarativeNetRequest rulesets ignored without the declarativeNetRequest permission", manifest.name);
+        }
+        return Ok(None);
+    };
     let mut rules = Vec::new();
     for ruleset in manifest.dnr_rulesets.iter().filter(|r| r.enabled) {
         let path = ruleset.path.resolve(dir);
@@ -79,7 +87,7 @@ pub(crate) fn dnr_json(dir: &Path, manifest: &Manifest, base_url: &str) -> Resul
     if rules.is_empty() {
         return Ok(None);
     }
-    let translation = dnr::translate(&rules, base_url.trim_end_matches('/'));
+    let translation = dnr::translate(&rules, base_url.trim_end_matches('/'), &grants);
     if !translation.skipped.is_empty() {
         log::warn!("{}: declarativeNetRequest rules WebKit cannot express: {}", manifest.name, dnr::describe_skipped(&translation.skipped));
     }

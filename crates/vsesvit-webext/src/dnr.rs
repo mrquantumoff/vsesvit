@@ -229,14 +229,127 @@ pub fn parse_rules(text: &str) -> Result<(Vec<Rule>, Vec<Skipped>), serde_json::
     Ok((rules, skipped))
 }
 
+/// What an extension's permissions let its rules do, as in Chrome: rulesets need the
+/// `declarativeNetRequest` (or `declarativeNetRequestWithHostAccess`) permission, and
+/// redirect and modifyHeaders rules (every rule, with only the latter) act only on
+/// requests to hosts the extension has host permissions for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Grants {
+    pub hosts: HostScope,
+    /// Only `declarativeNetRequestWithHostAccess`: every rule needs host access.
+    pub host_access_only: bool,
+}
+
+/// The hosts an extension's host permissions cover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostScope {
+    /// `<all_urls>` or a pattern for any host of any web scheme.
+    All,
+    /// Just these; none when the extension has no host permissions.
+    Hosts(Vec<HostGrant>),
+}
+
+/// One host permission pattern, as a request URL condition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostGrant {
+    /// `None` for `*` (http, https, ws, wss).
+    scheme: Option<String>,
+    /// `*` for any host.
+    host: String,
+    subdomains: bool,
+}
+
+impl Grants {
+    /// `None` when `permissions` has neither DNR permission, so no ruleset applies.
+    pub fn from_manifest(permissions: &[String], host_permissions: &[String]) -> Option<Grants> {
+        let has = |name: &str| permissions.iter().any(|p| p == name);
+        if !has("declarativeNetRequest") && !has("declarativeNetRequestWithHostAccess") {
+            return None;
+        }
+        Some(Grants { hosts: HostScope::from_patterns(host_permissions), host_access_only: !has("declarativeNetRequest") })
+    }
+}
+
+impl HostScope {
+    /// Match patterns (`<all_urls>`, `*://*.example.com/*`, ...) as hosts; paths do not
+    /// limit host access, and patterns for schemes without hosts (`file`) grant none.
+    pub fn from_patterns(patterns: &[String]) -> HostScope {
+        let mut grants = Vec::new();
+        for pattern in patterns {
+            if pattern == "<all_urls>" {
+                return HostScope::All;
+            }
+            let Some((scheme, rest)) = pattern.split_once("://") else { continue };
+            let scheme = match scheme {
+                "*" => None,
+                "http" | "https" | "ws" | "wss" | "ftp" => Some(scheme.to_owned()),
+                _ => continue,
+            };
+            let host = rest.split('/').next().unwrap_or_default();
+            let host = host.split(':').next().unwrap_or_default().to_ascii_lowercase();
+            if host.is_empty() {
+                continue;
+            }
+            if host == "*" && scheme.is_none() {
+                return HostScope::All;
+            }
+            grants.push(match host.strip_prefix("*.") {
+                Some(domain) => HostGrant { scheme, host: domain.to_owned(), subdomains: true },
+                None => HostGrant { scheme, subdomains: host == "*", host },
+            });
+        }
+        HostScope::Hosts(grants)
+    }
+}
+
+impl HostGrant {
+    /// The part of this grant inside `domain` and its subdomains (a `requestDomains`
+    /// entry), if any.
+    fn within(&self, domain: &str) -> Option<HostGrant> {
+        let domain = domain.trim_start_matches("*.").to_ascii_lowercase();
+        let under = |host: &str, parent: &str| host == parent || host.ends_with(&format!(".{parent}"));
+        if self.host == "*" || (self.subdomains && under(&domain, &self.host)) {
+            Some(HostGrant { scheme: self.scheme.clone(), host: domain, subdomains: true })
+        } else if under(&self.host, &domain) {
+            Some(self.clone())
+        } else {
+            None
+        }
+    }
+
+    /// `^https://+([^:/]+\.)?example\.com[:/]`: the start of a URL this grant covers.
+    fn anchor(&self) -> Result<String, String> {
+        let mut re = String::from("^");
+        match &self.scheme {
+            Some(s) => s.chars().for_each(|ch| push_literal(&mut re, ch)),
+            None => re.push_str("[^:]+"),
+        }
+        re.push_str("://+");
+        if self.host == "*" {
+            return Ok(re);
+        }
+        if !self.host.is_ascii() {
+            return Err(format!("host permission {:?} is not ASCII", self.host));
+        }
+        if self.subdomains {
+            re.push_str("([^:/]+\\.)?");
+        }
+        for ch in self.host.chars() {
+            push_literal(&mut re, ch);
+        }
+        re.push_str("[:/]");
+        Ok(re)
+    }
+}
+
 /// Translate the merged rules of one extension. `extension_base` is
 /// `chrome-extension://<id>`; `redirect.extensionPath` resolves against it.
-pub fn translate(rules: &[Rule], extension_base: &str) -> Translation {
+pub fn translate(rules: &[Rule], extension_base: &str, grants: &Grants) -> Translation {
     let mut out = Translation::default();
     let mut ordered: Vec<&Rule> = rules.iter().collect();
     ordered.sort_by_key(|r| (std::cmp::Reverse(r.priority), r.action.kind.rank()));
     for rule in ordered {
-        match translate_rule(rule, extension_base) {
+        match translate_rule(rule, extension_base, grants) {
             Ok(webkit_rules) => out.rules.extend(webkit_rules),
             Err(reason) => out.skipped.push(Skipped { rule_id: Some(rule.id), reason }),
         }
@@ -244,7 +357,7 @@ pub fn translate(rules: &[Rule], extension_base: &str) -> Translation {
     out
 }
 
-fn translate_rule(rule: &Rule, extension_base: &str) -> Result<Vec<Value>, String> {
+fn translate_rule(rule: &Rule, extension_base: &str, grants: &Grants) -> Result<Vec<Value>, String> {
     let c = &rule.condition;
     if c.tab_ids.is_some() || c.excluded_tab_ids.is_some() {
         return Err("tabIds conditions cannot be expressed as a content blocker".into());
@@ -289,15 +402,41 @@ fn translate_rule(rule: &Rule, extension_base: &str) -> Result<Vec<Value>, Strin
 
     let action = translate_action(rule, extension_base)?;
 
+    // The host permissions a rule of this kind is limited to; `None` when it may act on
+    // any request.
+    let needs_hosts = grants.host_access_only || matches!(rule.action.kind, ActionType::Redirect | ActionType::ModifyHeaders);
+    let scope = match &grants.hosts {
+        HostScope::Hosts(list) if needs_hosts => Some(list),
+        _ => None,
+    };
+
     if rule.action.kind == ActionType::AllowAllRequests {
+        if scope.is_some() {
+            return Err("allowAllRequests needs host permissions for every host".into());
+        }
         return allow_all_requests(c, &filters, trigger, action, &methods);
     }
 
     trigger.insert("resource-type".into(), json!(resource_types(c)));
 
+    let (hosts, what) = match (scope, &c.request_domains) {
+        (Some(grants), domains) => {
+            let covered: Vec<HostGrant> = match domains {
+                Some(domains) => domains.iter().flat_map(|d| grants.iter().filter_map(move |g| g.within(d))).collect(),
+                None => grants.clone(),
+            };
+            let anchors: BTreeSet<String> = covered.iter().map(HostGrant::anchor).collect::<Result<_, _>>()?;
+            if anchors.is_empty() {
+                return Err("this action needs host permissions for the requests it acts on".into());
+            }
+            (Some(anchors.into_iter().collect::<Vec<_>>()), "a rule limited to host permissions")
+        }
+        (None, Some(domains)) => (Some(domains.iter().map(|d| domain_regex(d)).collect::<Result<Vec<_>, _>>()?), "requestDomains"),
+        (None, None) => (None, ""),
+    };
     // WebKit takes one `url-filter` per rule, so alternative filters fan out too.
-    let url_filters = match &c.request_domains {
-        Some(domains) => filters.iter().map(|f| fold_request_domains(domains, f)).collect::<Result<Vec<_>, _>>()?.concat(),
+    let url_filters = match hosts {
+        Some(hosts) => filters.iter().map(|f| fold_hosts(&hosts, f, what)).collect::<Result<Vec<_>, _>>()?.concat(),
         None => filters,
     };
     let mut out = Vec::new();
@@ -507,19 +646,13 @@ fn domain_regex(domain: &str) -> Result<String, String> {
     Ok(re)
 }
 
-/// `requestDomains` become a host anchor in front of the filter. That only composes with
-/// a filter that is not itself anchored at the start.
-fn fold_request_domains(domains: &[String], filter: &str) -> Result<Vec<String>, String> {
+/// Host anchors (`requestDomains`, host permissions) go in front of the filter, one rule
+/// each. That only composes with a filter that is not itself anchored at the start.
+fn fold_hosts(hosts: &[String], filter: &str, what: &str) -> Result<Vec<String>, String> {
     if filter.starts_with('^') {
-        return Err("requestDomains cannot combine with a start-anchored filter".into());
+        return Err(format!("{what} cannot combine with a start-anchored filter"));
     }
-    domains
-        .iter()
-        .map(|d| {
-            let host = domain_regex(d)?;
-            Ok(if filter == ".*" { host } else { format!("{host}.*{filter}") })
-        })
-        .collect()
+    Ok(hosts.iter().map(|host| if filter == ".*" { host.clone() } else { format!("{host}.*{filter}") }).collect())
 }
 
 /// The condition's URL filter as WebKit regexes; a request matches if any of them does.
@@ -655,6 +788,84 @@ mod tests {
     use super::*;
 
     const BASE: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+    /// `declarativeNetRequest` and `<all_urls>`: every rule may act everywhere.
+    const ALL: Grants = Grants { hosts: HostScope::All, host_access_only: false };
+
+    fn grants(permissions: &[&str], hosts: &[&str]) -> Option<Grants> {
+        let strings = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        Grants::from_manifest(&strings(permissions), &strings(hosts))
+    }
+
+    /// Chrome applies no ruleset without a DNR permission.
+    #[test]
+    fn rulesets_need_the_dnr_permission() {
+        assert_eq!(grants(&[], &["<all_urls>"]), None);
+        assert_eq!(grants(&["storage", "tabs"], &["<all_urls>"]), None);
+        assert_eq!(grants(&["declarativeNetRequest"], &["<all_urls>"]), Some(ALL));
+        assert_eq!(grants(&["declarativeNetRequest"], &["*://*/*"]), Some(ALL));
+        let with_host_access = grants(&["declarativeNetRequestWithHostAccess"], &[]).unwrap();
+        assert!(with_host_access.host_access_only && with_host_access.hosts == HostScope::Hosts(Vec::new()));
+        assert!(!grants(&["declarativeNetRequest", "declarativeNetRequestWithHostAccess"], &[]).unwrap().host_access_only);
+    }
+
+    /// Without host permissions an extension may block but not redirect requests or
+    /// change their headers (strip CSP, set cookies) on sites it has no access to.
+    #[test]
+    fn redirect_and_modify_headers_need_host_access() {
+        let text = r#"[
+          {"id": 1, "action": {"type": "redirect", "redirect": {"url": "https://evil.test/a.js"}}, "condition": {"urlFilter": "||bank.example/app.js", "resourceTypes": ["script"]}},
+          {"id": 2, "action": {"type": "modifyHeaders", "responseHeaders": [{"header": "content-security-policy", "operation": "remove"}]}, "condition": {"urlFilter": "*"}},
+          {"id": 3, "action": {"type": "block"}, "condition": {"urlFilter": "ads"}}
+        ]"#;
+        let t = translate(&rules(text), BASE, &grants(&["declarativeNetRequest"], &[]).unwrap());
+        let types: Vec<&str> = t.rules.iter().map(|r| r["action"]["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["block"]);
+        let mut skipped: Vec<Option<u32>> = t.skipped.iter().map(|s| s.rule_id).collect();
+        skipped.sort();
+        assert_eq!(skipped, [Some(1), Some(2)]);
+    }
+
+    /// With some host permissions, redirect and modifyHeaders rules act on those hosts only.
+    #[test]
+    fn redirect_scoped_to_host_permissions() {
+        let g = grants(&["declarativeNetRequest"], &["https://example.com/*", "*://*.cdn.test/*"]).unwrap();
+        let text = r#"[
+          {"id": 1, "action": {"type": "redirect", "redirect": {"url": "https://x.test/"}}, "condition": {"urlFilter": "/app.js"}},
+          {"id": 2, "action": {"type": "redirect", "redirect": {"url": "https://x.test/"}}, "condition": {"urlFilter": "/app.js", "requestDomains": ["bank.example"]}},
+          {"id": 3, "action": {"type": "redirect", "redirect": {"url": "https://x.test/"}}, "condition": {"requestDomains": ["img.cdn.test", "example.com"]}},
+          {"id": 4, "action": {"type": "redirect", "redirect": {"url": "https://x.test/"}}, "condition": {"urlFilter": "||example.com/app.js"}},
+          {"id": 5, "action": {"type": "block"}, "condition": {"urlFilter": "||bank.example^"}}
+        ]"#;
+        let t = translate(&rules(text), BASE, &g);
+        let filters = |kind: &str| -> Vec<&str> { t.rules.iter().filter(|r| r["action"]["type"] == kind).map(|r| r["trigger"]["url-filter"].as_str().unwrap()).collect() };
+        assert_eq!(
+            filters("redirect"),
+            [
+                "^[^:]+://+([^:/]+\\.)?cdn\\.test[:/].*\\/app\\.js",
+                "^https://+example\\.com[:/].*\\/app\\.js",
+                "^[^:]+://+([^:/]+\\.)?img\\.cdn\\.test[:/]",
+                "^https://+example\\.com[:/]",
+            ]
+        );
+        assert_eq!(filters("block").len(), 2, "blocking needs no host permission");
+        let mut skipped: Vec<Option<u32>> = t.skipped.iter().map(|s| s.rule_id).collect();
+        skipped.sort();
+        assert_eq!(skipped, [Some(2), Some(4)], "{:?}", t.skipped);
+    }
+
+    /// With only `declarativeNetRequestWithHostAccess`, blocking needs host access too.
+    #[test]
+    fn host_access_only_limits_every_rule() {
+        let g = grants(&["declarativeNetRequestWithHostAccess"], &["*://ads.test/*"]).unwrap();
+        let text = r#"[
+          {"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "pixel"}},
+          {"id": 2, "action": {"type": "allowAllRequests"}, "condition": {"urlFilter": "||ads.test"}}
+        ]"#;
+        let t = translate(&rules(text), BASE, &g);
+        assert_eq!(t.rules.len(), 1);
+        assert_eq!(t.rules[0]["trigger"]["url-filter"], "^[^:]+://+ads\\.test[:/].*pixel");
+        assert_eq!(t.skipped.iter().map(|s| s.rule_id).collect::<Vec<_>>(), [Some(2)]);
+    }
 
     fn rules(text: &str) -> Vec<Rule> {
         let (rules, skipped) = parse_rules(text).unwrap();
@@ -665,7 +876,7 @@ mod tests {
     #[test]
     fn probe_rule_becomes_a_block_rule() {
         let text = include_str!("../../../tests/fixtures/extensions/probe/rules.json");
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         assert!(t.skipped.is_empty(), "{:?}", t.skipped);
         assert_eq!(t.rules.len(), 1);
         let r = &t.rules[0];
@@ -693,13 +904,13 @@ mod tests {
     /// `||tracker.io^` must not block `tracker.iot.com` or `tracker.io.evil.net`.
     #[test]
     fn trailing_separator_ends_the_host() {
-        let t = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "||tracker.io^"}}]"#), BASE);
+        let t = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "||tracker.io^"}}]"#), BASE, &ALL);
         let filters: Vec<&str> = t.rules.iter().map(|r| r["trigger"]["url-filter"].as_str().unwrap()).collect();
         assert_eq!(filters, ["^[^:]+://+([^:/]+\\.)?tracker\\.io[^-.%a-zA-Z0-9_]", "^[^:]+://+([^:/]+\\.)?tracker\\.io$"]);
-        let all = translate(&rules(r#"[{"id": 2, "action": {"type": "allowAllRequests"}, "condition": {"urlFilter": "||trusted.test^"}}]"#), BASE);
+        let all = translate(&rules(r#"[{"id": 2, "action": {"type": "allowAllRequests"}, "condition": {"urlFilter": "||trusted.test^"}}]"#), BASE, &ALL);
         assert_eq!(all.rules.len(), 1, "the frame URL condition is a list, so no fan-out: {:?}", all.rules);
         assert_eq!(all.rules[0]["trigger"]["if-top-url"].as_array().map(Vec::len), Some(2));
-        let folded = translate(&rules(r#"[{"id": 3, "action": {"type": "block"}, "condition": {"urlFilter": "/ad^", "requestDomains": ["a.test"], "requestMethods": ["get", "post"]}}]"#), BASE);
+        let folded = translate(&rules(r#"[{"id": 3, "action": {"type": "block"}, "condition": {"urlFilter": "/ad^", "requestDomains": ["a.test"], "requestMethods": ["get", "post"]}}]"#), BASE, &ALL);
         assert_eq!(folded.rules.len(), 4, "two filters times two methods");
     }
 
@@ -721,7 +932,7 @@ mod tests {
           {"id": 4, "priority": 3, "action": {"type": "block"}, "condition": {"urlFilter": "ads/strong"}},
           {"id": 5, "priority": 1, "action": {"type": "upgradeScheme"}, "condition": {"urlFilter": "http"}}
         ]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         let types: Vec<&str> = t.rules.iter().map(|r| r["action"]["type"].as_str().unwrap()).collect();
         assert_eq!(types, ["block", "ignore-following-rules", "ignore-following-rules", "block", "make-https"]);
         let filters: Vec<&str> = t.rules.iter().map(|r| r["trigger"]["url-filter"].as_str().unwrap()).collect();
@@ -738,7 +949,7 @@ mod tests {
             "requestMethods": ["POST", "get"], "excludedResourceTypes": ["main_frame", "image"]
           }
         }]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         assert!(t.skipped.is_empty(), "{:?}", t.skipped);
         assert_eq!(t.rules.len(), 2, "one WebKit rule per request method");
         let trig = &t.rules[0]["trigger"];
@@ -762,12 +973,12 @@ mod tests {
           "id": 3, "action": {"type": "block"},
           "condition": {"urlFilter": "ads", "domains": ["example.com"], "excludedDomains": ["safe.example.com"]}
         }]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         assert!(t.rules.is_empty(), "mistranslated: {:?}", t.rules);
         assert_eq!(t.skipped.len(), 1);
         assert_eq!(t.skipped[0].rule_id, Some(3));
         assert!(t.skipped[0].reason.contains("excludedDomains"), "{}", t.skipped[0].reason);
-        let alone = translate(&rules(r#"[{"id": 4, "action": {"type": "block"}, "condition": {"urlFilter": "ads", "excludedDomains": ["safe.example.com"]}}]"#), BASE);
+        let alone = translate(&rules(r#"[{"id": 4, "action": {"type": "block"}, "condition": {"urlFilter": "ads", "excludedDomains": ["safe.example.com"]}}]"#), BASE, &ALL);
         assert_eq!(alone.rules[0]["trigger"]["unless-frame-url"], json!(["^[^:]+://+([^:/]+\\.)?safe\\.example\\.com[:/]"]));
     }
 
@@ -783,7 +994,7 @@ mod tests {
           {"id": 4, "action": {"type": "allowAllRequests"}, "condition": {"urlFilter": "||trusted.test", "domains": ["a.test"], "resourceTypes": ["main_frame"]}},
           {"id": 5, "action": {"type": "allowAllRequests"}, "condition": {"urlFilter": "||trusted.test", "excludedDomains": ["a.test"], "resourceTypes": ["sub_frame"]}}
         ]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         const CONDITIONS: [&str; 6] = ["if-domain", "unless-domain", "if-top-url", "unless-top-url", "if-frame-url", "unless-frame-url"];
         for r in &t.rules {
             let n = CONDITIONS.iter().filter(|k| r["trigger"].get(**k).is_some()).count();
@@ -800,17 +1011,17 @@ mod tests {
     #[test]
     fn excluded_request_methods_fan_out_to_the_rest() {
         let text = r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x", "excludedRequestMethods": ["get", "HEAD"]}}]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         let methods: Vec<&str> = t.rules.iter().map(|r| r["trigger"]["request-method"].as_str().unwrap()).collect();
         assert_eq!(methods, ["connect", "delete", "options", "patch", "post", "put", "trace"]);
-        let bad = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"requestMethods": ["brew"]}}]"#), BASE);
+        let bad = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"requestMethods": ["brew"]}}]"#), BASE, &ALL);
         assert!(bad.rules.is_empty() && bad.skipped.len() == 1);
     }
 
     #[test]
     fn default_resource_types_exclude_main_frame() {
         let text = r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x"}}]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         let types = t.rules[0]["trigger"]["resource-type"].as_array().unwrap();
         assert!(!types.contains(&json!("top-document")));
         assert!(types.contains(&json!("script")));
@@ -823,7 +1034,7 @@ mod tests {
           {"id": 2, "action": {"type": "block"}, "condition": {"requestDomains": ["a.test"], "urlFilter": "/img/"}},
           {"id": 3, "action": {"type": "block"}, "condition": {"requestDomains": ["a.test"], "urlFilter": "||c.test/"}}
         ]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         assert_eq!(t.rules.len(), 3);
         assert_eq!(t.rules[0]["trigger"]["url-filter"], "^[^:]+://+([^:/]+\\.)?a\\.test[:/]");
         assert_eq!(t.rules[1]["trigger"]["url-filter"], "^[^:]+://+([^:/]+\\.)?b\\.test[:/]");
@@ -836,7 +1047,7 @@ mod tests {
     fn allow_all_requests_moves_filter_to_frame_url() {
         let text = r#"[{"id": 9, "priority": 5, "action": {"type": "allowAllRequests"},
           "condition": {"urlFilter": "||trusted.test", "resourceTypes": ["main_frame", "sub_frame"]}}]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         assert!(t.skipped.is_empty(), "{:?}", t.skipped);
         assert_eq!(t.rules.len(), 2);
         assert_eq!(t.rules[0]["trigger"]["url-filter"], ".*");
@@ -853,7 +1064,7 @@ mod tests {
           {"id": 3, "action": {"type": "modifyHeaders", "requestHeaders": [{"header": "Cookie", "operation": "remove"}], "responseHeaders": [{"header": "X-A", "operation": "set", "value": "1"}]}, "condition": {"urlFilter": "x"}},
           {"id": 4, "action": {"type": "modifyHeaders", "requestHeaders": [{"header": "X", "operation": "set"}]}, "condition": {"urlFilter": "x"}}
         ]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         assert_eq!(t.rules[0]["action"]["redirect"]["url"], format!("{BASE}/empty.js"));
         assert_eq!(t.rules[1]["action"]["redirect"]["transform"]["scheme"], "https");
         assert_eq!(t.rules[1]["action"]["redirect"]["transform"]["query-transform"]["remove-parameters"], json!(["utm_source"]));
@@ -872,7 +1083,7 @@ mod tests {
           {"id": 3, "action": {"type": "block"}, "condition": {"urlFilter": "x", "excludedRequestDomains": ["a.test"]}},
           {"id": 4, "action": {"type": "block"}, "condition": {"urlFilter": "ok"}}
         ]"#;
-        let t = translate(&rules(text), BASE);
+        let t = translate(&rules(text), BASE, &ALL);
         assert_eq!(t.rules.len(), 1);
         let ids: Vec<Option<u32>> = t.skipped.iter().map(|s| s.rule_id).collect();
         assert_eq!(ids, [Some(1), Some(2), Some(3)]);
@@ -890,9 +1101,9 @@ mod tests {
 
     #[test]
     fn json_output_is_an_array() {
-        let t = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x"}}]"#), BASE);
+        let t = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x"}}]"#), BASE, &ALL);
         let parsed: Value = serde_json::from_str(&t.to_json()).unwrap();
         assert!(parsed.is_array());
-        assert!(translate(&[], BASE).is_empty());
+        assert!(translate(&[], BASE, &ALL).is_empty());
     }
 }
