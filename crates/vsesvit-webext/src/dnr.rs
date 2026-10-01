@@ -262,7 +262,7 @@ fn translate_rule(rule: &Rule, extension_base: &str) -> Result<Vec<Value>, Strin
         return Err("initiatorDomains (domains) and excludedInitiatorDomains (excludedDomains) together are not supported".into());
     }
 
-    let filter = url_filter_regex(c)?;
+    let filters = url_filter_regex(c)?;
     let mut trigger = Map::new();
     if c.is_url_filter_case_sensitive {
         trigger.insert("url-filter-is-case-sensitive".into(), json!(true));
@@ -290,14 +290,15 @@ fn translate_rule(rule: &Rule, extension_base: &str) -> Result<Vec<Value>, Strin
     let action = translate_action(rule, extension_base)?;
 
     if rule.action.kind == ActionType::AllowAllRequests {
-        return allow_all_requests(c, &filter, trigger, action, &methods);
+        return allow_all_requests(c, &filters, trigger, action, &methods);
     }
 
     trigger.insert("resource-type".into(), json!(resource_types(c)));
 
+    // WebKit takes one `url-filter` per rule, so alternative filters fan out too.
     let url_filters = match &c.request_domains {
-        Some(domains) => fold_request_domains(domains, &filter)?,
-        None => vec![filter],
+        Some(domains) => filters.iter().map(|f| fold_request_domains(domains, f)).collect::<Result<Vec<_>, _>>()?.concat(),
+        None => filters,
     };
     let mut out = Vec::new();
     for url_filter in url_filters {
@@ -318,7 +319,7 @@ fn translate_rule(rule: &Rule, extension_base: &str) -> Result<Vec<Value>, Strin
 /// `if-frame-url` for `sub_frame`.
 fn allow_all_requests(
     c: &Condition,
-    filter: &str,
+    filters: &[String],
     trigger: Map<String, Value>,
     action: Value,
     methods: &[Option<String>],
@@ -342,7 +343,7 @@ fn allow_all_requests(
         for method in methods {
             let mut trig = trigger.clone();
             trig.insert("url-filter".into(), json!(".*"));
-            trig.insert(key.into(), json!([filter]));
+            trig.insert(key.into(), json!(filters));
             if let Some(m) = method {
                 trig.insert("request-method".into(), json!(m));
             }
@@ -521,26 +522,29 @@ fn fold_request_domains(domains: &[String], filter: &str) -> Result<Vec<String>,
         .collect()
 }
 
-fn url_filter_regex(c: &Condition) -> Result<String, String> {
+/// The condition's URL filter as WebKit regexes; a request matches if any of them does.
+fn url_filter_regex(c: &Condition) -> Result<Vec<String>, String> {
     match (&c.url_filter, &c.regex_filter) {
         (Some(_), Some(_)) => Err("urlFilter and regexFilter are mutually exclusive".into()),
         (Some(f), None) => url_filter_to_regex(f),
         (None, Some(r)) => {
             check_webkit_regex(r)?;
-            Ok(r.clone())
+            Ok(vec![r.clone()])
         }
-        (None, None) => Ok(".*".into()),
+        (None, None) => Ok(vec![".*".into()]),
     }
 }
 
 /// Chrome's URL filter grammar: `||` anchors at a host boundary, `|` at the start or the
-/// end, `*` is a wildcard, `^` a separator, everything else literal.
-pub fn url_filter_to_regex(filter: &str) -> Result<String, String> {
+/// end, `*` is a wildcard, `^` a separator, everything else literal. A separator at the
+/// very end also matches the end of the URL; WebKit's regex subset has no alternation, so
+/// that filter becomes two regexes, one for each.
+pub fn url_filter_to_regex(filter: &str) -> Result<Vec<String>, String> {
     if !filter.is_ascii() {
         return Err(format!("urlFilter {filter:?} contains non-ASCII characters"));
     }
     if filter.is_empty() {
-        return Ok(".*".into());
+        return Ok(vec![".*".into()]);
     }
     let mut out = String::new();
     let mut rest = filter;
@@ -555,27 +559,31 @@ pub fn url_filter_to_regex(filter: &str) -> Result<String, String> {
     if end_anchor {
         rest = &rest[..rest.len() - 1];
     }
-    let chars: Vec<char> = rest.chars().collect();
-    for (i, &ch) in chars.iter().enumerate() {
+    let trailing_separator = rest.ends_with('^');
+    if trailing_separator {
+        rest = &rest[..rest.len() - 1];
+    }
+    for ch in rest.chars() {
         match ch {
             '*' => out.push_str(".*"),
             '|' => return Err(format!("urlFilter {filter:?} has `|` in the middle")),
-            // A separator at the very end also matches the end of the URL. WebKit's regex
-            // subset cannot express "separator or end" without alternation, so the
-            // trailing separator is dropped, which matches slightly more.
-            '^' if i + 1 == chars.len() => {}
-            '^' => out.push_str("[^-.%a-zA-Z0-9_]"),
+            '^' => out.push_str(SEPARATOR),
             other => push_literal(&mut out, other),
         }
     }
-    if end_anchor {
-        out.push('$');
+    let end = if end_anchor { "$" } else { "" };
+    if trailing_separator {
+        return Ok(vec![format!("{out}{SEPARATOR}{end}"), format!("{out}$")]);
     }
+    out.push_str(end);
     if out.is_empty() {
         out.push_str(".*");
     }
-    Ok(out)
+    Ok(vec![out])
 }
+
+/// A character that is not a letter, a digit or one of `_-.%`.
+const SEPARATOR: &str = "[^-.%a-zA-Z0-9_]";
 
 fn push_literal(out: &mut String, ch: char) {
     if matches!(ch, '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | '$' | '^' | '|' | '/') {
@@ -669,14 +677,30 @@ mod tests {
 
     #[test]
     fn url_filter_grammar() {
-        assert_eq!(url_filter_to_regex("||example.com/ads").unwrap(), "^[^:]+://+([^:/]+\\.)?example\\.com\\/ads");
-        assert_eq!(url_filter_to_regex("|https://x.test/").unwrap(), "^https:\\/\\/x\\.test\\/");
-        assert_eq!(url_filter_to_regex("*/track?id=*|").unwrap(), ".*\\/track\\?id=.*$");
-        assert_eq!(url_filter_to_regex("abc^def").unwrap(), "abc[^-.%a-zA-Z0-9_]def");
-        assert_eq!(url_filter_to_regex("||ads.test^").unwrap(), "^[^:]+://+([^:/]+\\.)?ads\\.test");
-        assert_eq!(url_filter_to_regex("").unwrap(), ".*");
+        assert_eq!(url_filter_to_regex("||example.com/ads").unwrap(), ["^[^:]+://+([^:/]+\\.)?example\\.com\\/ads"]);
+        assert_eq!(url_filter_to_regex("|https://x.test/").unwrap(), ["^https:\\/\\/x\\.test\\/"]);
+        assert_eq!(url_filter_to_regex("*/track?id=*|").unwrap(), [".*\\/track\\?id=.*$"]);
+        assert_eq!(url_filter_to_regex("abc^def").unwrap(), ["abc[^-.%a-zA-Z0-9_]def"]);
+        // A trailing separator is a separator or the end of the URL: two regexes, since
+        // WebKit has no alternation.
+        assert_eq!(url_filter_to_regex("||ads.test^").unwrap(), ["^[^:]+://+([^:/]+\\.)?ads\\.test[^-.%a-zA-Z0-9_]", "^[^:]+://+([^:/]+\\.)?ads\\.test$"]);
+        assert_eq!(url_filter_to_regex("/ad^|").unwrap(), ["\\/ad[^-.%a-zA-Z0-9_]$", "\\/ad$"]);
+        assert_eq!(url_filter_to_regex("").unwrap(), [".*"]);
         assert!(url_filter_to_regex("a|b").is_err());
         assert!(url_filter_to_regex("héllo").is_err());
+    }
+
+    /// `||tracker.io^` must not block `tracker.iot.com` or `tracker.io.evil.net`.
+    #[test]
+    fn trailing_separator_ends_the_host() {
+        let t = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "||tracker.io^"}}]"#), BASE);
+        let filters: Vec<&str> = t.rules.iter().map(|r| r["trigger"]["url-filter"].as_str().unwrap()).collect();
+        assert_eq!(filters, ["^[^:]+://+([^:/]+\\.)?tracker\\.io[^-.%a-zA-Z0-9_]", "^[^:]+://+([^:/]+\\.)?tracker\\.io$"]);
+        let all = translate(&rules(r#"[{"id": 2, "action": {"type": "allowAllRequests"}, "condition": {"urlFilter": "||trusted.test^"}}]"#), BASE);
+        assert_eq!(all.rules.len(), 1, "the frame URL condition is a list, so no fan-out: {:?}", all.rules);
+        assert_eq!(all.rules[0]["trigger"]["if-top-url"].as_array().map(Vec::len), Some(2));
+        let folded = translate(&rules(r#"[{"id": 3, "action": {"type": "block"}, "condition": {"urlFilter": "/ad^", "requestDomains": ["a.test"], "requestMethods": ["get", "post"]}}]"#), BASE);
+        assert_eq!(folded.rules.len(), 4, "two filters times two methods");
     }
 
     #[test]
