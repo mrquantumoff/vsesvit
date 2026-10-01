@@ -1,6 +1,7 @@
 //! Reading bookmarks exported by or stored in other browsers, and importing them into a profile.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use vsesvit_core::bookmarks::{BookmarkId, ImportItem, NodeKind};
 use vsesvit_core::import::{self, Source};
@@ -26,6 +27,26 @@ fn link(title: &str, url: &str, added_ms: Option<i64>) -> ImportItem {
 
 fn folder(title: &str, children: Vec<ImportItem>) -> ImportItem {
     ImportItem::Folder { title: title.into(), children }
+}
+
+/// Held while reading a Firefox profile: each read copies it into the temp dir, which
+/// `firefox_places_are_read_from_a_copy_while_the_original_is_locked` checks is left clean.
+static FIREFOX: Mutex<()> = Mutex::new(());
+
+/// How many folders deep `items` nest.
+fn depth(items: &[ImportItem]) -> usize {
+    items.iter().map(|i| if let ImportItem::Folder { children, .. } = i { 1 + depth(children) } else { 0 }).max().unwrap_or(0)
+}
+
+fn links(items: &[ImportItem]) -> Vec<String> {
+    items
+        .iter()
+        .flat_map(|i| match i {
+            ImportItem::Url { url, .. } => vec![url.to_string()],
+            ImportItem::Folder { children, .. } => links(children),
+            ImportItem::Separator => vec![],
+        })
+        .collect()
 }
 
 const CHROME_HTML: &str = r#"<!DOCTYPE NETSCAPE-Bookmark-file-1>
@@ -119,6 +140,57 @@ fn out_of_range_add_dates_are_dropped() {
     );
 }
 
+#[test]
+fn deeply_nested_html_folders_are_capped() {
+    let html = format!(
+        "<DL><p>{}<DT><A HREF=\"https://deep.example/\">deep</A>{}<DT><A HREF=\"https://after.example/\">after</A></DL><p>",
+        "<DT><H3>a</H3><DL><p>".repeat(100_000),
+        "</DL><p>".repeat(100_000)
+    );
+    let items = import::parse_html(&html);
+    assert_eq!(depth(&items), import::MAX_FOLDER_DEPTH);
+    assert_eq!(links(&items), ["https://deep.example/", "https://after.example/"], "the deepest links land in the deepest folder kept");
+    assert!(matches!(items.last(), Some(ImportItem::Url { title, .. }) if title == "after"), "lists below the cap still close in pairs");
+
+    let dir = TempDir::new();
+    let mut p = Profile::open(&dir.0.join("profile"), OpenOptions::default()).unwrap();
+    assert_eq!(p.bookmarks().import_folder("Imported", items).unwrap(), import::MAX_FOLDER_DEPTH + 2);
+}
+
+#[test]
+fn firefox_parent_cycles_and_deep_chains_end() {
+    let _one = FIREFOX.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = TempDir::new();
+    let places = dir.0.join("places.sqlite");
+    let db = rusqlite::Connection::open(&places).unwrap();
+    db.execute_batch(
+        "CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT);
+         CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER, parent INTEGER,
+                                     position INTEGER, title TEXT, dateAdded INTEGER, guid TEXT);
+         INSERT INTO moz_places VALUES (1, 'https://bar.example/'), (2, 'https://menu.example/'), (3, 'https://deep.example/');
+         INSERT INTO moz_bookmarks VALUES
+           (2, 2, NULL, 30, 0, 'menu', 0, 'menu________'),
+           (3, 2, NULL, 3, 0, 'toolbar', 0, 'toolbar_____'),
+           (4, 2, NULL, 1, 3, 'unfiled', 0, 'unfiled_____'),
+           (10, 1, 1, 3, 1, 'Bar', 0, 'a'),
+           (30, 2, NULL, 2, 0, 'Loop', 0, 'b'),
+           (31, 1, 2, 30, 1, 'Menu link', 0, 'c'),
+           (5000, 1, 3, 1999, 0, 'Deep', 0, 'h');
+         -- A chain of folders far deeper than any real profile, under Other Bookmarks.
+         INSERT INTO moz_bookmarks
+           WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 999)
+           SELECT 1000 + i, 2, NULL, IIF(i = 0, 4, 999 + i), 0, 'f', 0, 'g' || i FROM n;",
+    )
+    .unwrap();
+    drop(db);
+
+    let items = Source::Firefox(places).read().unwrap();
+    assert_eq!(items[0], link("Bar", "https://bar.example/", None), "a folder that is its own parent is read once");
+    assert_eq!(items[1], folder("Bookmarks Menu", vec![folder("Loop", vec![link("Menu link", "https://menu.example/", None)])]));
+    assert_eq!(items.len(), 3);
+    assert!(depth(&items) <= import::MAX_FOLDER_DEPTH + 1, "{}", depth(&items));
+}
+
 const CHROMIUM_JSON: &str = r#"{
    "checksum": "x",
    "roots": {
@@ -164,6 +236,7 @@ fn a_file_source_tells_json_from_html() {
 
 #[test]
 fn firefox_places_are_read_from_a_copy_while_the_original_is_locked() {
+    let _one = FIREFOX.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new();
     let places = dir.0.join("places.sqlite");
     let db = rusqlite::Connection::open(&places).unwrap();

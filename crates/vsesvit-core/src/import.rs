@@ -7,7 +7,7 @@
 //! bookmarks", Firefox's "Bookmarks Menu") follow as folders. Links with a scheme the browser
 //! cannot open (`javascript:`, Firefox's `place:` queries) are dropped.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::Url;
@@ -16,6 +16,11 @@ use crate::search::NAVIGABLE_SCHEMES;
 
 /// The folder title for an import from a file.
 pub const FILE_FOLDER_TITLE: &str = "Imported";
+
+/// How many folders deep a source's tree may nest. Deeper folders in an HTML file give their
+/// items to the deepest folder kept; in a Firefox profile they are left out. A Chromium file
+/// nests about 60 deep before its JSON is too deep to read.
+pub const MAX_FOLDER_DEPTH: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
@@ -125,6 +130,8 @@ pub fn parse_html(text: &str) -> Vec<ImportItem> {
     let mut stack = vec![Frame { folder: None, items: Vec::new() }];
     let mut toolbar = Vec::new();
     let mut pending: Option<(String, bool)> = None;
+    // Lists still open past MAX_FOLDER_DEPTH; their items go to the deepest folder kept.
+    let mut flattened = 0usize;
     let mut capture = Capture::None;
     let mut rest = text;
 
@@ -200,9 +207,14 @@ pub fn parse_html(text: &str) -> Vec<ImportItem> {
             }
             (false, "dl") => {
                 if let Some(folder) = pending.take() {
-                    stack.push(Frame { folder: Some(folder), items: Vec::new() });
+                    if stack.len() > MAX_FOLDER_DEPTH {
+                        flattened += 1;
+                    } else {
+                        stack.push(Frame { folder: Some(folder), items: Vec::new() });
+                    }
                 }
             }
+            (true, "dl") if flattened > 0 => flattened -= 1,
             (true, "dl") => close(&mut stack, &mut toolbar),
             (false, "hr") => {
                 stack.last_mut().expect("the outer frame is never popped").items.push(ImportItem::Separator)
@@ -509,20 +521,27 @@ fn firefox_tree(conn: &rusqlite::Connection) -> Result<Vec<ImportItem>, ImportEr
         roots.insert(guid, row.id);
         children.entry(parent).or_default().push(row);
     }
-    fn build(id: i64, children: &HashMap<i64, Vec<Row>>) -> Vec<ImportItem> {
-        let Some(rows) = children.get(&id) else {
+    /// A damaged profile's parent links can loop, so a folder already read is skipped.
+    fn build(id: i64, children: &HashMap<i64, Vec<Row>>, depth: usize, seen: &mut HashSet<i64>) -> Vec<ImportItem> {
+        seen.insert(id);
+        let Some(rows) = children.get(&id).filter(|_| depth < MAX_FOLDER_DEPTH) else {
             return Vec::new();
         };
         rows.iter()
             .filter_map(|row| match row.kind {
                 1 => link(&row.title, row.url.as_deref()?, row.added_us.filter(|&us| us > 0).map(|us| us / 1000)),
-                2 => Some(ImportItem::Folder { title: row.title.clone(), children: build(row.id, children) }),
+                2 if !seen.contains(&row.id) => {
+                    Some(ImportItem::Folder { title: row.title.clone(), children: build(row.id, children, depth + 1, seen) })
+                }
                 3 => Some(ImportItem::Separator),
                 _ => None,
             })
             .collect()
     }
-    let root = |guid: &str| roots.get(guid).map(|&id| build(id, &children)).unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut root = |guid: &str| {
+        roots.get(guid).copied().filter(|id| !seen.contains(id)).map(|id| build(id, &children, 0, &mut seen)).unwrap_or_default()
+    };
     Ok(assemble(
         root("toolbar_____"),
         vec![
