@@ -15,25 +15,29 @@ use crate::keymap::{self, Binding, Pressed};
 
 struct Row {
     cmd: Command,
-    row: adw::ActionRow,
-    chords: adw::ShortcutLabel,
-    reset: gtk::Button,
+    chords: glib::WeakRef<adw::ShortcutLabel>,
+    reset: glib::WeakRef<gtk::Button>,
 }
 
+/// The rows' handlers hold it, so it holds the rows weakly.
 struct Page {
     browser: Browser,
     rows: Vec<Row>,
-    reset_all: adw::ButtonRow,
+    reset_all: glib::WeakRef<adw::ButtonRow>,
 }
 
 impl Page {
     fn refresh(&self) {
         let keymap = self.browser.keymap();
         for row in &self.rows {
-            row.chords.set_accelerator(&keymap::accelerators(keymap.chords(row.cmd)));
-            row.reset.set_visible(!keymap.is_default(row.cmd));
+            if let (Some(chords), Some(reset)) = (row.chords.upgrade(), row.reset.upgrade()) {
+                chords.set_accelerator(&keymap::accelerators(keymap.chords(row.cmd)));
+                reset.set_visible(!keymap.is_default(row.cmd));
+            }
         }
-        self.reset_all.set_sensitive(keymap != Keymap::default());
+        if let Some(reset_all) = self.reset_all.upgrade() {
+            reset_all.set_sensitive(keymap != Keymap::default());
+        }
     }
 }
 
@@ -43,7 +47,7 @@ pub(super) fn page(browser: &Browser) -> adw::PreferencesPage {
         .title("Shortcuts")
         .icon_name("preferences-desktop-keyboard-shortcuts-symbolic")
         .build();
-    let mut rows = Vec::new();
+    let mut widgets = Vec::new();
     for section in Section::ALL {
         let group = adw::PreferencesGroup::builder().title(section.title()).build();
         for (cmd, _) in keymap::actions().filter(|(cmd, _)| cmd.section() == section) {
@@ -60,7 +64,7 @@ pub(super) fn page(browser: &Browser) -> adw::PreferencesPage {
             row.add_suffix(&chords);
             row.add_suffix(&reset);
             group.add(&row);
-            rows.push(Row { cmd, row, chords, reset });
+            widgets.push((cmd, row, chords, reset));
         }
         preferences.add(&group);
     }
@@ -69,13 +73,13 @@ pub(super) fn page(browser: &Browser) -> adw::PreferencesPage {
     group.add(&reset_all);
     preferences.add(&group);
 
-    let page = Rc::new(Page { browser: browser.clone(), rows, reset_all });
+    let rows = widgets.iter().map(|(cmd, _, chords, reset)| Row { cmd: *cmd, chords: chords.downgrade(), reset: reset.downgrade() }).collect();
+    let page = Rc::new(Page { browser: browser.clone(), rows, reset_all: reset_all.downgrade() });
     page.refresh();
     let weak = Rc::downgrade(&page);
     browser.watch_prefs(move |_| weak.upgrade().inspect(|page| page.refresh()).is_some());
-    for row in &page.rows {
-        let cmd = row.cmd;
-        row.row.connect_activated(glib::clone!(
+    for (cmd, row, _, reset) in widgets {
+        row.connect_activated(glib::clone!(
             #[strong]
             page,
             move |row| {
@@ -83,7 +87,7 @@ pub(super) fn page(browser: &Browser) -> adw::PreferencesPage {
                 capture(row, &page.browser, cmd, move || refreshed.refresh());
             }
         ));
-        row.reset.connect_clicked(glib::clone!(
+        reset.connect_clicked(glib::clone!(
             #[strong]
             page,
             move |_| {
@@ -92,7 +96,7 @@ pub(super) fn page(browser: &Browser) -> adw::PreferencesPage {
             }
         ));
     }
-    page.reset_all.connect_activated(glib::clone!(
+    reset_all.connect_activated(glib::clone!(
         #[strong]
         page,
         move |button| {
@@ -110,8 +114,9 @@ pub(super) fn page(browser: &Browser) -> adw::PreferencesPage {
 }
 
 /// The open capture dialog. The self-test feeds it key presses through [`Capture::press`].
+/// The dialog's handlers hold it, so it holds the dialog weakly.
 pub(crate) struct Capture {
-    dialog: adw::AlertDialog,
+    dialog: glib::WeakRef<adw::AlertDialog>,
     browser: Browser,
     cmd: Command,
     preview: adw::ShortcutLabel,
@@ -144,7 +149,7 @@ pub(crate) fn capture(parent: &impl IsA<gtk::Widget>, browser: &Browser, cmd: Co
     dialog.set_response_enabled("save", false);
     dialog.set_close_response("cancel");
 
-    let capture = Rc::new(Capture { dialog: dialog.clone(), browser: browser.clone(), cmd, preview, note, chord: Cell::new(None), done: Box::new(done) });
+    let capture = Rc::new(Capture { dialog: dialog.downgrade(), browser: browser.clone(), cmd, preview, note, chord: Cell::new(None), done: Box::new(done) });
     dialog.connect_response(
         Some("save"),
         glib::clone!(
@@ -186,19 +191,25 @@ pub(crate) fn capture(parent: &impl IsA<gtk::Widget>, browser: &Browser, cmd: Co
 }
 
 impl Capture {
+    pub(crate) fn close(&self) {
+        if let Some(dialog) = self.dialog.upgrade() {
+            dialog.close();
+        }
+    }
+
     pub(crate) fn press(&self, pressed: Pressed) {
         match pressed {
             Pressed::Cancel => {
-                self.dialog.close();
+                self.close();
             }
             Pressed::Clear => {
                 self.save(&[]);
-                self.dialog.close();
+                self.close();
             }
             Pressed::Confirm => {
                 if let Some(chord) = self.chord.get() {
                     self.save(&[chord]);
-                    self.dialog.close();
+                    self.close();
                 }
             }
             Pressed::Chord(chord) => {
@@ -224,20 +235,40 @@ impl Capture {
         self.note.label().into()
     }
 
-    #[cfg(feature = "self-test")]
-    pub(crate) fn close(&self) {
-        self.dialog.close();
-    }
-
     fn offer(&self, chord: Option<Chord>, note: &str) {
         self.chord.set(chord);
         self.note.set_label(note);
         self.note.set_visible(!note.is_empty());
-        self.dialog.set_response_enabled("save", chord.is_some());
+        if let Some(dialog) = self.dialog.upgrade() {
+            dialog.set_response_enabled("save", chord.is_some());
+        }
     }
 
     fn save(&self, chords: &[Chord]) {
         self.browser.edit_keymap(|keymap| keymap.assign(self.cmd, chords.iter().copied()));
         (self.done)();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{browser, wait_until};
+    use crate::window::BrowserWindow;
+
+    #[gtk::test]
+    fn the_page_and_a_closed_capture_let_the_browser_go() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        let held = || Rc::strong_count(&browser.0);
+        let before = held();
+        drop(page(&browser));
+        wait_until("the page to let the browser go", || held() == before);
+        let capture = capture(&window, &browser, Command::ShowHistory, || {});
+        capture.press(Pressed::Cancel);
+        drop(capture);
+        wait_until("the capture to let the browser go", || held() == before);
+        window.destroy();
     }
 }
