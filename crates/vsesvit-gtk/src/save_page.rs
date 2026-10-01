@@ -61,6 +61,7 @@ fn suggested_name(view: &webkit::WebView, format: Format) -> String {
 
 /// Saves what `view` shows to `path`. A file goes through the downloads list, which reports
 /// how it ends; this returns once it has started.
+#[cfg(feature = "self-test")]
 pub(crate) async fn save(browser: &Browser, view: &webkit::WebView, path: &Path) -> Result<(), String> {
     save_as(browser, view, format_of_view(view), view.uri(), path).await
 }

@@ -36,9 +36,12 @@ use crate::tab::{Tab, TabChange};
 use crate::updates::Banner;
 use crate::zoom;
 use ext_actions::ExtensionActions;
-use layout::{Layout, Rect};
+use layout::Layout;
+#[cfg(feature = "self-test")]
+use layout::Rect;
 use tab_list::TabList;
 
+#[cfg(feature = "self-test")]
 pub(crate) use layout::{LayoutProbe, classify as classify_layout};
 
 /// The compact address bar's widest.
@@ -72,6 +75,8 @@ struct Ui {
     downloads_button: gtk::Button,
     tab_view: adw::TabView,
     tab_bar: adw::TabBar,
+    /// Held because only it owns the list's rows.
+    #[cfg_attr(not(any(test, feature = "self-test")), allow(dead_code))]
     tab_list: TabList,
     split: adw::OverlaySplitView,
     bookmarks_bar: BookmarksBar,
@@ -189,6 +194,7 @@ impl BrowserWindow {
         &self.ui().address
     }
 
+    #[cfg(any(test, feature = "self-test"))]
     pub(crate) fn bookmarks_bar(&self) -> &BookmarksBar {
         &self.ui().bookmarks_bar
     }
@@ -529,6 +535,7 @@ impl BrowserWindow {
     }
 
     /// Where the tab widgets and the selected web view are, in window coordinates.
+    #[cfg(feature = "self-test")]
     pub(crate) fn layout_probe(&self) -> LayoutProbe {
         let ui = self.ui();
         let bounds = |widget: &gtk::Widget| -> Option<Rect> {
@@ -752,15 +759,18 @@ impl BrowserWindow {
         }
     }
 
+    #[cfg(feature = "self-test")]
     pub(crate) fn extension_action_button(&self, id: &ExtensionId) -> Option<gtk::Button> {
         self.ui().extension_actions.button_for(id)
     }
 
     /// The popup page currently shown, if any.
+    #[cfg(feature = "self-test")]
     pub(crate) fn extension_popup_view(&self) -> Option<webkit::WebView> {
         self.ui().extension_actions.popup_view()
     }
 
+    #[cfg(feature = "self-test")]
     pub(crate) fn close_extension_popup(&self) {
         self.ui().extension_actions.close_popup();
     }

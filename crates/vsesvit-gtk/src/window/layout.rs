@@ -23,6 +23,7 @@ impl Layout {
 }
 
 /// A widget's bounds in window coordinates.
+#[cfg(any(test, feature = "self-test"))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Rect {
     pub(crate) x: f32,
@@ -31,6 +32,7 @@ pub(crate) struct Rect {
     pub(crate) height: f32,
 }
 
+#[cfg(any(test, feature = "self-test"))]
 impl Rect {
     pub(crate) fn right(&self) -> f32 {
         self.x + self.width
@@ -43,6 +45,7 @@ impl Rect {
 
 /// Where the tab widgets and the web view are on screen. `None` means the widget is hidden
 /// or has no allocation.
+#[cfg(any(test, feature = "self-test"))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LayoutProbe {
     /// The window's width; the sidebar slides in from outside it while it animates.
@@ -56,6 +59,7 @@ pub(crate) struct LayoutProbe {
 /// inside the window and the tab widgets plus the web view spanning its width, so a frame
 /// caught mid-transition classifies as nothing. Half a pixel of slack covers fractional
 /// positions from scaled displays.
+#[cfg(any(test, feature = "self-test"))]
 pub(crate) fn classify(probe: &LayoutProbe) -> Option<TabsPosition> {
     const SLACK: f32 = 0.5;
     let web = probe.web_view.filter(|r| r.width > 0.0 && r.height > 0.0)?;
@@ -77,6 +81,7 @@ pub(crate) fn classify(probe: &LayoutProbe) -> Option<TabsPosition> {
     }
 }
 
+#[cfg(any(test, feature = "self-test"))]
 impl std::fmt::Display for LayoutProbe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fn rect(r: Option<Rect>) -> String {

@@ -487,6 +487,7 @@ impl AddressBar {
 
     /// Enters `text` as if the user typed it and pressed Enter (the self-test's way
     /// through the omnibox).
+    #[cfg(feature = "self-test")]
     pub(crate) fn submit_text(&self, text: &str) {
         self.imp().edit.replace(Some(Edit::new(text.to_owned())));
         self.set_text_quietly(text);
@@ -507,6 +508,7 @@ impl AddressBar {
             .set_progress_fraction(fraction.max(shown).max(PROGRESS_START));
     }
 
+    #[cfg(feature = "self-test")]
     pub(crate) fn progress(&self) -> f64 {
         self.imp().entry.progress_fraction()
     }
@@ -689,7 +691,7 @@ impl AddressBar {
     }
 
     /// The zoom level shown before the star, once it is laid out, if the page is zoomed.
-    #[cfg(any(test, feature = "self-test"))]
+    #[cfg(feature = "self-test")]
     pub(crate) fn shown_zoom(&self) -> Option<String> {
         let zoom = &self.imp().zoom;
         (zoom.is_mapped() && zoom.width() > 0).then(|| zoom.label().unwrap_or_default().into())
