@@ -351,6 +351,23 @@ fn no_inline_without_permission_whitespace_or_a_suffix() {
 }
 
 #[test]
+fn a_typed_url_in_history_is_one_row() {
+    let (mut p, _dir) = open();
+    visit(&mut p, "https://github.com/", "GitHub");
+    visit(&mut p, "https://github.com/rust-lang/rust", "rust-lang/rust");
+
+    for allow_inline in [false, true] {
+        for (typed, url) in [("github.com", "https://github.com/"), ("github.com/rust-lang/rust", "https://github.com/rust-lang/rust")] {
+            let s = suggest(&mut p, typed, allow_inline);
+            assert_eq!(s.items.iter().filter(|r| r.target.url().as_str() == url).count(), 1, "{typed:?} {allow_inline}");
+            assert_eq!(s.items[0].target.url().as_str(), url, "{typed:?} {allow_inline}");
+        }
+    }
+    let s = suggest(&mut p, "github.com", false);
+    assert_eq!((s.items[0].title.as_str(), s.items[0].fill.as_str()), ("GitHub", "github.com"), "the visited row takes the typed row's place");
+}
+
+#[test]
 fn selection_actions() {
     let ddg = &engines()[0];
     let long = "a".repeat(60);

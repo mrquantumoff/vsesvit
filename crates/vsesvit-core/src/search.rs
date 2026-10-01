@@ -704,14 +704,19 @@ struct Candidate {
 }
 
 /// Picks the default match over the ranked rows: the inline completion when there is one,
-/// then the what-you-typed row, then the rest.
+/// then the what-you-typed row, then the rest. A ranked row for the typed url takes the
+/// what-you-typed row's place, so the url shows once and with its title.
 fn arrange(text: &str, typed: Option<Suggestion>, ranked: Vec<Candidate>, allow_inline: bool, limit: usize) -> Suggestions {
     let (lead, inline) = match allow_inline.then(|| completion(text, &ranked)).flatten() {
         Some((row, inline)) => (Some(row), Some(inline)),
         None => (None, None),
     };
     let lead_target = lead.as_ref().map(|l| l.target.clone());
-    let rest = ranked.into_iter().map(|c| c.row).filter(|r| lead_target.as_ref() != Some(&r.target));
+    let mut rest: Vec<Suggestion> = ranked.into_iter().map(|c| c.row).filter(|r| lead_target.as_ref() != Some(&r.target)).collect();
+    let typed = typed.map(|t| match rest.iter().position(|r| r.target == t.target) {
+        Some(i) => rest.remove(i),
+        None => t,
+    });
     let items = lead.into_iter().chain(typed).chain(rest).take(limit).collect();
     Suggestions { items, inline }
 }
