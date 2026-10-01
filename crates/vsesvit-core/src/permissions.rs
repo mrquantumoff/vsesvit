@@ -347,8 +347,7 @@ pub enum Decision {
 }
 
 /// Any block wins; then everything allowed (stored or granted) allows; else ask for the rest.
-fn decision(permissions: &[Permission], stored: &[(Permission, Setting)], granted: impl Fn(Permission) -> bool) -> Decision {
-    let setting = |p: Permission| stored.iter().find(|(q, _)| *q == p).map(|(_, s)| *s);
+fn decision(permissions: &[Permission], mut setting: impl FnMut(Permission) -> Option<Setting>, granted: impl Fn(Permission) -> bool) -> Decision {
     if permissions.iter().any(|&p| setting(p) == Some(Setting::Block)) {
         return Decision::Block;
     }
@@ -430,8 +429,7 @@ impl SitePermissions<'_> {
 
     /// Whether a request for `permissions` may go ahead. With no origin only `grants` count.
     pub fn decide(&mut self, origin: Option<&Origin>, permissions: &[Permission], grants: &TabGrants) -> Decision {
-        let stored = origin.map(|o| self.for_site(o)).unwrap_or_default();
-        decision(permissions, &stored, |p| grants.allows(origin, p))
+        decision(permissions, |p| origin.and_then(|o| self.get(o, p)), |p| grants.allows(origin, p))
     }
 
     /// Applies a prompt answer and returns whether the request is granted. "Allow while

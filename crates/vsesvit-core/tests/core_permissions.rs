@@ -213,6 +213,8 @@ fn decide_matrix() {
 
     let other = origin("https://other.example");
     assert_eq!(p.site_permissions().decide(Some(&other), &[Microphone], &grants), Decision::Ask(vec![Microphone]), "grants are per site");
+    p.site_permissions().set(&other, Notifications, Some(Setting::Block)).unwrap();
+    assert_eq!(p.site_permissions().decide(Some(&other), &[Camera], &none), Decision::Ask(vec![Camera]), "only requested blocks count");
 
     p.site_permissions().set(&site, Microphone, Some(Setting::Block)).unwrap();
     assert_eq!(p.site_permissions().decide(Some(&site), &[Microphone], &grants), Decision::Block, "a stored block beats a grant");
