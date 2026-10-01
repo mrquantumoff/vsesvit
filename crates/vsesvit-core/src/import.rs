@@ -474,12 +474,11 @@ fn firefox_profiles(root: &Path) -> Vec<Found> {
 /// Reads a copy of `places.sqlite` (and its WAL), because a running Firefox holds the
 /// database with an exclusive lock.
 fn read_firefox(places: &Path) -> Result<Vec<ImportItem>, ImportError> {
-    let dir = std::env::temp_dir().join(format!("vsesvit-import-{}", uuid::Uuid::new_v4()));
     let io = |path: &Path| {
         let path = path.to_owned();
         move |source| ImportError::Io { path, source }
     };
-    std::fs::create_dir_all(&dir).map_err(io(&dir))?;
+    let dir = private_temp_dir().map_err(io(&std::env::temp_dir()))?;
     let result = (|| {
         let copy = dir.join("places.sqlite");
         std::fs::copy(places, &copy).map_err(io(places))?;
@@ -492,6 +491,17 @@ fn read_firefox(places: &Path) -> Result<Vec<ImportItem>, ImportError> {
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result
+}
+
+/// A new directory under the system temp directory that only this user can open. The copy
+/// holds the whole browsing history, and on Linux `/tmp` is shared with every other user.
+fn private_temp_dir() -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join(format!("vsesvit-import-{}", uuid::Uuid::new_v4()));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir)?;
+    Ok(dir)
 }
 
 fn firefox_tree(conn: &rusqlite::Connection) -> Result<Vec<ImportItem>, ImportError> {
@@ -550,4 +560,17 @@ fn firefox_tree(conn: &rusqlite::Connection) -> Result<Vec<ImportItem>, ImportEr
             ("Mobile Bookmarks".to_owned(), root("mobile______")),
         ],
     ))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn the_copy_of_a_firefox_profile_is_private() {
+        let dir = super::private_temp_dir().unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(mode, 0o700);
+    }
 }
