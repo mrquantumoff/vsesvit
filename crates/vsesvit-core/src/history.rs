@@ -373,23 +373,22 @@ fn directives_for(conn: &rusqlite::Connection, url: Option<&Url>) -> Result<Vec<
     Ok(rows.into_iter().map(|r| r.map(|(_, d)| d)).collect::<Result<Vec<_>, _>>()?)
 }
 
-/// Frecency: a pure function of the visit set, so it needs no clock and every store
+/// Frecency: a pure function of the visit stats, so it needs no clock and every store
 /// computes the same value. Recency dominates (10 points per day of the newest visit),
 /// then volume and typed navigations.
-fn frecency(visits: &BTreeSet<Visit>) -> i64 {
-    let last_day = visits.iter().map(|v| v.at_ms).max().unwrap_or(0).max(0) / 86_400_000;
-    let typed = visits.iter().filter(|v| v.transition == Transition::Typed).count() as i64;
-    last_day * 10 + visits.len() as i64 * 100 + typed * 200
+fn frecency(last_ms: i64, count: i64, typed: i64) -> i64 {
+    last_ms.max(0) / 86_400_000 * 10 + count * 100 + typed * 200
 }
 
 /// The one writer of the derived stats columns. Recomputes them from `history_visits`.
 pub(crate) fn refresh_stats(conn: &rusqlite::Connection, url: &str) -> Result<(), Error> {
     let visits = load_visits(conn, url)?;
+    let count = visits.len() as i64;
     let typed = visits.iter().filter(|v| v.transition == Transition::Typed).count() as i64;
     let last = visits.iter().map(|v| v.at_ms).max().unwrap_or(0);
     conn.execute(
         "UPDATE history_pages SET visit_count = ?2, typed_count = ?3, last_visit_ms = ?4, frecency = ?5 WHERE url = ?1",
-        params![url, visits.len() as i64, typed, last, frecency(&visits)],
+        params![url, count, typed, last, frecency(last, count, typed)],
     )?;
     Ok(())
 }
@@ -604,6 +603,12 @@ mod tests {
         assert_eq!(kept.visits.len(), MAX_VISITS);
         assert_eq!(kept.visits.first().unwrap().at_ms, 6);
         assert!(kept.visits.iter().all(|v| v.transition == Transition::Reload));
+    }
+
+    #[test]
+    fn frecency_counts_days_visits_and_typed_visits() {
+        assert_eq!(frecency(2 * 86_400_000 + 5, 3, 1), 2 * 10 + 300 + 200);
+        assert_eq!(frecency(-5, 1, 0), 100, "a time before 1970 is day 0");
     }
 
     #[test]
