@@ -283,7 +283,6 @@ pub(crate) fn bubble(window: &BrowserWindow, node: BookmarkNode, added: bool) ->
             }
         }
     });
-    let name = form.name.clone();
     done.connect_clicked({
         let (form, popover) = (form.clone(), popover.downgrade());
         move |_| {
@@ -299,11 +298,8 @@ pub(crate) fn bubble(window: &BrowserWindow, node: BookmarkNode, added: bool) ->
     });
     // After the popover has taken the focus, so the selection is not replaced.
     popover.connect_map(move |_| {
-        let name = name.clone();
-        glib::idle_add_local_once(move || {
-            name.grab_focus();
-            name.select_region(0, -1);
-        });
+        let form = form.clone();
+        glib::idle_add_local_once(move || form.focus_name());
     });
     popover
 }
