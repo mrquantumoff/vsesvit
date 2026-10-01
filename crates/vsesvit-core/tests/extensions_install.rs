@@ -628,3 +628,22 @@ fn install_times_follow_the_profile_clock() {
         conn.query_row("SELECT installed_ms FROM extension_installs WHERE id = ?1", [testkit::PROBE_ID], |r| r.get(0)).unwrap();
     assert_eq!(installed_ms, 1_780_000_000_000);
 }
+
+/// The shells lay out toolbar buttons nobody has moved in `list` order.
+#[test]
+fn extensions_list_in_install_order_and_an_update_keeps_its_place() {
+    let t = TempDir::new();
+    let now = Rc::new(Cell::new(1_780_000_000_000));
+    let mut p = t.open_at(&now);
+    let xpi = |id: &str, version: &str| raw_zip(&[("manifest.json", &xpi_manifest(id, version, ""))], &[]);
+    let ids = |p: &mut Profile| p.extensions().list().unwrap().into_iter().map(|e| e.id.as_str().to_owned()).collect::<Vec<_>>();
+    let first = install_file(&t, &mut p, "z.xpi", &xpi("z@example.org", "1.0")).unwrap().unwrap();
+    now.set(now.get() + 1000);
+    install_file(&t, &mut p, "a.xpi", &xpi("a@example.org", "1.0")).unwrap().unwrap();
+    assert_eq!(ids(&mut p), ["z@example.org", "a@example.org"], "install order, not id order");
+
+    now.set(now.get() + 1000);
+    let updated = install_file(&t, &mut p, "z2.xpi", &xpi("z@example.org", "2.0")).unwrap().unwrap();
+    assert_ne!(updated.dir, first.dir);
+    assert_eq!(ids(&mut p), ["z@example.org", "a@example.org"], "an update in a new dir keeps its place");
+}

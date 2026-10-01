@@ -300,9 +300,10 @@ pub struct Extensions<'p> {
 }
 
 impl Extensions<'_> {
-    /// Access pattern 4. Reads rows only; no disk scan.
+    /// Access pattern 4. Reads rows only; no disk scan. In install order, which an
+    /// update keeps.
     pub fn list(&mut self) -> Result<Vec<InstalledExtension>, Error> {
-        let sql = format!("{SELECT_INSTALLED} ORDER BY i.id");
+        let sql = format!("{SELECT_INSTALLED} ORDER BY i.installed_ms, i.id");
         let mut stmt = self.p.conn.prepare(&sql)?;
         let rows = stmt.query_map([], LoadedRow::from_sql)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows.into_iter().map(|r| r.into_installed(&self.p.paths.extensions)).collect())
@@ -376,7 +377,7 @@ impl Extensions<'_> {
                 None => Some(existing.as_ref().and_then(|r| r.local_enabled).unwrap_or(true)),
             },
             engine_id: existing.as_ref().filter(|_| same_dir).and_then(|r| r.engine_id.clone()),
-            installed_ms: existing.as_ref().filter(|_| same_dir).map_or_else(|| self.p.clock.now_ms() as i64, |r| r.installed_ms),
+            installed_ms: existing.as_ref().map_or_else(|| self.p.clock.now_ms() as i64, |r| r.installed_ms),
             id,
             version: manifest.version.clone(),
             dir: dir_text,
@@ -695,6 +696,7 @@ struct InstallRow {
     manifest: Manifest,
     local_enabled: Option<bool>,
     engine_id: Option<String>,
+    /// When this extension was first installed on this device; `list` orders by it.
     installed_ms: i64,
 }
 

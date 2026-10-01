@@ -31,7 +31,7 @@ CREATE TABLE extension_installs_v4 (     -- LOCAL: what is on this device's disk
   -- Who owns `enabled`: the synced `extensions` row for store installs, this column otherwise.
   local_enabled  INTEGER,
   engine_id      TEXT,                   -- WebView2's id for this dir; NULL until the engine loaded this dir
-  installed_ms   INTEGER NOT NULL,       -- when this dir was first committed
+  installed_ms   INTEGER NOT NULL,       -- when this extension was first installed on this device
   CHECK ((local_enabled IS NULL) = (source_kind IN ('chrome_web_store', 'edge_addons', 'amo')))
 ) WITHOUT ROWID;
 INSERT INTO extension_installs_v4 (id, version, dir, source_kind, source, verification, manifest, local_enabled, engine_id, installed_ms)
