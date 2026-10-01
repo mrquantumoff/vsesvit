@@ -8,7 +8,7 @@ use std::rc::Rc;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkRecord, InsertAt, NodeKind};
 use vsesvit_core::crdt::{DeviceId, Extra, Hlc, Lww, Seq, Stamp, TimeSource};
 use vsesvit_core::extensions::{ExtensionId, ExtensionRecord, StoreRef};
-use vsesvit_core::sync::{Kind, WireRecord};
+use vsesvit_core::sync::{DataType, Kind, WireRecord};
 use vsesvit_core::{OpenOptions, Profile, Url};
 
 struct TempDir(PathBuf);
@@ -198,4 +198,15 @@ fn records_stamped_far_in_the_future_are_rejected() {
     let report = p.sync().apply(vec![homepage("https://skewed.example/", skewed)]).unwrap();
     assert_eq!((report.rejected.len(), report.merged), (0, 1), "an hour of skew is ordinary");
     assert_eq!(p.prefs().get(&keys::HOMEPAGE), "https://skewed.example/");
+}
+
+#[test]
+fn turning_a_type_off_and_on_keeps_the_order() {
+    let without_history = DataType::toggled(&DataType::ALL, DataType::History, false);
+    assert_eq!(without_history, [DataType::Bookmarks, DataType::Tabs, DataType::Extensions, DataType::Settings]);
+    assert!(!DataType::all_in(&without_history));
+    let back = DataType::toggled(&without_history, DataType::History, true);
+    assert_eq!(back, DataType::ALL);
+    assert!(DataType::all_in(&back));
+    assert_eq!(DataType::toggled(&[DataType::Settings], DataType::Bookmarks, true), [DataType::Bookmarks, DataType::Settings]);
 }

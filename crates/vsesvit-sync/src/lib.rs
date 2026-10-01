@@ -123,6 +123,15 @@ pub fn normalize_base_url(input: &str) -> Result<String, Error> {
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
+/// What a server field holds: nothing, which means the default server, or a server address,
+/// normalized as [`normalize_base_url`] does.
+pub fn server_input(text: &str) -> Result<Option<String>, Error> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    normalize_base_url(text).map(Some)
+}
+
 fn network(url: &str) -> impl FnOnce(ureq::Error) -> Error + '_ {
     move |e| {
         log::warn!("{url}: {e}");
@@ -148,5 +157,15 @@ mod tests {
         assert!(normalize_base_url("https://example.com/?a=1").is_err());
         assert!(normalize_base_url("sync.example.com").is_err());
         assert!(normalize_base_url("ftp://example.com").is_err());
+    }
+
+    #[test]
+    fn a_blank_server_field_means_the_default() {
+        assert!(normalize_base_url("").is_err());
+        assert_eq!(server_input("").unwrap(), None);
+        assert_eq!(server_input("  ").unwrap(), None);
+        assert_eq!(server_input(" https://sync.example.com/ ").unwrap().as_deref(), Some("https://sync.example.com"));
+        assert_eq!(server_input("http://127.0.0.1:8080/").unwrap().as_deref(), Some("http://127.0.0.1:8080"));
+        assert_eq!(server_input("http://sync.example.com").unwrap_err().to_string(), "http://sync.example.com is not a valid server address");
     }
 }

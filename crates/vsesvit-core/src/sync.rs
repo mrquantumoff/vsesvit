@@ -134,6 +134,16 @@ impl DataType {
             DataType::Settings => "Settings",
         }
     }
+
+    /// `types` with `data_type` turned on or off, in [`DataType::ALL`]'s order.
+    pub fn toggled(types: &[DataType], data_type: DataType, on: bool) -> Vec<DataType> {
+        DataType::ALL.into_iter().filter(|t| if *t == data_type { on } else { types.contains(t) }).collect()
+    }
+
+    /// Whether `types` holds every data type, as "Sync everything" does.
+    pub fn all_in(types: &[DataType]) -> bool {
+        DataType::ALL.iter().all(|t| types.contains(t))
+    }
 }
 
 /// One record in transit. `body` is the kind's record type as UTF-8 JSON. The engine

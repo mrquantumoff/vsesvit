@@ -17,7 +17,7 @@ use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
-use vsesvit_core::prefs::{TabsPosition, Theme, keys};
+use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
 use vsesvit_core::search::{NavTarget, SearchEngineId, UrlTemplate};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::testkit::{self, FixtureServer};
@@ -1545,6 +1545,16 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
                         return Err(format!("Sync Server shows {:?} for {server:?}, Sign In shown={sign_in}", row.text()));
                     }
                     notes.push(format!("sync: Sign In and the server {server}"));
+                    row.set_text("https://sync.example.com/");
+                    row.emit_by_name::<()>("apply", &[]);
+                    let custom = browser.core().borrow_mut().prefs().get(&keys::SYNC_SERVER);
+                    row.set_text("");
+                    row.emit_by_name::<()>("apply", &[]);
+                    let cleared = browser.core().borrow_mut().prefs().get(&keys::SYNC_SERVER);
+                    if custom != "https://sync.example.com" || cleared != DEFAULT_SYNC_SERVER || row.text() != DEFAULT_SYNC_SERVER || row.has_css_class("error") {
+                        return Err(format!("Sync Server stored {custom:?}, then cleared stored {cleared:?} and showed {:?}, error={}", row.text(), row.has_css_class("error")));
+                    }
+                    notes.push("clearing Sync Server went back to the default server".to_owned());
                 }
                 Step::Welcome | Step::Done => {}
             }

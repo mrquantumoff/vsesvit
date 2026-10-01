@@ -13,7 +13,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::permissions::{Origin, Permission, Setting};
-use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
+use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::search::SearchEngine;
 use vsesvit_core::sync::DataType;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
@@ -117,7 +117,7 @@ impl SyncTypes {
 
     fn show(&self) {
         let chosen = self.chosen();
-        let everything = !self.customizing.get() && every_type(&chosen);
+        let everything = !self.customizing.get() && DataType::all_in(&chosen);
         if let Some(row) = self.everything.upgrade() {
             row.set_active(everything);
         }
@@ -165,11 +165,11 @@ fn sync_types_group(browser: &Browser) -> adw::PreferencesGroup {
         types,
         move |row| {
             if row.is_active() {
-                if types.customizing.replace(false) || !every_type(&types.chosen()) {
+                if types.customizing.replace(false) || !DataType::all_in(&types.chosen()) {
                     types.choose(&DataType::ALL);
                     types.show();
                 }
-            } else if !types.customizing.get() && every_type(&types.chosen()) {
+            } else if !types.customizing.get() && DataType::all_in(&types.chosen()) {
                 types.customizing.set(true);
                 types.show();
             }
@@ -181,7 +181,7 @@ fn sync_types_group(browser: &Browser) -> adw::PreferencesGroup {
             types,
             move |row| {
                 let chosen = types.chosen();
-                let next = toggled(&chosen, data_type, row.is_active());
+                let next = DataType::toggled(&chosen, data_type, row.is_active());
                 if row.is_sensitive() && next != chosen {
                     types.choose(&next);
                     types.show();
@@ -190,18 +190,6 @@ fn sync_types_group(browser: &Browser) -> adw::PreferencesGroup {
         ));
     }
     group
-}
-
-fn every_type(types: &[DataType]) -> bool {
-    DataType::ALL.iter().all(|t| types.contains(t))
-}
-
-/// `types` with `data_type` turned on or off, in [`DataType::ALL`]'s order.
-fn toggled(types: &[DataType], data_type: DataType, on: bool) -> Vec<DataType> {
-    DataType::ALL
-        .into_iter()
-        .filter(|t| if *t == data_type { on } else { types.contains(t) })
-        .collect()
 }
 
 /// Shown while signed in; asks first, and a failure leaves the profile signed in.
@@ -290,7 +278,8 @@ fn sync_account_row(syncer: &Syncer) -> adw::ActionRow {
 }
 
 /// The server to sign in to, which only changes while signed out. An address that is not one is
-/// refused in `group`'s description, above the field. The welcome shows it too.
+/// refused in `group`'s description, above the field, and an empty one is the default server. The
+/// welcome shows it too.
 pub(crate) fn sync_server_row(browser: &Browser, group: &adw::PreferencesGroup) -> adw::EntryRow {
     let current = browser.core().borrow_mut().prefs().get(&keys::SYNC_SERVER);
     let row = adw::EntryRow::builder()
@@ -321,8 +310,12 @@ pub(crate) fn sync_server_row(browser: &Browser, group: &adw::PreferencesGroup) 
     row.connect_apply(glib::clone!(
         #[strong]
         browser,
-        move |row| match vsesvit_sync::normalize_base_url(&row.text()) {
-            Ok(server) => {
+        move |row| match vsesvit_sync::server_input(&row.text()) {
+            Ok(None) => {
+                browser.reset_pref(&keys::SYNC_SERVER);
+                row.set_text(DEFAULT_SYNC_SERVER);
+            }
+            Ok(Some(server)) => {
                 browser.set_pref(&keys::SYNC_SERVER, &server);
                 if row.text() != server {
                     row.set_text(&server);
@@ -1006,16 +999,5 @@ mod tests {
                 .collect();
             assert!(order.is_sorted(), "{state:?} lists {actions:?}");
         }
-    }
-
-    #[test]
-    fn turning_a_type_off_and_on_keeps_the_order() {
-        let without_history = toggled(&DataType::ALL, DataType::History, false);
-        assert_eq!(without_history, [DataType::Bookmarks, DataType::Tabs, DataType::Extensions, DataType::Settings]);
-        assert!(!every_type(&without_history));
-        let back = toggled(&without_history, DataType::History, true);
-        assert_eq!(back, DataType::ALL);
-        assert!(every_type(&back));
-        assert_eq!(toggled(&[DataType::Tabs], DataType::Bookmarks, true), [DataType::Bookmarks, DataType::Tabs]);
     }
 }

@@ -7,7 +7,7 @@ use std::rc::{Rc, Weak};
 
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, keys};
 use vsesvit_core::sync::DataType;
-use vsesvit_sync::normalize_base_url;
+use vsesvit_sync::server_input;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, Status};
 use windows_core::{Interface, Result};
 
@@ -206,7 +206,7 @@ impl Page {
         if on == stored.contains(&data_type) {
             return;
         }
-        sync::set_types(&browser, &with_type(&stored, data_type, on));
+        sync::set_types(&browser, &DataType::toggled(&stored, data_type, on));
     }
 
     /// One button per action, the first one accented. Deleting the server's data asks first, in
@@ -320,26 +320,12 @@ impl Page {
 /// What the switches show: whether "Sync everything" is on, then each type's switch (in
 /// `DataType::ALL`'s order) on and enabled.
 fn type_switches(stored: &[DataType], customizing: bool) -> (bool, Vec<(bool, bool)>) {
-    let everything = !customizing && DataType::ALL.iter().all(|t| stored.contains(t));
+    let everything = !customizing && DataType::all_in(stored);
     let switches = DataType::ALL
         .iter()
         .map(|t| (everything || stored.contains(t), !everything))
         .collect();
     (everything, switches)
-}
-
-/// `stored` with `data_type` turned on or off, in `DataType::ALL`'s order.
-fn with_type(stored: &[DataType], data_type: DataType, on: bool) -> Vec<DataType> {
-    DataType::ALL
-        .into_iter()
-        .filter(|t| {
-            if *t == data_type {
-                on
-            } else {
-                stored.contains(t)
-            }
-        })
-        .collect()
 }
 
 /// The sync server's address box, stored when it loses focus, editable only while signed out.
@@ -388,7 +374,7 @@ impl ServerBox {
         }
         let text = self.text.Text().unwrap_or_default();
         let stored = browser.core(|p| p.prefs().get(&keys::SYNC_SERVER));
-        match server_value(&text) {
+        match server_input(&text) {
             Ok(value) => {
                 let shown = value.as_deref().unwrap_or(DEFAULT_SYNC_SERVER);
                 match &value {
@@ -407,7 +393,7 @@ impl ServerBox {
                 true
             }
             Err(error) => {
-                let _ = self.error.SetText(&error);
+                let _ = self.error.SetText(&error.to_string());
                 let _ = xaml::set_visible(&self.error, true);
                 false
             }
@@ -415,36 +401,9 @@ impl ServerBox {
     }
 }
 
-/// What the server box holds: nothing (the default server) or a server address, normalized.
-fn server_value(text: &str) -> std::result::Result<Option<String>, String> {
-    if text.trim().is_empty() {
-        return Ok(None);
-    }
-    normalize_base_url(text)
-        .map(Some)
-        .map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_server_box_is_empty_or_an_address() {
-        assert_eq!(server_value("  "), Ok(None));
-        assert_eq!(
-            server_value(" https://sync.example.com/ "),
-            Ok(Some("https://sync.example.com".into()))
-        );
-        assert_eq!(
-            server_value("http://127.0.0.1:8080/"),
-            Ok(Some("http://127.0.0.1:8080".into()))
-        );
-        assert_eq!(
-            server_value("http://sync.example.com"),
-            Err("http://sync.example.com is not a valid server address".into())
-        );
-    }
 
     #[test]
     fn sync_everything_shows_every_type_on_and_fixed() {
@@ -458,14 +417,5 @@ mod tests {
         assert!(!everything);
         assert_eq!(switches[0], (false, true));
         assert_eq!(switches[1], (true, true));
-    }
-
-    #[test]
-    fn a_type_turns_on_and_off_in_a_fixed_order() {
-        let off = with_type(&DataType::ALL, DataType::Bookmarks, false);
-        assert!(!off.contains(&DataType::Bookmarks));
-        assert_eq!(off.len(), DataType::ALL.len() - 1);
-        let on = with_type(&[DataType::Settings], DataType::Bookmarks, true);
-        assert_eq!(on, [DataType::Bookmarks, DataType::Settings]);
     }
 }
