@@ -188,18 +188,8 @@ fn row_button(icon: gtk::Image, text: &str, folder: bool) -> gtk::Button {
 fn link_row(node: &BookmarkNode, url: &Url, icon: Option<&gdk::Texture>, open: &Rc<RefCell<Option<gtk::Popover>>>) -> gtk::Button {
     let row = row_button(favicons::image(icon, "web-browser-symbolic"), &label_for(&node.title, url), false);
     row.set_tooltip_text(Some(&format!("{}\n{}", node.title, url.as_str())));
-    row.set_action_name(Some(OPEN_ACTION));
-    row.set_action_target_value(Some(&url.as_str().to_variant()));
+    open_on_click(&row, url, close_menus);
     row.connect_clicked(|row| close_menus(row.upcast_ref()));
-    let middle = gtk::GestureClick::builder().button(gdk::BUTTON_MIDDLE).build();
-    let target = url.as_str().to_owned();
-    middle.connect_released(move |gesture, _, _, _| {
-        if let Some(row) = gesture.widget() {
-            let _ = row.activate_action("win.open-in-new-tab", Some(&target.to_variant()));
-            close_menus(&row);
-        }
-    });
-    row.add_controller(middle);
     // Hovering a link closes the submenu a folder row opened, as in any menu.
     let motion = gtk::EventControllerMotion::new();
     let open = Rc::downgrade(open);
@@ -211,6 +201,21 @@ fn link_row(node: &BookmarkNode, url: &Url, icon: Option<&gdk::Texture>, open: &
     row.add_controller(motion);
     attach_context_menu(&row, Target::Node(Item { node: node.clone(), children: Rc::from([]) }));
     row
+}
+
+/// Clicking `button` opens `url` here; a middle click opens it in a new tab, then runs `after`.
+pub(crate) fn open_on_click(button: &gtk::Button, url: &Url, after: fn(&gtk::Widget)) {
+    button.set_action_name(Some(OPEN_ACTION));
+    button.set_action_target_value(Some(&url.as_str().to_variant()));
+    let middle = gtk::GestureClick::builder().button(gdk::BUTTON_MIDDLE).build();
+    let target = url.as_str().to_owned();
+    middle.connect_released(move |gesture, _, _, _| {
+        if let Some(widget) = gesture.widget() {
+            let _ = widget.activate_action("win.open-in-new-tab", Some(&target.to_variant()));
+            after(&widget);
+        }
+    });
+    button.add_controller(middle);
 }
 
 fn folder_row(item: &Item, open: &Rc<RefCell<Option<gtk::Popover>>>) -> gtk::Button {

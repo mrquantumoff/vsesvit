@@ -23,8 +23,6 @@ use crate::favicons;
 use crate::profile::Core;
 use crate::window::BrowserWindow;
 
-pub(crate) use crate::bookmark_menu::OPEN_ACTION;
-
 const MAX_LABEL_CHARS: i32 = 18;
 const SPACING: i32 = 1;
 const URL_FALLBACK_ICON: &str = "web-browser-symbolic";
@@ -384,16 +382,7 @@ fn url_button(title: &str, url: &Url, icon: Option<&gdk::Texture>) -> gtk::Butto
         .tooltip_text(url.as_str())
         .css_classes(["flat"])
         .build();
-    button.set_action_name(Some(OPEN_ACTION));
-    button.set_action_target_value(Some(&url.as_str().to_variant()));
-    let middle = gtk::GestureClick::builder().button(gdk::BUTTON_MIDDLE).build();
-    let target = url.as_str().to_owned();
-    middle.connect_released(move |gesture, _, _, _| {
-        if let Some(button) = gesture.widget() {
-            let _ = button.activate_action("win.open-in-new-tab", Some(&target.to_variant()));
-        }
-    });
-    button.add_controller(middle);
+    bookmark_menu::open_on_click(&button, url, |_| {});
     button
 }
 
