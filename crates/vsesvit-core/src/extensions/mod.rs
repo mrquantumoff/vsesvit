@@ -360,14 +360,15 @@ impl Extensions<'_> {
             return self.get(&id);
         }
 
-        let dir = match files {
+        // Managed: `<id>/<version>_<hash32>`, relative to `<root>/extensions`.
+        let dir_text = match files {
             StagedFiles::Staged { staging, dir_name } => {
                 place(staging, &self.p.paths.extensions.join(id.as_str()), &dir_name)?;
-                StoredDir::Managed(format!("{}/{}", id.as_str(), dir_name))
+                format!("{}/{dir_name}", id.as_str())
             }
-            StagedFiles::InPlace { dir } => StoredDir::InPlace(dir),
+            // `prepare_install` already refused a dir that is not Unicode.
+            StagedFiles::InPlace { dir } => dir.to_str().ok_or_else(|| InstallError::PathNotUnicode(dir.clone()))?.to_owned(),
         };
-        let dir_text = dir.to_column()?;
         let same_dir = existing.as_ref().is_some_and(|r| r.dir == dir_text);
         let row = InstallRow {
             local_enabled: match source.store() {
@@ -680,24 +681,6 @@ fn now_ms() -> i64 {
 
 fn conversion_error(column: usize, e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(e))
-}
-
-enum StoredDir {
-    /// `<id>/<version>_<hash32>`, relative to `<root>/extensions`.
-    Managed(String),
-    InPlace(PathBuf),
-}
-
-impl StoredDir {
-    fn to_column(&self) -> Result<String, Error> {
-        match self {
-            StoredDir::Managed(rel) => Ok(rel.clone()),
-            StoredDir::InPlace(dir) => dir
-                .to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "extension dir path is not UTF-8").into()),
-        }
-    }
 }
 
 /// Every `extension_installs` column, then `enabled`: the local column for local
