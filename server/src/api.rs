@@ -20,7 +20,7 @@ use vsesvit_sync_proto::{
 };
 
 use crate::auth::{AuthError, NewLogin, Provider, SignInKey, challenge, random_token};
-use crate::config::Config;
+use crate::config::{Admission, Config};
 use crate::store::{self, AccountId, DownloadError, Quota, UploadError, token_hash};
 
 /// Longest `state` a browser may send through a sign-in.
@@ -37,6 +37,7 @@ pub struct AppState {
     pub info: Arc<ServerInfo>,
     pub quota: Quota,
     pub session_idle: chrono::Duration,
+    pub admission: Arc<Admission>,
     /// Added to every account's epoch.
     pub epoch: u64,
 }
@@ -50,6 +51,7 @@ impl AppState {
             info: Arc::new(ServerInfo { protocol: PROTOCOL, limits: config.limits }),
             quota: config.quota,
             session_idle: config.session_idle,
+            admission: Arc::new(config.admission.clone()),
             epoch: config.epoch.into(),
         }
     }
@@ -171,13 +173,23 @@ async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>)
             return refused(error, e.to_string());
         }
     };
+    if state.admission.subjects.as_ref().is_some_and(|subjects| !subjects.contains(&person.subject)) {
+        tracing::info!("sign-in refused: {} is not in ALLOWED_SUBJECTS", person.subject);
+        return refused("access_denied", "this sync server is not open to this account".to_owned());
+    }
     let one_time = random_token();
     let authorized = async {
-        let account = store::account(&state.db, state.provider.issuer(), &person.subject).await?;
-        store::authorize_login(&state.db, pending, account, person.name, token_hash(&one_time)).await
+        let Some(account) = store::account(&state.db, state.provider.issuer(), &person.subject, state.admission.max_accounts).await? else {
+            return Ok(false);
+        };
+        store::authorize_login(&state.db, pending, account, person.name, token_hash(&one_time)).await.map(|()| true)
     };
     match authorized.await {
-        Ok(()) => redirect_to_browser(&login, &[("code", &one_time)]),
+        Ok(true) => redirect_to_browser(&login, &[("code", &one_time)]),
+        Ok(false) => {
+            tracing::warn!("sign-in refused: the server has MAX_ACCOUNTS accounts, so {} gets none", person.subject);
+            refused("access_denied", "this sync server takes no new accounts".to_owned())
+        }
         Err(e) => database_page(e),
     }
 }

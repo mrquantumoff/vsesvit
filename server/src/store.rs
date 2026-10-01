@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use chrono::Utc;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect, TransactionTrait,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, TransactionTrait,
 };
 use sha2::{Digest, Sha256};
 use vsesvit_sync_proto::{Page, Record};
@@ -56,9 +56,16 @@ pub enum DownloadError {
     CursorAhead,
 }
 
-pub async fn account(db: &DatabaseConnection, issuer: &str, subject: &str) -> Result<AccountId, DbErr> {
+/// The person's account, made the first time they sign in. `None` when they have none and the
+/// server has `max_accounts` already; a few signing up at once may pass it by one each.
+pub async fn account(db: &DatabaseConnection, issuer: &str, subject: &str, max_accounts: Option<u64>) -> Result<Option<AccountId>, DbErr> {
     if let Some(id) = find_account(db, issuer, subject).await? {
-        return Ok(id);
+        return Ok(Some(id));
+    }
+    if let Some(max) = max_accounts
+        && accounts::Entity::find().count(db).await? >= max
+    {
+        return Ok(None);
     }
     let row = accounts::ActiveModel {
         issuer: Set(issuer.to_owned()),
@@ -72,7 +79,7 @@ pub async fn account(db: &DatabaseConnection, issuer: &str, subject: &str) -> Re
     let conflict = OnConflict::columns([accounts::Column::Issuer, accounts::Column::Subject]).do_nothing().to_owned();
     // A concurrent first request may have inserted it; either way the row exists now.
     let _ = accounts::Entity::insert(row).on_conflict(conflict).exec_without_returning(db).await?;
-    find_account(db, issuer, subject).await?.ok_or_else(|| DbErr::RecordNotFound("the account just inserted".to_owned()))
+    find_account(db, issuer, subject).await?.ok_or_else(|| DbErr::RecordNotFound("the account just inserted".to_owned())).map(Some)
 }
 
 async fn find_account(db: &impl ConnectionTrait, issuer: &str, subject: &str) -> Result<Option<AccountId>, DbErr> {

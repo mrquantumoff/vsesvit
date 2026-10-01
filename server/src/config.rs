@@ -18,6 +18,8 @@
 //! | `MAX_REQUEST_BYTES`       | `33554432`, also a download page's budget |
 //! | `MAX_ACCOUNT_BYTES`       | `1073741824`                              |
 //! | `MAX_ACCOUNT_RECORDS`     | `1000000`                                 |
+//! | `ALLOWED_SUBJECTS`        | none: anyone the provider signs in        |
+//! | `MAX_ACCOUNTS`            | none                                      |
 //! | `EPOCH`                   | `0`; raise it after restoring the database from a backup |
 //!
 //! Lists are separated by spaces or commas.
@@ -40,9 +42,19 @@ pub struct Config {
     pub session_idle: chrono::Duration,
     pub limits: Limits,
     pub quota: Quota,
+    pub admission: Admission,
     /// Raised by the operator after restoring the database from a backup, so every device syncs
     /// everything again.
     pub epoch: u32,
+}
+
+/// Who may use the server. By default, anyone the provider signs in gets an account.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Admission {
+    /// The provider's `sub` of everyone who may sign in, when only they may.
+    pub subjects: Option<Vec<String>>,
+    /// The most accounts the server makes. Those who have one can still sign in.
+    pub max_accounts: Option<u64>,
 }
 
 /// The OpenID Connect provider the server signs people in with, as its client.
@@ -140,6 +152,10 @@ impl Config {
         if quota.max_records < 1 {
             return Err(invalid("MAX_ACCOUNT_RECORDS", &quota.max_records.to_string()));
         }
+        let admission = Admission {
+            subjects: var("ALLOWED_SUBJECTS").map(|v| list(&v)),
+            max_accounts: var("MAX_ACCOUNTS").map(|v| v.trim().parse().map_err(|_| invalid("MAX_ACCOUNTS", &v))).transpose()?,
+        };
         let max_connections = parse(&var, "DATABASE_MAX_CONNECTIONS", 10)?;
         if !(1..=1000).contains(&max_connections) {
             return Err(invalid("DATABASE_MAX_CONNECTIONS", &max_connections.to_string()));
@@ -156,6 +172,7 @@ impl Config {
             session_idle: chrono::Duration::days(idle_days),
             limits,
             quota,
+            admission,
             epoch: parse(&var, "EPOCH", 0)?,
         })
     }
@@ -221,6 +238,7 @@ mod tests {
         assert_eq!(c.session_idle, chrono::Duration::days(180));
         assert!(c.database.run_migrations);
         assert_eq!(c.database.max_connections, 10);
+        assert_eq!(c.admission, Admission::default());
         assert_eq!(c.epoch, 0);
         assert!(!with("RUN_MIGRATIONS", "false").unwrap().database.run_migrations);
         assert_eq!(with("DATABASE_MAX_CONNECTIONS", "3").unwrap().database.max_connections, 3);
@@ -236,6 +254,13 @@ mod tests {
     #[test]
     fn scopes_split_on_spaces_and_commas() {
         assert_eq!(with("OIDC_SCOPES", "openid, email").unwrap().oidc.scopes, ["openid", "email"]);
+    }
+
+    #[test]
+    fn who_may_sign_in_can_be_limited() {
+        assert_eq!(with("ALLOWED_SUBJECTS", "a, b").unwrap().admission.subjects.unwrap(), ["a", "b"]);
+        assert_eq!(with("MAX_ACCOUNTS", "20").unwrap().admission.max_accounts, Some(20));
+        assert!(with("MAX_ACCOUNTS", "-1").is_err());
     }
 
     #[test]

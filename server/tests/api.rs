@@ -27,7 +27,7 @@ use tower::ServiceExt;
 use vsesvit_sync_proto::{ApiError, OAuthError, Page, Record, ServerInfo, TokenResponse, Upload, Uploaded};
 use vsesvit_sync_server::api::{self, AppState};
 use vsesvit_sync_server::config::{Config, DatabaseConfig};
-use vsesvit_sync_server::entities::{logins, sessions};
+use vsesvit_sync_server::entities::{accounts, logins, sessions};
 use vsesvit_sync_server::store;
 
 /// The server's public address in the tests. The provider redirects there, and the test hands those
@@ -324,6 +324,32 @@ async fn a_refusal_at_the_provider_reaches_the_browser_with_its_state() {
 }
 
 #[tokio::test]
+async fn only_the_allowed_subjects_get_an_account() {
+    each_database_with(&[("ALLOWED_SUBJECTS", "carol-id, alice-id")], async |app| {
+        let back = authorize(&app, "mallory", "mallory-verifier-0123456789-0123456789-0123456789").await;
+        assert_eq!(param(&back, "error").as_deref(), Some("access_denied"));
+        assert_eq!(param(&back, "state").as_deref(), Some("browser-state"));
+        assert!(param(&back, "code").is_none());
+        assert_eq!(accounts::Entity::find().count(&app.db).await.unwrap(), 0);
+        sign_in(&app, "alice").await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_server_with_all_the_accounts_it_takes_still_lets_their_people_in() {
+    each_database_with(&[("MAX_ACCOUNTS", "1")], async |app| {
+        sign_in(&app, "alice").await;
+        let back = authorize(&app, "bob", "bob-verifier-0123456789-0123456789-0123456789-0").await;
+        assert_eq!(param(&back, "error").as_deref(), Some("access_denied"));
+        assert!(param(&back, "code").is_none());
+        assert_eq!(accounts::Entity::find().count(&app.db).await.unwrap(), 1);
+        sign_in(&app, "alice").await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_request_the_server_cannot_trust_gets_a_page_not_a_redirect() {
     each_database(async |app| {
         let query = encode(&[
@@ -550,7 +576,7 @@ async fn a_download_page_stays_within_its_byte_budget_but_always_moves() {
         let alice = sign_in(&app, "alice").await;
         let sixteen = "sixteen bytes!!!";
         upload(&app, &alice, vec![record(1, "a", sixteen), record(1, "b", sixteen), record(1, "c", sixteen)]).await;
-        let account = store::account(&app.db, &app.issuer, "alice-id").await.unwrap();
+        let account = store::account(&app.db, &app.issuer, "alice-id", None).await.unwrap().unwrap();
         let page = store::download(&app.db, account, 0, 10, 200).await.unwrap();
         assert_eq!((page.records.len(), page.more), (2, true));
         let page = store::download(&app.db, account, page.cursor, 10, 1).await.unwrap();

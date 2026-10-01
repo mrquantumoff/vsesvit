@@ -57,6 +57,8 @@ Settings come from environment variables, or from a `.env` file in the working d
 | `MAX_REQUEST_BYTES` | `33554432` | One upload request, and roughly one download page. 65536 to 134217728. |
 | `MAX_ACCOUNT_BYTES` | `1073741824` | What one account may store, bodies and ids. An upload that would pass it is refused with 507; one that does not grow the account always passes. |
 | `MAX_ACCOUNT_RECORDS` | `1000000` | Records one account may store. |
+| `ALLOWED_SUBJECTS` | none | The provider's `sub` of each person who may sign in; anyone else is refused, and the server logs their `sub`. Unset, anyone the provider signs in may. |
+| `MAX_ACCOUNTS` | none | The most accounts the server makes. Once it has them, people who have one can still sign in, and nobody else. |
 | `EPOCH` | `0` | Raise it after restoring the database from a backup, so every device syncs everything again. |
 | `RUST_LOG` | `info` | |
 
@@ -70,6 +72,8 @@ Register the server with the provider as a client:
 - **Redirect URI.** `{PUBLIC_URL}/v1/auth/callback`, such as `https://sync.example.com/v1/auth/callback`.
 
 Set `OIDC_ISSUER` to the provider's issuer URL, and `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` to what it gives you.
+
+Anyone the provider signs in gets an account here, with a full quota. With a provider where anyone can sign up, such as Google, or Keycloak or Authentik with registration open, limit who may use the server: with `ALLOWED_SUBJECTS` or `MAX_ACCOUNTS`, or at the provider, by binding the client to a group.
 
 ## Signing in
 
