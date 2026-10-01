@@ -439,7 +439,7 @@ fn stage(
             unpack_zip(&package.bytes, root)?;
             set_key(root, None)?;
             progress(InstallPhase::ReadingManifest);
-            let manifest = Manifest::load(root, ui_locale)?;
+            let manifest = Manifest::load_xpi(root, ui_locale)?;
             let gecko_id = manifest
                 .gecko_id
                 .as_deref()

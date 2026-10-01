@@ -393,6 +393,26 @@ fn xpi_metadata_is_stripped_and_the_gecko_id_is_the_id() {
 }
 
 #[test]
+fn xpi_versions_follow_firefox_grammar_and_the_rest_chrome_grammar() {
+    let t = TempDir::new();
+    let mut p = t.open();
+    // Firefox allows parts of up to 9 digits, so AMO serves date versions.
+    let xpi = raw_zip(&[("manifest.json", &xpi_manifest("dated@example.org", "20240101.1", ""))], &[]);
+    let ext = install_file(&t, &mut p, "dated.xpi", &xpi).unwrap().unwrap();
+    assert_eq!(ext.version, "20240101.1");
+    let newer = raw_zip(&[("manifest.json", &xpi_manifest("dated@example.org", "20240102.0", ""))], &[]);
+    assert_eq!(install_file(&t, &mut p, "newer.xpi", &newer).unwrap().unwrap().version, "20240102.0");
+
+    let letters = raw_zip(&[("manifest.json", &xpi_manifest("old@example.org", "2.0b3", ""))], &[]);
+    let refused = install_file(&t, &mut p, "old.xpi", &letters);
+    assert!(matches!(refused, Err(Error::Install(InstallError::Manifest(ManifestError::Field("version"))))), "{refused:?}");
+
+    let dev = probe_dir(&t, "dated", |m| m.replace("\"1.0.0\"", "\"20240101.1\""));
+    let refused = install(&mut p, InstallSource::Unpacked { dir: dev });
+    assert!(matches!(refused, Err(Error::Install(InstallError::Manifest(ManifestError::Field("version"))))), "{refused:?}");
+}
+
+#[test]
 fn crx_problems_surface_as_install_errors() {
     let t = TempDir::new();
     let mut p = t.open();

@@ -26,7 +26,8 @@ use crate::Url;
 pub struct Manifest {
     pub manifest_version: ManifestVersion,
     pub name: String,
-    /// Chrome version grammar: 1-4 dot-separated integers, each 0..=65535.
+    /// 1-4 dot-separated integers without leading zeros, each 0..=65535 (Chrome's
+    /// grammar), or 0..=999999999 in an XPI (Firefox's).
     pub version: String,
     pub description: Option<String>,
     pub default_locale: Option<String>,
@@ -294,15 +295,24 @@ impl Manifest {
     /// each `__MSG_key__` comes from the most specific of `_locales/<ui_locale>`,
     /// `_locales/<language>` and `_locales/<default_locale>` that defines `key`.
     pub fn load(dir: &Path, ui_locale: &str) -> Result<Manifest, ManifestError> {
+        Manifest::load_with(dir, ui_locale, CHROME_MAX_VERSION_PART)
+    }
+
+    /// [`Manifest::load`] for an unpacked XPI, whose `version` follows Firefox's grammar.
+    pub(crate) fn load_xpi(dir: &Path, ui_locale: &str) -> Result<Manifest, ManifestError> {
+        Manifest::load_with(dir, ui_locale, FIREFOX_MAX_VERSION_PART)
+    }
+
+    fn load_with(dir: &Path, ui_locale: &str, max_version_part: u32) -> Result<Manifest, ManifestError> {
         let raw = parse_tolerant_json(&read_text(&dir.join("manifest.json"))?)?;
         let default_locale = raw.get("default_locale").and_then(Value::as_str);
         let catalog = MessageCatalog::load(dir, ui_locale, default_locale);
-        Manifest::from_value(raw, &|key| catalog.get(key))
+        Manifest::from_value(raw, max_version_part, &|key| catalog.get(key))
     }
 
     /// Parse manifest text. `messages(key)` resolves `__MSG_key__`.
     pub fn parse(text: &str, messages: &dyn Fn(&str) -> Option<String>) -> Result<Manifest, ManifestError> {
-        Manifest::from_value(parse_tolerant_json(text)?, messages)
+        Manifest::from_value(parse_tolerant_json(text)?, CHROME_MAX_VERSION_PART, messages)
     }
 
     /// The SPKI DER in `key`, if the manifest has one.
@@ -315,7 +325,7 @@ impl Manifest {
         self.key_der().map(|der| ExtensionId::from_public_key(&der))
     }
 
-    fn from_value(raw: Value, messages: &dyn Fn(&str) -> Option<String>) -> Result<Manifest, ManifestError> {
+    fn from_value(raw: Value, max_version_part: u32, messages: &dyn Fn(&str) -> Option<String>) -> Result<Manifest, ManifestError> {
         let obj = raw.as_object().ok_or_else(|| ManifestError::Json("the top level is not an object".into()))?;
         let l10n = |s: &str| localize(s, messages);
 
@@ -326,7 +336,9 @@ impl Manifest {
             _ => return Err(ManifestError::Field("manifest_version")),
         };
         let name = str_field(obj, "name", "name")?.map(l10n).filter(|n| !n.trim().is_empty()).ok_or(ManifestError::Field("name"))?;
-        let version = str_field(obj, "version", "version")?.filter(|v| is_valid_version(v)).ok_or(ManifestError::Field("version"))?;
+        let version = str_field(obj, "version", "version")?
+            .filter(|v| is_valid_version(v, max_version_part))
+            .ok_or(ManifestError::Field("version"))?;
         let key = str_field(obj, "key", "key")?;
         if key.is_some_and(|k| decode_key(k).is_none()) {
             return Err(ManifestError::Field("key"));
@@ -599,16 +611,23 @@ fn gecko_id(obj: &Object) -> Option<String> {
     ["browser_specific_settings", "applications"].iter().find_map(|k| obj.get(*k)?.get("gecko")?.get("id")?.as_str()).map(str::to_owned)
 }
 
-/// Chrome's grammar: 1 to 4 dot-separated integers in 0..=65535, no leading zeros.
-fn is_valid_version(v: &str) -> bool {
+/// The largest part of a `version` Chrome accepts.
+const CHROME_MAX_VERSION_PART: u32 = 65535;
+/// Firefox's: up to 9 digits, so AMO serves date versions like `20240101.1`. Its older
+/// grammar's letters (`2.0b3`) stay refused, as AMO refuses them now: a version is part
+/// of a dir name, and [`cmp_versions`] compares numbers.
+const FIREFOX_MAX_VERSION_PART: u32 = 999_999_999;
+
+/// 1 to 4 dot-separated integers in `0..=max_part`, no leading zeros.
+fn is_valid_version(v: &str, max_part: u32) -> bool {
     let parts: Vec<&str> = v.split('.').collect();
     (1..=4).contains(&parts.len())
         && parts.iter().all(|p| {
             !p.is_empty()
-                && p.len() <= 5
+                && p.len() <= 9
                 && p.bytes().all(|b| b.is_ascii_digit())
                 && (p.len() == 1 || !p.starts_with('0'))
-                && p.parse::<u32>().is_ok_and(|n| n <= 65535)
+                && p.parse::<u32>().is_ok_and(|n| n <= max_part)
         })
 }
 
@@ -915,13 +934,20 @@ mod tests {
     }
 
     #[test]
-    fn versions_follow_chrome_grammar() {
+    fn versions_follow_chrome_or_firefox_grammar() {
         for good in ["1", "1.0", "1.2.3.4", "0.0.0.0", "65535.1"] {
-            assert!(is_valid_version(good), "{good}");
+            assert!(is_valid_version(good, CHROME_MAX_VERSION_PART), "{good}");
+            assert!(is_valid_version(good, FIREFOX_MAX_VERSION_PART), "{good}");
         }
-        for bad in ["", "1.", ".1", "1..2", "1.2.3.4.5", "65536", "1.02", "01", "1.0a", "1.-1", " 1"] {
-            assert!(!is_valid_version(bad), "{bad:?}");
+        for bad in ["", "1.", ".1", "1..2", "1.2.3.4.5", "1.02", "01", "1.0a", "2.0b3", "1.-1", " 1", "1000000000"] {
+            assert!(!is_valid_version(bad, CHROME_MAX_VERSION_PART), "{bad:?}");
+            assert!(!is_valid_version(bad, FIREFOX_MAX_VERSION_PART), "{bad:?}");
         }
+        for firefox_only in ["65536", "20240101.1", "2024.10.15.999999999"] {
+            assert!(!is_valid_version(firefox_only, CHROME_MAX_VERSION_PART), "{firefox_only}");
+            assert!(is_valid_version(firefox_only, FIREFOX_MAX_VERSION_PART), "{firefox_only}");
+        }
+        assert_eq!(cmp_versions("20240102.0", "20240101.9"), std::cmp::Ordering::Greater);
         assert_eq!(cmp_versions("1.2", "1.2.0.0"), std::cmp::Ordering::Equal);
         assert_eq!(cmp_versions("1.10", "1.9"), std::cmp::Ordering::Greater);
         assert_eq!(cmp_versions("2", "10"), std::cmp::Ordering::Less);
