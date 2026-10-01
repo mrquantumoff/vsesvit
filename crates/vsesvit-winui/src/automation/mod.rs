@@ -360,9 +360,11 @@ async fn zoom_steps(
     Ok(())
 }
 
-/// Starts from a fresh profile when the run uses the one inside `out_dir`.
+/// Removes an earlier run's `smoke.json`, so a run that never writes one cannot pass for it,
+/// and starts from a fresh profile when the run uses the one inside `out_dir`.
 pub(crate) fn prepare(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out_dir)?;
+    selftest::absent(std::fs::remove_file(out_dir.join("smoke.json")))?;
     if profile_dir == out_dir.join("profile") {
         selftest::absent(std::fs::remove_dir_all(profile_dir))?;
     }
@@ -386,7 +388,7 @@ pub(crate) async fn ui_smoke(browser: Rc<Browser>, out_dir: PathBuf) {
         "ui smoke: ok={ok}, report in {} ({written:?})",
         out_dir.display()
     );
-    app::exit(if ok { 0 } else { 1 });
+    app::exit(if ok && written.is_ok() { 0 } else { 1 });
 }
 
 async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> Result<(), String> {
@@ -1154,4 +1156,23 @@ pub(super) async fn shoot(
 fn save(out_dir: &Path, name: &str, png: &[u8]) -> Result<(), String> {
     let path = out_dir.join(format!("{name}.png"));
     std::fs::write(&path, png).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare;
+
+    #[test]
+    fn prepare_removes_an_earlier_report() {
+        let dir =
+            std::env::temp_dir().join(format!("vsesvit-winui-test-smoke-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        prepare(&dir, &dir.join("profile")).unwrap();
+        std::fs::write(dir.join("smoke.json"), r#"{"ok":true}"#).unwrap();
+        std::fs::create_dir_all(dir.join("profile")).unwrap();
+        prepare(&dir, &dir.join("profile")).unwrap();
+        assert!(!dir.join("smoke.json").exists());
+        assert!(!dir.join("profile").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
