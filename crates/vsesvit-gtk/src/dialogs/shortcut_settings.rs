@@ -55,12 +55,7 @@ pub(super) fn page(browser: &Browser) -> adw::PreferencesPage {
             let chords = adw::ShortcutLabel::new("");
             chords.set_disabled_text("Disabled");
             chords.set_valign(gtk::Align::Center);
-            let reset = gtk::Button::builder()
-                .icon_name("edit-undo-symbolic")
-                .tooltip_text("Reset to Default")
-                .valign(gtk::Align::Center)
-                .css_classes(["flat"])
-                .build();
+            let reset = super::row_button("edit-undo-symbolic", "Reset to Default");
             row.add_suffix(&chords);
             row.add_suffix(&reset);
             group.add(&row);

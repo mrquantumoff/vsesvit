@@ -248,12 +248,7 @@ impl State {
             .use_markup(false)
             .build();
         widget.add_prefix(&gtk::Image::from_icon_name("web-browser-symbolic"));
-        let forget = gtk::Button::builder()
-            .icon_name("user-trash-symbolic")
-            .tooltip_text("Forget this page")
-            .valign(gtk::Align::Center)
-            .css_classes(["flat"])
-            .build();
+        let forget = super::row_button("user-trash-symbolic", "Forget this page");
         forget.connect_clicked(glib::clone!(
             #[weak(rename_to = state)]
             self,

@@ -149,6 +149,16 @@ pub(crate) async fn confirm(
     dialog.choose_future(Some(parent)).await == "accept"
 }
 
+/// A flat icon button centred in a list row's suffix.
+pub(crate) fn row_button(icon: &str, tooltip: &str) -> gtk::Button {
+    gtk::Button::builder()
+        .icon_name(icon)
+        .tooltip_text(tooltip)
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build()
+}
+
 /// A visit time in the user's locale.
 pub(crate) fn format_time(unix_ms: i64) -> String {
     glib::DateTime::from_unix_local(unix_ms.div_euclid(1000))

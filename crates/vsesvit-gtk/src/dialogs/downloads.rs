@@ -215,12 +215,7 @@ impl State {
     }
 
     fn button(self: &Rc<Self>, icon: &str, tooltip: &str, action: impl Fn(&Rc<Self>) + 'static) -> gtk::Button {
-        let button = gtk::Button::builder()
-            .icon_name(icon)
-            .tooltip_text(tooltip)
-            .valign(gtk::Align::Center)
-            .css_classes(["flat"])
-            .build();
+        let button = super::row_button(icon, tooltip);
         button.connect_clicked(glib::clone!(
             #[strong(rename_to = state)]
             self,

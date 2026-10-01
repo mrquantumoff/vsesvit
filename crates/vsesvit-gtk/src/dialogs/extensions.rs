@@ -275,12 +275,7 @@ impl State {
         ));
         row.add_suffix(&enabled);
 
-        let remove = gtk::Button::builder()
-            .icon_name("user-trash-symbolic")
-            .tooltip_text("Remove")
-            .valign(gtk::Align::Center)
-            .css_classes(["flat"])
-            .build();
+        let remove = super::row_button("user-trash-symbolic", "Remove");
         remove.connect_clicked(glib::clone!(
             #[strong(rename_to = state)]
             self,

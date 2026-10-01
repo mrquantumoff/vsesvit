@@ -651,12 +651,7 @@ fn site_setting_row(content: &adw::Bin, browser: &Browser, origin: &Origin, perm
             }
         }
     ));
-    let remove = gtk::Button::builder()
-        .icon_name("user-trash-symbolic")
-        .tooltip_text("Remove")
-        .valign(gtk::Align::Center)
-        .css_classes(["flat"])
-        .build();
+    let remove = super::row_button("user-trash-symbolic", "Remove");
     remove.connect_clicked(glib::clone!(
         #[weak]
         content,
