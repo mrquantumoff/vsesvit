@@ -966,8 +966,8 @@ impl Browser {
         self.keymap_changed();
     }
 
-    /// Applies the stored keyboard shortcuts in every window. Whatever else writes
-    /// `keyboard.shortcuts`, such as a sync, calls this once it has.
+    /// Applies the stored keyboard shortcuts in every window, after an edit here or a
+    /// sync (`sync_applied`) wrote `keyboard.shortcuts`.
     pub fn keymap_changed(&self) {
         shortcuts::set_current(self.core(|p| p.prefs().keymap()));
         for window in self.windows() {

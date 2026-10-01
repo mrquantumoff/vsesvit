@@ -1,15 +1,21 @@
-//! The `shortcuts` and `save_page` checks: reassigning shortcuts through Settings applies at
-//! once to the page already loaded and to the window, and Ctrl+Shift+S saves the page.
+//! The `shortcuts`, `shortcuts_sync` and `save_page` checks: reassigning shortcuts through
+//! Settings or by a sync applies at once to the page already loaded and to the window, and
+//! Ctrl+Shift+S saves the page.
 
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
+use serde_json::json;
+use vsesvit_core::crdt::{DeviceId, Hlc, JsonText, Lww, Seq, Stamp};
+use vsesvit_core::prefs::{PrefRecord, keys};
 use vsesvit_core::shortcuts::{Command as Core, Keymap};
+use vsesvit_core::sync::{Kind, WireRecord};
 use windows_core::Interface;
 
 use super::{Probe, eval, until, wait_ready};
 use crate::automation::{invoke, press};
+use crate::browser::Browser;
 use crate::bindings::{
     Button, CoreWebView2SaveAsKind, DependencyObject, Flyout, FrameworkElement, IButton,
     ICoreWebView2_9, ICoreWebView2_25, IScrollViewer, ListView, Point, Selector, UIElement,
@@ -287,6 +293,106 @@ pub(super) async fn shortcuts(
         && toggled == [true, true]
         && save == Some((Command::SavePage, InPage::Overridable))
         && history == Some(Dialog::History);
+    let detail = detail.join("; ");
+    ok.then_some(detail.clone()).ok_or(detail)
+}
+
+/// `keyboard.shortcuts` as another device sends it, stamped just after the value held here
+/// so it wins.
+fn remote_shortcuts(
+    browser: &Browser,
+    value: Option<serde_json::Value>,
+) -> Result<WireRecord, String> {
+    let key = keys::SHORTCUTS.key;
+    let local = browser
+        .core(|c| c.sync().changes_since(Kind::Prefs, Seq::ZERO, 1024))
+        .map_err(err)?
+        .records
+        .into_iter()
+        .find(|r| r.id == key)
+        .map(|r| serde_json::from_slice::<PrefRecord>(&r.body))
+        .transpose()
+        .map_err(err)?
+        .map_or(Stamp::ZERO, |r| r.value.at);
+    let at = Stamp {
+        hlc: Hlc(local.hlc.0 + 1),
+        device: DeviceId(0x5e11),
+    };
+    let record = PrefRecord {
+        key: key.to_owned(),
+        value: Lww::new(value.as_ref().map(JsonText::from_value), at),
+    };
+    Ok(WireRecord {
+        kind: Kind::Prefs,
+        id: key.to_owned(),
+        body: serde_json::to_vec(&record).map_err(err)?,
+    })
+}
+
+/// Applies `record` the way a sync engine does: `sync().apply`, then `Browser::sync_applied`.
+async fn apply_remote(browser: &Browser, record: WireRecord) -> Result<Vec<String>, String> {
+    let report = browser
+        .core(|c| c.sync().apply(vec![record]))
+        .map_err(err)?;
+    browser.sync_applied(&report.changed);
+    exec::sleep(SETTLE).await;
+    Ok(report.changed.prefs)
+}
+
+pub(super) async fn shortcuts_sync(
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    p: &Probe,
+) -> Result<String, String> {
+    let browser = window.browser().ok_or("no browser")?;
+    eval(tab, RECORD_KEYS).await?;
+    let mut detail = Vec::new();
+
+    p.observe("applying a remote record moving History to Ctrl+Shift+Y");
+    let record = remote_shortcuts(&browser, Some(json!({"show-history": ["Ctrl+Shift+Y"]})))?;
+    let changed = apply_remote(&browser, record).await?;
+    let stored: Vec<String> = browser
+        .core(|c| c.prefs().keymap())
+        .chords(Core::ShowHistory)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let xaml_y = has_accelerator(window, 0x59, ACCEL_CTRL | ACCEL_SHIFT);
+    let xaml_h = has_accelerator(window, 0x48, ACCEL_CTRL);
+    detail.push(format!(
+        "remote record changed {changed:?}; History reads {stored:?}; window accelerators Ctrl+Shift+Y={xaml_y} Ctrl+H={xaml_h}"
+    ));
+    if changed != [keys::SHORTCUTS.key] || stored != ["Ctrl+Shift+Y"] || !xaml_y || xaml_h {
+        return Err(detail.join("; "));
+    }
+
+    p.observe("Ctrl+Shift+Y and Ctrl+H in the page");
+    press(tab, 0x59, CTRL | SHIFT).await?;
+    let new_chord = dialog_opened(window, Duration::from_secs(5)).await;
+    press(tab, 0x48, CTRL).await?;
+    let old_chord = dialog_opened(window, Duration::from_millis(1500)).await;
+    let kept = marked(tab).await;
+    detail.push(format!(
+        "in the loaded page Ctrl+Shift+Y opened {new_chord:?}, Ctrl+H opened {old_chord:?}, page not reloaded {kept}"
+    ));
+    if new_chord != Some(Dialog::History) || old_chord.is_some() || !kept {
+        return Err(detail.join("; "));
+    }
+
+    p.observe("applying a newer remote record resetting the shortcuts");
+    let record = remote_shortcuts(&browser, None)?;
+    let changed = apply_remote(&browser, record).await?;
+    let defaults = browser.core(|c| c.prefs().keymap()) == Keymap::default();
+    press(tab, 0x48, CTRL).await?;
+    let history = dialog_opened(window, Duration::from_secs(5)).await;
+    let kept = marked(tab).await;
+    detail.push(format!(
+        "reset record changed {changed:?}; the keymap is the default {defaults}; Ctrl+H opened {history:?}, page not reloaded {kept}"
+    ));
+    let ok = changed == [keys::SHORTCUTS.key]
+        && defaults
+        && history == Some(Dialog::History)
+        && kept;
     let detail = detail.join("; ");
     ok.then_some(detail.clone()).ok_or(detail)
 }

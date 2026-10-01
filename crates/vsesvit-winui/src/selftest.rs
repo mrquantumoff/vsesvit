@@ -517,10 +517,15 @@ async fn checks(
             .map_err(|e| format!("{e} (at: {})", p.last()))
     })
     .await;
-    window.close_scripted_dialog();
-    if browser.core(|c| c.prefs().keymap()) != vsesvit_core::shortcuts::Keymap::default() {
-        browser.edit_keymap(vsesvit_core::shortcuts::Keymap::reset_all);
-    }
+    restore_shortcuts(&window, browser);
+
+    check(report, "shortcuts_sync", DEFAULT_TIMEOUT, async |p| {
+        shortcut_checks::shortcuts_sync(&window, &tab, p)
+            .await
+            .map_err(|e| format!("{e} (at: {})", p.last()))
+    })
+    .await;
+    restore_shortcuts(&window, browser);
 
     check(report, "save_page", DEFAULT_TIMEOUT, async |p| {
         shortcut_checks::save_page(&tab, out_dir, p).await
@@ -657,6 +662,14 @@ async fn expect_layout(window: &Rc<BrowserWindow>, want: TabsPosition, probe: &P
 }
 
 /// A tab's engine view exists and its first navigation has settled.
+/// Back to the default shortcuts with no dialog open, whether or not a shortcuts check passed.
+fn restore_shortcuts(window: &BrowserWindow, browser: &Browser) {
+    window.close_scripted_dialog();
+    if browser.core(|c| c.prefs().keymap()) != vsesvit_core::shortcuts::Keymap::default() {
+        browser.edit_keymap(vsesvit_core::shortcuts::Keymap::reset_all);
+    }
+}
+
 async fn wait_ready(tab: &Rc<Tab>, probe: &Probe) {
     until(probe, |p| {
         let s = tab.state();
