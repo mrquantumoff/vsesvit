@@ -108,7 +108,9 @@ impl State {
     }
 }
 
-fn ago(secs: u64) -> String {
+/// "just now", "5 minutes ago", "3 hours ago", "2 days ago": how long ago, in seconds, something
+/// happened, as both shells word it.
+pub fn ago(secs: u64) -> String {
     let (n, unit) = match secs {
         0..60 => return "just now".to_owned(),
         60..3600 => (secs / 60, "minute"),
@@ -166,5 +168,23 @@ mod tests {
         assert_eq!(with(false, Some("could not reach x"), false).subtitle, "Sync failed: could not reach x");
         let s = with(false, None, true);
         assert_eq!((s.subtitle.as_str(), s.actions.as_slice()), ("Sign in again to keep syncing.", &[Action::SignIn, Action::SignOut][..]));
+    }
+
+    #[test]
+    fn how_long_ago_rounds_down_to_the_largest_unit() {
+        let cases = [
+            (0, "just now"),
+            (59, "just now"),
+            (60, "1 minute ago"),
+            (3599, "59 minutes ago"),
+            (3600, "1 hour ago"),
+            (5 * 3600, "5 hours ago"),
+            (86_399, "23 hours ago"),
+            (86_400, "1 day ago"),
+            (2 * 86_400, "2 days ago"),
+        ];
+        for (secs, text) in cases {
+            assert_eq!(ago(secs), text, "{secs} s");
+        }
     }
 }

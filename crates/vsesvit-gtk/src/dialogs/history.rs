@@ -304,14 +304,7 @@ impl State {
 
 /// When another device's tabs were last synced, for its heading.
 fn synced_ago(ms: i64) -> String {
-    let secs = ms.max(0) / 1000;
-    let (n, unit) = match secs {
-        0..60 => return "Synced just now".to_owned(),
-        60..3600 => (secs / 60, "minute"),
-        3600..86_400 => (secs / 3600, "hour"),
-        _ => (secs / 86_400, "day"),
-    };
-    format!("Synced {n} {unit}{} ago", if n == 1 { "" } else { "s" })
+    format!("Synced {}", vsesvit_sync::status::ago(u64::try_from(ms.max(0) / 1000).unwrap_or(0)))
 }
 
 #[cfg(test)]

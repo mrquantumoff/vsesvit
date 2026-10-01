@@ -256,14 +256,7 @@ fn row(entry: &HistoryEntry, now_ms: i64) -> Result<IInspectable> {
 
 /// "just now", "5 minutes ago", "3 hours ago", "2 days ago".
 pub(super) fn ago(now_ms: i64, then_ms: i64) -> String {
-    let minutes = (now_ms - then_ms).max(0) / 60_000;
-    let (n, unit) = match minutes {
-        0 => return "just now".to_owned(),
-        m if m < 60 => (m, "minute"),
-        m if m < 24 * 60 => (m / 60, "hour"),
-        m => (m / (24 * 60), "day"),
-    };
-    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+    vsesvit_sync::status::ago(u64::try_from((now_ms - then_ms).max(0) / 1000).unwrap_or(0))
 }
 
 pub(super) fn now_ms() -> i64 {
