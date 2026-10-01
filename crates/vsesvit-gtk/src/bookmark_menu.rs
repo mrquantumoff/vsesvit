@@ -373,7 +373,7 @@ fn context_model(widget: &gtk::Widget, target: &Target) -> (gio::Menu, gio::Simp
             }));
             add("delete", true, Box::new({
                 let node = item.node.clone();
-                move |window| delete(window, node.clone(), 0)
+                move |window| delete(window, node.clone())
             }));
         }
         Target::Node(folder) => {
@@ -397,8 +397,8 @@ fn context_model(widget: &gtk::Widget, target: &Target) -> (gio::Menu, gio::Simp
                 move |window| edit(window, Subject::Existing(node.clone()))
             }));
             add("delete", editable, Box::new({
-                let (node, count) = (folder.node.clone(), folder.children.len());
-                move |window| delete(window, node.clone(), count)
+                let node = folder.node.clone();
+                move |window| delete(window, node.clone())
             }));
         }
         Target::Bar => {}
@@ -440,10 +440,12 @@ fn edit(window: &BrowserWindow, subject: Subject) {
     });
 }
 
-/// Deletes `node`; a folder with `count` items asks first.
-fn delete(window: &BrowserWindow, node: BookmarkNode, count: usize) {
+/// Deletes `node`; a folder with items in it asks first. They are counted in core, since a
+/// menu's copy may be stale or cut off at [`MAX_DEPTH`].
+fn delete(window: &BrowserWindow, node: BookmarkNode) {
     let window = window.clone();
     glib::spawn_future_local(async move {
+        let count = window.browser().core().borrow_mut().bookmarks().children(node.id).len();
         if node.kind == NodeKind::Folder && count > 0 {
             let body = format!("“{}” and the {count} items in it will be deleted.", node.title);
             if !confirm(&window, "Delete Folder?", &body, "_Delete").await {
@@ -479,5 +481,44 @@ mod tests {
         let url = Url::parse("https://example.com/path").unwrap();
         assert_eq!(label_for("Example", &url), "Example");
         assert_eq!(label_for("  ", &url), "example.com");
+    }
+
+    #[gtk::test]
+    fn deleting_a_folder_nested_past_what_menus_show_still_asks_first() {
+        let browser = crate::test_support::browser();
+        let core = browser.core().clone();
+        let mut folders = vec![BookmarkId::TOOLBAR];
+        for depth in 0..15 {
+            let parent = *folders.last().unwrap();
+            let added = core.borrow_mut().bookmarks().add_folder(parent, InsertAt::End, &format!("Nested {depth}"));
+            folders.push(added.expect("a folder"));
+        }
+        let mut items = collect(&core.borrow_mut().bookmarks(), BookmarkId::TOOLBAR);
+        let mut item = None;
+        for &folder in &folders[1..] {
+            let found = items.iter().find(|item| item.node.id == folder).cloned().expect("shown so far");
+            items = found.children.to_vec();
+            item = Some(found);
+            if items.is_empty() {
+                break;
+            }
+        }
+        let item = item.unwrap();
+        assert!(item.children.is_empty() && item.node.id != *folders.last().unwrap(), "past what menus show");
+
+        let window = BrowserWindow::new(&browser);
+        let (_, actions) = context_model(&window.content().expect("the window's content"), &Target::Node(item.clone()));
+        actions.activate_action("delete", None);
+        crate::test_support::settle(std::time::Duration::from_millis(200));
+        let asked = window.visible_dialog();
+        let kept = core.borrow_mut().bookmarks().get(item.node.id).is_some();
+        if let Some(dialog) = asked.as_ref() {
+            dialog.force_close();
+        }
+        assert!(kept, "the folder is deleted without asking");
+        assert!(asked.is_some_and(|dialog| dialog.is::<adw::AlertDialog>()), "nothing asks first");
+
+        core.borrow_mut().bookmarks().remove(folders[1]).expect("the folders are removed");
+        window.destroy();
     }
 }
