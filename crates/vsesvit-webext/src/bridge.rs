@@ -344,12 +344,12 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
         },
         Method::TabsCreate => {
             let props = call.arg(0);
-            let url = props.get("url").and_then(Value::as_str).unwrap_or("about:blank");
+            let url = navigation_url(ext, call, props.get("url").and_then(Value::as_str).unwrap_or("about:blank"))?;
             let active = props.get("active").and_then(Value::as_bool).unwrap_or(true);
-            let id = host.create_tab(url, active).ok_or("tabs.create: the browser refused to open a tab")?;
+            let id = host.create_tab(&url, active).ok_or("tabs.create: the browser refused to open a tab")?;
             Some(find(id).as_ref().map(visible).unwrap_or_else(|| {
                 let mut tab = json!({ "id": id.0, "active": active });
-                if ext.has_permission("tabs") || ext.host_access(url, Some(id)) {
+                if ext.has_permission("tabs") || ext.host_access(&url, Some(id)) {
                     tab["url"] = json!(url);
                 }
                 tab
@@ -361,9 +361,9 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
                 None => host.tabs().into_iter().find(|t| t.active).map(|t| t.id).ok_or("tabs.update: no active tab")?,
             };
             let props = call.arg(1);
-            let url = props.get("url").and_then(Value::as_str);
+            let url = props.get("url").and_then(Value::as_str).map(|u| navigation_url(ext, call, u)).transpose()?;
             let active = props.get("active").and_then(Value::as_bool);
-            if !host.update_tab(id, url, active) {
+            if !host.update_tab(id, url.as_deref(), active) {
                 return Err(format!("No tab with id: {}.", id.0));
             }
             find(id).as_ref().map(visible)
@@ -390,6 +390,12 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
         }
         _ => unreachable!("not a tabs method"),
     })
+}
+
+/// See [`crate::patterns::navigation_url`]: relative to the calling page, and never a
+/// `javascript:` or `file:` URL.
+fn navigation_url(ext: &Extension, call: &Call, raw: &str) -> Result<String, String> {
+    crate::patterns::navigation_url(&ext.base_url, call.url.as_deref(), raw)
 }
 
 fn open_options_page(inner: &Rc<Inner>, ext: &Rc<Extension>) -> Result<Option<Value>, String> {

@@ -79,7 +79,8 @@
 //! - Chrome's permission model for those APIs: `scripting.*` needs the `scripting`
 //!   permission and host access to the target tab (a host permission, or `activeTab`
 //!   after the user invoked the action on that tab); tab URLs and titles are visible
-//!   only with the `tabs` permission or host access to the tab's URL.
+//!   only with the `tabs` permission or host access to the tab's URL; `tabs.create/update`
+//!   resolve relative URLs against the calling page and refuse `javascript:` and `file:`.
 //! - declarativeNetRequest static rulesets as one WebKit content blocker per extension,
 //!   attached to every tab. Rules WebKit cannot express are logged and skipped. As in
 //!   Chrome, rulesets need the `declarativeNetRequest` permission, and redirect and

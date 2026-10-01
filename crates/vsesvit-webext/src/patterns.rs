@@ -85,6 +85,25 @@ pub fn resource_path<'a>(base_url: &str, reference: &'a str) -> &'a str {
     path.trim_start_matches('/')
 }
 
+/// The URL `tabs.create` / `tabs.update` may navigate a tab to, from the `url` an
+/// extension passed. A relative URL resolves against the calling extension page (`caller`)
+/// or else the extension root (`base_url`, `chrome-extension://<host>/`), as in Chrome.
+/// Web pages, `data:`, `about:blank` and the extension's own pages are allowed; Chrome
+/// refuses `javascript:` (use `scripting`), and `file:` needs a file-access grant this
+/// runtime does not have, so those and every other scheme are refused.
+pub fn navigation_url(base_url: &str, caller: Option<&str>, raw: &str) -> Result<String, String> {
+    let base = caller.filter(|c| c.starts_with(base_url)).unwrap_or(base_url);
+    let url = url::Url::parse(base).and_then(|b| b.join(raw)).map_err(|_| format!("Invalid url: \"{raw}\"."))?;
+    let own = url.as_str().starts_with(base_url);
+    match url.scheme() {
+        "http" | "https" | "data" => Ok(url.into()),
+        "about" if url.path() == "blank" => Ok(url.into()),
+        "chrome-extension" if own => Ok(url.into()),
+        "javascript" => Err("JavaScript URLs are not allowed in API based tab navigation. Use the scripting API instead.".into()),
+        _ => Err(format!("Cannot navigate to \"{raw}\".")),
+    }
+}
+
 /// May a document at `page_url` load `path` (no leading slash) from an extension whose
 /// `web_accessible_resources` entries are `(resources, matches)`? An entry with no
 /// `matches` (MV2 lists only resources) is open to every site.
@@ -143,5 +162,22 @@ mod tests {
         assert_eq!(resource_path(base, "chrome-extension://abc"), "");
         assert_eq!(resource_path(base, "chrome-extension://other/popup.html"), "chrome-extension://other/popup.html");
         assert_eq!(resource_path(base, ""), "");
+    }
+
+    #[test]
+    fn tab_navigation_resolves_relative_urls_and_refuses_script_and_file_urls() {
+        let base = "chrome-extension://abc/";
+        let ok = |caller: Option<&str>, raw: &str| navigation_url(base, caller, raw).unwrap();
+        assert_eq!(ok(Some("chrome-extension://abc/popup/popup.html"), "options.html"), "chrome-extension://abc/popup/options.html");
+        assert_eq!(ok(Some("chrome-extension://abc/_generated_background_page.html"), "/welcome.html"), "chrome-extension://abc/welcome.html");
+        assert_eq!(ok(None, "options.html"), "chrome-extension://abc/options.html");
+        assert_eq!(ok(Some("https://evil.example/dir/"), "x.html"), "chrome-extension://abc/x.html");
+        assert_eq!(ok(None, "https://example.com/"), "https://example.com/");
+        assert_eq!(ok(None, "about:blank"), "about:blank");
+        assert_eq!(ok(None, "data:text/html,hi"), "data:text/html,hi");
+        for refused in ["javascript:alert(1)", "JavaScript:alert(1)", "file:///etc/passwd", "chrome-extension://other/x.html", "mailto:a@b.test", "about:config"] {
+            assert!(navigation_url(base, None, refused).is_err(), "{refused} must be refused");
+        }
+        assert!(navigation_url(base, None, "javascript:alert(1)").unwrap_err().contains("scripting"));
     }
 }

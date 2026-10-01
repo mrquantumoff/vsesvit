@@ -9,17 +9,21 @@
 //!    host permission for the fixture server only) and the *widget* (a popup that frames
 //!    a fixture page, no host permissions);
 //! 3. open a tab on `/index.html`: the probe's content script round-trips to its
-//!    background; both twin entries run in one world;
+//!    background; both twin entries run in one world, its `"world": "MAIN"` entry in the
+//!    page's;
 //! 4. the server saw `/allowed.png` and never `/vsesvit-blocked/pixel.png`;
 //! 5. the probe popup shows `visits=N`; page APIs and events work in it; its
 //!    `scripting.executeScript` is refused (no `scripting` permission);
 //! 6. the widget popup's iframe loads in place instead of being blanked and opened as a tab;
 //! 7. the twin popup opens the options page in a tab, where `chrome.*` works
 //!    (storage, `runtime.getURL` on the hashed host, messaging both ways, `tabs.getCurrent`,
-//!    `tabs.onUpdated`); `scripting.executeScript` injects the content-script API into a
-//!    tab without a manifest content script, accepts `/`-prefixed files, is refused for a
-//!    tab outside the host permissions until `activeTab` grants it; `tabs.query` hides
-//!    that tab's URL; `action.setPopup(getURL(..))` and `setIcon('/..')` resolve;
+//!    `tabs.onUpdated`); `runtime.sendMessage` reaches every page; `scripting.executeScript`
+//!    injects the content-script API into a tab without a manifest content script, accepts
+//!    `/`-prefixed files, is refused for a tab outside the host permissions until
+//!    `activeTab` grants it and for one still showing such a page while it loads another;
+//!    `tabs.query` hides that tab's URL; `action.setPopup(getURL(..))` and `setIcon('/..')`
+//!    resolve; `tabs.create` resolves relative URLs and `tabs.update` refuses
+//!    `javascript:` and `file:`;
 //! 8. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!    and an uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -386,6 +390,18 @@ mod linux {
             let paths_ok = paths.as_ref().and_then(Value::as_array).is_some_and(|p| p.len() == 2 && p[0] == p[1] && p[0].as_str().is_some_and(|s| s.ends_with("/popup.html") && !s.contains("chrome-extension://chrome-extension")))
                 && icon.as_ref().is_some_and(|i| i.ends_with("icon.png"));
             self.note("action_resource_paths", paths_ok, format!("getPopup vs getURL = {paths:?}; icon = {icon:?}"));
+
+            // tabs.create resolves a relative URL against the extension; tabs.update refuses
+            // javascript: and file: URLs.
+            let navigation = self
+                .eval_async(
+                    &popup,
+                    "const tab = await chrome.tabs.create({ url: 'data.json', active: false }); const refused = []; for (const url of ['javascript:document.title=\"hijacked\"', 'file:///etc/hostname']) { try { await chrome.tabs.update(tab.id, { url }); refused.push('navigated'); } catch (e) { refused.push(String(e.message)); } } return refused;",
+                )
+                .await;
+            let created = self.host.created.borrow().last().cloned().unwrap_or_default();
+            let refused = navigation.as_ref().and_then(Value::as_array).is_some_and(|r| r.len() == 2 && r.iter().all(|m| m.as_str().is_some_and(|m| m != "navigated")));
+            self.note("tabs_url_resolved_and_gated", created.starts_with("chrome-extension://") && created.ends_with("/data.json") && refused, format!("created {created:?}; javascript:/file: updates = {navigation:?}"));
         }
 
         async fn lifecycle(&self) {
