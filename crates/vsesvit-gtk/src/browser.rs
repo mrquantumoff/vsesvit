@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::extensions::{ExtensionId, toolbar};
@@ -247,7 +249,7 @@ impl Browser {
     /// according to the startup preference, plus any URLs from the command line. On the
     /// run that created the profile the first window opens the welcome over them.
     pub(crate) fn open_startup_windows(&self, targets: &[Url]) {
-        let startup = self.core().borrow_mut().prefs().get(&keys::STARTUP);
+        let startup = self.pref(&keys::STARTUP);
         let restored = match startup {
             Startup::RestoreSession => {
                 let saved = self.core().borrow_mut().session().restore();
@@ -629,8 +631,20 @@ impl Browser {
 
     // Preferences with a live effect.
 
+    pub(crate) fn pref<T: DeserializeOwned>(&self, pref: &Pref<T>) -> T {
+        self.core().borrow_mut().prefs().get(pref)
+    }
+
+    /// Writes a preference, logging a failure. The `set_*` methods that call it also apply it.
+    pub(crate) fn set_pref<T: Serialize>(&self, pref: &Pref<T>, value: &T) {
+        let set = self.core().borrow_mut().prefs().set(pref, value);
+        if let Err(e) = set {
+            log::warn!("prefs: {e}");
+        }
+    }
+
     pub(crate) fn tabs_position(&self) -> TabsPosition {
-        self.core().borrow_mut().prefs().get(&keys::TABS_POSITION)
+        self.pref(&keys::TABS_POSITION)
     }
 
     /// Writes the synced preference and re-lays out every open window at once.
@@ -642,15 +656,7 @@ impl Browser {
     }
 
     pub(crate) fn switch(&self, pref: &Pref<bool>) -> bool {
-        self.core().borrow_mut().prefs().get(pref)
-    }
-
-    /// Writes a preference, logging a failure. The `set_*` methods that call it also apply it.
-    pub(crate) fn set_pref<T: serde::Serialize>(&self, pref: &Pref<T>, value: &T) {
-        let set = self.core().borrow_mut().prefs().set(pref, value);
-        if let Err(e) = set {
-            log::warn!("prefs: {e}");
-        }
+        self.pref(pref)
     }
 
     /// Puts a preference back to its default, logging a failure.
@@ -713,7 +719,7 @@ impl Browser {
     }
 
     pub(crate) fn theme(&self) -> Theme {
-        self.core().borrow_mut().prefs().get(&keys::THEME)
+        self.pref(&keys::THEME)
     }
 
     pub(crate) fn set_theme(&self, theme: Theme) {
@@ -770,7 +776,7 @@ impl Browser {
 
     /// The homepage preference as a URL, or `None` for the new tab page.
     pub(crate) fn homepage(&self) -> Option<Url> {
-        location::homepage_url(&self.core().borrow_mut().prefs().get(&keys::HOMEPAGE))
+        location::homepage_url(&self.pref(&keys::HOMEPAGE))
     }
 
     /// What the shell refreshes after sync applied remote records (`ApplyReport::changed`). The
