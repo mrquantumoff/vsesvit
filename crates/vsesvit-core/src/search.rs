@@ -141,20 +141,22 @@ impl EngineFields {
 
     /// Fields still at the zero stamp read through to the shipped values of a built-in.
     fn engine(&self, id: &SearchEngineId) -> SearchEngine {
-        let code = Builtin::find(id).map(Builtin::engine);
-        let through = |at: Stamp| at == Stamp::ZERO && code.is_some();
-        let code_ref = code.as_ref();
-        SearchEngine {
+        let own = SearchEngine {
             id: id.clone(),
-            name: if through(self.name.at) { code_ref.map(|c| c.name.clone()).unwrap_or_default() } else { self.name.v.clone() },
-            keyword: if through(self.keyword.at) { code_ref.and_then(|c| c.keyword.clone()) } else { self.keyword.v.clone() },
-            search_url: if through(self.search_url.at) {
-                code_ref.map(|c| c.search_url.clone()).unwrap_or_else(|| self.search_url.v.clone())
-            } else {
-                self.search_url.v.clone()
-            },
-            suggest_url: if through(self.suggest_url.at) { code_ref.and_then(|c| c.suggest_url.clone()) } else { self.suggest_url.v.clone() },
+            name: self.name.v.clone(),
+            keyword: self.keyword.v.clone(),
+            search_url: self.search_url.v.clone(),
+            suggest_url: self.suggest_url.v.clone(),
             builtin: id.is_builtin(),
+        };
+        let Some(code) = Builtin::find(id).map(Builtin::engine) else { return own };
+        let zero = |at: Stamp| at == Stamp::ZERO;
+        SearchEngine {
+            name: if zero(self.name.at) { code.name } else { own.name },
+            keyword: if zero(self.keyword.at) { code.keyword } else { own.keyword },
+            search_url: if zero(self.search_url.at) { code.search_url } else { own.search_url },
+            suggest_url: if zero(self.suggest_url.at) { code.suggest_url } else { own.suggest_url },
+            ..own
         }
     }
 }
