@@ -1,13 +1,17 @@
 //! A live sync between two profiles through a real sync server, run as `--ui-smoke` when
 //! `VSESVIT_SYNC_LIVE` names the server. `VSESVIT_SYNC_LIVE_ROLE` is `a`, `b` or `a-delete`, and
-//! the two runs meet through marker files in `VSESVIT_SYNC_LIVE_DIR`. Both sign in by pressing
-//! Sign In on the Sync page, which opens the provider's page in a tab, as a user does.
+//! the two runs meet through marker files in `VSESVIT_SYNC_LIVE_DIR`. A marker counts only for
+//! runs with the same `VSESVIT_SYNC_LIVE_RUN`, so markers an earlier pair left there are not
+//! taken for this pair's; once `VSESVIT_SYNC_LIVE` is set, the run fails if any of the others
+//! is missing or empty. Both sign in by pressing Sign In on the Sync page, which opens the
+//! provider's page in a tab, as a user does.
 //!
 //! A adds bookmarks and opens tabs; B sees them arrive, lists A's tabs under "Tabs from other
 //! devices", turns Bookmarks off and on again, and gets the bookmark A added just before it
 //! quit. `a-delete`, on A's profile again, deletes the data on the server.
 
 use std::cell::RefCell;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -36,20 +40,45 @@ pub(super) struct Live {
     server: String,
     role: String,
     dir: PathBuf,
+    run: String,
 }
 
 impl Live {
-    pub fn from_env() -> Option<Live> {
-        Some(Live {
-            server: std::env::var("VSESVIT_SYNC_LIVE").ok()?,
-            role: std::env::var("VSESVIT_SYNC_LIVE_ROLE").ok()?,
-            dir: std::env::var_os("VSESVIT_SYNC_LIVE_DIR")?.into(),
-        })
+    /// `None` when `VSESVIT_SYNC_LIVE` is unset; once it is set, a missing or empty variable is
+    /// the run's error, so a driver that leaves one out fails rather than passing a fixture run.
+    /// `None` when `VSESVIT_SYNC_LIVE` is unset, and an error when another variable is missing,
+    /// so a driver that leaves one out fails rather than passing as a fixture run.
+    pub fn from_env() -> Option<std::result::Result<Live, String>> {
+        Live::from_vars(|name| std::env::var_os(name))
+    }
+
+    fn from_vars(
+        var: impl Fn(&str) -> Option<OsString>,
+    ) -> Option<std::result::Result<Live, String>> {
+        var("VSESVIT_SYNC_LIVE")?;
+        let need = |name: &str| {
+            var(name)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("{name} is not set"))
+        };
+        let text = |name: &str| {
+            need(name)?
+                .into_string()
+                .map_err(|_| format!("{name} is not Unicode"))
+        };
+        Some((|| {
+            Ok(Live {
+                server: text("VSESVIT_SYNC_LIVE")?,
+                role: text("VSESVIT_SYNC_LIVE_ROLE")?,
+                dir: need("VSESVIT_SYNC_LIVE_DIR")?.into(),
+                run: text("VSESVIT_SYNC_LIVE_RUN")?,
+            })
+        })())
     }
 
     fn mark(&self, name: &str) -> i64 {
         let at = now_ms();
-        let _ = std::fs::write(self.dir.join(name), at.to_string());
+        let _ = std::fs::write(self.dir.join(name), format!("{} {at}", self.run));
         log::info!("live sync: marked {name}");
         at
     }
@@ -57,11 +86,17 @@ impl Live {
     async fn marked(&self, name: &str) -> std::result::Result<i64, String> {
         let file = self.dir.join(name);
         exec::wait_for(PARTNER, POLL, || {
-            std::fs::read_to_string(&file).ok()?.trim().parse().ok()
+            marker_time(&std::fs::read_to_string(&file).ok()?, &self.run)
         })
         .await
         .ok_or_else(|| format!("the other run never marked {name}"))
     }
+}
+
+/// When a marker file says it was marked, if `run` marked it.
+fn marker_time(contents: &str, run: &str) -> Option<i64> {
+    let (id, at) = contents.trim().rsplit_once(' ')?;
+    if id == run { at.parse().ok() } else { None }
 }
 
 fn now_ms() -> i64 {
@@ -510,6 +545,42 @@ mod tests {
             error: error.map(str::to_owned),
             needs_sign_in: false,
         }
+    }
+
+    #[test]
+    fn markers_count_only_for_their_run() {
+        assert_eq!(
+            marker_time("run1 1700000000000\n", "run1"),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(marker_time("run0 1700000000000", "run1"), None);
+        assert_eq!(marker_time("1700000000000", "run1"), None);
+        assert_eq!(marker_time("run 1 5", "run 1"), Some(5));
+    }
+
+    /// `Live::from_vars` with every variable set to `x`, but `without` unset and `run` for RUN.
+    fn live(without: &str, run: &str) -> Option<std::result::Result<Live, String>> {
+        Live::from_vars(|name| match name {
+            _ if name == without => None,
+            "VSESVIT_SYNC_LIVE_RUN" => Some(run.into()),
+            _ => Some("x".into()),
+        })
+    }
+
+    #[test]
+    fn a_live_run_missing_a_variable_is_an_error_not_a_fixture_run() {
+        assert!(live("VSESVIT_SYNC_LIVE", "run1").is_none());
+        assert!(matches!(live("", "run1"), Some(Ok(live)) if live.run == "run1"));
+        for missing in [
+            "VSESVIT_SYNC_LIVE_ROLE",
+            "VSESVIT_SYNC_LIVE_DIR",
+            "VSESVIT_SYNC_LIVE_RUN",
+        ] {
+            let error = live(missing, "run1").and_then(Result::err);
+            assert_eq!(error, Some(format!("{missing} is not set")));
+        }
+        let error = live("", "").and_then(Result::err);
+        assert_eq!(error.as_deref(), Some("VSESVIT_SYNC_LIVE_RUN is not set"));
     }
 
     #[test]

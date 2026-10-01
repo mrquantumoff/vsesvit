@@ -375,7 +375,8 @@ pub(crate) fn prepare(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()>
 pub(crate) async fn ui_smoke(browser: Rc<Browser>, out_dir: PathBuf) {
     let mut steps = Vec::new();
     let result = match sync_live::Live::from_env() {
-        Some(live) => sync_live::run(&live, &browser, &out_dir, &mut steps).await,
+        Some(Ok(live)) => sync_live::run(&live, &browser, &out_dir, &mut steps).await,
+        Some(Err(error)) => Err(error),
         None => run(&browser, &out_dir, &mut steps).await,
     };
     let ok = result.is_ok() && steps.iter().all(|s| s["ok"] == true);
