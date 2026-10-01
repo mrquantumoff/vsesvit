@@ -132,14 +132,7 @@ impl FindBar {
     }
 
     pub(crate) fn show_result(&self, result: FindResult) {
-        let (text, found) = match result {
-            FindResult::Matches(1) => ("1 match".to_owned(), true),
-            FindResult::Matches(n) if n >= MAX_MATCHES => {
-                (format!("More than {MAX_MATCHES} matches"), true)
-            }
-            FindResult::Matches(n) => (format!("{n} matches"), n > 0),
-            FindResult::NotFound => ("No matches".to_owned(), false),
-        };
+        let (text, found) = status(result);
         let empty = self.0.entry.text().is_empty();
         self.0.status.set_label(if empty { "" } else { &text });
         if found || empty {
@@ -185,5 +178,32 @@ impl FindBar {
         if let Some(view) = self.0.target.upgrade() {
             view.grab_focus();
         }
+    }
+}
+
+/// The status text for `result`, and whether anything was found. WebKit reports more than
+/// [`MAX_MATCHES`] as `u32::MAX`.
+fn status(result: FindResult) -> (String, bool) {
+    match result {
+        FindResult::Matches(1) => ("1 match".to_owned(), true),
+        FindResult::Matches(n) if n > MAX_MATCHES => {
+            (format!("More than {MAX_MATCHES} matches"), true)
+        }
+        FindResult::Matches(n) => (format!("{n} matches"), n > 0),
+        FindResult::NotFound => ("No matches".to_owned(), false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_status_counts_up_to_the_most_webkit_counts() {
+        assert_eq!(status(FindResult::Matches(0)), ("0 matches".to_owned(), false));
+        assert_eq!(status(FindResult::Matches(1)), ("1 match".to_owned(), true));
+        assert_eq!(status(FindResult::Matches(MAX_MATCHES)), ("1000 matches".to_owned(), true));
+        assert_eq!(status(FindResult::Matches(u32::MAX)), ("More than 1000 matches".to_owned(), true));
+        assert_eq!(status(FindResult::NotFound), ("No matches".to_owned(), false));
     }
 }
