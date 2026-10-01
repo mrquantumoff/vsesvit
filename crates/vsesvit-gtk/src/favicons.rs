@@ -31,8 +31,15 @@ pub(crate) fn record(profile: &mut Profile, uri: &str, icon: &gdk::Texture) -> b
 
 /// An image of the stored icon, or of the generic `fallback` icon.
 pub(crate) fn image(icon: Option<&gdk::Texture>, fallback: &str) -> gtk::Image {
+    let image = gtk::Image::new();
+    show(&image, icon, fallback);
+    image
+}
+
+/// Makes `image` show the stored icon, or the generic `fallback` icon.
+pub(crate) fn show(image: &gtk::Image, icon: Option<&gdk::Texture>, fallback: &str) {
     match icon {
-        Some(texture) => gtk::Image::from_paintable(Some(texture)),
-        None => gtk::Image::from_icon_name(fallback),
+        Some(texture) => image.set_paintable(Some(texture)),
+        None => image.set_icon_name(Some(fallback)),
     }
 }

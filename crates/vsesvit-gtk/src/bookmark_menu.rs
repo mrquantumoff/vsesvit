@@ -32,7 +32,7 @@ const MAX_MENU_LABEL_CHARS: i32 = 40;
 const MAX_HEIGHT_FRACTION: f64 = 0.75;
 
 /// A bookmark subtree copied out of core, so widgets are built without a borrow held.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct Item {
     pub(crate) node: BookmarkNode,
     /// A folder's children.

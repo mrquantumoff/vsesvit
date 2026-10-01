@@ -26,6 +26,7 @@ pub(crate) use crate::bookmark_menu::OPEN_ACTION;
 
 const MAX_LABEL_CHARS: i32 = 18;
 const SPACING: i32 = 1;
+const URL_FALLBACK_ICON: &str = "web-browser-symbolic";
 
 mod imp {
     use std::cell::Cell;
@@ -179,6 +180,8 @@ pub(crate) struct BookmarksBar {
     end: gtk::Box,
     /// What the row's items show, in order.
     items: Rc<RefCell<Vec<Item>>>,
+    /// What "Other Bookmarks" shows.
+    other: RefCell<Option<Item>>,
 }
 
 impl BookmarksBar {
@@ -222,7 +225,7 @@ impl BookmarksBar {
             .reveal_child(true)
             .transition_type(gtk::RevealerTransitionType::SlideDown)
             .build();
-        BookmarksBar { revealer, row, empty, end, items }
+        BookmarksBar { revealer, row, empty, end, items, other: RefCell::default() }
     }
 
     pub(crate) fn widget(&self) -> &gtk::Revealer {
@@ -233,7 +236,9 @@ impl BookmarksBar {
         self.revealer.set_reveal_child(revealed);
     }
 
-    /// Rebuilds the bar from the profile's toolbar and "other" folders.
+    /// Shows the profile's toolbar and "other" folders. When only icons changed, the buttons
+    /// stay and show them: pages of a bookmarked site store their icons as they load, and
+    /// building every button again each time would close the bar's menus and drop its hover.
     pub(crate) fn refresh(&self, core: &Core) {
         let (toolbar, other, icons) = {
             let mut profile = core.borrow_mut();
@@ -249,6 +254,10 @@ impl BookmarksBar {
                 .collect();
             (toolbar, other, icons)
         };
+        if *self.items.borrow() == toolbar && *self.other.borrow() == other {
+            self.show_icons(&toolbar, &icons);
+            return;
+        }
         while let Some(child) = self.end.first_child() {
             self.end.remove(&child);
         }
@@ -267,12 +276,26 @@ impl BookmarksBar {
         self.row.set_items(widgets);
         self.empty.set_visible(toolbar.is_empty());
         self.items.replace(toolbar);
+        self.other.replace(other.clone());
         if let Some(other) = other.filter(|other| !other.children.is_empty()) {
             let button = folder_button("Other Bookmarks", &other.children);
             let node = other.node.clone();
             button.add_controller(drop_target(&self.row, move |_| Some(node.clone())));
             bookmark_menu::attach_context_menu(&button, Target::Node(other));
             self.end.append(&button);
+        }
+    }
+
+    /// Shows `icons` on the buttons of `items`, which the row already holds.
+    fn show_icons(&self, items: &[Item], icons: &HashMap<BookmarkId, gdk::Texture>) {
+        for (item, widget) in items.iter().zip(self.row.imp().items.borrow().iter()) {
+            if item.node.url.is_none() {
+                continue;
+            }
+            let image = widget.first_child().and_then(|content| content.first_child()).and_downcast::<gtk::Image>();
+            if let Some(image) = image {
+                favicons::show(&image, icons.get(&item.node.id), URL_FALLBACK_ICON);
+            }
         }
     }
 
@@ -361,7 +384,7 @@ fn item_widget(item: &Item, icon: Option<&gdk::Texture>) -> gtk::Widget {
 
 fn url_button(title: &str, url: &Url, icon: Option<&gdk::Texture>) -> gtk::Button {
     let button = gtk::Button::builder()
-        .child(&labelled(favicons::image(icon, "web-browser-symbolic"), label_for(title, url)))
+        .child(&labelled(favicons::image(icon, URL_FALLBACK_ICON), label_for(title, url)))
         .tooltip_text(url.as_str())
         .css_classes(["flat"])
         .build();
