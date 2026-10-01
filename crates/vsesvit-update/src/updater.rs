@@ -19,6 +19,10 @@ use crate::{Config, DisabledReason, Error, Format, Installation, WindowsInstallM
 /// the disk, and then the memory [`Update::download`] reads the file into to verify it.
 const MAX_ARTIFACT_SIZE: u64 = 512 * 1024 * 1024;
 
+/// The channels, from the steadiest to the newest, as `UpdateChannel` in vsesvit-core names them.
+/// A release is on the channel its prerelease starts with, or on stable without one.
+const CHANNELS: [&str; 4] = ["stable", "beta", "weekly", "nightly"];
+
 /// Checks the configured endpoints for a newer release.
 #[derive(Debug)]
 pub struct Updater {
@@ -92,15 +96,15 @@ impl Updater {
     }
 
     /// Asks each endpoint in turn until one answers, filling `{{channel}}` with `channel`.
-    /// `Ok(None)` when the answering endpoint has nothing newer. When every endpoint fails,
-    /// returns the last failure.
+    /// `Ok(None)` when the answering endpoint has nothing newer, or only a release on a channel
+    /// less steady than `channel`. When every endpoint fails, returns the last failure.
     pub fn check(&self, channel: &str) -> Result<Option<Available>, Error> {
         let mut last_error = None;
         for template in &self.endpoints {
             let url = release::endpoint_url(template, channel, &self.current_version, self.installation.variant());
             match self.fetch(&url) {
                 Ok(None) => return Ok(None),
-                Ok(Some(manifest)) => return self.offer(manifest),
+                Ok(Some(manifest)) => return self.offer(manifest, channel),
                 Err(e) => {
                     log::warn!("update endpoint {url} failed: {e}");
                     last_error = Some(e);
@@ -123,8 +127,13 @@ impl Updater {
         }
     }
 
-    fn offer(&self, manifest: Manifest) -> Result<Option<Available>, Error> {
+    fn offer(&self, manifest: Manifest, channel: &str) -> Result<Option<Available>, Error> {
         if manifest.release.version <= self.current_version {
+            return Ok(None);
+        }
+        // The signature binds the version, not the channel, so an endpoint answering for stable
+        // could otherwise hand out a nightly build, which sorts above the last stable release.
+        if steadiness(release_channel(&manifest.release.version)) > steadiness(channel) {
             return Ok(None);
         }
         let Some(format) = self.installation.format() else {
@@ -313,6 +322,18 @@ impl Downloaded {
     pub fn format(&self) -> Format {
         self.format
     }
+}
+
+fn release_channel(version: &Version) -> &str {
+    match version.pre.as_str().split('.').next() {
+        None | Some("") => "stable",
+        Some(channel) => channel,
+    }
+}
+
+/// Where `channel` stands in [`CHANNELS`]; one no build is released on comes after all of them.
+fn steadiness(channel: &str) -> usize {
+    CHANNELS.iter().position(|c| *c == channel).unwrap_or(CHANNELS.len())
 }
 
 fn agent(https_only: bool, current_version: &Version) -> ureq::Agent {

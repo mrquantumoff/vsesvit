@@ -191,6 +191,29 @@ fn only_a_strictly_newer_version_is_offered() {
 }
 
 #[test]
+fn a_channel_is_offered_only_releases_as_steady_as_it_is() {
+    let server = Server::start();
+    let offered = |release: &str, channel: &str| {
+        server.route("/u", 200, dynamic(release));
+        let updater = updater(vec![server.url("/u")], "1.0.0", Installation::Deb);
+        updater.check(channel).expect("check succeeds").is_some()
+    };
+    for (release, steadiest_channel) in [
+        ("1.0.1", "stable"),
+        ("1.0.1-beta.2", "beta"),
+        ("1.0.1-weekly.20260105.12", "weekly"),
+        ("1.0.1-nightly.20260105.12", "nightly"),
+    ] {
+        let channels = ["stable", "beta", "weekly", "nightly"];
+        let steadiest = channels.iter().position(|c| *c == steadiest_channel).unwrap();
+        for (i, channel) in channels.into_iter().enumerate() {
+            assert_eq!(offered(release, channel), i >= steadiest, "{release} on {channel}");
+        }
+    }
+    assert!(!offered("1.0.1-rc.1", "nightly"), "a prerelease no channel is named after is on none");
+}
+
+#[test]
 fn installations_that_do_not_update_themselves_see_the_release_without_an_artifact() {
     let server = Server::start();
     server.route("/u", 200, static_manifest(&[&format!("{TARGET}-{ARCH}-deb"), &format!("{TARGET}-{ARCH}-appimage")]));
