@@ -19,8 +19,9 @@ enum Format {
     File,
 }
 
-/// Beyond this many characters a page title is cut short in the suggested file name.
-const TITLE_CHARS: usize = 120;
+/// Beyond this many bytes a page title is cut short, at a character, in the suggested file
+/// name, which keeps the name under the 255 bytes most file systems allow.
+const TITLE_BYTES: usize = 200;
 
 /// No response yet (a page still loading, the new tab page) reads as HTML.
 fn format_of(mime: Option<&str>) -> Format {
@@ -36,8 +37,8 @@ fn format_of_view(view: &webkit::WebView) -> Format {
 }
 
 fn mhtml_name(title: &str) -> String {
-    let title: String = title.replace(['/', '\\'], "-").chars().take(TITLE_CHARS).collect();
-    let title = title.trim();
+    let title = title.replace(['/', '\\'], "-");
+    let title = title[..title.floor_char_boundary(TITLE_BYTES)].trim();
     format!("{}.mhtml", sanitize(if title.is_empty() { "page" } else { title }))
 }
 
@@ -112,6 +113,15 @@ mod tests {
         assert_eq!(mhtml_name("Vsesvit fixture"), "Vsesvit fixture.mhtml");
         assert_eq!(mhtml_name("A/B testing"), "A-B testing.mhtml");
         assert_eq!(mhtml_name("  "), "page.mhtml");
-        assert_eq!(mhtml_name(&"x".repeat(400)), format!("{}.mhtml", "x".repeat(TITLE_CHARS)));
+        assert_eq!(mhtml_name(&"x".repeat(400)), format!("{}.mhtml", "x".repeat(TITLE_BYTES)));
+    }
+
+    #[test]
+    fn a_long_title_in_any_script_fits_a_file_name() {
+        for title in ["日".repeat(120), "😀".repeat(100), format!("x{}", "é".repeat(200))] {
+            let name = mhtml_name(&title);
+            assert!(name.len() <= 255, "{} bytes", name.len());
+            assert!(name.ends_with(".mhtml"));
+        }
     }
 }
