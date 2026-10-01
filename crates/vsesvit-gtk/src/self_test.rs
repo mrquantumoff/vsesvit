@@ -139,7 +139,11 @@ pub(crate) fn run(out_dir: &Path, network: bool) -> ExitCode {
         }
     };
     let server = match FixtureServer::start() {
-        Ok(server) => server,
+        Ok(server) => {
+            // `favicon_preload` has core fetch a bookmark's icon from the loopback server.
+            vsesvit_core::favicons::allow_local_hosts();
+            server
+        }
         Err(e) => {
             report.borrow_mut().push("fixture_server", false, started, e.to_string());
             return finish(out_dir, &report);
