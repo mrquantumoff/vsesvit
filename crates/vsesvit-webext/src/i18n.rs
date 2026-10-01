@@ -6,50 +6,21 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
+use vsesvit_core::extensions::manifest::{ManifestError, locale_chain, parse_tolerant_json, read_text};
 
 /// The catalog the shim receives: lowercase message name to
 /// `{"message": .., "placeholders": {..}}`.
 pub type Catalog = BTreeMap<String, Value>;
 
-/// The UI locale from the environment (`LC_ALL`, `LC_MESSAGES`, `LANG`), as Chrome
-/// spells it: `en_US`. Falls back to `en`.
-pub fn ui_locale() -> String {
-    ["LC_ALL", "LC_MESSAGES", "LANG"]
-        .iter()
-        .filter_map(|k| std::env::var(k).ok())
-        .map(|v| normalize_locale(&v))
-        .find(|v| !v.is_empty() && v != "C" && v != "POSIX")
-        .unwrap_or_else(|| "en".to_owned())
-}
-
-/// `en_US.UTF-8` -> `en_US`, `pt-BR` -> `pt_BR`.
-pub fn normalize_locale(raw: &str) -> String {
-    let base = raw.split(['.', '@']).next().unwrap_or(raw);
-    base.replace('-', "_")
-}
-
-/// Candidate locale directories in lookup order: `en_US`, `en`, then the default locale.
-pub fn locale_chain(ui: &str, default_locale: Option<&str>) -> Vec<String> {
-    let mut chain = vec![ui.to_owned()];
-    if let Some((lang, _)) = ui.split_once('_') {
-        chain.push(lang.to_owned());
-    }
-    if let Some(d) = default_locale
-        && !chain.iter().any(|c| c == d)
-    {
-        chain.push(d.to_owned());
-    }
-    chain
-}
-
 /// Load the catalog for `ui` from `dir/_locales`, more specific locales overriding the
-/// default one. A missing `_locales` dir yields an empty catalog; an unreadable file is
-/// skipped with a warning, since Chrome tolerates comments and trailing commas there.
+/// default one, read as core reads them for the manifest (BOM, comments and trailing
+/// commas tolerated). A missing `_locales` dir yields an empty catalog; an unparsable
+/// file is skipped with a warning.
 pub fn load_catalog(dir: &Path, ui: &str, default_locale: Option<&str>) -> Catalog {
     let mut catalog = Catalog::new();
     for locale in locale_chain(ui, default_locale).iter().rev() {
         let path = dir.join("_locales").join(locale).join("messages.json");
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = read_text(&path) else { continue };
         match parse_messages(&text) {
             Ok(messages) => catalog.extend(messages),
             Err(e) => log::warn!("{}: {e}", path.display()),
@@ -58,8 +29,8 @@ pub fn load_catalog(dir: &Path, ui: &str, default_locale: Option<&str>) -> Catal
     catalog
 }
 
-pub fn parse_messages(text: &str) -> Result<Catalog, serde_json::Error> {
-    let value: Value = serde_json::from_str(&strip_json_comments(text))?;
+pub fn parse_messages(text: &str) -> Result<Catalog, ManifestError> {
+    let value = parse_tolerant_json(text)?;
     let mut out = Catalog::new();
     if let Value::Object(map) = value {
         for (k, v) in map {
@@ -71,89 +42,9 @@ pub fn parse_messages(text: &str) -> Result<Catalog, serde_json::Error> {
     Ok(out)
 }
 
-/// Remove `//` and `/* */` comments and trailing commas, outside string literals.
-pub fn strip_json_comments(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    let mut in_string = false;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if in_string {
-            out.push(c as char);
-            if c == b'\\' && i + 1 < bytes.len() {
-                out.push(bytes[i + 1] as char);
-                i += 2;
-                continue;
-            }
-            if c == b'"' {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-        match c {
-            b'"' => {
-                in_string = true;
-                out.push('"');
-                i += 1;
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                i += 2;
-            }
-            b',' => {
-                let mut j = i + 1;
-                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if !matches!(bytes.get(j), Some(b'}') | Some(b']')) {
-                    out.push(',');
-                }
-                i += 1;
-            }
-            _ => {
-                // Multi-byte UTF-8 only occurs inside strings in valid JSON, but be safe.
-                let ch_len = utf8_len(c);
-                out.push_str(&text[i..i + ch_len]);
-                i += ch_len;
-            }
-        }
-    }
-    out
-}
-
-fn utf8_len(first: u8) -> usize {
-    match first {
-        0x00..=0x7F => 1,
-        0xC0..=0xDF => 2,
-        0xE0..=0xEF => 3,
-        _ => 4,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn locales() {
-        assert_eq!(normalize_locale("en_US.UTF-8"), "en_US");
-        assert_eq!(normalize_locale("pt-BR"), "pt_BR");
-        assert_eq!(normalize_locale("de_DE@euro"), "de_DE");
-        assert_eq!(normalize_locale("C.UTF-8"), "C");
-        assert_eq!(locale_chain("en_US", Some("de")), ["en_US", "en", "de"]);
-        assert_eq!(locale_chain("en", Some("en")), ["en"]);
-        assert_eq!(locale_chain("fr", None), ["fr"]);
-    }
 
     #[test]
     fn tolerant_messages() {
@@ -183,5 +74,37 @@ mod tests {
         assert_eq!(c["b"]["message"], "en-b");
         assert!(load_catalog(&dir.join("missing"), "en", None).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_ascii_messages_and_bom() {
+        let c = parse_messages("{\"hi\": {\"message\": \"Привіт — ok\"}}").unwrap();
+        assert_eq!(c["hi"]["message"], "Привіт — ok");
+        let dir = std::env::temp_dir().join(format!("vsesvit-i18n-bom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("_locales/uk")).unwrap();
+        std::fs::write(dir.join("_locales/uk/messages.json"), "\u{feff}{\"hi\": {\"message\": \"Привіт\"}}").unwrap();
+        assert_eq!(load_catalog(&dir, "uk_UA", Some("en"))["hi"]["message"], "Привіт");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trailing_comma_before_comment() {
+        for text in ["{\"last\": {\"message\": \"x\"}, // keep sorted\n}", "{\"last\": {\"message\": \"x\"}, /* c */ }"] {
+            let c = parse_messages(text).unwrap();
+            assert_eq!(c.len(), 1);
+            assert_eq!(c["last"]["message"], "x");
+        }
+    }
+
+    #[test]
+    fn default_locale_cannot_escape_the_extension_dir() {
+        let root = std::env::temp_dir().join(format!("vsesvit-i18n-escape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ext/_locales")).unwrap();
+        std::fs::create_dir_all(root.join("x")).unwrap();
+        std::fs::write(root.join("x/messages.json"), r#"{"n": {"message": "escaped"}}"#).unwrap();
+        assert!(load_catalog(&root.join("ext"), "en", Some("../../x")).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -473,15 +473,21 @@ pub(crate) fn unpacked_id(dir: &Path, manifest: &Manifest) -> ExtensionId {
     manifest.key_id().unwrap_or_else(|| ExtensionId::for_unpacked_dir(dir))
 }
 
-/// The UI language for `__MSG_*__` in manifests, from `LC_ALL` / `LC_MESSAGES` / `LANG`
-/// (`uk_UA.UTF-8` -> `uk_UA`). Where none is set (usual on Windows) it is `en`, and
-/// lookups fall back to each extension's `default_locale`.
-pub(crate) fn ui_locale() -> String {
-    ["LC_ALL", "LC_MESSAGES", "LANG"]
-        .iter()
-        .filter_map(|k| std::env::var(k).ok())
+/// The UI language for `__MSG_*__` in manifests and for `chrome.i18n`, from `LC_ALL` /
+/// `LC_MESSAGES` / `LANG`, as Chrome spells it (`uk_UA.UTF-8` -> `uk_UA`). Where none is
+/// set (usual on Windows) it is `en`, and lookups fall back to each extension's
+/// `default_locale`.
+pub fn ui_locale() -> String {
+    ui_locale_from(["LC_ALL", "LC_MESSAGES", "LANG"].map(|k| std::env::var(k).ok()))
+}
+
+/// The first non-empty variable decides, as in POSIX: `LC_ALL=C` overrides `LANG`, and
+/// `C` / `POSIX` mean `en`.
+fn ui_locale_from(vars: [Option<String>; 3]) -> String {
+    vars.into_iter()
+        .flatten()
         .find(|v| !v.is_empty())
-        .and_then(|v| v.split(['.', '@']).next().map(str::to_owned))
+        .and_then(|v| v.split(['.', '@']).next().map(|base| base.replace('-', "_")))
         .filter(|v| !v.is_empty() && v != "C" && v != "POSIX")
         .unwrap_or_else(|| "en".to_owned())
 }
@@ -848,6 +854,17 @@ pub enum InstallError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_locale_takes_the_first_set_variable_in_chrome_spelling() {
+        let s = |v: &str| Some(v.to_owned());
+        assert_eq!(ui_locale_from([s("C.UTF-8"), None, s("uk_UA.UTF-8")]), "en", "LC_ALL=C overrides LANG");
+        assert_eq!(ui_locale_from([None, s("POSIX"), s("uk_UA.UTF-8")]), "en");
+        assert_eq!(ui_locale_from([None, None, s("uk_UA.UTF-8")]), "uk_UA");
+        assert_eq!(ui_locale_from([s(""), s("pt-BR"), None]), "pt_BR");
+        assert_eq!(ui_locale_from([None, None, s("de_DE@euro")]), "de_DE");
+        assert_eq!(ui_locale_from([None, None, None]), "en");
+    }
 
     #[test]
     fn entry_paths() {

@@ -378,7 +378,7 @@ impl Manifest {
 type Object = serde_json::Map<String, Value>;
 
 /// A UTF-8 text file. [`parse_tolerant_json`] drops a leading BOM, as Chrome does.
-pub(crate) fn read_text(path: &Path) -> Result<String, ManifestError> {
+pub fn read_text(path: &Path) -> Result<String, ManifestError> {
     String::from_utf8(std::fs::read(path)?).map_err(|_| ManifestError::Json(format!("{} is not UTF-8", path.display())))
 }
 
@@ -655,23 +655,30 @@ fn localize(s: &str, messages: &dyn Fn(&str) -> Option<String>) -> String {
     out
 }
 
+/// The `_locales` directories to look in, most specific first: `uk_UA`, `uk`, then
+/// `default_locale`. `ui_locale` may be spelled `uk-UA`. Each entry is a path component
+/// and `default_locale` comes from the manifest, so anything but a plain locale name is
+/// dropped.
+pub fn locale_chain(ui_locale: &str, default_locale: Option<&str>) -> Vec<String> {
+    let ui = ui_locale.replace('-', "_");
+    let language = ui.split('_').next().unwrap_or_default().to_owned();
+    let mut chain: Vec<String> = Vec::new();
+    for locale in [Some(ui), Some(language), default_locale.map(str::to_owned)].into_iter().flatten() {
+        let safe = !locale.is_empty() && locale.len() <= 16 && locale.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if safe && !chain.contains(&locale) {
+            chain.push(locale);
+        }
+    }
+    chain
+}
+
 /// `_locales/<locale>/messages.json` bundles in lookup order, keys lowercased
 /// (message names are case-insensitive).
 struct MessageCatalog(Vec<BTreeMap<String, String>>);
 
 impl MessageCatalog {
     fn load(dir: &Path, ui_locale: &str, default_locale: Option<&str>) -> Self {
-        let ui = ui_locale.replace('-', "_");
-        let language = ui.split('_').next().unwrap_or_default().to_owned();
-        let mut chain: Vec<String> = Vec::new();
-        for locale in [Some(ui), Some(language), default_locale.map(str::to_owned)].into_iter().flatten() {
-            // default_locale comes from the manifest, so it is also a path component to check.
-            let safe = !locale.is_empty() && locale.len() <= 16 && locale.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
-            if safe && !chain.contains(&locale) {
-                chain.push(locale);
-            }
-        }
-        let bundles = chain
+        let bundles = locale_chain(ui_locale, default_locale)
             .iter()
             .filter_map(|locale| read_text(&dir.join("_locales").join(locale).join("messages.json")).ok())
             .filter_map(|text| parse_tolerant_json(&text).ok())
@@ -734,7 +741,7 @@ fn expand_placeholders(message: &str, placeholders: &BTreeMap<String, &str>) -> 
 
 /// Chrome accepts `//` and `/* */` comments and trailing commas in manifest.json and
 /// messages.json. Strip them (string-literal aware) before `serde_json`.
-pub(crate) fn parse_tolerant_json(text: &str) -> Result<serde_json::Value, ManifestError> {
+pub fn parse_tolerant_json(text: &str) -> Result<serde_json::Value, ManifestError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let cleaned = strip_trailing_commas(&strip_comments(text)?);
     serde_json::from_str(&cleaned).map_err(|e| ManifestError::Json(e.to_string()))
@@ -893,6 +900,16 @@ mod tests {
         assert_eq!(v, serde_json::json!({"a": "http://x/*y*/,", "b": [1, 2], "c": {"d": "\"//\""}}));
         assert!(parse_tolerant_json("{\"a\": 1 /* never closed").is_err());
         assert!(parse_tolerant_json("{\"a\": }").is_err());
+    }
+
+    #[test]
+    fn locale_chain_goes_from_region_to_language_to_default_and_drops_unsafe_names() {
+        assert_eq!(locale_chain("en_US", Some("de")), ["en_US", "en", "de"]);
+        assert_eq!(locale_chain("uk-UA", Some("uk")), ["uk_UA", "uk"]);
+        assert_eq!(locale_chain("en", Some("en")), ["en"]);
+        assert_eq!(locale_chain("fr", None), ["fr"]);
+        assert_eq!(locale_chain("en", Some("../../x")), ["en"]);
+        assert_eq!(locale_chain("", Some("en")), ["en"]);
     }
 
     #[test]

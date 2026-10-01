@@ -87,7 +87,7 @@ impl Runtime {
             context,
             filter_store,
             state_dir,
-            ui_locale: crate::i18n::ui_locale(),
+            ui_locale: vsesvit_core::extensions::ui_locale(),
             extensions: RefCell::new(BTreeMap::new()),
             tabs: RefCell::new(BTreeMap::new()),
             actions_changed: RefCell::new(Vec::new()),

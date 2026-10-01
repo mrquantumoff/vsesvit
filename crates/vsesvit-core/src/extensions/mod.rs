@@ -43,7 +43,7 @@ use sha2::{Digest, Sha256};
 
 pub use install::{
     InstallError, InstallJob, InstallPhase, InstallSource, Intent, MAX_ARCHIVE_BYTES, MAX_ENTRIES, MAX_UNPACKED_BYTES, SourceParseError,
-    StagedInstall,
+    StagedInstall, ui_locale,
 };
 use install::{StagedFiles, StagingDir};
 use manifest::{Manifest, cmp_versions};
