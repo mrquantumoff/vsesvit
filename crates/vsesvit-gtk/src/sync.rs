@@ -57,7 +57,7 @@ struct Inner {
     canceller: RefCell<Option<Arc<AtomicBool>>>,
     watchers: RefCell<Vec<Watcher>>,
     window_seen: Cell<bool>,
-    timer: RefCell<Option<glib::SourceId>>,
+    timer: Repeating,
 }
 
 impl Syncer {
@@ -74,7 +74,7 @@ impl Syncer {
             canceller: RefCell::default(),
             watchers: RefCell::default(),
             window_seen: Cell::new(false),
-            timer: RefCell::default(),
+            timer: Repeating::default(),
         }))
     }
 
@@ -135,29 +135,11 @@ impl Syncer {
     }
 
     fn schedule(&self, first_secs: u32) {
-        self.cancel_timer();
-        let weak = Rc::downgrade(&self.0);
-        let first = glib::timeout_add_seconds_local_once(first_secs, move || {
-            let Some(inner) = weak.upgrade() else { return };
-            let weak = Rc::downgrade(&inner);
-            let every = glib::timeout_add_seconds_local(TICK_SECS, move || match weak.upgrade() {
-                Some(inner) => {
-                    Syncer(inner).tick();
-                    glib::ControlFlow::Continue
-                }
-                None => glib::ControlFlow::Break,
-            });
-            // The one-shot source is already gone, so its id is dropped, not removed.
-            *inner.timer.borrow_mut() = Some(every);
-            Syncer(inner).tick();
-        });
-        self.0.timer.replace(Some(first));
+        self.0.timer.start(first_secs, TICK_SECS, Rc::downgrade(&self.0), |inner| Syncer(inner).tick());
     }
 
     fn cancel_timer(&self) {
-        if let Some(timer) = self.0.timer.take() {
-            timer.remove();
-        }
+        self.0.timer.cancel();
     }
 
     fn change_seq(&self) -> Option<Seq> {
@@ -442,6 +424,45 @@ fn settle(state: &mut State, result: Result<(), Error>, synced_at: Option<u64>) 
     }
 }
 
+/// A timer that fires once after a delay, then at an interval for as long as its owner lives.
+/// Also used by the updater.
+#[derive(Default)]
+pub(crate) struct Repeating(Rc<RefCell<Option<glib::SourceId>>>);
+
+impl Repeating {
+    /// Runs `run` after `first` seconds, then every `every` seconds, replacing what ran before.
+    /// The interval is armed before the first run, so a `cancel` inside `run` sticks.
+    pub(crate) fn start<T: 'static>(&self, first: u32, every: u32, owner: Weak<T>, run: fn(Rc<T>)) {
+        self.cancel();
+        let slot = Rc::clone(&self.0);
+        let once = glib::timeout_add_seconds_local_once(first, move || {
+            let Some(inner) = owner.upgrade() else { return };
+            let weak = Rc::downgrade(&inner);
+            let repeat = glib::timeout_add_seconds_local(every, move || match weak.upgrade() {
+                Some(inner) => {
+                    run(inner);
+                    glib::ControlFlow::Continue
+                }
+                None => glib::ControlFlow::Break,
+            });
+            // The one-shot source is already gone, so its id is dropped, not removed.
+            slot.replace(Some(repeat));
+            run(inner);
+        });
+        self.0.replace(Some(once));
+    }
+
+    pub(crate) fn cancel(&self) {
+        if let Some(timer) = self.0.take() {
+            timer.remove();
+        }
+    }
+
+    pub(crate) fn is_armed(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,5 +594,23 @@ mod tests {
         let mut state = signed_in_state(true, false);
         settle(&mut state, Err(Error::SignedOut), None);
         assert_eq!(state, signed_in_state(false, false), "a new sign-in keeps what it shows");
+    }
+
+    struct Stopper {
+        runs: Cell<u32>,
+        timer: Repeating,
+    }
+
+    #[gtk::test]
+    fn a_timer_its_first_run_cancels_stays_cancelled() {
+        let owner = Rc::new(Stopper { runs: Cell::new(0), timer: Repeating::default() });
+        owner.timer.start(0, 1, Rc::downgrade(&owner), |owner| {
+            owner.runs.set(owner.runs.get() + 1);
+            owner.timer.cancel();
+        });
+        crate::test_support::wait_until("the first run", || owner.runs.get() > 0);
+        crate::test_support::settle(Duration::from_millis(2500));
+        assert_eq!(owner.runs.get(), 1, "the interval ran after the cancel");
+        assert!(!owner.timer.is_armed());
     }
 }

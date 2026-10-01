@@ -23,6 +23,7 @@ use vsesvit_update::{
     remove_stale_downloads,
 };
 
+use crate::sync::Repeating;
 use crate::window::BrowserWindow;
 pub(crate) use lifecycle::{Banner, Status, StatusButton};
 use lifecycle::{Effect, Event, Lifecycle, State};
@@ -49,7 +50,7 @@ struct Inner {
     channel: Cell<UpdateChannel>,
     status_watchers: RefCell<Vec<StatusWatcher>>,
     window_seen: Cell<bool>,
-    timer: RefCell<Option<glib::SourceId>>,
+    timer: Repeating,
     restart: Cell<bool>,
 }
 
@@ -94,7 +95,7 @@ impl Updates {
             channel: Cell::new(channel),
             status_watchers: RefCell::default(),
             window_seen: Cell::new(false),
-            timer: RefCell::default(),
+            timer: Repeating::default(),
             restart: Cell::new(false),
         }));
         if !automatic {
@@ -112,7 +113,7 @@ impl Updates {
         self.0.automatic.set(automatic);
         if !automatic {
             self.cancel_timer();
-        } else if self.0.window_seen.get() && self.0.timer.borrow().is_none() {
+        } else if self.0.window_seen.get() && !self.0.timer.is_armed() {
             self.schedule();
         }
     }
@@ -165,31 +166,12 @@ impl Updates {
 
     fn schedule(&self) {
         let weak = Rc::downgrade(&self.0);
-        let first = glib::timeout_add_seconds_local_once(FIRST_CHECK_DELAY_SECS, move || {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            let weak = Rc::downgrade(&inner);
-            let daily = glib::timeout_add_seconds_local(CHECK_INTERVAL_SECS, move || {
-                match weak.upgrade() {
-                    Some(inner) => {
-                        Updates(inner).dispatch(Event::Check);
-                        glib::ControlFlow::Continue
-                    }
-                    None => glib::ControlFlow::Break,
-                }
-            });
-            // The one-shot source is already gone, so its id is dropped, not removed.
-            *inner.timer.borrow_mut() = Some(daily);
-            Updates(inner).dispatch(Event::Check);
-        });
-        self.0.timer.replace(Some(first));
+        let check = |inner| Updates(inner).dispatch(Event::Check);
+        self.0.timer.start(FIRST_CHECK_DELAY_SECS, CHECK_INTERVAL_SECS, weak, check);
     }
 
     fn cancel_timer(&self) {
-        if let Some(timer) = self.0.timer.take() {
-            timer.remove();
-        }
+        self.0.timer.cancel();
     }
 
     fn dispatch(&self, event: Event<Downloaded>) {
