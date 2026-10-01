@@ -3,7 +3,7 @@
 //! version, provenance, an enabled switch and removal; and, per extension, what its
 //! manifest asks for that the Linux runtime does not provide.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -23,6 +23,8 @@ struct State {
     window: glib::WeakRef<BrowserWindow>,
     dialog: adw::PreferencesDialog,
     progress: adw::ActionRow,
+    /// Installs still running: two can overlap, and they share the progress row.
+    installing: Cell<u32>,
     installed: adw::PreferencesGroup,
     rows: RefCell<Vec<gtk::Widget>>,
 }
@@ -72,6 +74,7 @@ fn build(window: &BrowserWindow) -> Rc<State> {
         window: window.downgrade(),
         dialog,
         progress,
+        installing: Cell::new(0),
         installed,
         rows: RefCell::new(Vec::new()),
     });
@@ -119,8 +122,7 @@ impl State {
             }
         };
         let Some(browser) = self.browser() else { return };
-        self.progress.set_subtitle("Starting…");
-        self.progress.set_visible(true);
+        self.install_started();
         let state = self.clone();
         glib::spawn_future_local(async move {
             let progress = {
@@ -128,7 +130,7 @@ impl State {
                 progress_to(move |text| row.set_subtitle(&text))
             };
             let result = browser.install(source, progress).await;
-            state.progress.set_visible(false);
+            state.install_finished();
             match result {
                 Ok(Some(ext)) => state.toast(&format!("Installed {} {}", ext.manifest.name, ext.version)),
                 Ok(None) => state.toast("The extension was removed elsewhere while it downloaded"),
@@ -140,6 +142,18 @@ impl State {
             }
             state.refresh();
         });
+    }
+
+    fn install_started(&self) {
+        self.installing.set(self.installing.get() + 1);
+        self.progress.set_subtitle("Starting…");
+        self.progress.set_visible(true);
+    }
+
+    fn install_finished(&self) {
+        let left = self.installing.get() - 1;
+        self.installing.set(left);
+        self.progress.set_visible(left > 0);
     }
 
     fn choose_file(self: &Rc<Self>) {
@@ -354,6 +368,19 @@ mod tests {
     fn row_titled(state: &State, title: &str) -> Option<gtk::Widget> {
         let is_titled = |row: &&gtk::Widget| row.downcast_ref::<adw::ExpanderRow>().is_some_and(|r| r.title() == title);
         state.rows.borrow().iter().find(is_titled).cloned()
+    }
+
+    #[gtk::test]
+    fn the_progress_row_stays_while_another_install_runs() {
+        let window = BrowserWindow::new(&browser());
+        let state = build(&window);
+        state.install_started();
+        state.install_started();
+        state.install_finished();
+        assert!(state.progress.is_visible(), "the install still running shows no progress");
+        state.install_finished();
+        assert!(!state.progress.is_visible());
+        window.destroy();
     }
 
     #[gtk::test]
