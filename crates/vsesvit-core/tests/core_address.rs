@@ -40,6 +40,53 @@ fn lookalike_hosts_keep_their_punycode() {
     assert_eq!(readable_url(&mixed), mixed);
 }
 
+#[test]
+fn more_lookalike_hosts_keep_their_punycode() {
+    for host in [
+        // Cyrillic and Latin letters that imitate other Latin ones.
+        "ѵіѕа.com",
+        "ınstagram.com",
+        "ǀinkedin.com",
+        "ɡoogle.com",
+        // IPA and Latin Extended Additional letters, with a-z or alone.
+        "pạypal.com",
+        "ɑpple.com",
+        "goọgle.com",
+        "ạṗṗḷẹ.com",
+        // Armenian lookalikes, alone and mixed with Latin ones from outside a-z.
+        "օօց.com",
+        "ɡօօɡḷẹ.com",
+        "ẹxаmple.com",
+        // Two scripts other than Latin, Greek and Cyrillic; a script not used for names.
+        "աბ.com",
+        "ꭰꮪꮃ.com",
+    ] {
+        let url = format!("https://{}/", idna_encode(host));
+        assert_eq!(readable_url(&url), url, "{host}");
+    }
+}
+
+#[test]
+fn names_in_one_script_read_decoded() {
+    for host in [
+        "ελληνικά.gr",
+        "հայաստան.am",
+        "ישראל.il",
+        "مصر.eg",
+        "भारत.in",
+        "ไทย.th",
+        "საქართველო.ge",
+        "例子.中国",
+        "ドメイン名例.jp",
+        "らーめん.jp",
+        "한국.kr",
+        "straße.de",
+    ] {
+        let url = format!("https://{}/", idna_encode(host));
+        assert_eq!(readable_url(&url), format!("https://{host}/"), "{host}");
+    }
+}
+
 fn idna_encode(host: &str) -> String {
     vsesvit_core::Url::parse(&format!("https://{host}/")).unwrap().host_str().unwrap().to_owned()
 }
