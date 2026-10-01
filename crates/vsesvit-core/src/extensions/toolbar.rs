@@ -8,6 +8,8 @@
 //! The functions are pure. A shell reads the pref, calls [`layout`] to paint, and on a pin
 //! toggle or a drag writes back what [`set_pinned`] or [`move_pinned`] returns.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::prefs::{Pref, Scope};
@@ -64,15 +66,17 @@ pub fn move_pinned(available: &[String], saved: &[Entry], id: &str, to: usize) -
 }
 
 /// `saved` without repeated ids, then every available id it lacks, pinned, in install order.
+/// Linear: the list comes from sync, so its length is not ours to choose.
 fn entries(available: &[String], saved: &[Entry]) -> Vec<Entry> {
+    let mut seen: HashSet<&str> = HashSet::with_capacity(saved.len() + available.len());
     let mut entries: Vec<Entry> = Vec::with_capacity(saved.len() + available.len());
     for entry in saved {
-        if !entries.iter().any(|e| e.id == entry.id) {
+        if seen.insert(&entry.id) {
             entries.push(entry.clone());
         }
     }
     for id in available {
-        if !entries.iter().any(|e| &e.id == id) {
+        if seen.insert(id) {
             entries.push(Entry { id: id.clone(), pinned: true });
         }
     }
@@ -127,6 +131,14 @@ mod tests {
     fn repeated_saved_ids_count_once() {
         let s = saved(&[("a", false), ("b", true), ("a", true)]);
         assert_eq!(layout_of(&["a", "b"], &s), (ids(&["b"]), ids(&["a"])));
+    }
+
+    #[test]
+    fn a_huge_saved_list_lays_out_in_linear_time() {
+        let s: Vec<Entry> = (0..100_000).map(|i| Entry { id: format!("x{i}"), pinned: true }).collect();
+        let start = std::time::Instant::now();
+        assert_eq!(layout_of(&["a"], &s), (ids(&["a"]), ids(&[])));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
     }
 
     #[test]
