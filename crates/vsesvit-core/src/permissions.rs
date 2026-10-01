@@ -409,7 +409,10 @@ impl SitePermissions<'_> {
 
     /// Every stored setting, by origin, then permission.
     pub fn all(&mut self) -> Vec<SiteSetting> {
-        let records = load_all(&self.p.conn).unwrap_or_default();
+        let records = load_all(&self.p.conn).unwrap_or_else(|e| {
+            log::warn!("site settings: {e}");
+            Vec::new()
+        });
         let mut out: Vec<SiteSetting> = records
             .into_iter()
             .filter_map(|r| {
@@ -515,9 +518,21 @@ fn load_record(conn: &rusqlite::Connection, origin: &Origin, p: Permission) -> R
     Ok(rec.map(|(_, r)| r))
 }
 
+/// Skips rows this build cannot read (a permission a newer build knows), leaving them stored.
+/// Any other error, such as a busy database, fails the whole read.
 fn load_all(conn: &rusqlite::Connection) -> Result<Vec<SitePermissionRecord>, Error> {
     let mut stmt = conn.prepare(&format!("SELECT {COLUMNS} FROM site_permissions WHERE setting IS NOT NULL"))?;
-    let rows = stmt.query_map([], row_record)?.map(|row| row.map(|(_, r)| r)).collect::<Result<_, _>>()?;
+    let rows = stmt
+        .query_map([], row_record)?
+        .filter_map(|row| match row {
+            Ok((_, r)) => Some(Ok(r)),
+            Err(e @ rusqlite::Error::FromSqlConversionFailure(..)) => {
+                log::warn!("site settings: skipping a row this build cannot read: {e}");
+                None
+            }
+            Err(e) => Some(Err(e)),
+        })
+        .collect::<Result<_, _>>()?;
     Ok(rows)
 }
 

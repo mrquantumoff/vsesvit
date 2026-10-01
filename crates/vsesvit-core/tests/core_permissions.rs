@@ -369,6 +369,26 @@ fn a_v5_profile_gains_the_table() {
 }
 
 #[test]
+fn a_row_from_a_newer_build_hides_no_other_settings() {
+    let dir = tmp();
+    let site = origin("https://a.example");
+    let mut p = open_at(&dir, 1);
+    p.site_permissions().set(&site, Location, Some(Setting::Block)).unwrap();
+    drop(p);
+    let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
+    conn.execute(
+        "INSERT INTO site_permissions (origin, permission, setting, setting_at, seq) SELECT origin, 'usb', 'block', setting_at, 999 FROM site_permissions",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut p = open_at(&dir, 1);
+    assert_eq!(p.site_permissions().all(), [SiteSetting { origin: site.clone(), permission: Location, setting: Setting::Block }]);
+    assert_eq!(p.site_permissions().get(&site, Location), Some(Setting::Block));
+}
+
+#[test]
 fn settings_sync_between_profiles() {
     let (mut a, _da) = open(1);
     let (mut b, _db) = open(2);
