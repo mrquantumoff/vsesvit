@@ -133,9 +133,7 @@ impl SyncTypes {
         if self.chosen() == types {
             return;
         }
-        if let Err(e) = self.browser.core().borrow_mut().prefs().set(&keys::SYNC_TYPES, &types.to_vec()) {
-            log::warn!("prefs: {e}");
-        }
+        self.browser.set_pref(&keys::SYNC_TYPES, &types.to_vec());
         self.browser.sync().types_changed();
     }
 }
@@ -325,10 +323,7 @@ pub(crate) fn sync_server_row(browser: &Browser, group: &adw::PreferencesGroup) 
         browser,
         move |row| match vsesvit_sync::normalize_base_url(&row.text()) {
             Ok(server) => {
-                let set = browser.core().borrow_mut().prefs().set(&keys::SYNC_SERVER, &server);
-                if let Err(e) = set {
-                    log::warn!("prefs: {e}");
-                }
+                browser.set_pref(&keys::SYNC_SERVER, &server);
                 if row.text() != server {
                     row.set_text(&server);
                 }
@@ -363,7 +358,7 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
         "Ask Where to Save Each File",
         None,
         &keys::DOWNLOADS_ASK,
-        Browser::set_switch,
+        |b, pref, on| b.set_pref(pref, &on),
     ));
 
     let system = group("System");
@@ -519,14 +514,14 @@ fn search_page(browser: &Browser) -> adw::PreferencesPage {
         "Browsing History",
         None,
         &keys::SUGGEST_HISTORY,
-        Browser::set_switch,
+        |b, pref, on| b.set_pref(pref, &on),
     ));
     suggestions.add(&pref_switch_row(
         browser,
         "Bookmarks",
         None,
         &keys::SUGGEST_BOOKMARKS,
-        Browser::set_switch,
+        |b, pref, on| b.set_pref(pref, &on),
     ));
 
     page("search", "Search", "system-search-symbolic", &[engine, address_bar, suggestions])
@@ -722,10 +717,7 @@ fn startup_row(browser: &Browser) -> adw::ComboRow {
             if let Some((startup, _)) = STARTUPS.get(row.selected() as usize)
                 && browser.core().borrow_mut().prefs().get(&keys::STARTUP) != *startup
             {
-                let set = browser.core().borrow_mut().prefs().set(&keys::STARTUP, startup);
-                if let Err(e) = set {
-                    log::warn!("prefs: {e}");
-                }
+                browser.set_pref(&keys::STARTUP, startup);
             }
         }
     ));
@@ -756,10 +748,7 @@ fn homepage_row(browser: &Browser) -> adw::EntryRow {
         move |row| {
             let text = row.text().trim().to_owned();
             let value = if text.is_empty() { "about:home".to_owned() } else { text };
-            let set = browser.core().borrow_mut().prefs().set(&keys::HOMEPAGE, &value);
-            if let Err(e) = set {
-                log::warn!("prefs: {e}");
-            }
+            browser.set_pref(&keys::HOMEPAGE, &value);
         }
     ));
     browser.watch_prefs(glib::clone!(
@@ -976,19 +965,13 @@ fn download_folder_row(window: &BrowserWindow) -> adw::ActionRow {
             glib::spawn_future_local(async move {
                 let Ok(folder) = dialog.select_folder_future(Some(&window)).await else { return };
                 let Some(path) = folder.path() else { return };
-                let set = window.browser().core().borrow_mut().prefs().set(&keys::DOWNLOADS_DIR, &Some(path));
-                if let Err(e) = set {
-                    log::warn!("prefs: {e}");
-                }
+                window.browser().set_pref(&keys::DOWNLOADS_DIR, &Some(path));
                 show();
             });
         }
     ));
     reset.connect_clicked(move |_| {
-        let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);
-        if let Err(e) = reset {
-            log::warn!("prefs: {e}");
-        }
+        browser.reset_pref(&keys::DOWNLOADS_DIR);
         show();
     });
     row

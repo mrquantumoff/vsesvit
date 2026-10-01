@@ -635,10 +635,7 @@ impl Browser {
 
     /// Writes the synced preference and re-lays out every open window at once.
     pub(crate) fn set_tabs_position(&self, position: TabsPosition) {
-        let set = self.core().borrow_mut().prefs().set(&keys::TABS_POSITION, &position);
-        if let Err(e) = set {
-            log::warn!("prefs: {e}");
-        }
+        self.set_pref(&keys::TABS_POSITION, &position);
         for window in self.windows() {
             window.apply_layout(position);
         }
@@ -648,10 +645,18 @@ impl Browser {
         self.core().borrow_mut().prefs().get(pref)
     }
 
-    /// Writes an on/off preference. The `set_*` methods that call it also apply it.
-    pub(crate) fn set_switch(&self, pref: &Pref<bool>, on: bool) {
-        let set = self.core().borrow_mut().prefs().set(pref, &on);
+    /// Writes a preference, logging a failure. The `set_*` methods that call it also apply it.
+    pub(crate) fn set_pref<T: serde::Serialize>(&self, pref: &Pref<T>, value: &T) {
+        let set = self.core().borrow_mut().prefs().set(pref, value);
         if let Err(e) = set {
+            log::warn!("prefs: {e}");
+        }
+    }
+
+    /// Puts a preference back to its default, logging a failure.
+    pub(crate) fn reset_pref<T>(&self, pref: &Pref<T>) {
+        let reset = self.core().borrow_mut().prefs().reset(pref);
+        if let Err(e) = reset {
             log::warn!("prefs: {e}");
         }
     }
@@ -661,7 +666,7 @@ impl Browser {
     }
 
     pub(crate) fn set_bookmarks_bar_visible(&self, shown: bool) {
-        self.set_switch(&keys::SHOW_BOOKMARKS_BAR, shown);
+        self.set_pref(&keys::SHOW_BOOKMARKS_BAR, &shown);
         for window in self.windows() {
             window.set_bookmarks_bar_visible(shown);
         }
@@ -672,7 +677,7 @@ impl Browser {
     }
 
     pub(crate) fn set_home_button_visible(&self, shown: bool) {
-        self.set_switch(&keys::SHOW_HOME_BUTTON, shown);
+        self.set_pref(&keys::SHOW_HOME_BUTTON, &shown);
         for window in self.windows() {
             window.set_home_button_visible(shown);
         }
@@ -683,7 +688,7 @@ impl Browser {
     }
 
     pub(crate) fn set_compact_address_bar(&self, compact: bool) {
-        self.set_switch(&keys::COMPACT_ADDRESS_BAR, compact);
+        self.set_pref(&keys::COMPACT_ADDRESS_BAR, &compact);
         for window in self.windows() {
             window.set_compact_address_bar(compact);
         }
@@ -694,7 +699,7 @@ impl Browser {
     }
 
     pub(crate) fn set_full_urls(&self, full: bool) {
-        self.set_switch(&keys::SHOW_FULL_URLS, full);
+        self.set_pref(&keys::SHOW_FULL_URLS, &full);
         for window in self.windows() {
             window.set_full_urls(full);
         }
@@ -703,7 +708,7 @@ impl Browser {
     /// Pop-ups, smooth scrolling and hardware acceleration: the engine's one settings
     /// object applies them to every view.
     pub(crate) fn set_engine_switch(&self, pref: &Pref<bool>, on: bool) {
-        self.set_switch(pref, on);
+        self.set_pref(pref, &on);
         self.engine().apply_prefs(&mut self.core().borrow_mut());
     }
 
@@ -712,10 +717,7 @@ impl Browser {
     }
 
     pub(crate) fn set_theme(&self, theme: Theme) {
-        let set = self.core().borrow_mut().prefs().set(&keys::THEME, &theme);
-        if let Err(e) = set {
-            log::warn!("prefs: {e}");
-        }
+        self.set_pref(&keys::THEME, &theme);
         self.apply_theme();
     }
 
@@ -731,7 +733,7 @@ impl Browser {
     /// The Settings switch for `updates.automatic`, a local preference: writes it and
     /// starts or stops this installation's checks.
     pub(crate) fn set_updates_automatic(&self, automatic: bool) {
-        self.set_switch(&keys::UPDATES_AUTOMATIC, automatic);
+        self.set_pref(&keys::UPDATES_AUTOMATIC, &automatic);
         if let Some(updates) = &self.0.updates {
             updates.set_automatic(automatic);
         }
@@ -740,14 +742,7 @@ impl Browser {
     /// The Settings choice of `updates.channel`, a local preference: writes it and checks the
     /// new channel, even with automatic updates off, because the user just asked for it.
     pub(crate) fn set_updates_channel(&self, channel: UpdateChannel) {
-        let set = self
-            .core()
-            .borrow_mut()
-            .prefs()
-            .set(&keys::UPDATES_CHANNEL, &channel);
-        if let Err(e) = set {
-            log::warn!("prefs: {e}");
-        }
+        self.set_pref(&keys::UPDATES_CHANNEL, &channel);
         if let Some(updates) = &self.0.updates {
             updates.set_channel(channel);
         }
@@ -1141,5 +1136,16 @@ mod tests {
             .find(|info| info.id == tab.id());
         window.destroy();
         assert_eq!(info.map(|info| info.url), Some(url));
+    }
+
+    #[gtk::test]
+    fn a_preference_is_written_and_reset() {
+        let browser = browser();
+        browser.set_pref(&keys::HOMEPAGE, &"https://example.test/".to_owned());
+        let set = browser.core().borrow_mut().prefs().get(&keys::HOMEPAGE);
+        browser.reset_pref(&keys::HOMEPAGE);
+        let reset = browser.core().borrow_mut().prefs().get(&keys::HOMEPAGE);
+        assert_eq!(set, "https://example.test/");
+        assert_eq!(reset, "about:home");
     }
 }

@@ -24,6 +24,7 @@ gtk = { workspace = true }
 adw = { workspace = true }
 webkit = { workspace = true }
 javascriptcore = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 url = { workspace = true }

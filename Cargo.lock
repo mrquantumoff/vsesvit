@@ -3368,6 +3368,7 @@ dependencies = [
  "libadwaita",
  "log",
  "semver",
+ "serde",
  "serde_json",
  "time",
  "url",
