@@ -178,19 +178,32 @@ const REDIRECTS: &[Redirect] = &[
     },
 ];
 
+/// Redirect wrappers unwrapped at most this deep; a deeper chain is cleaned as it stands.
+const MAX_UNWRAP: usize = 8;
+
 /// `url` without tracking parameters, and a redirect wrapper replaced by the cleaned link it
 /// forwards to. Everything else keeps its form: the order, encoding and values of other
 /// parameters and the fragment. A query left empty loses its `?`. Text that does not parse, a
 /// scheme other than `http` or `https`, and a URL with nothing to remove come back unchanged.
 pub fn clean(url: &str) -> String {
+    let mut current = url.to_owned();
+    for _ in 0..MAX_UNWRAP {
+        let parsed = Url::parse(&current).ok().filter(|u| matches!(u.scheme(), "http" | "https"));
+        match parsed.and_then(|u| redirect_target(&u)) {
+            Some(target) => current = target,
+            None => break,
+        }
+    }
+    strip(&current)
+}
+
+/// `url` without tracking parameters (see [`clean`]), wrappers left as they are.
+fn strip(url: &str) -> String {
     let Ok(mut parsed) = Url::parse(url) else {
         return url.to_owned();
     };
     if !matches!(parsed.scheme(), "http" | "https") {
         return url.to_owned();
-    }
-    if let Some(target) = redirect_target(&parsed) {
-        return clean(&target);
     }
     let host = parsed.host_str().unwrap_or_default();
     let sites: Vec<&Site> = SITES.iter().filter(|s| s.domains.iter().any(|d| d.matches(host))).collect();
@@ -380,6 +393,20 @@ mod tests {
             ),
             ("https://lm.facebook.com/l.php?u=http%3A%2F%2Fexample.org%2Fx", "http://example.org/x"),
         ]);
+    }
+
+    #[test]
+    fn nested_redirects_unwrap_within_the_cap() {
+        assert_cleans(&[(
+            "https://www.google.com/url?q=https://www.google.com/url?q=https://example.com/a?fbclid=1",
+            "https://example.com/a",
+        )]);
+    }
+
+    #[test]
+    fn deeply_nested_redirects_do_not_overflow() {
+        let url = "https://www.google.com/url?q=".repeat(50_000) + "https://example.com/?utm_source=x";
+        assert!(clean(&url).starts_with("https://www.google.com/url?q="));
     }
 
     #[test]
