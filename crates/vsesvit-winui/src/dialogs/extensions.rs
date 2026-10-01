@@ -298,6 +298,8 @@ impl Manager {
                         let _ = me
                             .status
                             .SetText(&format!("Could not change {}: {e}", id.as_str()));
+                        // The switch shows what core keeps, which a refused change left as it was.
+                        me.render();
                     }
                 });
             })?
