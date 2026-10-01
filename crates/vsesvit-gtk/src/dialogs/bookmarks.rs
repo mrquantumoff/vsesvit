@@ -249,8 +249,8 @@ impl State {
         self.window.upgrade().map(|window| window.browser().core().clone())
     }
 
-    /// Rebuilds the tree from core. The first build expands the three roots; later ones
-    /// keep the folders that were open.
+    /// Rebuilds the tree from core, and the search results while they show. The first build
+    /// expands the three roots; later ones keep the folders that were open.
     fn rebuild(&self) {
         let Some(core) = self.core() else { return };
         let first = self.tree.n_items() == 0;
@@ -275,6 +275,10 @@ impl State {
             }
             i += 1;
         }
+        let text = self.ui.search.text();
+        if !text.trim().is_empty() {
+            self.search(&text);
+        }
     }
 
     /// A row dropped on `zone` of `target`: one core move, then the tree and the bars.
@@ -286,7 +290,11 @@ impl State {
         }
     }
 
+    /// The row selected in the tree, while the tree shows rather than search results.
     fn selected(&self) -> Option<BookmarkNode> {
+        if self.stack.visible_child_name().as_deref() != Some("tree") {
+            return None;
+        }
         self.selection
             .selected_item()
             .and_downcast::<gtk::TreeListRow>()
@@ -710,5 +718,42 @@ mod tests {
         drop(window);
         wait_until("the state to go", || weak.upgrade().is_none());
         opener.destroy();
+    }
+
+    #[gtk::test]
+    fn a_search_hides_the_tree_selection_and_follows_changes() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let state = build(&window);
+        let core = browser.core().clone();
+        let (folder, zebra) = {
+            let mut profile = core.borrow_mut();
+            let mut bookmarks = profile.bookmarks();
+            let folder = bookmarks.add_folder(BookmarkId::OTHER, InsertAt::End, "Search test").unwrap();
+            let zebra = bookmarks.add_url(folder, InsertAt::End, "Zebra", &Url::parse("https://zebra.example/").unwrap()).unwrap();
+            (folder, zebra)
+        };
+        state.rebuild();
+        let position = |id| {
+            (0..state.tree.n_items()).find(|&i| {
+                state.tree.row(i).and_then(|row| row.item()).and_then(|item| node_of(&item)).is_some_and(|node| node.id == id)
+            })
+        };
+        state.tree.row(position(folder).expect("the test folder is in the tree")).unwrap().set_expanded(true);
+        state.selection.set_selected(position(zebra).expect("the bookmark is in the tree"));
+        let before_search = state.selected().map(|node| node.id);
+
+        state.ui.search.set_text("zebra");
+        state.search("zebra");
+        let while_searching = (state.stack.visible_child_name(), state.selected().map(|node| node.id));
+        core.borrow_mut().bookmarks().remove(zebra).unwrap();
+        state.rebuild();
+        let after_removal = (state.stack.visible_child_name(), state.result_rows.borrow().len());
+
+        core.borrow_mut().bookmarks().remove(folder).unwrap();
+        window.destroy();
+        assert_eq!(before_search, Some(zebra));
+        assert_eq!(while_searching, (Some("results".into()), None), "the toolbar does not act on rows the search hides");
+        assert_eq!(after_removal, (Some("empty".into()), 0), "the results follow changes");
     }
 }
