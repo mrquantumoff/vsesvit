@@ -38,13 +38,17 @@ pub(crate) enum Initial {
     Opener(NewWindowRequest),
 }
 
+/// A deferred `window.open`. Dropping one that was not fulfilled cancels it, so whichever way
+/// opening its tab failed, the page's call returns `null` instead of WebView2 opening a window
+/// of its own.
 pub(crate) struct NewWindowRequest {
     args: CoreWebView2NewWindowRequestedEventArgs,
-    deferral: Deferral,
+    /// Taken once the request is answered.
+    deferral: Option<Deferral>,
 }
 
 impl NewWindowRequest {
-    fn fulfil(self, core: &CoreWebView2) {
+    fn fulfil(mut self, core: &CoreWebView2) {
         let set = self
             .args
             .SetNewWindow(core)
@@ -52,12 +56,18 @@ impl NewWindowRequest {
         if let Err(e) = set {
             log::warn!("new window request: {e}");
         }
-        let _ = self.deferral.Complete();
+        if let Some(deferral) = self.deferral.take() {
+            let _ = deferral.Complete();
+        }
     }
+}
 
-    fn cancel(self) {
-        let _ = self.args.SetHandled(true);
-        let _ = self.deferral.Complete();
+impl Drop for NewWindowRequest {
+    fn drop(&mut self) {
+        if let Some(deferral) = self.deferral.take() {
+            let _ = self.args.SetHandled(true);
+            let _ = deferral.Complete();
+        }
     }
 }
 
@@ -287,16 +297,10 @@ impl Tab {
             Ok(core) => core,
             Err(e) => {
                 log::error!("tab {}: WebView2 initialization failed: {e}", self.id);
-                if let Initial::Opener(request) = initial {
-                    request.cancel();
-                }
                 return;
             }
         };
         if self.closed.get() {
-            if let Initial::Opener(request) = initial {
-                request.cancel();
-            }
             let _ = self.view.Close();
             return;
         }
@@ -926,7 +930,7 @@ impl Tab {
             .is_some_and(|(link, at)| link == url && at.elapsed() < Duration::from_secs(3));
         let request = NewWindowRequest {
             args: args.clone(),
-            deferral,
+            deferral: Some(deferral),
         };
         window.open_tab_from(self.id, Initial::Opener(request), background);
     }

@@ -466,9 +466,19 @@ impl BrowserWindow {
         } else {
             index.max(pinned_before)
         };
-        self.strip().insert(index, tab.id, &tab.look())?;
-        if foreground || self.strip().selected().is_none() {
-            self.strip().select(tab.id)?;
+        let placed = self
+            .strip()
+            .insert(index, tab.id, &tab.look())
+            .and_then(|()| {
+                if foreground || self.strip().selected().is_none() {
+                    self.strip().select(tab.id)?;
+                }
+                Ok(())
+            });
+        if let Err(e) = placed {
+            // Leaves nothing of a tab that never starts; dropping `initial` cancels a request.
+            let _ = self.remove_tab(&tab);
+            return Err(e);
         }
         self.sync_selection();
         exec::spawn(tab.clone().start(
