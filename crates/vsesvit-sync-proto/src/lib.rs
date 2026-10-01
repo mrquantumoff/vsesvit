@@ -43,6 +43,10 @@ pub const SESSION_PATH: &str = "/v1/auth/session";
 pub const RECORDS_PATH: &str = "/v1/records";
 pub const ACCOUNT_PATH: &str = "/v1/account";
 
+/// Bytes of one record's id; core's longest ids are history URLs. The server rejects an upload
+/// holding an empty or longer one.
+pub const MAX_ID_BYTES: usize = 8 * 1024;
+
 /// What a client learns before it signs in. Served without authentication.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerInfo {

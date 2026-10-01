@@ -15,8 +15,8 @@ use serde::Deserialize;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use vsesvit_sync_proto::{
-    ACCOUNT_PATH, AUTHORIZE_PATH, ApiError, CALLBACK_PATH, INFO_PATH, OAuthError, PROTOCOL, Page, RECORDS_PATH, SESSION_PATH, ServerInfo,
-    TOKEN_PATH, TokenResponse, Upload, Uploaded,
+    ACCOUNT_PATH, AUTHORIZE_PATH, ApiError, CALLBACK_PATH, INFO_PATH, MAX_ID_BYTES, OAuthError, PROTOCOL, Page, RECORDS_PATH, SESSION_PATH,
+    ServerInfo, TOKEN_PATH, TokenResponse, Upload, Uploaded,
 };
 
 use crate::auth::{AuthError, Provider, challenge, random_token};
@@ -24,8 +24,6 @@ use crate::config::Config;
 use crate::entities::logins;
 use crate::store::{self, AccountId, LoginError, NewLogin, Quota, UploadError, token_hash};
 
-/// Longest record id accepted; core's longest ids are history URLs.
-const MAX_ID_BYTES: usize = 8 * 1024;
 /// Longest `state` a browser may send through a sign-in.
 const MAX_STATE_BYTES: usize = 1024;
 /// A request still running after this is answered 408. Uploads are one transaction, and a sign-in's

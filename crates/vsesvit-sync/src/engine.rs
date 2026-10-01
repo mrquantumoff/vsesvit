@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use vsesvit_core::crdt::Seq;
 use vsesvit_core::sync::{ApplyReport, DataType, Kind, SyncStore, WireRecord};
-use vsesvit_sync_proto::{Limits, Page, Record, Upload};
+use vsesvit_sync_proto::{Limits, MAX_ID_BYTES, Page, Record, Upload};
 
 use crate::auth;
 use crate::server::{self, Call};
@@ -143,9 +143,9 @@ pub struct Round {
 
 impl Round {
     /// Collects up to one batch of local changes of the `types` this device syncs, oldest first per
-    /// kind. A record larger than the server takes is left out and logged; nothing else could send
-    /// it. The kinds of other types keep their cursors, so turning a type on uploads what changed
-    /// while it was off.
+    /// kind. A record larger than the server takes, or with an id it refuses, is left out and
+    /// logged; nothing else could send it. The kinds of other types keep their cursors, so turning
+    /// a type on uploads what changed while it was off.
     pub fn gather(store: &mut SyncStore<'_>, mut account: Account, types: &[DataType]) -> Result<Round, Error> {
         let types: BTreeSet<DataType> = types.iter().copied().collect();
         if !types.is_subset(&account.downloading) {
@@ -166,8 +166,8 @@ impl Round {
             upto.insert(kind.code(), batch.upto.0);
             more_up |= batch.more;
             for wire in batch.records {
-                if wire.body.len() > account.limits.max_record_bytes as usize {
-                    log::warn!("not syncing {kind:?} {}: {} bytes is over the server's limit", wire.id, wire.body.len());
+                if wire.id.is_empty() || wire.id.len() > MAX_ID_BYTES || wire.body.len() > account.limits.max_record_bytes as usize {
+                    log::warn!("not syncing {kind:?}: its {}-byte id or {}-byte body is over the server's limits", wire.id.len(), wire.body.len());
                     continue;
                 }
                 records.push(Record { kind: kind.code(), id: wire.id, body: wire.body });
@@ -320,5 +320,31 @@ mod tests {
         let sizes: Vec<usize> = chunks((0..4).map(|_| record(1500)).collect(), limits).iter().map(Vec::len).collect();
         assert_eq!(sizes, [2, 2]);
         assert!(chunks(Vec::new(), limits).is_empty());
+    }
+
+    #[test]
+    fn a_record_whose_id_the_server_refuses_is_left_out_and_passed() {
+        use vsesvit_core::history::Transition;
+        use vsesvit_core::vault::KeyStore;
+        use vsesvit_core::{OpenOptions, Profile, Url};
+
+        let dir = std::env::temp_dir().join(format!("vsesvit-sync-long-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut profile = Profile::open(&dir, OpenOptions { key_store: KeyStore::Basic, ..OpenOptions::default() }).unwrap();
+        let long = Url::parse(&format!("https://example.com/?q={}", "a".repeat(9000))).unwrap();
+        profile.history().record_visit(&Url::parse("https://example.com/short").unwrap(), Transition::Link).unwrap();
+        profile.history().record_visit(&long, Transition::Link).unwrap();
+
+        let limits = Limits { max_batch: 100, max_record_bytes: 1 << 20, max_request_bytes: 4 << 20 };
+        let account = Account::new("https://sync.example.com".to_owned(), None, "session".to_owned(), limits);
+        let mut store = profile.sync();
+        let round = Round::gather(&mut store, account, &[DataType::History]).unwrap();
+        let ids: Vec<usize> = round.records.iter().map(|r| r.id.len()).collect();
+        assert_eq!(ids, ["https://example.com/short".len()], "the long URL is left out");
+        let all = store.changes_since(Kind::HistoryPages, Seq(0), 100).unwrap();
+        assert_eq!(round.upto[&Kind::HistoryPages.code()], all.upto.0, "the cursor passes the long one too");
+        drop(store);
+        drop(profile);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
