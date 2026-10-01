@@ -249,7 +249,8 @@ impl Prefs<'_> {
             }
             let at = tx.stamp();
             rec.value.set(value, at);
-            let seq = tx.seq();
+            // A Local row is never uploaded, so it takes no seq and leaves `change_seq` alone.
+            let seq = if scope == Scope::Synced { tx.seq() } else { Seq::ZERO };
             store_record(&tx.sql, &rec, seq, Some(scope == Scope::Synced))
         })
     }

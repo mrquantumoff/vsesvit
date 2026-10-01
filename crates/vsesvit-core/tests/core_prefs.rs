@@ -199,3 +199,18 @@ fn a_local_pref_reads_only_what_this_device_wrote() {
     assert_eq!(p.prefs().get(&shell_local), 5);
     assert!(exported(&mut p).is_empty(), "the local write takes the row back from sync");
 }
+
+/// A Local pref has nothing to upload, so writing one must not move `change_seq`, which the
+/// shells watch to start a sync.
+#[test]
+fn local_prefs_leave_the_change_seq_alone() {
+    let (mut p, _dir) = open();
+    let before = p.change_seq();
+    p.prefs().set(&keys::DOWNLOADS_DIR, &Some(PathBuf::from("/tmp/x"))).unwrap();
+    p.prefs().set(&keys::HARDWARE_ACCELERATION, &false).unwrap();
+    p.prefs().reset(&keys::HARDWARE_ACCELERATION).unwrap();
+    assert_eq!(p.change_seq(), before);
+    p.prefs().set(&keys::DOWNLOADS_ASK, &true).unwrap();
+    assert!(p.change_seq() > before);
+    assert_eq!(p.prefs().get(&keys::DOWNLOADS_DIR), Some(PathBuf::from("/tmp/x")));
+}
