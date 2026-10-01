@@ -531,14 +531,7 @@ async fn background_tab(
     eval(&tab, ASK_LOCATION).await?;
     exec::sleep(Duration::from_millis(1000)).await;
     let while_behind = window.permission_prompt().is_some();
-    let index = window
-        .tabs_in_order()
-        .iter()
-        .position(|t| t.id == tab.id)
-        .ok_or("the background tab is gone")?;
-    window.run(Command::SelectTab(
-        u8::try_from(index).map_err(|e| e.to_string())?,
-    ));
+    select_tab(window, &tab)?;
     let prompt = wait_prompt(window).await;
     let heading = prompt.as_ref().map(|p| text_of(p, "PromptHeading"));
     shoot_clear(
