@@ -72,6 +72,7 @@
   if (store === "edge") {
     webstore.getExtensionStatus = (id, manifest, callback) =>
       ask("list").then((r) => {
+        if (!r.extensions) return answer(lastArg([manifest, callback]), r.error ?? "unknown_error");
         const e = r.extensions.find((e) => e.id === id);
         return answer(lastArg([manifest, callback]), null, e ? (e.enabled ? "enabled" : "disabled") : "installable");
       });
@@ -81,10 +82,13 @@
   }
 
   if (emulated) {
-    const list = () => ask("list").then((r) => r.extensions.map(describe));
-    management.getAll = (callback) => list().then((all) => answer(callback, null, all));
+    // The shell answers with `extensions`, or with `error` when it could not list them.
+    const list = () =>
+      ask("list").then((r) => (r.extensions ? { all: r.extensions.map(describe) } : { error: r.error ?? "unknown_error" }));
+    management.getAll = (callback) => list().then(({ error, all }) => answer(callback, error, all));
     management.get = (id, callback) =>
-      list().then((all) => {
+      list().then(({ error, all }) => {
+        if (error) return answer(callback, error);
         const e = all.find((e) => e.id === id);
         return answer(callback, e ? null : `No extension with id ${id}`, e);
       });
