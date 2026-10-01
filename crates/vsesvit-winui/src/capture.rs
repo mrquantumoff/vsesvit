@@ -7,7 +7,7 @@
 //!   own; each open one is captured the same way and drawn over the window where it is on
 //!   screen.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use windows_core::{IInspectable, Interface, Result};
 
@@ -104,23 +104,20 @@ async fn capture_window(hwnd: HWND) -> Result<Layer> {
         let _ = session.SetIsCursorCaptureEnabled(false);
     }
     session.StartCapture()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let frame = loop {
-        if let Ok(frame) = pool.TryGetNextFrame() {
-            break frame;
-        }
-        if Instant::now() > deadline {
-            let _ = session.cast::<IClosable>().and_then(|s| s.Close());
-            let _ = pool.cast::<IClosable>().and_then(|p| p.Close());
-            return Err(windows_core::Error::new(
-                E_FAIL,
-                "no frame from Windows.Graphics.Capture within 5 s",
-            ));
-        }
-        exec::sleep(Duration::from_millis(16)).await;
+    let frame = exec::wait_for(Duration::from_secs(5), Duration::from_millis(16), || {
+        pool.TryGetNextFrame().ok()
+    })
+    .await;
+    let bitmap = match &frame {
+        Some(frame) => SoftwareBitmap::CreateCopyFromSurfaceAsync(&frame.Surface()?)?.await,
+        None => Err(windows_core::Error::new(
+            E_FAIL,
+            "no frame from Windows.Graphics.Capture within 5 s",
+        )),
     };
-    let bitmap = SoftwareBitmap::CreateCopyFromSurfaceAsync(&frame.Surface()?)?.await;
-    let _ = frame.cast::<IClosable>().and_then(|f| f.Close());
+    if let Some(frame) = &frame {
+        let _ = frame.cast::<IClosable>().and_then(|f| f.Close());
+    }
     let _ = session.cast::<IClosable>().and_then(|s| s.Close());
     let _ = pool.cast::<IClosable>().and_then(|p| p.Close());
     let bitmap = bitmap?;
