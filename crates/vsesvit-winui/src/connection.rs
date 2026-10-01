@@ -107,9 +107,22 @@ pub(crate) enum Headline {
     Local,
 }
 
+/// The URL whose origin a page has: the inner URL of a blob: or filesystem: URL, which the
+/// page that made it shares, or `url` itself.
+pub(crate) fn origin_url(url: &str) -> &str {
+    ["blob:", "filesystem:"]
+        .iter()
+        .find(|prefix| {
+            url.get(..prefix.len())
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case(prefix))
+        })
+        .map_or(url, |prefix| &url[prefix.len()..])
+}
+
 impl Headline {
+    /// By the scheme of the page's origin, so a blob: page an http site made is not secure.
     pub fn of(url: &str, report: Option<&Report>) -> Self {
-        match url.split_once(':').map(|(scheme, _)| scheme) {
+        match origin_url(url).split_once(':').map(|(scheme, _)| scheme) {
             Some("https") if report.is_none_or(|r| r.state == "secure") => Headline::Secure,
             Some("https" | "http") => Headline::NotSecure,
             _ => Headline::Local,
@@ -423,5 +436,31 @@ mod tests {
         assert_eq!(Headline::of("http://a.test/", None), Headline::NotSecure);
         assert_eq!(Headline::of("file:///C:/a.html", None), Headline::Local);
         assert_eq!(Headline::of("data:text/html,x", None), Headline::Local);
+    }
+
+    #[test]
+    fn blob_and_filesystem_pages_take_their_creators_headline() {
+        let secure = Report {
+            state: "secure".into(),
+            ..Report::default()
+        };
+        assert_eq!(
+            Headline::of("blob:http://evil.test/1b2c", None),
+            Headline::NotSecure
+        );
+        assert_eq!(
+            Headline::of("filesystem:http://evil.test/temporary/a.html", None),
+            Headline::NotSecure
+        );
+        assert_eq!(
+            Headline::of("BLOB:https://a.test/1b2c", Some(&secure)),
+            Headline::Secure
+        );
+        assert_eq!(Headline::of("blob:null/1b2c", None), Headline::Local);
+        assert_eq!(
+            origin_url("blob:https://a.test/1b2c"),
+            "https://a.test/1b2c"
+        );
+        assert_eq!(origin_url("https://a.test/"), "https://a.test/");
     }
 }
