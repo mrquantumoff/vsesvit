@@ -277,7 +277,7 @@ impl BookmarksBar {
     }
 
     /// The bar's button for `url`, if it has one.
-    fn button_for(&self, url: &str) -> Option<gtk::Button> {
+    pub(crate) fn button_for(&self, url: &str) -> Option<gtk::Button> {
         self.row
             .imp()
             .items

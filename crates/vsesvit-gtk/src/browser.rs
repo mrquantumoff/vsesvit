@@ -1016,6 +1016,46 @@ mod tests {
     }
 
     #[gtk::test]
+    fn visiting_more_of_a_bookmarked_site_keeps_the_bar_buttons() {
+        let png = |rgba: [u8; 4]| {
+            let pixels = glib::Bytes::from_owned(rgba.repeat(16 * 16));
+            gtk::gdk::MemoryTexture::new(16, 16, gtk::gdk::MemoryFormat::R8g8b8a8, &pixels, 16 * 4).save_to_png_bytes().to_vec()
+        };
+        let (red, blue) = (png([200, 40, 40, 255]), png([40, 90, 200, 255]));
+        let server = Server::start("127.0.0.5", move |path| match path {
+            "/" => Reply::Body("text/html", b"<!doctype html><title>Home</title><link rel=icon href=/red.png>".to_vec()),
+            "/inbox" => Reply::Body("text/html", b"<!doctype html><title>Inbox</title><link rel=icon href=/blue.png>".to_vec()),
+            "/red.png" => Reply::Body("image/png", red.clone()),
+            "/blue.png" => Reply::Body("image/png", blue.clone()),
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let (url, inbox) = (server.url("/"), Url::parse(&server.url("/inbox")).unwrap());
+        let window = BrowserWindow::new(&browser);
+        let tab = window.open_tab(Some(&url), None, Focus::Foreground);
+        wait_until("the page's favicon", || tab.web_view().favicon().is_some());
+        browser.star_clicked(&window);
+        let home_icon = browser.core().borrow_mut().favicons().get(&inbox).unwrap();
+        let button = window.bookmarks_bar().button_for(&url);
+        tab.load(inbox.as_str());
+        wait_until("the other page's icon to be kept", || {
+            browser.core().borrow_mut().favicons().get(&inbox).unwrap() != home_icon
+        });
+        let button_after = window.bookmarks_bar().button_for(&url);
+        let shown = window.bookmarks_bar().shows_favicon(&url);
+        {
+            let mut profile = browser.core().borrow_mut();
+            let mut bookmarks = profile.bookmarks();
+            for node in bookmarks.find_by_url(&Url::parse(&url).unwrap()) {
+                bookmarks.remove(node.id).unwrap();
+            }
+        }
+        window.destroy();
+        assert!(button.is_some() && button_after == button, "the bar kept its button");
+        assert!(shown, "the button still shows the site's icon");
+    }
+
+    #[gtk::test]
     fn bookmarked_sites_get_their_icons_without_being_visited() {
         let pixels = glib::Bytes::from_owned([40u8, 90, 200, 255].repeat(16 * 16));
         let icon = gtk::gdk::MemoryTexture::new(16, 16, gtk::gdk::MemoryFormat::R8g8b8a8, &pixels, 16 * 4);
