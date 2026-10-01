@@ -1086,11 +1086,7 @@ impl Tab {
                 exec::spawn(store::answer(window, self.id, request));
             }
             Some(PageMessage::Zoom(ratio)) => {
-                let scale = window
-                    .xaml_root()
-                    .and_then(|r| r.RasterizationScale())
-                    .unwrap_or(1.0);
-                let level = zoom::Level(zoom::percent(ratio, scale));
+                let level = zoom::Level(zoom::percent(ratio, window.scale()));
                 if self.state.borrow().zoom != level {
                     log::debug!("tab {}: zoom {}", self.id, level.label());
                     self.state.borrow_mut().zoom = level;

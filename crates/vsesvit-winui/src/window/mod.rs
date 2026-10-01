@@ -347,6 +347,13 @@ impl BrowserWindow {
         self.ui.root.cast::<UIElement>()?.XamlRoot()
     }
 
+    /// Physical pixels per XAML pixel; 1.0 before the window has a XamlRoot.
+    pub(crate) fn scale(&self) -> f64 {
+        self.xaml_root()
+            .and_then(|r| r.RasterizationScale())
+            .unwrap_or(1.0)
+    }
+
     fn me(&self) -> Rc<Self> {
         self.me
             .upgrade()

@@ -127,10 +127,7 @@ impl BrowserWindow {
     /// Makes the spacer at the toolbar's end exactly as wide as the window's caption buttons,
     /// which Windows draws over it, so no empty stretch is left between the menu and them.
     fn fit_caption_spacer(&self) {
-        let scale = self
-            .xaml_root()
-            .and_then(|root| root.RasterizationScale())
-            .unwrap_or(1.0);
+        let scale = self.scale();
         let inset = self
             .app_window()
             .and_then(|w| w.TitleBar())
@@ -145,10 +142,7 @@ impl BrowserWindow {
 
     /// The toolbar's empty stretches, full height, in physical pixels of the window.
     fn toolbar_gaps(&self) -> Vec<RectInt32> {
-        let scale = self
-            .xaml_root()
-            .and_then(|root| root.RasterizationScale())
-            .unwrap_or(1.0);
+        let scale = self.scale();
         let ui = &self.ui;
         let Some(bar) = ui
             .toolbar
