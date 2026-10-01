@@ -100,6 +100,25 @@ fn unclosed_lists_still_yield_their_folders() {
     assert_eq!(import::parse_html("<html><body>not bookmarks</body></html>"), vec![]);
 }
 
+#[test]
+fn out_of_range_add_dates_are_dropped() {
+    let html = r#"<DL><p>
+    <DT><A HREF="https://a.example/" ADD_DATE="9999999999999999">Huge</A>
+    <DT><A HREF="https://b.example/" ADD_DATE="-5">Negative</A>
+    <DT><A HREF="https://c.example/" ADD_DATE="0">Zero</A>
+    <DT><A HREF="https://d.example/" ADD_DATE="1700000000">Ok</A>
+</DL>"#;
+    assert_eq!(
+        import::parse_html(html),
+        vec![
+            link("Huge", "https://a.example/", None),
+            link("Negative", "https://b.example/", None),
+            link("Zero", "https://c.example/", None),
+            link("Ok", "https://d.example/", Some(1_700_000_000_000)),
+        ]
+    );
+}
+
 const CHROMIUM_JSON: &str = r#"{
    "checksum": "x",
    "roots": {

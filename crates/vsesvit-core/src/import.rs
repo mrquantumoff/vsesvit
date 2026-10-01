@@ -168,7 +168,10 @@ pub fn parse_html(text: &str) -> Vec<ImportItem> {
         let attrs = &tag[name_end..];
         match (closing, name.as_str()) {
             (false, "a") => {
-                let added_ms = attr(attrs, "add_date").and_then(|s| s.trim().parse::<i64>().ok()).map(|s| s * 1000);
+                let added_ms = attr(attrs, "add_date")
+                    .and_then(|s| s.trim().parse::<i64>().ok())
+                    .filter(|&s| s > 0)
+                    .and_then(|s| s.checked_mul(1000));
                 capture =
                     Capture::Link { href: attr(attrs, "href").unwrap_or_default(), added_ms, title: String::new() };
             }
