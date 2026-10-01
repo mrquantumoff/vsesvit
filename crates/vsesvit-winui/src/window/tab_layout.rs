@@ -92,7 +92,7 @@ impl BrowserWindow {
         } else {
             self.window.SetTitleBar(&self.ui.drag_region)?;
         }
-        self.drag_regions.borrow_mut().clear();
+        *self.drag_regions.borrow_mut() = None;
         self.update_drag_regions();
         self.update_pip();
         Ok(())
@@ -100,23 +100,30 @@ impl BrowserWindow {
 
     /// With vertical tabs the toolbar is the title bar: the space between its controls drags
     /// the window. Those gaps are the window's caption regions, recomputed whenever the layout
-    /// moves the controls and sent only when they changed. (With the top strip, XAML keeps
-    /// the strip's footer as the title bar.)
+    /// moves the controls and sent only when they changed. In fullscreen the page covers the
+    /// toolbar, and there are none. (With the top strip, XAML keeps the strip's footer as the
+    /// title bar.)
     pub(super) fn update_drag_regions(&self) {
         if StripKind::of(self.tabs_position.get()) != StripKind::Side {
             return;
         }
         self.fit_caption_spacer();
-        let rects = self.toolbar_gaps();
-        if rects.is_empty() || *self.drag_regions.borrow() == rects {
+        let fullscreen = self.fullscreen.get();
+        let gaps = if fullscreen {
+            Vec::new()
+        } else {
+            self.toolbar_gaps()
+        };
+        let Some(rects) = caption_update(self.drag_regions.borrow().as_deref(), fullscreen, gaps)
+        else {
             return;
-        }
+        };
         let set = self
             .window_id()
             .and_then(InputNonClientPointerSource::GetForWindowId)
             .and_then(|source| source.SetRegionRects(NonClientRegionKind::Caption, &rects));
         match set {
-            Ok(()) => *self.drag_regions.borrow_mut() = rects,
+            Ok(()) => *self.drag_regions.borrow_mut() = Some(rects),
             Err(e) => log::warn!("toolbar drag regions: {e}"),
         }
     }
@@ -258,6 +265,20 @@ impl BrowserWindow {
     }
 }
 
+/// The caption regions to send, given those `sent` last (`None`: not known) and the toolbar's
+/// gaps; `None` when nothing needs sending.
+fn caption_update(
+    sent: Option<&[RectInt32]>,
+    fullscreen: bool,
+    gaps: Vec<RectInt32>,
+) -> Option<Vec<RectInt32>> {
+    // Fullscreen clears the regions; otherwise no gaps is a layout pass that has not placed
+    // the toolbar yet.
+    let rects = if fullscreen { Vec::new() } else { gaps };
+    let skip = (rects.is_empty() && !fullscreen) || sent == Some(rects.as_slice());
+    (!skip).then_some(rects)
+}
+
 /// The stretches of `[start, end)` not covered by `spans` (sorted by start).
 fn gaps(start: f64, end: f64, spans: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
@@ -276,7 +297,31 @@ fn gaps(start: f64, end: f64, spans: &[(f64, f64)]) -> Vec<(f64, f64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::gaps;
+    use super::{caption_update, gaps};
+    use crate::bindings::RectInt32;
+
+    const GAP: RectInt32 = RectInt32 {
+        x: 10,
+        y: 0,
+        width: 40,
+        height: 40,
+    };
+
+    #[test]
+    fn fullscreen_clears_the_caption_regions_once() {
+        assert_eq!(caption_update(Some(&[GAP]), true, vec![GAP]), Some(vec![]));
+        assert_eq!(caption_update(None, true, vec![]), Some(vec![]));
+        assert_eq!(caption_update(Some(&[]), true, vec![]), None);
+    }
+
+    #[test]
+    fn caption_regions_are_sent_when_they_change() {
+        assert_eq!(caption_update(None, false, vec![GAP]), Some(vec![GAP]));
+        assert_eq!(caption_update(Some(&[]), false, vec![GAP]), Some(vec![GAP]));
+        assert_eq!(caption_update(Some(&[GAP]), false, vec![GAP]), None);
+        // A layout pass that has not placed the toolbar yet leaves the regions alone.
+        assert_eq!(caption_update(Some(&[GAP]), false, vec![]), None);
+    }
 
     #[test]
     fn gaps_are_what_the_controls_leave() {

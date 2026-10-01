@@ -180,8 +180,8 @@ pub(crate) struct BrowserWindow {
     shown_tab: Cell<Option<TabId>>,
     split: Cell<Option<Split>>,
     fullscreen: Cell<bool>,
-    /// The toolbar's drag regions last sent to the window.
-    drag_regions: RefCell<Vec<RectInt32>>,
+    /// The toolbar's drag regions last sent to the window; `None` since the layout changed.
+    drag_regions: RefCell<Option<Vec<RectInt32>>>,
     /// The address box has the keyboard focus, and so shows the whole URL.
     address_focused: Cell<bool>,
     full_urls: Cell<bool>,
@@ -248,7 +248,7 @@ impl BrowserWindow {
             shown_tab: Cell::new(None),
             split: Cell::new(None),
             fullscreen: Cell::new(false),
-            drag_regions: RefCell::new(Vec::new()),
+            drag_regions: RefCell::new(None),
             address_focused: Cell::new(false),
             full_urls: Cell::new(prefs.full_urls),
             bookmarks_bar_wanted: Cell::new(prefs.bookmarks_bar),
