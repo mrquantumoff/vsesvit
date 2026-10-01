@@ -202,11 +202,7 @@ impl Round {
         Ok(Round { account, records, upto, more_up, types })
     }
 
-    /// Records this round uploads.
-    pub fn len(&self) -> usize {
-        self.records.len()
-    }
-
+    /// Whether this round uploads nothing.
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
