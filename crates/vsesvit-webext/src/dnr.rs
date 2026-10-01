@@ -255,11 +255,11 @@ fn translate_rule(rule: &Rule, extension_base: &str) -> Result<Vec<Value>, Strin
     if c.excluded_request_domains.is_some() {
         return Err("excludedRequestDomains cannot be expressed as a content blocker".into());
     }
-    if c.excluded_initiator_domains.is_some() && c.initiator_domains.is_some() {
-        return Err("initiatorDomains and excludedInitiatorDomains together are not supported".into());
-    }
-    if c.excluded_domains.is_some() && c.domains.is_some() {
-        return Err("domains and excludedDomains together are not supported".into());
+    // `domains` and `excludedDomains` are Chrome's deprecated names for the initiator lists.
+    let initiators = merged(&c.domains, &c.initiator_domains);
+    let excluded_initiators = merged(&c.excluded_domains, &c.excluded_initiator_domains);
+    if initiators.is_some() && excluded_initiators.is_some() {
+        return Err("initiatorDomains (domains) and excludedInitiatorDomains (excludedDomains) together are not supported".into());
     }
 
     let filter = url_filter_regex(c)?;
@@ -274,14 +274,11 @@ fn translate_rule(rule: &Rule, extension_base: &str) -> Result<Vec<Value>, Strin
         };
         trigger.insert("load-type".into(), json!([v]));
     }
-    if let Some(domains) = &c.domains {
-        trigger.insert("if-domain".into(), domain_list(domains));
-    } else if let Some(excluded) = &c.excluded_domains {
-        trigger.insert("unless-domain".into(), domain_list(excluded));
-    }
-    if let Some(initiators) = &c.initiator_domains {
+    // The only frame or domain condition on the trigger: WebKit rejects a trigger with two,
+    // and with it the extension's whole filter.
+    if let Some(initiators) = &initiators {
         trigger.insert("if-frame-url".into(), frame_url_list(initiators)?);
-    } else if let Some(excluded) = &c.excluded_initiator_domains {
+    } else if let Some(excluded) = &excluded_initiators {
         trigger.insert("unless-frame-url".into(), frame_url_list(excluded)?);
     }
     // WebKit takes one `request-method` string per rule, so a method list fans out.
@@ -331,7 +328,7 @@ fn allow_all_requests(
         return Err("allowAllRequests resourceTypes must be main_frame or sub_frame".into());
     }
     if trigger.contains_key("if-frame-url") || trigger.contains_key("unless-frame-url") {
-        return Err("allowAllRequests cannot combine initiatorDomains with the frame URL condition".into());
+        return Err("allowAllRequests cannot combine initiator domains with the frame URL condition".into());
     }
     if c.request_domains.is_some() {
         return Err("allowAllRequests with requestDomains is not supported".into());
@@ -484,9 +481,12 @@ fn request_methods(c: &Condition) -> Result<Option<Vec<String>>, String> {
     })
 }
 
-/// `if-domain` / `unless-domain` entries: `*` prefix so subdomains match, as DNR does.
-fn domain_list(domains: &[String]) -> Value {
-    Value::Array(domains.iter().map(|d| json!(format!("*{}", d.trim_start_matches("*.").to_ascii_lowercase()))).collect())
+/// Both lists in one, or `None` when neither is given.
+fn merged(a: &Option<Vec<String>>, b: &Option<Vec<String>>) -> Option<Vec<String>> {
+    match (a, b) {
+        (None, None) => None,
+        _ => Some(a.iter().chain(b).flatten().cloned().collect()),
+    }
 }
 
 fn frame_url_list(domains: &[String]) -> Result<Value, String> {
@@ -720,8 +720,8 @@ mod tests {
         let trig = &t.rules[0]["trigger"];
         assert_eq!(trig["url-filter-is-case-sensitive"], true);
         assert_eq!(trig["load-type"], json!(["third-party"]));
-        assert_eq!(trig["if-domain"], json!(["*example.com"]));
-        assert_eq!(trig["if-frame-url"], json!(["^[^:]+://+([^:/]+\\.)?a\\.test[:/]"]));
+        assert!(trig.get("if-domain").is_none(), "{trig}");
+        assert_eq!(trig["if-frame-url"], json!(["^[^:]+://+([^:/]+\\.)?example\\.com[:/]", "^[^:]+://+([^:/]+\\.)?a\\.test[:/]"]));
         assert_eq!(trig["request-method"], "post");
         assert_eq!(t.rules[1]["trigger"]["request-method"], "get");
         let types = trig["resource-type"].as_array().unwrap();
@@ -730,8 +730,8 @@ mod tests {
     }
 
     /// Chrome lets `excludedDomains` win over `domains`; a WebKit trigger carries either
-    /// `if-domain` or `unless-domain`, so the pair is refused (and logged) like the
-    /// initiator pair, never emitted as an `if-domain` that also fires on the exclusions.
+    /// `if-frame-url` or `unless-frame-url`, so the pair is refused (and logged) like the
+    /// initiator pair, never emitted as an `if-frame-url` that also fires on the exclusions.
     #[test]
     fn domains_with_excluded_domains_are_skipped_not_over_blocked() {
         let text = r#"[{
@@ -744,7 +744,33 @@ mod tests {
         assert_eq!(t.skipped[0].rule_id, Some(3));
         assert!(t.skipped[0].reason.contains("excludedDomains"), "{}", t.skipped[0].reason);
         let alone = translate(&rules(r#"[{"id": 4, "action": {"type": "block"}, "condition": {"urlFilter": "ads", "excludedDomains": ["safe.example.com"]}}]"#), BASE);
-        assert_eq!(alone.rules[0]["trigger"]["unless-domain"], json!(["*safe.example.com"]));
+        assert_eq!(alone.rules[0]["trigger"]["unless-frame-url"], json!(["^[^:]+://+([^:/]+\\.)?safe\\.example\\.com[:/]"]));
+    }
+
+    /// WebKit allows one of `if-domain`, `unless-domain`, `if-top-url`, `unless-top-url`,
+    /// `if-frame-url` and `unless-frame-url` per trigger and rejects the whole filter
+    /// otherwise, so a rule that would need two is translated with one or skipped.
+    #[test]
+    fn no_trigger_carries_two_conditions() {
+        let text = r#"[
+          {"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x", "domains": ["a.test"], "initiatorDomains": ["b.test"]}},
+          {"id": 2, "action": {"type": "block"}, "condition": {"urlFilter": "x", "domains": ["a.test"], "excludedInitiatorDomains": ["b.test"]}},
+          {"id": 3, "action": {"type": "block"}, "condition": {"urlFilter": "x", "excludedDomains": ["a.test"], "excludedInitiatorDomains": ["b.test"]}},
+          {"id": 4, "action": {"type": "allowAllRequests"}, "condition": {"urlFilter": "||trusted.test", "domains": ["a.test"], "resourceTypes": ["main_frame"]}},
+          {"id": 5, "action": {"type": "allowAllRequests"}, "condition": {"urlFilter": "||trusted.test", "excludedDomains": ["a.test"], "resourceTypes": ["sub_frame"]}}
+        ]"#;
+        let t = translate(&rules(text), BASE);
+        const CONDITIONS: [&str; 6] = ["if-domain", "unless-domain", "if-top-url", "unless-top-url", "if-frame-url", "unless-frame-url"];
+        for r in &t.rules {
+            let n = CONDITIONS.iter().filter(|k| r["trigger"].get(**k).is_some()).count();
+            assert!(n <= 1, "two conditions on one trigger: {r}");
+        }
+        let mut skipped: Vec<Option<u32>> = t.skipped.iter().map(|s| s.rule_id).collect();
+        skipped.sort();
+        assert_eq!(skipped, [Some(2), Some(4), Some(5)], "{:?}", t.skipped);
+        let both = &t.rules[0]["trigger"];
+        assert_eq!(both["if-frame-url"], json!(["^[^:]+://+([^:/]+\\.)?a\\.test[:/]", "^[^:]+://+([^:/]+\\.)?b\\.test[:/]"]));
+        assert_eq!(t.rules[1]["trigger"]["unless-frame-url"].as_array().map(Vec::len), Some(2));
     }
 
     #[test]

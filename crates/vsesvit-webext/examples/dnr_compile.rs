@@ -33,6 +33,7 @@ fn main() -> std::process::ExitCode {
         ("if-domain / unless-domain", r#"[{"trigger":{"url-filter":"x","if-domain":["*example.com"]},"action":{"type":"block"}},{"trigger":{"url-filter":"y","unless-domain":["*example.org"]},"action":{"type":"block"}}]"#.into()),
         ("if-frame-url", r#"[{"trigger":{"url-filter":"x","if-frame-url":["^[^:]+://+([^:/]+\\.)?a\\.test[:/]"]},"action":{"type":"block"}}]"#.into()),
         ("unless-frame-url", r#"[{"trigger":{"url-filter":"x","unless-frame-url":["^[^:]+://+([^:/]+\\.)?a\\.test[:/]"]},"action":{"type":"block"}}]"#.into()),
+        ("if-domain + if-frame-url on one trigger (expected REJECTED: one condition per trigger)", r#"[{"trigger":{"url-filter":"x","if-domain":["*example.com"],"if-frame-url":["^[^:]+://+([^:/]+\\.)?a\\.test[:/]"]},"action":{"type":"block"}}]"#.into()),
         ("if-top-url", r#"[{"trigger":{"url-filter":".*","if-top-url":["^[^:]+://+([^:/]+\\.)?trusted\\.test"]},"action":{"type":"ignore-following-rules"}}]"#.into()),
         ("load-context child-frame", r#"[{"trigger":{"url-filter":"x","load-context":["child-frame"]},"action":{"type":"block"}}]"#.into()),
         ("request-method (one string per rule)", r#"[{"trigger":{"url-filter":"x","request-method":"post"},"action":{"type":"block"}},{"trigger":{"url-filter":"x","request-method":"get"},"action":{"type":"block"}}]"#.into()),
