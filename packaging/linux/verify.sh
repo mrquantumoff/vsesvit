@@ -10,11 +10,11 @@ version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$(dirname "$0")/../../Cargo.tom
 formats=("$@")
 [ ${#formats[@]} -gt 0 ] || formats=(deb rpm pacman appimage flatpak)
 
-# Runs `script` in `image` with the artifacts under /dist.
+# Runs `script` in `image` with the artifacts under /dist; any failing command fails the format.
 container() {
   local image=$1 script=$2
   shift 2
-  docker run --rm -v "$dist:/dist:ro" "$@" "$image" bash -ec "$script"
+  docker run --rm -v "$dist:/dist:ro" "$@" "$image" bash -o pipefail -ec "$script"
 }
 
 # Shell text run inside the container after installing; $1 is the libav element to look for.
@@ -22,7 +22,7 @@ checks() {
   echo "
 echo '--- vsesvit --version'; vsesvit --version
 echo '--- marker'; cat /usr/lib/vsesvit/package-format; readlink -f /usr/bin/vsesvit
-echo '--- desktop-file-validate'; desktop-file-validate /usr/share/applications/dev.mrquantumoff.vsesvit.desktop && echo ok
+echo '--- desktop-file-validate'; desktop-file-validate /usr/share/applications/dev.mrquantumoff.vsesvit.desktop; echo ok
 echo '--- gst-inspect'; gst-inspect-1.0 $1 | grep Long-name; gst-inspect-1.0 vp9dec | grep Long-name
 "
 }
@@ -43,24 +43,25 @@ for format in "${formats[@]}"; do
         pacman -Qi vsesvit | grep -E '^(Depends On|Optional Deps)'; $(checks avdec_h264)" ;;
     appimage)
       # A container has no FUSE, so the runtime extracts the image. The self-test
-      # (docs/design/self-test.md) runs when the shell has it; until then the proof is a page
-      # served by a local HTTP server and the WebKit helper processes running out of the image.
+      # (docs/design/self-test.md) must pass; then a page served by a local HTTP server must
+      # reach a normal run, with the WebKit helper processes running out of the image.
       container ubuntu:26.04 "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null
         apt-get install -y -qq xvfb python3 libgl1 libegl1 libgles2 libasound2t64 fontconfig fonts-dejavu-core shared-mime-info procps >/dev/null
-        ! dpkg -l libwebkitgtk-6.0-4 libgtk-4-1 2>/dev/null | grep -q '^ii' || { echo 'container must not have WebKitGTK'; exit 1; }
+        ! { dpkg -l libwebkitgtk-6.0-4 libgtk-4-1 2>/dev/null || true; } | grep -q '^ii' || { echo 'container must not have WebKitGTK'; exit 1; }
         cp /dist/Vsesvit_${version}_amd64.AppImage /tmp/app && chmod +x /tmp/app
         export APPIMAGE_EXTRACT_AND_RUN=1 HOME=/tmp/home; mkdir -p \$HOME /tmp/site
         echo '<title>appimage proof</title><p>hello' > /tmp/site/index.html
         echo '--- --version'; /tmp/app --version
         echo '--- self-test'
-        xvfb-run -a -s '-screen 0 1280x800x24' /tmp/app --self-test /tmp/out && cat /tmp/out/report.json || true
+        xvfb-run -a -s '-screen 0 1280x800x24' /tmp/app --self-test /tmp/out || { echo 'self-test failed'; cat /tmp/out/report.json; exit 1; }
+        cat /tmp/out/report.json
         echo '--- page load'
         python3 -m http.server 8000 --bind 127.0.0.1 --directory /tmp/site > /tmp/http.log 2>&1 &
         xvfb-run -a -s '-screen 0 1280x800x24' /tmp/app http://127.0.0.1:8000/index.html > /tmp/app.log 2>&1 &
         sleep 12
-        pgrep -af 'WebKit(Web|Network|GPU)Process' | cut -d' ' -f1-2 || echo 'no WebKit helper processes'
-        grep -m1 'GET /index.html' /tmp/http.log || echo 'no page request seen'
-        echo '--- app stderr'; grep -v '^$' /tmp/app.log | head -20" ;;
+        echo '--- app stderr'; awk 'NF && n++ < 20' /tmp/app.log
+        pgrep -af 'WebKit(Web|Network|GPU)Process' | cut -d' ' -f1-2 || { echo 'no WebKit helper processes'; exit 1; }
+        grep -m1 'GET /index.html' /tmp/http.log || { echo 'no page request seen'; exit 1; }" ;;
     flatpak)
       flatpak install --user -y --noninteractive --reinstall "$dist/Vsesvit_${version}_x86_64.flatpak" >/dev/null
       echo "--- flatpak run --version"; flatpak run dev.mrquantumoff.vsesvit --version
