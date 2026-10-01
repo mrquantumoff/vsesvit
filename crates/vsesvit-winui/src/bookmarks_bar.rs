@@ -284,8 +284,13 @@ impl Bar {
         self.list.cast::<ItemsControl>()?.Items()?.cast()
     }
 
-    /// Replaces the bar's entries.
+    /// Shows `items`. Entries whose bookmark only got a new favicon stay and show it: pages
+    /// that change their icon often would otherwise have the list make, and animate in, every
+    /// entry again each time.
     pub fn set(&self, items: &[BarItem]) {
+        if self.show_new_icons(items) {
+            return;
+        }
         let Ok(entries) = self.entries() else {
             return;
         };
@@ -305,6 +310,38 @@ impl Bar {
         }
         *self.rows.borrow_mut() = rows;
         self.fit();
+    }
+
+    /// Shows the favicons `items` give the bar's entries, when that is all that changed.
+    fn show_new_icons(&self, items: &[BarItem]) -> bool {
+        let mut rows = self.rows.borrow_mut();
+        if rows.len() != items.len()
+            || !rows
+                .iter()
+                .zip(items)
+                .all(|(row, item)| same_but_icons(&row.item, item))
+        {
+            return false;
+        }
+        for (row, item) in rows.iter_mut().zip(items) {
+            if row.item == *item {
+                continue;
+            }
+            if let BarItem::Link {
+                icon: Some(png), ..
+            } = item
+            {
+                let shown = row
+                    .element
+                    .cast()
+                    .and_then(|element| xaml::show_favicon(&element, png.clone()));
+                if let Err(e) = shown {
+                    log::warn!("bookmarks bar icon: {e}");
+                }
+            }
+            row.item = item.clone();
+        }
+        true
     }
 
     /// Shows the items that fit whole in the bar's width and moves the rest behind the chevron.
@@ -630,6 +667,52 @@ pub(crate) fn fitting(widths: &[f64], available: f64, chevron: f64) -> usize {
         .count()
 }
 
+/// Whether `new` is `old` with favicons gained or changed and nothing else: no icon lost.
+fn same_but_icons(old: &BarItem, new: &BarItem) -> bool {
+    match (old, new) {
+        (
+            BarItem::Link {
+                id,
+                title,
+                url,
+                icon,
+            },
+            BarItem::Link {
+                id: new_id,
+                title: new_title,
+                url: new_url,
+                icon: new_icon,
+            },
+        ) => {
+            id == new_id
+                && title == new_title
+                && url == new_url
+                && (new_icon.is_some() || icon.is_none())
+        }
+        (
+            BarItem::Folder {
+                id,
+                title,
+                children,
+            },
+            BarItem::Folder {
+                id: new_id,
+                title: new_title,
+                children: new_children,
+            },
+        ) => {
+            id == new_id
+                && title == new_title
+                && children.len() == new_children.len()
+                && children
+                    .iter()
+                    .zip(new_children)
+                    .all(|(old, new)| same_but_icons(old, new))
+        }
+        _ => false,
+    }
+}
+
 /// A title as a menu shows it: cut to `MENU_LABEL_CHARS` with an ellipsis.
 pub(crate) fn menu_label(title: &str) -> String {
     if title.chars().count() <= MENU_LABEL_CHARS {
@@ -810,6 +893,34 @@ mod tests {
             panic!("a folder")
         };
         assert!(matches!(&children[0], BarItem::Link { icon: Some(_), .. }));
+    }
+
+    #[test]
+    fn only_new_icons_keep_the_entries() {
+        let link = |title: &str, icon: Option<u8>| BarItem::Link {
+            id: BookmarkId::MOBILE,
+            title: title.into(),
+            url: "https://a.test/".into(),
+            icon: icon.map(|b| vec![b]),
+        };
+        let folder = |child| BarItem::Folder {
+            id: BookmarkId::OTHER,
+            title: "F".into(),
+            children: vec![child],
+        };
+        assert!(same_but_icons(&link("A", None), &link("A", Some(1))));
+        assert!(same_but_icons(&link("A", Some(1)), &link("A", Some(2))));
+        assert!(same_but_icons(
+            &folder(link("A", None)),
+            &folder(link("A", Some(1)))
+        ));
+        assert!(!same_but_icons(&link("A", Some(1)), &link("A", None)));
+        assert!(!same_but_icons(&link("A", None), &link("B", None)));
+        assert!(!same_but_icons(
+            &folder(link("A", None)),
+            &folder(link("B", Some(1)))
+        ));
+        assert!(!same_but_icons(&link("A", None), &folder(link("A", None))));
     }
 
     #[test]
