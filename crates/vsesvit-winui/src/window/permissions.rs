@@ -22,8 +22,9 @@ use vsesvit_core::permissions::{
 use windows_core::{Interface, Result};
 
 use super::BrowserWindow;
-use super::wiring::{click, with};
+use super::wiring::with;
 use crate::bindings::*;
+use crate::dialogs::on_click;
 use crate::permissions;
 use crate::tab::{Tab, TabId};
 use crate::{connection, exec, xaml};
@@ -150,7 +151,7 @@ fn section_markup(rows: &[SiteRow], stored: bool) -> String {
 impl BrowserWindow {
     pub(super) fn wire_permissions(&self) -> Result<()> {
         let w = self.me.clone();
-        click(&self.ui.capture_button, move || {
+        on_click(&self.ui.capture_button, move || {
             with(&w, |w| {
                 if let Err(e) = w.show_connection() {
                     log::warn!("connection popup: {e}");
@@ -158,7 +159,7 @@ impl BrowserWindow {
             });
         })?;
         let w = self.me.clone();
-        click(&self.ui.share_stop, move || {
+        on_click(&self.ui.share_stop, move || {
             with(&w, |w| {
                 if let Some(tab) = w.active_tab() {
                     tab.stop_capture(Permission::ScreenShare);
@@ -225,7 +226,7 @@ impl BrowserWindow {
         for &answer in &prompt.answers {
             let button: Button = xaml::find(&content, &format!("Answer{answer:?}"))?;
             let w = self.me.clone();
-            click(&button, move || with(&w, |w| w.prompt_button(id, answer)))?;
+            on_click(&button, move || with(&w, |w| w.prompt_button(id, answer)))?;
         }
         Ok(content)
     }
@@ -466,7 +467,7 @@ impl BrowserWindow {
             if row.live {
                 let stop: Button = xaml::find(&section, &format!("PermissionStop{key}"))?;
                 let t = Rc::downgrade(tab);
-                click(&stop, move || {
+                on_click(&stop, move || {
                     if let Some(tab) = t.upgrade() {
                         tab.stop_capture(row.permission);
                     }
@@ -476,7 +477,7 @@ impl BrowserWindow {
         if stored && let Some(origin) = origin {
             let reset: Button = xaml::find(&section, "ResetPermissions")?;
             let (w, t) = (self.me.clone(), Rc::downgrade(tab));
-            click(&reset, move || reset_site(&w, &t, &origin))?;
+            on_click(&reset, move || reset_site(&w, &t, &origin))?;
         }
         if let Some(name) = focused
             && self.is_foreground()

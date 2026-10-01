@@ -8,7 +8,7 @@ use windows_core::{Interface, Result};
 
 use super::{BrowserWindow, MenuAction};
 use crate::bindings::*;
-use crate::dialogs::Dialog;
+use crate::dialogs::{Dialog, on_click};
 use crate::exec;
 use crate::shortcuts::{self, Command, Mods};
 use crate::player::PlayerEvents;
@@ -42,7 +42,7 @@ impl BrowserWindow {
             .SizeChanged(move |_, _| with(&w, BrowserWindow::fit_bookmarks_bar))?
             .forget();
         let w = me();
-        click(&ui.bookmarks_overflow, move || {
+        on_click(&ui.bookmarks_overflow, move || {
             with(&w, |w| {
                 if let Err(e) = w.show_bookmarks_overflow() {
                     log::warn!("bookmarks overflow menu: {e}");
@@ -51,11 +51,11 @@ impl BrowserWindow {
         })?;
 
         let w = me();
-        click(&ui.back, move || with(&w, |w| w.run(Command::Back)))?;
+        on_click(&ui.back, move || with(&w, |w| w.run(Command::Back)))?;
         let w = me();
-        click(&ui.forward, move || with(&w, |w| w.run(Command::Forward)))?;
+        on_click(&ui.forward, move || with(&w, |w| w.run(Command::Forward)))?;
         let w = me();
-        click(&ui.reload, move || {
+        on_click(&ui.reload, move || {
             with(&w, |w| {
                 if let Some(tab) = w.active_tab() {
                     tab.reload_or_stop();
@@ -63,14 +63,16 @@ impl BrowserWindow {
             });
         })?;
         let w = me();
-        click(&ui.home, move || with(&w, |w| w.go_home()))?;
+        on_click(&ui.home, move || with(&w, |w| w.go_home()))?;
         let w = me();
-        click(&ui.star, move || with(&w, |w| w.star_clicked()))?;
+        on_click(&ui.star, move || with(&w, |w| w.star_clicked()))?;
         self.wire_split_divider()?;
         let w = me();
-        click(&ui.copy_link, move || with(&w, |w| w.run(Command::CopyCleanLink)))?;
+        on_click(&ui.copy_link, move || {
+            with(&w, |w| w.run(Command::CopyCleanLink))
+        })?;
         let w = me();
-        click(&ui.site_button, move || {
+        on_click(&ui.site_button, move || {
             with(&w, |w| {
                 if let Err(e) = w.show_connection() {
                     log::warn!("connection popup: {e}");
@@ -78,7 +80,7 @@ impl BrowserWindow {
             });
         })?;
         let w = me();
-        click(&ui.update_action, move || with(&w, |w| w.update_clicked()))?;
+        on_click(&ui.update_action, move || with(&w, |w| w.update_clicked()))?;
         for (name, step) in [
             ("ZoomIn", zoom::Step::In),
             ("ZoomOut", zoom::Step::Out),
@@ -86,10 +88,10 @@ impl BrowserWindow {
         ] {
             let w = me();
             let button: Button = xaml::find(&ui.root, name)?;
-            click(&button, move || with(&w, |w| w.zoom_clicked(step)))?;
+            on_click(&button, move || with(&w, |w| w.zoom_clicked(step)))?;
         }
         let w = me();
-        click(&ui.downloads, move || {
+        on_click(&ui.downloads, move || {
             with(&w, |w| w.show_dialog(Dialog::Downloads));
         })?;
 
@@ -363,12 +365,4 @@ pub(super) fn with(window: &Weak<BrowserWindow>, f: impl FnOnce(&BrowserWindow))
     if let Some(window) = window.upgrade() {
         f(&window);
     }
-}
-
-pub(super) fn click(button: &impl Interface, handler: impl Fn() + 'static) -> Result<()> {
-    button
-        .cast::<ButtonBase>()?
-        .Click(move |_, _| handler())?
-        .forget();
-    Ok(())
 }

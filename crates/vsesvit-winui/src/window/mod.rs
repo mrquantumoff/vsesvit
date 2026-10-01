@@ -51,7 +51,7 @@ use crate::{capture, connection, exec, platform, xaml, zoom};
 use chrome::Chrome;
 use tab_actions::Split;
 pub(crate) use tab_menu::TabAction;
-use wiring::{click as click_handler, strip_events, with};
+use wiring::{strip_events, with};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Show {
@@ -787,7 +787,7 @@ impl BrowserWindow {
             (xaml::find::<Button>(&content, "ShowCertificate"), report)
         {
             let window = self.me.clone();
-            click_handler(&button, move || {
+            dialogs::on_click(&button, move || {
                 with(&window, |w| {
                     if let Ok(owner) = platform::window_handle(&w.window) {
                         connection::show_native(owner, report.chain.clone());

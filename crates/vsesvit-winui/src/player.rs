@@ -6,6 +6,7 @@
 use windows_core::{Interface, Result};
 
 use crate::bindings::*;
+use crate::dialogs::on_click;
 use crate::media::MediaAction;
 use crate::xaml;
 
@@ -123,17 +124,17 @@ impl Player {
         xaml::set_visible(&this.root, false)?;
         let events = std::rc::Rc::new(events);
         let e = events.clone();
-        click(&this.media_tab, move || (e.go_to_tab)())?;
+        on_click(&this.media_tab, move || (e.go_to_tab)())?;
         for (button, action) in [
             (&this.previous, MediaAction::Previous),
             (&this.play_pause, MediaAction::PlayPause),
             (&this.next, MediaAction::Next),
         ] {
             let e = events.clone();
-            click(button, move || (e.action)(action))?;
+            on_click(button, move || (e.action)(action))?;
         }
         let e = events.clone();
-        click(&this.mute, move || (e.toggle_muted)())?;
+        on_click(&this.mute, move || (e.toggle_muted)())?;
         let host = this.pip_host.cast::<FrameworkElement>()?;
         let root = this.root.clone();
         this.root
@@ -221,14 +222,6 @@ impl Player {
 /// 16:9, as most video is.
 fn pip_height(width: f64) -> f64 {
     (width * 9.0 / 16.0).round()
-}
-
-fn click(button: &impl Interface, handler: impl Fn() + 'static) -> Result<()> {
-    button
-        .cast::<ButtonBase>()?
-        .Click(move |_, _| handler())?
-        .forget();
-    Ok(())
 }
 
 fn set_tip(element: &impl Interface, tip: &str) -> Result<()> {
