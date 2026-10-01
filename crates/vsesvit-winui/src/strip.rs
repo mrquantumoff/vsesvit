@@ -203,6 +203,8 @@ pub(crate) struct TopStrip {
     view: TabView,
     rows: Rows,
     events: Events,
+    /// The user's drags of tabs are reported (see `watch_drags`).
+    drags_watched: Cell<bool>,
 }
 
 impl TopStrip {
@@ -211,6 +213,7 @@ impl TopStrip {
             view,
             rows: Rows::default(),
             events: events.clone(),
+            drags_watched: Cell::new(false),
         });
         let weak = Rc::downgrade(&this);
         let e = events.clone();
@@ -238,11 +241,37 @@ impl TopStrip {
             .cast::<FrameworkElement>()?
             .SizeChanged(move |_, _| {
                 if let Some(this) = weak.upgrade() {
+                    this.watch_drags();
                     this.fit_widths();
                 }
             })?
             .forget();
         Ok(this)
+    }
+
+    /// `TabView` reorders the tabs the user drags itself, in the list of its template, and
+    /// reports it through that list's `DragItemsCompleted`. The template is there once the
+    /// strip has been laid out, as when its size first changes.
+    fn watch_drags(&self) {
+        if self.drags_watched.get() {
+            return;
+        }
+        let Some(list) = self
+            .view
+            .cast::<DependencyObject>()
+            .ok()
+            .and_then(|view| xaml::find_named::<ListViewBase>(&view, "TabListView"))
+        else {
+            return;
+        };
+        let e = self.events.clone();
+        match list.DragItemsCompleted(move |_, _| (e.reordered)()) {
+            Ok(token) => {
+                token.forget();
+                self.drags_watched.set(true);
+            }
+            Err(err) => log::warn!("tab strip drags: {err}"),
+        }
     }
 
     /// Pinned tabs show their icon only, as in Chrome; the others share the rest of the strip
