@@ -14,12 +14,25 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::crdt::{Clock, DeviceId, Hlc, Seq, Stamp};
 use crate::{Error, OpenError};
 
-pub(crate) const SCHEMA_VERSION: u32 = 8;
+pub(crate) const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 pub(crate) const SCHEMA_V1: &str = include_str!("schema.sql");
 /// Extension tables, owned by `extensions`. Applied after `SCHEMA_V1` in the same transaction.
 pub(crate) const SCHEMA_V1_EXTENSIONS: &str = include_str!("extensions/schema.sql");
 /// Rebuilds both extension tables so their store CHECKs accept `edge_addons`.
 pub(crate) const SCHEMA_V4_EXTENSIONS: &str = include_str!("extensions/schema_v4.sql");
+
+/// Migration `i` brings a profile to `user_version = i + 1`, running its scripts in order in
+/// one transaction. Append only.
+const MIGRATIONS: &[&[&str]] = &[
+    &[SCHEMA_V1, SCHEMA_V1_EXTENSIONS],
+    &[crate::favicons::SCHEMA],
+    &[crate::downloads::SCHEMA],
+    &[SCHEMA_V4_EXTENSIONS],
+    &[crate::favicons::FAILURES_SCHEMA],
+    &[crate::permissions::SCHEMA],
+    &[crate::zoom::SCHEMA],
+    &[crate::vault::SCHEMA, crate::sync::SECRETS_SCHEMA],
+];
 
 /// `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=0`
 /// (a single process holds the profile, so contention is a bug, not a wait), and
@@ -46,55 +59,15 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), OpenError> {
     if found > SCHEMA_VERSION {
         return Err(OpenError::TooNew { found, supported: SCHEMA_VERSION });
     }
-    if found < 1 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V1)?;
-        tx.execute_batch(SCHEMA_V1_EXTENSIONS)?;
-        tx.pragma_update(None, "user_version", 1)?;
-        tx.commit()?;
-    }
-    if found < 2 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(crate::favicons::SCHEMA)?;
-        tx.pragma_update(None, "user_version", 2)?;
-        tx.commit()?;
-    }
-    if found < 3 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(crate::downloads::SCHEMA)?;
-        tx.pragma_update(None, "user_version", 3)?;
-        tx.commit()?;
-    }
-    if found < 4 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V4_EXTENSIONS)?;
-        tx.pragma_update(None, "user_version", 4)?;
-        tx.commit()?;
-    }
-    if found < 5 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(crate::favicons::FAILURES_SCHEMA)?;
-        tx.pragma_update(None, "user_version", 5)?;
-        tx.commit()?;
-    }
-    if found < 6 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(crate::permissions::SCHEMA)?;
-        tx.pragma_update(None, "user_version", 6)?;
-        tx.commit()?;
-    }
-    if found < 7 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(crate::zoom::SCHEMA)?;
-        tx.pragma_update(None, "user_version", 7)?;
-        tx.commit()?;
-    }
-    if found < 8 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(crate::vault::SCHEMA)?;
-        tx.execute_batch(crate::sync::SECRETS_SCHEMA)?;
-        tx.pragma_update(None, "user_version", 8)?;
-        tx.commit()?;
+    for (version, scripts) in (1..).zip(MIGRATIONS) {
+        if found < version {
+            let tx = conn.transaction()?;
+            for sql in *scripts {
+                tx.execute_batch(sql)?;
+            }
+            tx.pragma_update(None, "user_version", version)?;
+            tx.commit()?;
+        }
     }
     Ok(())
 }
