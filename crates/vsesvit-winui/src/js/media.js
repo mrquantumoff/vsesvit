@@ -104,8 +104,10 @@
     if (!document.adoptedStyleSheets.includes(sheet)) document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
     video.setAttribute("data-vsesvit-pip", "");
     video.setAttribute("popover", "manual");
-    try { video.showPopover(); } catch (e) { hide(); return false; }
+    // Before showing, so that hide() undoes all of the above if showPopover throws (as it does
+    // for a fullscreen video).
     shown = video;
+    try { video.showPopover(); } catch (e) { hide(); return false; }
     return true;
   };
   // Shows the playing video again if the page moved it (which closes a popover), replaced it,
