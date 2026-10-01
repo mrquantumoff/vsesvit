@@ -94,6 +94,15 @@ enum DropSpot {
     After(BookmarkId),
 }
 
+/// The sibling a node dropped onto `link` goes before (the folder's end when `None`).
+fn next_after(siblings: &[BookmarkId], link: BookmarkId, moved: BookmarkId) -> Option<BookmarkId> {
+    let i = siblings.iter().position(|&id| id == link)?;
+    siblings[i + 1..]
+        .iter()
+        .copied()
+        .find(|&next| next != moved)
+}
+
 /// A button's handler.
 type Action = fn(&Editor);
 
@@ -548,12 +557,12 @@ impl Editor {
                 let place = browser.core(|p| {
                     let bookmarks = p.bookmarks();
                     let link = bookmarks.get(link)?;
-                    let next = bookmarks
+                    let siblings: Vec<_> = bookmarks
                         .children(link.parent)
-                        .get(link.index + 1)
+                        .iter()
                         .map(|n| n.id)
-                        .filter(|&next| next != moved.id);
-                    Some((link.parent, next))
+                        .collect();
+                    Some((link.parent, next_after(&siblings, link.id, moved.id)))
                 });
                 match place {
                     Some((folder, before)) => {
@@ -739,5 +748,23 @@ impl Branch {
         for child in &self.children {
             child.folders(depth + 1, out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Any three distinct ids do.
+    const A: BookmarkId = BookmarkId::TOOLBAR;
+    const B: BookmarkId = BookmarkId::OTHER;
+    const C: BookmarkId = BookmarkId::MOBILE;
+
+    #[test]
+    fn dropping_onto_the_previous_bookmark_keeps_the_order() {
+        assert_eq!(next_after(&[A, B, C], A, B), Some(C));
+        assert_eq!(next_after(&[A, B], A, B), None);
+        assert_eq!(next_after(&[A, C, B], A, B), Some(C));
+        assert_eq!(next_after(&[A, B, C], C, A), None);
     }
 }
