@@ -348,20 +348,25 @@ fn load_visits(conn: &rusqlite::Connection, url: &str) -> Result<BTreeSet<Visit>
     rows.collect()
 }
 
-fn load_page_by_text(conn: &rusqlite::Connection, url: &str) -> Result<Option<(Seq, PageRecord)>, Error> {
-    let head = conn
-        .query_row("SELECT title, title_at, extra, seq FROM history_pages WHERE url = ?1", [url], |row| {
-            Ok((row.get::<_, String>(0)?, stamp_col(row, 1)?, extra_col(row, 2)?, seq_col(row, 3)?))
-        })
-        .optional()?;
-    let Some((title, title_at, extra, seq)) = head else { return Ok(None) };
+/// A page from its `history_pages` row and its visits.
+fn page_from_head(conn: &rusqlite::Connection, url: &str, title: String, title_at: Stamp, extra: Extra) -> Result<PageRecord, Error> {
     let parsed = Url::parse(url).map_err(|_| crate::db::bad_column(0, "url"))?;
     let visits = load_visits(conn, url)?;
-    Ok(Some((seq, PageRecord { url: parsed, title: Lww::new(title, title_at), visits, extra })))
+    Ok(PageRecord { url: parsed, title: Lww::new(title, title_at), visits, extra })
+}
+
+fn load_page_by_text(conn: &rusqlite::Connection, url: &str) -> Result<Option<PageRecord>, Error> {
+    let head = conn
+        .query_row("SELECT title, title_at, extra FROM history_pages WHERE url = ?1", [url], |row| {
+            Ok((row.get::<_, String>(0)?, stamp_col(row, 1)?, extra_col(row, 2)?))
+        })
+        .optional()?;
+    let Some((title, title_at, extra)) = head else { return Ok(None) };
+    page_from_head(conn, url, title, title_at, extra).map(Some)
 }
 
 pub(crate) fn load_page(conn: &rusqlite::Connection, url: &Url) -> Result<Option<PageRecord>, Error> {
-    Ok(load_page_by_text(conn, url.as_str())?.map(|(_, p)| p))
+    load_page_by_text(conn, url.as_str())
 }
 
 /// Directives that can cover visits to `url` (`None` = every directive).
@@ -494,7 +499,7 @@ impl SyncTable for PagesTable {
     }
 
     fn load(tx: &rusqlite::Transaction<'_>, wire_id: &str) -> Result<Option<PageRecord>, Error> {
-        Ok(load_page_by_text(tx, wire_id)?.map(|(_, p)| p))
+        load_page_by_text(tx, wire_id)
     }
 
     fn store(tx: &rusqlite::Transaction<'_>, rec: &PageRecord, seq: Seq) -> Result<(), Error> {
@@ -511,9 +516,7 @@ impl SyncTable for PagesTable {
         })?;
         let mut out = Vec::with_capacity(heads.len());
         for (seq, (url, title, title_at, extra)) in heads {
-            let visits = load_visits(conn, &url)?;
-            let url = Url::parse(&url).map_err(|_| crate::db::bad_column(0, "url"))?;
-            out.push((seq, PageRecord { url, title: Lww::new(title, title_at), visits, extra }));
+            out.push((seq, page_from_head(conn, &url, title, title_at, extra)?));
         }
         Ok((out, more))
     }
