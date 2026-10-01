@@ -4,8 +4,8 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-/// The checks, in the order the contract lists and runs them.
-pub(crate) const CHECKS: [&str; 19] = [
+/// The checks, in the order the run makes them (docs/design/self-test.md says what each proves).
+pub(crate) const CHECKS: [&str; 22] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -19,7 +19,10 @@ pub(crate) const CHECKS: [&str; 19] = [
     "tab_layout",
     "popup",
     "omnibox",
+    "address_completion",
+    "selection_search",
     "session",
+    "new_tab_page",
     "shortcuts",
     "shortcuts_sync",
     "save_page",
@@ -152,5 +155,25 @@ mod tests {
         assert_eq!(json["platform"], "windows");
         assert_eq!(json["ok"], false);
         assert_eq!(json["checks"][1]["name"], "install_crx");
+    }
+
+    /// The names of the run's `check(report, "name", ...)` calls, in source order.
+    fn checks_in(source: &str) -> Vec<&str> {
+        source
+            .split("check(")
+            .zip(source.split("check(").skip(1))
+            .filter(|(before, _)| !before.ends_with(|c: char| c.is_alphanumeric() || c == '_'))
+            .filter_map(|(_, call)| {
+                let call = call.trim_start().strip_prefix("report,")?.trim_start();
+                call.strip_prefix('"')?.split('"').next()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn checks_are_the_ones_the_run_makes_in_its_order() {
+        let mut run = vec!["profile_open"];
+        run.extend(checks_in(include_str!("selftest.rs")));
+        assert_eq!(run, expected(true));
     }
 }
