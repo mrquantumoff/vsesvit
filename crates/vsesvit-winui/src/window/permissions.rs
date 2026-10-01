@@ -21,8 +21,8 @@ use vsesvit_core::permissions::{
 };
 use windows_core::{Interface, Result};
 
-use super::BrowserWindow;
 use super::wiring::with;
+use super::{BrowserWindow, hide, open_content};
 use crate::bindings::*;
 use crate::dialogs::on_click;
 use crate::permissions;
@@ -52,10 +52,6 @@ pub(super) struct PermissionUi {
     prompts_shown: Cell<u64>,
     /// The rows the open site-info popup lists.
     rows: RefCell<Vec<SiteRow>>,
-}
-
-fn hide(flyout: &Flyout) {
-    let _ = flyout.cast::<FlyoutBase>().and_then(|f| f.Hide());
 }
 
 fn prompt_markup(prompt: &Prompt) -> String {
@@ -249,13 +245,7 @@ impl BrowserWindow {
             });
         })?
         .forget();
-        let options = FlyoutShowOptions::new()?;
-        options.SetShowMode(if self.is_foreground() {
-            FlyoutShowMode::Standard
-        } else {
-            FlyoutShowMode::Transient
-        })?;
-        base.ShowAtWithOptions(&self.ui.site_button.cast::<FrameworkElement>()?, &options)?;
+        self.show_at_site_button(&base)?;
         Ok(ShownPrompt {
             id,
             tab,
@@ -600,13 +590,7 @@ impl BrowserWindow {
 
     /// The permission prompt while it is open.
     pub fn permission_prompt(&self) -> Option<FrameworkElement> {
-        let prompt = self.permissions.prompt.borrow();
-        let flyout = &prompt.as_ref()?.flyout;
-        let open = flyout
-            .cast::<FlyoutBase>()
-            .and_then(|f| f.IsOpen())
-            .unwrap_or(false);
-        open.then(|| flyout.Content().ok()?.cast().ok()).flatten()
+        open_content(&self.permissions.prompt.borrow().as_ref()?.flyout)
     }
 
     /// What the address bar's capture button says, while it shows.

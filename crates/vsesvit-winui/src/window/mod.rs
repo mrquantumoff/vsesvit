@@ -799,33 +799,32 @@ impl BrowserWindow {
         self.fill_permissions_in(&content, &tab)?;
         let flyout = connection::flyout(&content)?;
         self.prompt_yields_to(&flyout)?;
-        let options = FlyoutShowOptions::new()?;
-        options.SetShowMode(if self.is_foreground() {
-            FlyoutShowMode::Standard
-        } else {
-            FlyoutShowMode::Transient
-        })?;
-        flyout
-            .cast::<FlyoutBase>()?
-            .ShowAtWithOptions(&self.ui.site_button.cast::<FrameworkElement>()?, &options)?;
+        self.show_at_site_button(&flyout.cast()?)?;
         *self.connection.borrow_mut() = Some(flyout);
         Ok(())
     }
 
     pub fn hide_connection(&self) {
         if let Some(flyout) = self.connection.borrow().as_ref() {
-            let _ = flyout.cast::<FlyoutBase>().and_then(|f| f.Hide());
+            hide(flyout);
         }
     }
 
     /// The security icon's popup while it is open.
     pub fn connection_popup(&self) -> Option<FrameworkElement> {
-        let flyout = self.connection.borrow().clone()?;
-        let open = flyout
-            .cast::<FlyoutBase>()
-            .and_then(|f| f.IsOpen())
-            .unwrap_or(false);
-        open.then(|| flyout.Content().ok()?.cast().ok()).flatten()
+        open_content(self.connection.borrow().as_ref()?)
+    }
+
+    /// Shows the site-info popup or the permission prompt under the site-info button; behind
+    /// another window it must not take the focus.
+    fn show_at_site_button(&self, flyout: &FlyoutBase) -> Result<()> {
+        let options = FlyoutShowOptions::new()?;
+        options.SetShowMode(if self.is_foreground() {
+            FlyoutShowMode::Standard
+        } else {
+            FlyoutShowMode::Transient
+        })?;
+        flyout.ShowAtWithOptions(&self.ui.site_button.cast::<FrameworkElement>()?, &options)
     }
 
     fn show_star(&self, starred: bool) {
@@ -1633,6 +1632,19 @@ async fn save_page(window: Weak<BrowserWindow>, tab: Rc<Tab>) {
     if let Some(window) = window.upgrade() {
         window.show_failure("Could not save the page", &failure);
     }
+}
+
+fn hide(flyout: &Flyout) {
+    let _ = flyout.cast::<FlyoutBase>().and_then(|f| f.Hide());
+}
+
+/// What `flyout` shows, while it is open.
+fn open_content(flyout: &Flyout) -> Option<FrameworkElement> {
+    let open = flyout
+        .cast::<FlyoutBase>()
+        .and_then(|f| f.IsOpen())
+        .unwrap_or(false);
+    open.then(|| flyout.Content().ok()?.cast().ok()).flatten()
 }
 
 /// How much of a restored window's title bar must be on a display for it to stay where it was
