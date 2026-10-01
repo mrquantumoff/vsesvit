@@ -76,6 +76,8 @@ pub enum Error {
     Signature(String),
     #[error("the update is signed for version {signed} but was announced as {announced}")]
     SignedVersionMismatch { signed: String, announced: semver::Version },
+    #[error("the update is larger than {} MiB", .0 / (1024 * 1024))]
+    TooLarge(u64),
     #[error("the downloaded file is not a {0:?} package")]
     WrongArtifactType(Format),
     #[error("installing the update failed: {0}")]

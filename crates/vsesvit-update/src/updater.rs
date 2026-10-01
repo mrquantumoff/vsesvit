@@ -14,6 +14,11 @@ use url::Url;
 use crate::release::{self, Artifact, Manifest};
 use crate::{Config, DisabledReason, Error, Format, Installation, WindowsInstallMode};
 
+/// The largest artifact a download takes, many times a release's size. The signature is checked
+/// only once the whole file is here, so without a cap an endpoint or artifact host could fill
+/// the disk, and then the memory [`Update::download`] reads the file into to verify it.
+const MAX_ARTIFACT_SIZE: u64 = 512 * 1024 * 1024;
+
 /// Checks the configured endpoints for a newer release.
 #[derive(Debug)]
 pub struct Updater {
@@ -158,8 +163,9 @@ impl Available {
 
 impl Update {
     /// Streams the artifact into `dir`, calling `progress(received, content_length)` as bytes
-    /// arrive, then verifies it. A file that fails verification is deleted. When `dir` already
-    /// holds this artifact from an earlier download and it verifies, nothing is fetched.
+    /// arrive, then verifies it. A file that grows past 512 MiB or fails verification is
+    /// deleted. When `dir` already holds this artifact from an earlier download and it verifies,
+    /// nothing is fetched.
     pub fn download(&self, dir: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Downloaded, Error> {
         let name = DownloadName { version: self.release.version.clone(), format: self.format, partial: false };
         let path = dir.join(name.to_string());
@@ -190,20 +196,9 @@ impl Update {
             return Err(Error::Http(status));
         }
         let total = response.body().content_length();
-        let mut reader = response.into_body().into_reader();
+        let reader = response.into_body().into_reader();
         let mut file = File::create(partial)?;
-        let mut chunk = vec![0u8; 64 * 1024];
-        let mut received = 0u64;
-        progress(received, total);
-        loop {
-            let n = reader.read(&mut chunk).map_err(|e| Error::Network(e.to_string()))?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&chunk[..n])?;
-            received += n as u64;
-            progress(received, total);
-        }
+        save(reader, total, &mut file, MAX_ARTIFACT_SIZE, progress)?;
         file.sync_all()?;
         Ok(())
     }
@@ -216,6 +211,37 @@ impl Update {
         }
         Ok(())
     }
+}
+
+/// Copies `reader`, whose server announced `total` bytes, into `file`. Fails with
+/// [`Error::TooLarge`] without reading when `total` is over `max`, and before writing past `max`
+/// whatever the server announced.
+fn save(
+    mut reader: impl Read,
+    total: Option<u64>,
+    file: &mut impl Write,
+    max: u64,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<(), Error> {
+    if total.is_some_and(|total| total > max) {
+        return Err(Error::TooLarge(max));
+    }
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut received = 0u64;
+    progress(received, total);
+    loop {
+        let n = reader.read(&mut chunk).map_err(|e| Error::Network(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        if received + n as u64 > max {
+            return Err(Error::TooLarge(max));
+        }
+        file.write_all(&chunk[..n])?;
+        received += n as u64;
+        progress(received, total);
+    }
+    Ok(())
 }
 
 /// Deletes what [`Update::download`] left in `dir`: partial downloads, and the artifacts of
@@ -320,6 +346,28 @@ mod tests {
                 assert_eq!(DownloadName::parse(&name.to_string()), Some(name));
             }
         }
+    }
+
+    #[test]
+    fn an_announced_length_over_the_limit_is_refused_before_reading() {
+        let mut file = Vec::new();
+        let mut body = io::repeat(1).take(10);
+        let err = save(&mut body, Some(1025), &mut file, 1024, &mut |_, _| {}).unwrap_err();
+        assert!(matches!(err, Error::TooLarge(1024)), "{err:?}");
+        assert_eq!((file.len(), body.limit()), (0, 10), "nothing is read or written");
+    }
+
+    #[test]
+    fn a_body_longer_than_the_limit_is_cut_off() {
+        for total in [None, Some(1000)] {
+            let mut file = Vec::new();
+            let err = save(io::repeat(1).take(1 << 20), total, &mut file, 1024, &mut |_, _| {}).unwrap_err();
+            assert!(matches!(err, Error::TooLarge(1024)), "{total:?}: {err:?}");
+            assert!(file.len() <= 1024, "{total:?}: wrote {} bytes", file.len());
+        }
+        let mut file = Vec::new();
+        save(io::repeat(1).take(1024), None, &mut file, 1024, &mut |_, _| {}).expect("exactly the limit is fine");
+        assert_eq!(file.len(), 1024);
     }
 
     #[test]
