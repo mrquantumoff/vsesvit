@@ -27,6 +27,8 @@ pub(crate) enum BarItem {
         id: BookmarkId,
         title: String,
         children: Vec<BarItem>,
+        /// Every item directly in the folder, separators too: what deleting it deletes.
+        contents: usize,
     },
 }
 
@@ -47,19 +49,17 @@ pub(crate) fn items_from(
     folder: BookmarkId,
     children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>,
 ) -> Vec<BarItem> {
-    items_at(folder, 0, children)
+    bar_items(children(folder), 0, children)
 }
 
-/// The items of `folder`, `depth` folders below the bar.
-fn items_at(
-    folder: BookmarkId,
+/// The bar's items for the bookmark nodes `nodes`, `depth` folders below the bar;
+/// `children` lists a folder's nodes.
+fn bar_items(
+    nodes: Vec<BookmarkNode>,
     depth: usize,
     children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>,
 ) -> Vec<BarItem> {
-    if depth >= MAX_DEPTH {
-        return Vec::new();
-    }
-    children(folder)
+    nodes
         .into_iter()
         .filter_map(|node| match node.kind {
             NodeKind::Url => node.url.map(|url| BarItem::Link {
@@ -72,11 +72,19 @@ fn items_at(
                 url: url.to_string(),
                 icon: None,
             }),
-            NodeKind::Folder => Some(BarItem::Folder {
-                id: node.id,
-                children: items_at(node.id, depth + 1, children),
-                title: node.title,
-            }),
+            NodeKind::Folder => {
+                let inner = children(node.id);
+                Some(BarItem::Folder {
+                    id: node.id,
+                    contents: inner.len(),
+                    children: if depth + 1 < MAX_DEPTH {
+                        bar_items(inner, depth + 1, children)
+                    } else {
+                        Vec::new()
+                    },
+                    title: node.title,
+                })
+            }
             NodeKind::Separator => None,
         })
         .collect()
@@ -163,6 +171,7 @@ pub(crate) fn context_entries(item: Option<&BarItem>) -> Vec<MenuEntry> {
             id,
             title,
             children,
+            contents,
         }) => {
             let links: Vec<String> = children
                 .iter()
@@ -184,7 +193,7 @@ pub(crate) fn context_entries(item: Option<&BarItem>) -> Vec<MenuEntry> {
                     BarCommand::Delete {
                         id: *id,
                         title: title.clone(),
-                        contents: children.len(),
+                        contents: *contents,
                     },
                 ),
             ]
@@ -710,15 +719,18 @@ fn same_but_icons(old: &BarItem, new: &BarItem) -> bool {
                 id,
                 title,
                 children,
+                contents,
             },
             BarItem::Folder {
                 id: new_id,
                 title: new_title,
                 children: new_children,
+                contents: new_contents,
             },
         ) => {
             id == new_id
                 && title == new_title
+                && contents == new_contents
                 && children.len() == new_children.len()
                 && children
                     .iter()
@@ -865,6 +877,7 @@ mod tests {
                         url: "https://b.test/".into(),
                         icon: None,
                     }],
+                    contents: 1,
                 },
             ]
         );
@@ -883,6 +896,35 @@ mod tests {
         }
         assert!(level.is_empty());
         assert_eq!(depth, MAX_DEPTH);
+    }
+
+    #[test]
+    fn separators_count_toward_a_folders_delete() {
+        // A folder holding only a separator: its menu is empty, but deleting it still asks.
+        let children = |folder: BookmarkId| match folder {
+            f if f == BookmarkId::TOOLBAR => {
+                vec![node(BookmarkId::OTHER, NodeKind::Folder, "F", None)]
+            }
+            f if f == BookmarkId::OTHER => {
+                vec![node(BookmarkId::MOBILE, NodeKind::Separator, "", None)]
+            }
+            _ => vec![],
+        };
+        let items = items_from(BookmarkId::TOOLBAR, &children);
+        let BarItem::Folder { children, .. } = &items[0] else {
+            panic!("a folder")
+        };
+        assert!(children.is_empty());
+        assert!(
+            context_entries(Some(&items[0])).contains(&MenuEntry::Command(
+                "Delete".into(),
+                BarCommand::Delete {
+                    id: BookmarkId::OTHER,
+                    title: "F".into(),
+                    contents: 1
+                }
+            ))
+        );
     }
 
     #[test]
@@ -925,6 +967,7 @@ mod tests {
                 id: BookmarkId::OTHER,
                 title: "F".into(),
                 children: vec![link("https://b.test/")],
+                contents: 1,
             },
         ];
         fill_icons(&mut items, &mut |url| {
@@ -949,6 +992,7 @@ mod tests {
             id: BookmarkId::OTHER,
             title: "F".into(),
             children: vec![child],
+            contents: 1,
         };
         assert!(same_but_icons(&link("A", None), &link("A", Some(1))));
         assert!(same_but_icons(&link("A", Some(1)), &link("A", Some(2))));
@@ -998,6 +1042,7 @@ mod tests {
             id: BookmarkId::OTHER,
             title: "F".into(),
             children: vec![link.clone(), link.clone()],
+            contents: 2,
         };
         assert_eq!(
             labels(Some(&folder)),
