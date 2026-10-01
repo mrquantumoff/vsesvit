@@ -6,7 +6,7 @@ use crate::Result;
 use crate::ctx::APP_ID;
 
 /// Sizes of the hicolor PNGs installed on Linux.
-pub const PNG_SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
+const PNG_SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
 /// Sizes packed into the Windows `.ico`.
 const ICO_SIZES: [u32; 6] = [16, 24, 32, 48, 64, 256];
 
@@ -40,13 +40,55 @@ pub fn ico() -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Writes `<APP_ID>.svg`, `<size>.png` for every Linux size, and `<APP_ID>.ico` into `out`.
+/// Writes `<APP_ID>.svg`, `<APP_ID>.ico` and the Linux icon theme tree ([`write_hicolor`]) under
+/// `hicolor/` into `out`.
 pub fn write_all(out: &Path) -> Result {
     let write = |name: String, bytes: Vec<u8>| std::fs::write(out.join(&name), bytes).map_err(|e| format!("{name}: {e}"));
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
     write(format!("{APP_ID}.svg"), svg()?)?;
+    write(format!("{APP_ID}.ico"), ico()?)?;
+    write_hicolor(&out.join("hicolor"))
+}
+
+/// Writes the icons Linux installs into `share/icons/hicolor`: `<size>x<size>/apps/<APP_ID>.png`
+/// for every size and `scalable/apps/<APP_ID>.svg`.
+pub fn write_hicolor(dir: &Path) -> Result {
+    let write = |name: String, bytes: Vec<u8>| {
+        let path = dir.join(name);
+        let parent = path.parent().unwrap_or(dir);
+        std::fs::create_dir_all(parent)
+            .and_then(|()| std::fs::write(&path, bytes))
+            .map_err(|e| format!("{}: {e}", path.display()))
+    };
     for size in PNG_SIZES {
-        write(format!("{size}.png"), png(size)?)?;
+        write(format!("{size}x{size}/apps/{APP_ID}.png"), png(size)?)?;
     }
-    write(format!("{APP_ID}.ico"), ico()?)
+    write(format!("scalable/apps/{APP_ID}.svg"), svg()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_hicolor_tree_holds_every_size_and_nothing_else() {
+        let out = std::env::temp_dir().join(format!("vsesvit-xtask-icons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        write_all(&out).unwrap();
+        let hicolor = out.join("hicolor");
+        for size in PNG_SIZES {
+            let png = std::fs::read(hicolor.join(format!("{size}x{size}/apps/{APP_ID}.png"))).unwrap();
+            let image = ico::IconImage::read_png(png.as_slice()).unwrap();
+            assert_eq!((image.width(), image.height()), (size, size));
+        }
+        assert!(hicolor.join(format!("scalable/apps/{APP_ID}.svg")).is_file());
+        let mut dirs: Vec<String> =
+            std::fs::read_dir(&hicolor).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        dirs.sort();
+        let mut expected: Vec<String> = PNG_SIZES.iter().map(|s| format!("{s}x{s}")).chain(["scalable".into()]).collect();
+        expected.sort();
+        assert_eq!(dirs, expected);
+        assert!(out.join(format!("{APP_ID}.ico")).is_file());
+        std::fs::remove_dir_all(&out).unwrap();
+    }
 }

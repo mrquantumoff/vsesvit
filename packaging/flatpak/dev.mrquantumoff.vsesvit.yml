@@ -38,11 +38,7 @@ modules:
         version=$(sed -n '/^\[workspace.package\]/,/^\[/ s/^version = "\(.*\)"$/\1/p' Cargo.toml)
         install -d /app/share/metainfo
         sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$(date -u +%F)/" packaging/linux/dev.mrquantumoff.vsesvit.metainfo.xml > /app/share/metainfo/dev.mrquantumoff.vsesvit.metainfo.xml
-      - |
-        for size in 16 24 32 48 64 128 256 512; do
-          install -Dm644 "icons/$size.png" "/app/share/icons/hicolor/${size}x${size}/apps/dev.mrquantumoff.vsesvit.png"
-        done
-      - install -Dm644 icons/dev.mrquantumoff.vsesvit.svg /app/share/icons/hicolor/scalable/apps/dev.mrquantumoff.vsesvit.svg
+      - install -d /app/share/icons && cp -r icons/hicolor /app/share/icons/
     sources:
       - type: dir
         path: ../..

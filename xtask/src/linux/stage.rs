@@ -55,11 +55,7 @@ pub fn stage(ctx: &Ctx, format: Format, binary: &Path) -> Result<Stage> {
     let metainfo_path = usr.join("share/metainfo").join(metainfo_file());
     util::write(&metainfo_path, metainfo(ctx)?)?;
 
-    let icons_dir = usr.join("share/icons/hicolor");
-    for size in icons::PNG_SIZES {
-        util::write(&icons_dir.join(format!("{size}x{size}/apps/{APP_ID}.png")), icons::png(size)?)?;
-    }
-    util::write(&icons_dir.join(format!("scalable/apps/{APP_ID}.svg")), icons::svg()?)?;
+    icons::write_hicolor(&usr.join("share/icons/hicolor"))?;
 
     validate(&desktop, &metainfo_path)?;
     Ok(Stage { root })
