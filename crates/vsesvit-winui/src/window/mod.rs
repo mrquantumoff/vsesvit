@@ -536,9 +536,9 @@ impl BrowserWindow {
     }
 
     fn select_index(&self, index: usize) {
-        let _ = self
-            .strip()
-            .select_index(u32::try_from(index).unwrap_or(u32::MAX));
+        if let Some(&id) = self.strip().order().get(index) {
+            let _ = self.strip().select(id);
+        }
         self.sync_selection();
     }
 
@@ -547,7 +547,11 @@ impl BrowserWindow {
         if count == 0 {
             return;
         }
-        let current = self.strip().selected_index().unwrap_or(0) as isize;
+        let current = self
+            .strip()
+            .selected()
+            .and_then(|id| self.index_of(id))
+            .unwrap_or(0) as isize;
         self.select_index((current + step).rem_euclid(count) as usize);
     }
 

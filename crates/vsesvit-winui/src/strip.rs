@@ -45,8 +45,6 @@ pub(crate) trait TabStrip {
     fn remove(&self, tab: TabId) -> Result<()>;
     fn select(&self, tab: TabId) -> Result<()>;
     fn selected(&self) -> Option<TabId>;
-    fn selected_index(&self) -> Option<u32>;
-    fn select_index(&self, index: u32) -> Result<()>;
     /// Tab ids in display order.
     fn order(&self) -> Vec<TabId>;
     fn update(&self, tab: TabId, look: &TabLook);
@@ -365,15 +363,6 @@ impl TabStrip for TopStrip {
 
     fn selected(&self) -> Option<TabId> {
         self.rows.tab_of(&self.view.SelectedItem().ok()?)
-    }
-
-    fn selected_index(&self) -> Option<u32> {
-        u32::try_from(self.view.SelectedIndex().ok()?).ok()
-    }
-
-    fn select_index(&self, index: u32) -> Result<()> {
-        self.view
-            .SetSelectedIndex(i32::try_from(index).unwrap_or(i32::MAX))
     }
 
     fn order(&self) -> Vec<TabId> {
@@ -814,19 +803,6 @@ impl TabStrip for SidePane {
     fn selected(&self) -> Option<TabId> {
         self.rows
             .tab_of(&self.selector().ok()?.SelectedItem().ok()?)
-    }
-
-    fn selected_index(&self) -> Option<u32> {
-        let selected = self.selected()?;
-        let index = self.order().iter().position(|t| *t == selected)?;
-        u32::try_from(index).ok()
-    }
-
-    fn select_index(&self, index: u32) -> Result<()> {
-        match self.order().get(index as usize) {
-            Some(tab) => self.select(*tab),
-            None => Ok(()),
-        }
     }
 
     fn order(&self) -> Vec<TabId> {
