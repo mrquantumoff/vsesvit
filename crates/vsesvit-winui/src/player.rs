@@ -198,14 +198,14 @@ impl Player {
             ("\u{E768}", "Play")
         };
         let _ = self.play_pause_glyph.SetGlyph(glyph);
-        let _ = set_tip(&self.play_pause, tip);
+        let _ = xaml::set_tip(&self.play_pause, tip);
         let (glyph, tip) = if look.muted {
             ("\u{E74F}", "Unmute tab")
         } else {
             ("\u{E767}", "Mute tab")
         };
         let _ = self.mute_glyph.SetGlyph(glyph);
-        let _ = set_tip(&self.mute, tip);
+        let _ = xaml::set_tip(&self.mute, tip);
         let _ = self.previous.cast::<Control>().and_then(|c| c.SetIsEnabled(look.previous));
         let _ = self.next.cast::<Control>().and_then(|c| c.SetIsEnabled(look.next));
     }
@@ -222,9 +222,4 @@ impl Player {
 /// 16:9, as most video is.
 fn pip_height(width: f64) -> f64 {
     (width * 9.0 / 16.0).round()
-}
-
-fn set_tip(element: &impl Interface, tip: &str) -> Result<()> {
-    let element = element.cast::<DependencyObject>()?;
-    ToolTipService::SetToolTip(&element, &xaml::boxed(tip)?)
 }

@@ -366,8 +366,7 @@ impl BrowserWindow {
                 "\u{E7F4}"
             };
             let _ = self.ui.capture_glyph.SetGlyph(glyph);
-            let _ = xaml::boxed(text)
-                .and_then(|tip| ToolTipService::SetToolTip(&self.ui.capture_button, &tip));
+            let _ = xaml::set_tip(&self.ui.capture_button, text);
         }
         if capturing.screen {
             let host = tab

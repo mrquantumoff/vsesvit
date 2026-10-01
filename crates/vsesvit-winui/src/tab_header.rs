@@ -143,7 +143,7 @@ impl TabHeader {
     pub fn show_shortcuts(&self) {
         if let Some(close) = &self.close {
             let tip = shortcuts::current().tip("Close tab", Command::CloseTab);
-            let _ = xaml::boxed(&tip).and_then(|tip| ToolTipService::SetToolTip(close, &tip));
+            let _ = xaml::set_tip(close, &tip);
         }
     }
 
@@ -161,8 +161,7 @@ impl TabHeader {
 
     pub fn apply(&self, look: &TabLook) {
         let _ = self.title.SetText(&look.title);
-        let _ =
-            xaml::boxed(&look.title).and_then(|tip| ToolTipService::SetToolTip(&self.root, &tip));
+        let _ = xaml::set_tip(&self.root, &look.title);
         let favicon = !look.loading && look.favicon.is_some();
         let _ = self.favicon.SetSource(look.favicon.as_ref());
         let _ = self.spinner.SetIsActive(look.loading);
@@ -175,7 +174,7 @@ impl TabHeader {
         let _ = xaml::set_visible(&self.audio, button.is_some());
         if let Some((glyph, tip)) = button {
             let _ = self.audio_glyph.SetGlyph(glyph);
-            let _ = xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.audio, &tip));
+            let _ = xaml::set_tip(&self.audio, tip);
         }
         // A pinned tab closes from its menu or with Ctrl+W, as in Chrome.
         if let Some(close) = &self.close {
@@ -202,8 +201,7 @@ impl TabHeader {
         let _ = xaml::set_visible(shown, true);
         let _ = xaml::set_visible(hidden, false);
         if let Some(tip) = capturing.description() {
-            let _ =
-                xaml::boxed(&tip).and_then(|tip| ToolTipService::SetToolTip(&self.capture, &tip));
+            let _ = xaml::set_tip(&self.capture, &tip);
         }
     }
 

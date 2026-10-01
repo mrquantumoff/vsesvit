@@ -710,7 +710,7 @@ impl SidePane {
             (&self.toggle, bindings.tip(toggle, Command::ToggleTabPane)),
             (&self.new_tab, bindings.tip("New tab", Command::NewTab)),
         ] {
-            let _ = xaml::boxed(&tip).and_then(|tip| ToolTipService::SetToolTip(button, &tip));
+            let _ = xaml::set_tip(button, &tip);
         }
         self.rows.each_header(TabHeader::show_shortcuts);
     }

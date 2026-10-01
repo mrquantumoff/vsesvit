@@ -624,7 +624,7 @@ impl BrowserWindow {
         };
         let tip = shortcuts::current().tip(tip, Command::Reload);
         let _ = self.ui.reload_glyph.SetGlyph(glyph);
-        let _ = xaml::boxed(&tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.reload, &tip));
+        let _ = xaml::set_tip(&self.ui.reload, &tip);
         let shown = self.address_shown(&state.url);
         let showing_page = match &mut *self.address.borrow_mut() {
             Address::Page(written) => {
@@ -718,8 +718,7 @@ impl BrowserWindow {
     fn show_site(&self, url: &str, report: Option<&connection::Report>) {
         let (glyph, tip) = site_look(url, report);
         let _ = self.ui.site_icon.SetGlyph(glyph);
-        let _ =
-            xaml::boxed(tip).and_then(|tip| ToolTipService::SetToolTip(&self.ui.site_icon, &tip));
+        let _ = xaml::set_tip(&self.ui.site_icon, tip);
     }
 
     /// The zoom chip, shown while the page is not at 100%, and the zoom bubble's level.
@@ -1009,7 +1008,7 @@ impl BrowserWindow {
         ];
         for (element, text, command) in tips {
             let tip = bindings.tip(text, command);
-            let _ = element.and_then(|e| ToolTipService::SetToolTip(&e, &xaml::boxed(&tip)?));
+            let _ = element.and_then(|e| xaml::set_tip(&e, &tip));
         }
         let menu = [
             ("MenuNewTab", Command::NewTab),

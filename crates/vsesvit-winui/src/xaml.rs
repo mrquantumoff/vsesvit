@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use windows_core::{IInspectable, IUnknown, Interface, Result};
+use windows_core::{IInspectable, IUnknown, Interface, Param, Result};
 use windows_reference::IReference;
 
 use crate::bindings::*;
@@ -160,6 +160,11 @@ pub(crate) fn find<T: Interface>(scope: &FrameworkElement, name: &str) -> Result
 
 pub(crate) fn boxed(text: &str) -> Result<IInspectable> {
     IReference::<windows_core::HSTRING>::from(text).cast()
+}
+
+/// Sets `element`'s tooltip to `tip`.
+pub(crate) fn set_tip(element: impl Param<DependencyObject>, tip: &str) -> Result<()> {
+    ToolTipService::SetToolTip(element, &boxed(tip)?)
 }
 
 pub(crate) fn set_visible(element: &impl Interface, visible: bool) -> Result<()> {
