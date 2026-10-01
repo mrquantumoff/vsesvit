@@ -49,15 +49,7 @@ fn build(window: &BrowserWindow) -> adw::Window {
     header.pack_start(&open_folder);
     header.pack_end(&clear);
 
-    let list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["boxed-list"])
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(6)
-        .margin_bottom(12)
-        .valign(gtk::Align::Start)
-        .build();
+    let list = super::boxed_list();
     let scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&list)
@@ -127,9 +119,7 @@ fn build(window: &BrowserWindow) -> adw::Window {
 impl State {
     fn refresh(self: &Rc<Self>) {
         let Some(downloads) = self.downloads.upgrade() else { return };
-        for row in self.rows.take() {
-            self.list.remove(&row.widget);
-        }
+        self.list.remove_all();
         let rows: Vec<Row> = downloads
             .list()
             .into_iter()

@@ -35,7 +35,6 @@ struct State {
     ui: LibraryWindow,
     list: gtk::ListBox,
     stack: gtk::Stack,
-    rows: RefCell<Vec<gtk::Widget>>,
     devices: gtk::Box,
     /// Tells the visits from the devices' tabs; hidden with them while searching.
     visits_heading: gtk::Label,
@@ -56,15 +55,7 @@ fn build(window: &BrowserWindow) -> adw::Window {
         .build();
     let ui = LibraryWindow::new("History", "Search history", &[clear.upcast_ref()]);
 
-    let list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["boxed-list"])
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(6)
-        .margin_bottom(12)
-        .valign(gtk::Align::Start)
-        .build();
+    let list = super::boxed_list();
     let empty = adw::StatusPage::builder()
         .icon_name("document-open-recent-symbolic")
         .title("No History")
@@ -106,7 +97,6 @@ fn build(window: &BrowserWindow) -> adw::Window {
             ui,
             list,
             stack,
-            rows: RefCell::new(Vec::new()),
             devices,
             visits_heading,
             watch: Rc::new(move || {
@@ -166,17 +156,11 @@ impl State {
     fn refresh(self: &Rc<Self>) {
         self.refresh_devices();
         let rows = self.load();
-        for row in self.rows.take() {
-            self.list.remove(&row);
-        }
-        let mut widgets = Vec::with_capacity(rows.len());
+        self.list.remove_all();
+        let page = if rows.is_empty() { "empty" } else { "list" };
         for row in rows {
-            let widget = self.row_widget(row);
-            self.list.append(&widget);
-            widgets.push(widget.upcast());
+            self.list.append(&self.row_widget(row));
         }
-        let page = if widgets.is_empty() { "empty" } else { "list" };
-        self.rows.replace(widgets);
         self.stack.set_visible_child_name(page);
     }
 

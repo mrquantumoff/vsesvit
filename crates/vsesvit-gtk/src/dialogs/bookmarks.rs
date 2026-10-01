@@ -36,7 +36,6 @@ struct State {
     selection: gtk::SingleSelection,
     stack: gtk::Stack,
     results: gtk::ListBox,
-    result_rows: RefCell<Vec<gtk::Widget>>,
     /// Rebuilds the tree after any bookmark change (an edit on the bar, icons that
     /// arrived), for as long as the window exists.
     watch: OnceCell<Rc<dyn Fn()>>,
@@ -124,15 +123,7 @@ fn build(window: &BrowserWindow) -> Rc<State> {
         .vexpand(true)
         .build();
 
-    let results = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["boxed-list"])
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(6)
-        .margin_bottom(12)
-        .valign(gtk::Align::Start)
-        .build();
+    let results = super::boxed_list();
     let results_scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&results)
@@ -173,7 +164,6 @@ fn build(window: &BrowserWindow) -> Rc<State> {
         selection,
         stack,
         results,
-        result_rows: RefCell::new(Vec::new()),
         watch: OnceCell::new(),
     });
     state.rebuild();
@@ -320,10 +310,8 @@ impl State {
             let found = profile.bookmarks().search(text, SEARCH_LIMIT);
             with_icons(&mut profile, found)
         };
-        for row in self.result_rows.take() {
-            self.results.remove(&row);
-        }
-        let mut rows = Vec::new();
+        self.results.remove_all();
+        let mut any = false;
         for Entry { node, icon } in found {
             let Some(url) = node.url.clone() else { continue };
             let row = adw::ActionRow::builder()
@@ -340,10 +328,9 @@ impl State {
                 }
             });
             self.results.append(&row);
-            rows.push(row.upcast());
+            any = true;
         }
-        let page = if rows.is_empty() { "empty" } else { "results" };
-        self.result_rows.replace(rows);
+        let page = if any { "results" } else { "empty" };
         self.stack.set_visible_child_name(page);
     }
 
@@ -748,7 +735,7 @@ mod tests {
         let while_searching = (state.stack.visible_child_name(), state.selected().map(|node| node.id));
         core.borrow_mut().bookmarks().remove(zebra).unwrap();
         state.rebuild();
-        let after_removal = (state.stack.visible_child_name(), state.result_rows.borrow().len());
+        let after_removal = (state.stack.visible_child_name(), state.results.observe_children().n_items());
 
         core.borrow_mut().bookmarks().remove(folder).unwrap();
         window.destroy();

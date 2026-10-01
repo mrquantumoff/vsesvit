@@ -165,6 +165,19 @@ pub(crate) fn row_button(icon: &str, tooltip: &str) -> gtk::Button {
         .build()
 }
 
+/// The inset, unselectable list the library windows show their rows in.
+pub(crate) fn boxed_list() -> gtk::ListBox {
+    gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(6)
+        .margin_bottom(12)
+        .valign(gtk::Align::Start)
+        .build()
+}
+
 /// A visit time in the user's locale.
 pub(crate) fn format_time(unix_ms: i64) -> String {
     glib::DateTime::from_unix_local(unix_ms.div_euclid(1000))
