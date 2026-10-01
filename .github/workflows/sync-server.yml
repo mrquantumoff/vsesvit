@@ -53,12 +53,16 @@ jobs:
           workspaces: |
             server
             .
+      # Before the server tests, so no server binary sits in server/target yet: the script has to
+      # find the one Cargo built where CARGO_TARGET_DIR put it.
+      - name: Profiles sync through the server
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: bash scripts/sync-e2e.sh
       - name: Server tests on SQLite and Postgres
         env:
           VSESVIT_SYNC_TEST_POSTGRES: postgres://postgres:test@localhost:5432/postgres
         run: cargo test --manifest-path server/Cargo.toml -- --test-threads=1
-      - name: Profiles sync through the server
-        run: bash scripts/sync-e2e.sh
 
   # Pull requests build the image with no permission to publish it.
   image:
