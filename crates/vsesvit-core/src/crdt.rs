@@ -2,8 +2,8 @@
 //!
 //! - [`Lww<T>`]: last-writer-wins register. Join = max by `(stamp, value)`.
 //! - a grow-only set (history visits, history deletion directives). Join = union.
-//! - a terminal tombstone ([`Record<T>`]: bookmarks, search engines). Join = "deleted
-//!   absorbs alive".
+//! - a terminal tombstone ([`Record<T>`]: search engines; bookmarks apply the same rule
+//!   inside `NodeState`). Join = "deleted absorbs alive".
 //!
 //! All three are join-semilattices, so merging is commutative, associative and
 //! idempotent. That is the whole convergence argument: a sync engine may apply remote

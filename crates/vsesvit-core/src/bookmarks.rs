@@ -506,7 +506,7 @@ fn raw_parent(records: &BTreeMap<BookmarkId, BookmarkRecord>, rec: &BookmarkReco
 /// the output is always a valid tree.
 ///
 /// ```text
-/// raw(n)   = n.placement.parent if that id is a root or a record of kind Folder, else OTHER    -- rule 1
+/// raw(n)   = n.placement.parent if that id is a visible root or a record of kind Folder, else OTHER    -- rule 1
 /// for each cycle in the raw graph (walk with white/grey/black colouring):
 ///     loser = member with max (placement.at, id); raw(loser) = OTHER                            -- rule 2
 /// for each live n: eff(n) = first live node on raw(n), raw(raw(n)), ...                         -- rule 3
@@ -1190,6 +1190,18 @@ mod tests {
             .unwrap();
         assert!(Position::parse(mid.as_str()).is_some(), "malformed");
         assert!(lo < mid && mid < hi);
+    }
+
+    /// Rule 1: only a visible root or a folder is a valid raw parent, so a record placed
+    /// under the invisible ROOT lands in OTHER.
+    #[test]
+    fn a_record_placed_under_root_lands_in_other() {
+        let id = BookmarkId(Uuid::from_u128(100));
+        let placement = Lww::new(Placement { parent: BookmarkId::ROOT, pos: pos("1") }, Stamp::ZERO);
+        let state = NodeState::Separator { extra: Extra::default() };
+        let tree = materialize(&BTreeMap::from([(id, BookmarkRecord { id, placement, added_ms: 0, state })]));
+        assert_eq!(tree.parent(id), Some(BookmarkId::OTHER));
+        assert_eq!(tree.children(BookmarkId::ROOT), BookmarkId::VISIBLE_ROOTS);
     }
 
     #[test]
