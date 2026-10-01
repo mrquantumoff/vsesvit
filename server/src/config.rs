@@ -118,7 +118,8 @@ impl Config {
         if !(1..=10_000).contains(&limits.max_batch) {
             return Err(invalid("MAX_BATCH", &limits.max_batch.to_string()));
         }
-        if limits.max_request_bytes < 64 * 1024 {
+        // Browsers read a download page of up to twice this, and no more than 256 MiB.
+        if !(64 * 1024..=128 << 20).contains(&limits.max_request_bytes) {
             return Err(invalid("MAX_REQUEST_BYTES", &limits.max_request_bytes.to_string()));
         }
         // One record, base64 and all, must fit in a request and in a download page.
@@ -256,6 +257,7 @@ mod tests {
             ("MAX_RECORD_BYTES", "0"),
             ("MAX_RECORD_BYTES", "33554432"),
             ("MAX_REQUEST_BYTES", "100"),
+            ("MAX_REQUEST_BYTES", "134217729"),
             ("MAX_ACCOUNT_BYTES", "10"),
             ("MAX_ACCOUNT_RECORDS", "0"),
             ("DATABASE_MAX_CONNECTIONS", "0"),

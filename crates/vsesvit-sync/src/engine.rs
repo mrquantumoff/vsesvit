@@ -202,7 +202,7 @@ fn exchange(http: &Http, account: &Account, records: Vec<Record>) -> Result<Page
         authorized(account, |token| server::upload(http, server, token, &upload))?;
     }
     let since = account.download_cursor;
-    authorized(account, |token| server::download(http, server, token, since, limits.max_batch))
+    authorized(account, |token| server::download(http, server, token, since, limits))
 }
 
 /// Calls with the session. A session the server no longer knows (signed out elsewhere, unused too

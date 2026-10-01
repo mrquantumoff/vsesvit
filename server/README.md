@@ -54,7 +54,7 @@ Settings come from environment variables, or from a `.env` file in the working d
 | `SESSION_IDLE_DAYS` | `180` | A browser's session ends after this many days unused, 1 to 3650. |
 | `MAX_BATCH` | `500` | Records per upload and per download page, 1 to 10000. |
 | `MAX_RECORD_BYTES` | `1048576` | One record's body. At most half of `MAX_REQUEST_BYTES`. |
-| `MAX_REQUEST_BYTES` | `33554432` | One upload request, and roughly one download page. At least 65536. |
+| `MAX_REQUEST_BYTES` | `33554432` | One upload request, and roughly one download page. 65536 to 134217728. |
 | `MAX_ACCOUNT_BYTES` | `1073741824` | What one account may store, bodies and ids. An upload that would pass it is refused with 507; one that does not grow the account always passes. |
 | `MAX_ACCOUNT_RECORDS` | `1000000` | Records one account may store. |
 | `RUST_LOG` | `info` | |
