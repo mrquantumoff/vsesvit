@@ -22,6 +22,7 @@ use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 use super::MAX_BYTES;
 use crate::Url;
+use crate::import::decode_entities;
 
 /// Pages fetched at once.
 const WORKERS: usize = 6;
@@ -390,19 +391,6 @@ fn parse_attrs(html: &str, mut at: usize) -> (Attrs, usize) {
     }
 }
 
-fn decode_entities(value: &str) -> String {
-    if !value.contains('&') {
-        return value.to_owned();
-    }
-    value
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-}
-
 // ---------------------------------------------------------------------------
 // Normalizing the image
 // ---------------------------------------------------------------------------
@@ -507,6 +495,12 @@ mod tests {
     fn resolves_against_base_href_and_decodes_entities() {
         let html = r#"<head><base href="https://cdn.example/assets/"><link rel="icon" href="i.png?a=1&amp;b=2"></head>"#;
         assert_eq!(links(html), ["https://cdn.example/assets/i.png?a=1&b=2"]);
+    }
+
+    #[test]
+    fn decodes_numeric_entities_in_href() {
+        let html = r#"<head><link rel="icon" href="/a.png?x=1&#38;y=2"><link rel="icon" href="/b.png?x=1&#x26;y=2"></head>"#;
+        assert_eq!(links(html), ["https://site.example/a.png?x=1&y=2", "https://site.example/b.png?x=1&y=2"]);
     }
 
     #[test]
