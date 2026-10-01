@@ -26,7 +26,7 @@ use crate::{exec, xaml};
 /// A canvas animation and a quiet tone as one media stream in a `<video>`; `start()` plays it.
 /// Like a video site, the video sits below a header, inside a transformed and clipped player,
 /// which moves elsewhere in the page when the page is narrow.
-pub(super) const MEDIA_PAGE: &str = "data:text/html,<title>Media</title>\
+const MEDIA_PAGE: &str = "data:text/html,<title>Media</title>\
 <body style='margin:0;background:rgb(10,20,40);color:white;font:24px sans-serif'>\
 <header style='height:120px'>Site header</header><div style='transform:translateZ(0);overflow:hidden;\
 margin-left:60px;width:640px;height:360px'><video id=v width=640 height=360></video></div>\
@@ -42,11 +42,6 @@ window.start=async()=>{const a=new AudioContext();const o=a.createOscillator();c
 n.gain.value=0.01;const d=a.createMediaStreamDestination();o.connect(n).connect(d);o.start();\
 const s=c.captureStream(30);s.addTrack(d.stream.getAudioTracks()[0]);const v=document.getElementById('v');\
 v.srcObject=s;await v.play();return 'playing'};</script></body>";
-
-/// Opens the media page in a background tab, muted, and plays it.
-pub(super) async fn open_media(window: &Rc<BrowserWindow>) -> Result<Rc<Tab>, String> {
-    open_playing(window, MEDIA_PAGE).await
-}
 
 /// Opens `page` in a background tab, muted, and calls its `start()`.
 async fn open_playing(window: &Rc<BrowserWindow>, page: &str) -> Result<Rc<Tab>, String> {
@@ -120,7 +115,7 @@ pub(super) async fn run(
     steps: &mut Vec<Value>,
 ) -> Result<(), String> {
     let first = window.active_tab().ok_or("no tab")?;
-    let media = open_media(window).await?;
+    let media = open_playing(window, MEDIA_PAGE).await?;
     exec::sleep(Duration::from_millis(300)).await;
     shoot(window, out_dir, "30-tab-plays-sound", steps, |_| {
         let state = media.state();
