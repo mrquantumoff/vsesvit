@@ -13,10 +13,9 @@ use vsesvit_core::permissions::{Origin, Permission, Setting};
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
 
-use super::{STEP_TIMEOUT, devtools, eval, shoot, wait_loaded};
+use super::{STEP_TIMEOUT, devtools, eval, settings_on, shoot, wait_loaded};
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::dialogs::{self, Dialog};
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
@@ -810,20 +809,9 @@ async fn settings(
     out_dir: &Path,
     steps: &mut Vec<Value>,
 ) -> Result<(), String> {
-    let preview = dialogs::preview(window, Dialog::Settings).map_err(|e| e.to_string())?;
-    exec::sleep(Duration::from_millis(500)).await;
-    let categories: ListView = preview
-        .find("SettingsCategories")
+    let preview = settings_on(window, "SitePermissionsPanel")
+        .await
         .map_err(|e| e.to_string())?;
-    let index = dialogs::SETTINGS_CATEGORIES
-        .iter()
-        .position(|c| c.panel == "SitePermissionsPanel")
-        .ok_or("no Site permissions category")?;
-    categories
-        .cast::<Selector>()
-        .and_then(|s| s.SetSelectedIndex(index as i32))
-        .map_err(|e| e.to_string())?;
-    exec::sleep(Duration::from_millis(500)).await;
     let site = preview
         .find::<TextBlock>("Site0")
         .and_then(|t| t.Text())

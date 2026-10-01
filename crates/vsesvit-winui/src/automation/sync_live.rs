@@ -21,12 +21,12 @@ use vsesvit_core::Url;
 use vsesvit_core::prefs::keys;
 use vsesvit_core::testkit::FixtureServer;
 use vsesvit_sync::status::State;
-use windows_core::{Interface, Result};
+use windows_core::Interface;
 
-use super::{invoke, shoot, wait_loaded};
+use super::{invoke, settings_on, shoot, wait_loaded};
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::dialogs::{self, Dialog, Preview};
+use crate::dialogs::{self, Dialog};
 use crate::window::BrowserWindow;
 use crate::{exec, xaml};
 
@@ -187,20 +187,6 @@ async fn synced_since(
     .await
 }
 
-async fn settings_sync_page(window: &Rc<BrowserWindow>) -> Result<Preview> {
-    let preview = dialogs::preview(window, Dialog::Settings)?;
-    let index = dialogs::SETTINGS_CATEGORIES
-        .iter()
-        .position(|c| c.panel == "SyncPanel")
-        .unwrap_or_default();
-    preview
-        .find::<ListView>("SettingsCategories")?
-        .cast::<Selector>()?
-        .SetSelectedIndex(i32::try_from(index).unwrap_or_default())?;
-    exec::sleep(SETTLE).await;
-    Ok(preview)
-}
-
 /// Types the server into the Sync page and presses Sign In; the provider's page opens in a tab
 /// and sends the browser back to the sign-in's loopback address.
 async fn sign_in(
@@ -210,7 +196,7 @@ async fn sign_in(
     out_dir: &Path,
     steps: &mut Vec<Value>,
 ) -> std::result::Result<(), String> {
-    let preview = settings_sync_page(window)
+    let preview = settings_on(window, "SyncPanel")
         .await
         .map_err(|e| e.to_string())?;
     let server: TextBox = preview.find("SyncServer").map_err(|e| e.to_string())?;
@@ -411,7 +397,7 @@ async fn role_b(
     .await;
     drop(preview);
 
-    let preview = settings_sync_page(window)
+    let preview = settings_on(window, "SyncPanel")
         .await
         .map_err(|e| e.to_string())?;
     let everything: ToggleSwitch = preview.find("SyncEverything").map_err(|e| e.to_string())?;
@@ -488,7 +474,7 @@ async fn role_delete(
     steps: &mut Vec<Value>,
 ) -> std::result::Result<(), String> {
     let signed_in = browser.sync().signed_in();
-    let preview = settings_sync_page(window)
+    let preview = settings_on(window, "SyncPanel")
         .await
         .map_err(|e| e.to_string())?;
     let button: Button = preview

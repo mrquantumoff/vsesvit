@@ -14,15 +14,13 @@ use vsesvit_core::sync::{Kind, WireRecord};
 use windows_core::Interface;
 
 use super::{Probe, eval, tab_ids, until, wait_ready};
-use crate::automation::{invoke, press};
+use crate::automation::{invoke, press, settings_on};
 use crate::browser::Browser;
 use crate::bindings::{
     Button, CoreWebView2SaveAsKind, DependencyObject, Flyout, FrameworkElement, IButton,
-    ICoreWebView2_9, ICoreWebView2_25, IScrollViewer, ListView, Point, Selector, UIElement,
+    ICoreWebView2_9, ICoreWebView2_25, IScrollViewer, Point, UIElement,
 };
-use crate::dialogs::{
-    self, Dialog, Preview, SETTINGS_CATEGORIES, ShortcutsPage, shortcut_row_name,
-};
+use crate::dialogs::{Dialog, Preview, ShortcutsPage, shortcut_row_name};
 use crate::shortcuts::{self, Command, InPage, Mods};
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
@@ -47,18 +45,7 @@ fn err(e: impl std::fmt::Display) -> String {
 async fn shortcuts_page(
     window: &Rc<BrowserWindow>,
 ) -> Result<(Preview, Rc<ShortcutsPage>), String> {
-    let preview = dialogs::preview(window, Dialog::Settings).map_err(err)?;
-    exec::sleep(SETTLE).await;
-    let index = SETTINGS_CATEGORIES
-        .iter()
-        .position(|c| c.panel == "ShortcutsPanel")
-        .ok_or("no Keyboard shortcuts category")?;
-    preview
-        .find::<ListView>("SettingsCategories")
-        .and_then(|list| list.cast::<Selector>())
-        .and_then(|s| s.SetSelectedIndex(i32::try_from(index).unwrap_or(0)))
-        .map_err(err)?;
-    exec::sleep(SETTLE).await;
+    let preview = settings_on(window, "ShortcutsPanel").await.map_err(err)?;
     let page = preview
         .wired::<ShortcutsPage>()
         .ok_or("the Settings dialog has no shortcuts page")?;

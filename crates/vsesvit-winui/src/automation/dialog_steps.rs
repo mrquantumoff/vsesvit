@@ -53,6 +53,25 @@ async fn open(window: &Rc<BrowserWindow>, dialog: Dialog) -> Result<Preview> {
     Ok(preview)
 }
 
+/// Selects the Settings category whose panel is `panel`.
+fn select_category(preview: &Preview, panel: &str) -> Result<()> {
+    let index = SETTINGS_CATEGORIES
+        .iter()
+        .position(|c| c.panel == panel)
+        .ok_or_else(|| {
+            windows_core::Error::new(E_FAIL, format!("no Settings category {panel:?}"))
+        })?;
+    select_index(&preview.find::<ListView>("SettingsCategories")?, index)
+}
+
+/// Settings over the window, on the category showing `panel`.
+pub(crate) async fn settings_on(window: &Rc<BrowserWindow>, panel: &str) -> Result<Preview> {
+    let preview = open(window, Dialog::Settings).await?;
+    select_category(&preview, panel)?;
+    settle().await;
+    Ok(preview)
+}
+
 /// Lets the dialog finish rebuilding after a change.
 async fn settle() {
     exec::sleep(Duration::from_millis(500)).await;
@@ -78,7 +97,7 @@ pub(super) async fn settings(
         category_steps(window, out_dir, &preview, category.panel, steps).await?;
     }
 
-    select_index(&categories, 2)?;
+    select_category(&preview, "AppearancePanel")?;
     settle().await;
     let tabs: ComboBox = preview.find("TabsPosition")?;
     select_index(&tabs, 1)?;
@@ -106,7 +125,7 @@ pub(super) async fn settings(
     }));
     home_button(window, out_dir, &preview, page2, steps).await?;
 
-    select_index(&categories, 3)?;
+    select_category(&preview, "SearchPanel")?;
     settle().await;
     let compact: ToggleSwitch = preview.find("CompactAddress")?;
     let full_urls: ToggleSwitch = preview.find("FullUrls")?;
@@ -124,7 +143,7 @@ pub(super) async fn settings(
         "ok": defaults == (true, false) && narrow > 0.0 && narrow <= 720.5 && wide > narrow,
     }));
 
-    select_index(&categories, 0)?;
+    select_category(&preview, "GeneralPanel")?;
     settle().await;
     let gpu: ToggleSwitch = preview.find("HardwareAcceleration")?;
     let smooth: ToggleSwitch = preview.find("SmoothScrolling")?;
@@ -269,10 +288,7 @@ pub(super) async fn clear_browsing_data(
     };
     let visits_before = visits();
 
-    let preview = open(window, Dialog::Settings).await?;
-    let categories: ListView = preview.find("SettingsCategories")?;
-    select_index(&categories, SETTINGS_CATEGORIES.len() - 1)?;
-    settle().await;
+    let preview = settings_on(window, "PrivacyPanel").await?;
     let button: Button = preview.find("ClearBrowsingData")?;
     invoke(&button)?;
     settle().await;
