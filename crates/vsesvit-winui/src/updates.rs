@@ -24,6 +24,7 @@ use vsesvit_update::{
 
 use crate::browser::{self, Browser};
 use crate::cli::UpdateCommand;
+use crate::sync::live;
 use crate::{app, exec};
 
 const FIRST_CHECK: Duration = Duration::from_secs(30);
@@ -383,12 +384,7 @@ impl Updates {
 
     /// Collected first, so a listener can read the state or add a listener.
     pub fn changed(&self) {
-        let live: Vec<Rc<dyn Fn()>> = {
-            let mut listeners = self.listeners.borrow_mut();
-            listeners.retain(|l| l.strong_count() > 0);
-            listeners.iter().filter_map(Weak::upgrade).collect()
-        };
-        for listener in live {
+        for listener in live(&self.listeners) {
             listener();
         }
     }

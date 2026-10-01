@@ -125,7 +125,7 @@ impl SyncController {
 }
 
 /// The listeners still kept, collected first so one can add a listener.
-fn live<T: ?Sized>(listeners: &RefCell<Vec<Weak<T>>>) -> Vec<Rc<T>> {
+pub(crate) fn live<T: ?Sized>(listeners: &RefCell<Vec<Weak<T>>>) -> Vec<Rc<T>> {
     let mut listeners = listeners.borrow_mut();
     listeners.retain(|l| l.strong_count() > 0);
     listeners.iter().filter_map(Weak::upgrade).collect()
@@ -718,5 +718,23 @@ mod tests {
             ]
         );
         assert!(pref_effects(&keys(&["startup", "search.default"])).is_empty());
+    }
+
+    #[test]
+    fn only_kept_listeners_are_called_and_one_can_add_a_listener() {
+        let listeners = Rc::new(RefCell::new(Vec::<Weak<dyn Fn()>>::new()));
+        let dropped: Rc<dyn Fn()> = Rc::new(|| {});
+        listeners.borrow_mut().push(Rc::downgrade(&dropped));
+        drop(dropped);
+        let added: Rc<dyn Fn()> = Rc::new(|| {});
+        let (list, new) = (listeners.clone(), added.clone());
+        let adder: Rc<dyn Fn()> = Rc::new(move || list.borrow_mut().push(Rc::downgrade(&new)));
+        listeners.borrow_mut().push(Rc::downgrade(&adder));
+        let kept = live(&listeners);
+        assert_eq!((kept.len(), listeners.borrow().len()), (1, 1));
+        for listener in kept {
+            listener();
+        }
+        assert_eq!(live(&listeners).len(), 2);
     }
 }

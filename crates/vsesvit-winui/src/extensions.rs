@@ -18,6 +18,7 @@ use crate::bindings::CoreWebView2Profile;
 use crate::browser::Browser;
 use crate::engine::EngineExtension;
 use crate::popup::ExtensionAction;
+use crate::sync::live;
 use crate::{engine, exec};
 
 /// WebView2 calls that never answer (their web view closed meanwhile) must not stall the loop.
@@ -58,12 +59,7 @@ impl ExtensionHost {
     }
 
     fn notify(&self) {
-        let live: Vec<Rc<dyn Fn()>> = {
-            let mut listeners = self.listeners.borrow_mut();
-            listeners.retain(|l| l.strong_count() > 0);
-            listeners.iter().filter_map(Weak::upgrade).collect()
-        };
-        for listener in live {
+        for listener in live(&self.listeners) {
             listener();
         }
     }

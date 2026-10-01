@@ -19,6 +19,7 @@ use windows_core::Result;
 
 use crate::bindings::*;
 use crate::browser::Browser;
+use crate::sync::live;
 use crate::window::BrowserWindow;
 use crate::{exec, pickers, platform};
 
@@ -327,12 +328,7 @@ impl Browser {
                 window.show_downloads(indicator);
             }
         }
-        let subscribers: Vec<Subscriber> = {
-            let mut subscribers = self.downloads.subscribers.borrow_mut();
-            subscribers.retain(|s| s.strong_count() > 0);
-            subscribers.iter().filter_map(Weak::upgrade).collect()
-        };
-        for subscriber in subscribers {
+        for subscriber in live(&self.downloads.subscribers) {
             subscriber(change);
         }
     }
