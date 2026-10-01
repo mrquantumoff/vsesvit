@@ -363,6 +363,17 @@ pub(crate) fn selected_index(selector: &impl Interface) -> Option<usize> {
     usize::try_from(index).ok()
 }
 
+/// Fills `bar` to `fraction` (0 to 1), or runs it indeterminate while that is unknown.
+fn set_progress(bar: &ProgressBar, fraction: Option<f64>) -> Result<()> {
+    let Some(fraction) = fraction else {
+        return bar.SetIsIndeterminate(true);
+    };
+    bar.SetIsIndeterminate(false)?;
+    let range = bar.cast::<RangeBase>()?;
+    range.SetMaximum(1.0)?;
+    range.SetValue(fraction)
+}
+
 /// Wires a button's click.
 pub(crate) fn on_click(button: &impl Interface, handler: impl Fn() + 'static) -> Result<()> {
     button

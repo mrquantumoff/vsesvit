@@ -151,7 +151,7 @@ impl Page {
             let live = browser.download_progress(row.download.id);
             let _ = row.status.SetText(&status_line(&row.download, live, true));
             let (received, total) = live.unwrap_or((row.download.received, row.download.total));
-            let _ = show_progress(&row.progress, received, total);
+            let _ = super::set_progress(&row.progress, fraction(received, total));
         }
     }
 
@@ -221,17 +221,9 @@ impl Page {
     }
 }
 
-/// A bar that fills as bytes arrive, or runs indeterminate while the size is unknown.
-fn show_progress(bar: &ProgressBar, received: u64, total: Option<u64>) -> Result<()> {
-    match total.filter(|t| *t > 0) {
-        Some(total) => {
-            bar.SetIsIndeterminate(false)?;
-            let range = bar.cast::<RangeBase>()?;
-            range.SetMaximum(1.0)?;
-            range.SetValue(received as f64 / total as f64)
-        }
-        None => bar.SetIsIndeterminate(true),
-    }
+/// How much of a download has arrived, while its size is known.
+fn fraction(received: u64, total: Option<u64>) -> Option<f64> {
+    total.filter(|t| *t > 0).map(|t| received as f64 / t as f64)
 }
 
 #[cfg(test)]
@@ -257,5 +249,12 @@ mod tests {
         assert_eq!(offered(State::Completed, false), [Remove], "deleted");
         assert_eq!(offered(State::Failed, false), [Remove]);
         assert_eq!(offered(State::Cancelled, true), [ShowInFolder, Remove]);
+    }
+
+    #[test]
+    fn download_fraction_is_unknown_without_a_size() {
+        assert_eq!(fraction(5, None), None);
+        assert_eq!(fraction(5, Some(0)), None);
+        assert_eq!(fraction(1, Some(4)), Some(0.25));
     }
 }

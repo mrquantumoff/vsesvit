@@ -675,18 +675,7 @@ impl ExtensionRow {
 
     fn show_progress(&self, progress: &Progress) {
         self.show_status(&progress.text);
-        match progress.fraction {
-            Some(fraction) => {
-                let _ = self.progress.SetIsIndeterminate(false);
-                if let Ok(range) = self.progress.cast::<RangeBase>() {
-                    let _ = range.SetMaximum(1.0);
-                    let _ = range.SetValue(fraction);
-                }
-            }
-            None => {
-                let _ = self.progress.SetIsIndeterminate(true);
-            }
-        }
+        let _ = super::set_progress(&self.progress, progress.fraction);
     }
 }
 
