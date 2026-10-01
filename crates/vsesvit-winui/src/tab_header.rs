@@ -3,10 +3,11 @@
 //! mutes the tab), a pin for pinned tabs, and in the vertical pane a close button. Each list
 //! builds its own header per tab from a `TabLook`.
 
-use vsesvit_core::permissions::Capturing;
+use vsesvit_core::permissions::{Capturing, Permission};
 use windows_core::Result;
 
 use crate::bindings::*;
+use crate::permissions::glyph;
 use crate::shortcuts::{self, Command};
 use crate::xaml;
 
@@ -51,13 +52,13 @@ pub(crate) struct TabLook {
 
 /// The in-use icon's glyph, and whether it is a recording (camera or microphone, shown red as
 /// Chrome's dot is) rather than a screen share.
-fn capture_glyph(capturing: Capturing) -> Option<(&'static str, bool)> {
+pub(crate) fn capture_glyph(capturing: Capturing) -> Option<(&'static str, bool)> {
     if capturing.camera {
-        Some(("\u{E714}", true))
+        Some((glyph(Permission::Camera), true))
     } else if capturing.microphone {
-        Some(("\u{E720}", true))
+        Some((glyph(Permission::Microphone), true))
     } else if capturing.screen {
-        Some(("\u{E7F4}", false))
+        Some((glyph(Permission::ScreenShare), false))
     } else {
         None
     }
@@ -209,5 +210,37 @@ impl TabHeader {
     pub fn set_compact(&self, compact: bool) {
         let _ = xaml::set_visible(&self.title, !compact);
         let _ = xaml::set_visible(&self.buttons, !compact);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_glyph_prefers_camera_then_microphone_and_uses_the_permission_glyphs() {
+        let all = Capturing {
+            camera: true,
+            microphone: true,
+            screen: true,
+        };
+        assert_eq!(capture_glyph(all), Some((glyph(Permission::Camera), true)));
+        let no_camera = Capturing {
+            camera: false,
+            ..all
+        };
+        assert_eq!(
+            capture_glyph(no_camera),
+            Some((glyph(Permission::Microphone), true))
+        );
+        let screen = Capturing {
+            microphone: false,
+            ..no_camera
+        };
+        assert_eq!(
+            capture_glyph(screen),
+            Some((glyph(Permission::ScreenShare), false))
+        );
+        assert_eq!(capture_glyph(Capturing::default()), None);
     }
 }

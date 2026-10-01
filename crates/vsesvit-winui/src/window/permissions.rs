@@ -358,14 +358,9 @@ impl BrowserWindow {
         let description = capturing.description();
         let _ = xaml::set_visible(&self.ui.capture_button, description.is_some());
         if let Some(text) = &description {
-            let glyph = if capturing.camera {
-                "\u{E714}"
-            } else if capturing.microphone {
-                "\u{E720}"
-            } else {
-                "\u{E7F4}"
-            };
-            let _ = self.ui.capture_glyph.SetGlyph(glyph);
+            if let Some((glyph, _)) = crate::tab_header::capture_glyph(capturing) {
+                let _ = self.ui.capture_glyph.SetGlyph(glyph);
+            }
             let _ = xaml::set_tip(&self.ui.capture_button, text);
         }
         if capturing.screen {
