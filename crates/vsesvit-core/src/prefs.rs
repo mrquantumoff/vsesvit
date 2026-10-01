@@ -242,7 +242,6 @@ impl Prefs<'_> {
         self.p.write(|tx| {
             // A Local pref ignores a row sync stored, as `get` does, so writing takes it back.
             let mut rec = load_record(&tx.sql, key, scope == Scope::Local)?
-                .map(|(r, _)| r)
                 .unwrap_or(PrefRecord { key: key.to_owned(), value: Lww::new(None, Stamp::ZERO) });
             if rec.value.v == value {
                 return Ok(());
@@ -258,7 +257,7 @@ impl Prefs<'_> {
 
 const COLUMNS: &str = "key, value, value_at, synced, seq";
 
-fn row_record(row: &rusqlite::Row<'_>) -> Result<(Seq, (PrefRecord, bool)), rusqlite::Error> {
+fn row_record(row: &rusqlite::Row<'_>) -> Result<(Seq, PrefRecord), rusqlite::Error> {
     let key: String = row.get(0)?;
     let value: Option<String> = row.get(1)?;
     let value = match value {
@@ -266,11 +265,10 @@ fn row_record(row: &rusqlite::Row<'_>) -> Result<(Seq, (PrefRecord, bool)), rusq
         None => None,
     };
     let at = stamp_col(row, 2)?;
-    let synced: i64 = row.get(3)?;
-    Ok((seq_col(row, 4)?, (PrefRecord { key, value: Lww::new(value, at) }, synced == 1)))
+    Ok((seq_col(row, 4)?, PrefRecord { key, value: Lww::new(value, at) }))
 }
 
-fn load_record(conn: &rusqlite::Connection, key: &str, local_only: bool) -> Result<Option<(PrefRecord, bool)>, Error> {
+fn load_record(conn: &rusqlite::Connection, key: &str, local_only: bool) -> Result<Option<PrefRecord>, Error> {
     let filter = if local_only { " AND synced = 0" } else { "" };
     let rec = conn.query_row(&format!("SELECT {COLUMNS} FROM prefs WHERE key = ?1{filter}"), [key], row_record).optional()?;
     Ok(rec.map(|(_, r)| r))
@@ -316,7 +314,7 @@ impl SyncTable for PrefsTable {
     }
 
     fn load(tx: &rusqlite::Transaction<'_>, wire_id: &str) -> Result<Option<PrefRecord>, Error> {
-        Ok(load_record(tx, wire_id, false)?.map(|(r, _)| r))
+        load_record(tx, wire_id, false)
     }
 
     fn store(tx: &rusqlite::Transaction<'_>, rec: &PrefRecord, seq: Seq) -> Result<(), Error> {
@@ -324,8 +322,7 @@ impl SyncTable for PrefsTable {
     }
 
     fn changed_since(conn: &rusqlite::Connection, since: Seq, limit: usize) -> Result<(Vec<(Seq, PrefRecord)>, bool), Error> {
-        let (rows, more) = changed_rows(conn, "prefs", COLUMNS, "synced = 1", since, limit, row_record)?;
-        Ok((rows.into_iter().map(|(s, (r, _))| (s, r)).collect(), more))
+        changed_rows(conn, "prefs", COLUMNS, "synced = 1", since, limit, row_record)
     }
 }
 
