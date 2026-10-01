@@ -11,6 +11,7 @@ use webkit::prelude::*;
 use crate::bridge::{self, Origin};
 use crate::extension::{ExtView, Extension, ViewId, ViewKind};
 use crate::lifecycle::InstallEvent;
+use crate::patterns;
 use crate::runtime::Inner;
 
 pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> webkit::WebView {
@@ -45,7 +46,7 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
     let base = ext.base_url.clone();
     let ext_id = ext.id.as_str().to_owned();
     view.connect_decide_policy(move |_, decision, decision_type| {
-        let inside = |uri: &str| uri.starts_with(&base) || uri == base.trim_end_matches('/') || uri.starts_with("about:") || uri.starts_with("blob:") || uri.starts_with("data:");
+        let inside = |uri: &str| patterns::under_base(&base, uri) || uri.starts_with("about:") || uri.starts_with("blob:") || uri.starts_with("data:");
         let leave = |uri: &str, inside: bool| {
             if (uri.starts_with("http://") || uri.starts_with("https://") || inside)
                 && let Some(inner) = weak_inner.upgrade()

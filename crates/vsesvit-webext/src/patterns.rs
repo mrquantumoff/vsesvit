@@ -94,6 +94,12 @@ pub fn glob(pattern: &str, text: &str) -> bool {
     p[pi..].iter().all(|&c| c == b'*')
 }
 
+/// Is `url` the extension at `base_url` (`chrome-extension://<host>/`) or a document
+/// inside it?
+pub fn under_base(base_url: &str, url: &str) -> bool {
+    url.starts_with(base_url) || url == base_url.trim_end_matches('/')
+}
+
 /// The extension-relative path a runtime API argument names. Chrome resolves these
 /// against the extension root, so `/x.js` is `x.js`, and an absolute URL of the
 /// extension itself (`chrome.runtime.getURL(..)`, accepted by `action.setPopup` and
@@ -132,7 +138,7 @@ pub fn navigation_url(base_url: &str, caller: Option<&str>, raw: &str) -> Result
 /// the browser started, or a referrer policy that sends none) the view decides: its URL,
 /// or `own_view` for the extension's background and popup views.
 pub fn requesting_document<'a>(base_url: &str, view_url: &'a str, referer: Option<&'a str>, own_view: bool) -> (&'a str, bool) {
-    let own = |url: &str| url.starts_with(base_url) || url == base_url.trim_end_matches('/');
+    let own = |url: &str| under_base(base_url, url);
     match referer.filter(|r| !r.is_empty()) {
         Some(referer) => (referer, own(referer)),
         None => (view_url, own(view_url) || own_view),
@@ -247,6 +253,16 @@ mod tests {
         // Anything else is not this gate's business.
         assert!(may_enter("https://a.test/", "https://b.test/"));
         assert!(may_enter("https://a.test/", "data:text/html,x"));
+    }
+
+    #[test]
+    fn under_base_matches_the_root_and_documents_inside_it() {
+        let base = "chrome-extension://abc/";
+        assert!(under_base(base, "chrome-extension://abc/"));
+        assert!(under_base(base, "chrome-extension://abc"));
+        assert!(under_base(base, "chrome-extension://abc/popup.html"));
+        assert!(!under_base(base, "chrome-extension://abcd/x"));
+        assert!(!under_base(base, "https://abc/"));
     }
 
     #[test]

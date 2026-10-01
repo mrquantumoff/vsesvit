@@ -183,7 +183,7 @@ impl Extension {
 
     /// Is `url` a document of this extension?
     pub fn owns_url(&self, url: &str) -> bool {
-        url.starts_with(&self.base_url) || url == self.base_url.trim_end_matches('/')
+        patterns::under_base(&self.base_url, url)
     }
 
     /// A runtime API's file reference (`files`, `path`, `popup`) as a path inside the
