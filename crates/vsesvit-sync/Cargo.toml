@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Vsesvit's sync engine: OpenID Connect sign-in and the rounds that move records between a profile and a sync server"
+description = "Vsesvit's sync engine: signing in to a sync server and the rounds that move records between a profile and it"
 
 [dependencies]
 vsesvit-core = { workspace = true }

@@ -109,7 +109,7 @@ impl Default for Http {
     }
 }
 
-/// Parses a server or provider address the user typed or a server named. HTTPS, except on the
+/// Parses a sync server address the user typed or a server named. HTTPS, except on the
 /// loopback interface, where a developer runs a server without a certificate. Returns it without
 /// a trailing slash.
 pub fn normalize_base_url(input: &str) -> Result<String, Error> {

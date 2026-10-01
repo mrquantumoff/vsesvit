@@ -5,7 +5,7 @@
 pub enum State {
     /// `error` is why the last sign-in failed, if it did.
     SignedOut { error: Option<String> },
-    /// The provider's page is open in a tab.
+    /// The sync server's sign-in page is open in a tab.
     SigningIn,
     SignedIn {
         name: Option<String>,
@@ -14,7 +14,7 @@ pub enum State {
         syncing: bool,
         /// Why the last sync failed; cleared by the next one that completes.
         error: Option<String>,
-        /// The provider no longer accepts the sign-in.
+        /// The server no longer accepts the session; signing in again fixes it.
         needs_sign_in: bool,
     },
 }
