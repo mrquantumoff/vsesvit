@@ -76,7 +76,7 @@ Set `OIDC_ISSUER` to the provider's issuer URL, and `OIDC_CLIENT_ID` and `OIDC_C
 Vsesvit signs in to this server, not to the provider. It uses the authorization code flow with PKCE for a native app (RFC 7636, RFC 8252), with the server as the authorization server:
 
 1. The browser opens `/v1/auth/authorize` in a tab, with a loopback `redirect_uri` on whatever port it could open.
-2. The server sends the tab on to the provider.
+2. The server sends the tab on to the provider. The sign-in travels in the `state` it sends there, signed with a key the server makes at startup, so the server stores nothing for a sign-in until the provider vouches for the person, and one under way when the server restarts has to start again.
 3. When the provider sends the person back to `/v1/auth/callback`, the server trades the provider's code for an access token, and asks userinfo who it belongs to. The account is the userinfo `sub` at this issuer; an access token's own `sub` need not be the user, and some providers put the granted scopes there.
 4. The server sends the tab to the browser's loopback address with a one-time code. Only the browser that started the sign-in listens there, so someone who sends a person their own sign-in link gets nothing.
 5. The browser trades the code, with its PKCE verifier, at `/v1/auth/token` for a session: an opaque token the server keeps only as a SHA-256 hash.

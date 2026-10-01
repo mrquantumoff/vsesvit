@@ -19,10 +19,9 @@ use vsesvit_sync_proto::{
     ServerInfo, TOKEN_PATH, TokenResponse, Upload, Uploaded,
 };
 
-use crate::auth::{AuthError, Provider, challenge, random_token};
+use crate::auth::{AuthError, NewLogin, Provider, SignInKey, challenge, random_token};
 use crate::config::Config;
-use crate::entities::logins;
-use crate::store::{self, AccountId, DownloadError, LoginError, NewLogin, Quota, UploadError, token_hash};
+use crate::store::{self, AccountId, DownloadError, Quota, UploadError, token_hash};
 
 /// Longest `state` a browser may send through a sign-in.
 const MAX_STATE_BYTES: usize = 1024;
@@ -34,6 +33,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct AppState {
     pub db: DatabaseConnection,
     pub provider: Arc<Provider>,
+    pub sign_in_key: Arc<SignInKey>,
     pub info: Arc<ServerInfo>,
     pub quota: Quota,
     pub session_idle: chrono::Duration,
@@ -46,6 +46,7 @@ impl AppState {
         AppState {
             db,
             provider: Arc::new(Provider::new(config.oidc.clone(), config.callback())),
+            sign_in_key: Arc::new(SignInKey::random()),
             info: Arc::new(ServerInfo { protocol: PROTOCOL, limits: config.limits }),
             quota: config.quota,
             session_idle: config.session_idle,
@@ -86,25 +87,19 @@ struct AuthorizeQuery {
     code_challenge_method: Option<String>,
 }
 
-/// The browser's sign-in starts here: the server records it and sends the browser on to its
-/// provider. A request it cannot trust gets a page, never a redirect to where it asked.
+/// The browser's sign-in starts here: the server sends the browser on to its provider, with the
+/// sign-in sealed into the provider's `state`, so it stores nothing for one nobody finishes. A
+/// request it cannot trust gets a page, never a redirect to where it asked.
 async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQuery>) -> Response {
     let new = match check_authorize(q) {
         Ok(new) => new,
         Err(reason) => return page(StatusCode::BAD_REQUEST, &format!("This sign-in link is not valid ({reason}). Start again from Vsesvit's Settings.")),
     };
-    let (id, verifier) = (random_token(), random_token());
-    if let Err(e) = store::start_login(&state.db, new, id.clone(), verifier.clone()).await {
-        return match e {
-            LoginError::Busy => page(StatusCode::SERVICE_UNAVAILABLE, &format!("{e}.")),
-            LoginError::Db(e) => database_page(e),
-        };
-    }
-    match state.provider.authorize_url(&id, &verifier).await {
+    let (sealed, verifier) = state.sign_in_key.seal(&new);
+    match state.provider.authorize_url(&sealed, &verifier).await {
         Ok(url) => Redirect::to(&url).into_response(),
         Err(e) => {
             tracing::warn!("{e}");
-            let _ = store::forget_login(&state.db, &id).await;
             page(StatusCode::BAD_GATEWAY, &format!("Signing in is not possible right now: {e}."))
         }
     }
@@ -157,33 +152,21 @@ struct CallbackQuery {
 /// a one-time code at its loopback address; only the browser that started the sign-in is listening
 /// there, so a sign-in link someone else started gets them nothing.
 async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>) -> Response {
-    let login = match q.state.as_deref() {
-        Some(id) => match store::pending_login(&state.db, id).await {
-            Ok(login) => login,
-            Err(e) => return database_page(e),
-        },
-        None => None,
+    let pending = q.state.as_deref().and_then(|s| state.sign_in_key.open(s)).filter(|p| p.started > chrono::Utc::now() - store::LOGIN_LIFETIME);
+    let Some(pending) = pending else {
+        return page(StatusCode::BAD_REQUEST, "This sign-in has expired or is not valid. Start again from Vsesvit's Settings.");
     };
-    let Some(login) = login else {
-        return page(StatusCode::BAD_REQUEST, "This sign-in has expired or was already used. Start again from Vsesvit's Settings.");
-    };
+    let login = pending.login.clone();
     let refused = |error: &str, description: String| redirect_to_browser(&login, &[("error", error), ("error_description", &description)]);
     let code = match (q.error, q.code) {
-        (Some(error), _) => {
-            let _ = store::forget_login(&state.db, &login.id).await;
-            return refused("access_denied", q.error_description.unwrap_or(error));
-        }
-        (None, None) => {
-            let _ = store::forget_login(&state.db, &login.id).await;
-            return refused("server_error", "the provider sent no code".to_owned());
-        }
+        (Some(error), _) => return refused("access_denied", q.error_description.unwrap_or(error)),
+        (None, None) => return refused("server_error", "the provider sent no code".to_owned()),
         (None, Some(code)) => code,
     };
-    let person = match state.provider.person(&code, &login.upstream_verifier).await {
+    let person = match state.provider.person(&code, &pending.upstream_verifier).await {
         Ok(person) => person,
         Err(e) => {
             tracing::warn!("sign-in: {e}");
-            let _ = store::forget_login(&state.db, &login.id).await;
             let error = if matches!(e, AuthError::Refused(_)) { "access_denied" } else { "server_error" };
             return refused(error, e.to_string());
         }
@@ -191,7 +174,7 @@ async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>)
     let one_time = random_token();
     let authorized = async {
         let account = store::account(&state.db, state.provider.issuer(), &person.subject).await?;
-        store::authorize_login(&state.db, &login.id, account, person.name, token_hash(&one_time)).await
+        store::authorize_login(&state.db, pending, account, person.name, token_hash(&one_time)).await
     };
     match authorized.await {
         Ok(()) => redirect_to_browser(&login, &[("code", &one_time)]),
@@ -199,7 +182,7 @@ async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>)
     }
 }
 
-fn redirect_to_browser(login: &logins::Model, params: &[(&str, &str)]) -> Response {
+fn redirect_to_browser(login: &NewLogin, params: &[(&str, &str)]) -> Response {
     let mut url = Url::parse(&login.client_redirect).expect("checked when the sign-in started");
     {
         let mut query = url.query_pairs_mut();

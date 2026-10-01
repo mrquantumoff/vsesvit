@@ -13,8 +13,10 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::Deserialize;
+use chrono::{DateTime, Utc};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{OnceCell, Semaphore};
 
@@ -102,8 +104,8 @@ impl Provider {
         &self.oidc.issuer
     }
 
-    /// The provider's page for a sign-in whose `state` is its login id, with the PKCE challenge of
-    /// `verifier`.
+    /// The provider's page for a sign-in whose `state` is [`SignInKey::seal`]'s, with the PKCE
+    /// challenge of `verifier`.
     pub async fn authorize_url(&self, state: &str, verifier: &str) -> Result<String, AuthError> {
         let endpoints = self.endpoints().await?;
         let mut url = reqwest::Url::parse(&endpoints.authorization).map_err(|e| AuthError::Provider(e.to_string()))?;
@@ -180,6 +182,83 @@ impl Provider {
     }
 }
 
+/// The browser's side of a sign-in, as `/v1/auth/authorize` received it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewLogin {
+    pub client_redirect: String,
+    pub client_state: String,
+    pub client_challenge: String,
+}
+
+/// A sign-in on its way through the provider, as the `state` sent there carries it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingLogin {
+    pub login: NewLogin,
+    /// The PKCE verifier of the challenge the provider was sent.
+    pub upstream_verifier: String,
+    pub started: DateTime<Utc>,
+}
+
+/// Signs the `state` each sign-in sends the provider, which carries the sign-in itself: the server
+/// stores nothing for one until the provider vouches for the person, so starting sign-ins, which
+/// anyone may do, costs it nothing. Random per process, so a sign-in under way when the server
+/// restarts has to start again.
+pub struct SignInKey([u8; 32]);
+
+#[derive(Serialize, Deserialize)]
+struct Sealed {
+    redirect: String,
+    state: String,
+    challenge: String,
+    started: i64,
+    /// Makes each sign-in's verifier its own.
+    nonce: String,
+}
+
+impl SignInKey {
+    pub fn random() -> SignInKey {
+        let mut key = [0u8; 32];
+        getrandom::fill(&mut key).expect("the OS random source works");
+        SignInKey(key)
+    }
+
+    /// The `state` for the provider, and the PKCE verifier to send it the challenge of. The
+    /// verifier is derived from the state with the key, so it travels nowhere.
+    pub fn seal(&self, login: &NewLogin) -> (String, String) {
+        let sealed = Sealed {
+            redirect: login.client_redirect.clone(),
+            state: login.client_state.clone(),
+            challenge: login.client_challenge.clone(),
+            started: Utc::now().timestamp(),
+            nonce: random_token(),
+        };
+        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&sealed).expect("the state serializes"));
+        let tag = URL_SAFE_NO_PAD.encode(self.mac(b"state", &payload).finalize().into_bytes());
+        let verifier = URL_SAFE_NO_PAD.encode(self.mac(b"verifier", &payload).finalize().into_bytes());
+        (format!("{payload}.{tag}"), verifier)
+    }
+
+    /// The sign-in a `state` from [`SignInKey::seal`] carries; `None` for one this key did not seal.
+    pub fn open(&self, state: &str) -> Option<PendingLogin> {
+        let (payload, tag) = state.split_once('.')?;
+        self.mac(b"state", payload).verify_slice(&URL_SAFE_NO_PAD.decode(tag).ok()?).ok()?;
+        let sealed: Sealed = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+        Some(PendingLogin {
+            login: NewLogin { client_redirect: sealed.redirect, client_state: sealed.state, client_challenge: sealed.challenge },
+            upstream_verifier: URL_SAFE_NO_PAD.encode(self.mac(b"verifier", payload).finalize().into_bytes()),
+            started: DateTime::from_timestamp(sealed.started, 0)?,
+        })
+    }
+
+    fn mac(&self, purpose: &[u8], payload: &str) -> Hmac<Sha256> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC takes a key of any length");
+        mac.update(purpose);
+        mac.update(b".");
+        mac.update(payload.as_bytes());
+        mac
+    }
+}
+
 /// The S256 PKCE challenge of `verifier` (RFC 7636 §4.2).
 pub fn challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
@@ -219,6 +298,27 @@ mod tests {
     #[test]
     fn the_challenge_is_rfc_7636s_example() {
         assert_eq!(challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    }
+
+    #[test]
+    fn a_sealed_sign_in_opens_only_unchanged_and_with_its_key() {
+        let key = SignInKey::random();
+        let login = NewLogin { client_redirect: "http://127.0.0.1:5000/cb".to_owned(), client_state: "s".to_owned(), client_challenge: "c".to_owned() };
+        let (state, verifier) = key.seal(&login);
+        let pending = key.open(&state).unwrap();
+        assert_eq!((&pending.login, pending.upstream_verifier.as_str()), (&login, verifier.as_str()));
+        assert!((Utc::now() - pending.started).num_seconds() < 5);
+        assert!(!state.contains(&verifier), "the verifier never travels");
+        assert_eq!(verifier.len(), 43);
+        assert_ne!(key.seal(&login).1, verifier, "each sign-in has a verifier of its own");
+
+        assert!(SignInKey::random().open(&state).is_none());
+        let (payload, tag) = state.split_once('.').unwrap();
+        let mut other: serde_json::Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        other["redirect"] = "http://127.0.0.1:6000/cb".into();
+        let forged = format!("{}.{tag}", URL_SAFE_NO_PAD.encode(other.to_string()));
+        assert!(key.open(&forged).is_none());
+        assert!(key.open(payload).is_none());
     }
 
     #[test]

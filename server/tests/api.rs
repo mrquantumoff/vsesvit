@@ -19,7 +19,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http_body_util::BodyExt;
 use reqwest::Url;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -27,7 +27,7 @@ use tower::ServiceExt;
 use vsesvit_sync_proto::{ApiError, OAuthError, Page, Record, ServerInfo, TokenResponse, Upload, Uploaded};
 use vsesvit_sync_server::api::{self, AppState};
 use vsesvit_sync_server::config::{Config, DatabaseConfig};
-use vsesvit_sync_server::entities::sessions;
+use vsesvit_sync_server::entities::{logins, sessions};
 use vsesvit_sync_server::store;
 
 /// The server's public address in the tests. The provider redirects there, and the test hands those
@@ -337,6 +337,36 @@ async fn a_request_the_server_cannot_trust_gets_a_page_not_a_redirect() {
         assert_eq!((status, location), (StatusCode::BAD_REQUEST, None));
         let (status, location, _) =
             send(&app, Request::get("/v1/auth/callback?code=x&state=unknown").body(Body::empty()).unwrap()).await;
+        assert_eq!((status, location), (StatusCode::BAD_REQUEST, None));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_sign_in_nobody_finishes_leaves_nothing_on_the_server() {
+    each_database(async |app| {
+        let query = encode(&[
+            ("response_type", "code"),
+            ("redirect_uri", "http://127.0.0.1:1/"),
+            ("state", "x"),
+            ("code_challenge", &challenge("v")),
+            ("code_challenge_method", "S256"),
+        ]);
+        let mut to_provider = None;
+        for _ in 0..20 {
+            let (status, location, _) = send(&app, Request::get(format!("/v1/auth/authorize?{query}")).body(Body::empty()).unwrap()).await;
+            assert_eq!(status, StatusCode::SEE_OTHER);
+            to_provider = location;
+        }
+        assert_eq!(logins::Entity::find().count(&app.db).await.unwrap(), 0, "anyone may start a sign-in, so it costs no row");
+
+        // The provider sends back the state it was given, which only this server could have made.
+        let to_provider = Url::parse(&to_provider.unwrap()).unwrap();
+        let state = param(&to_provider, "state").unwrap();
+        let mut forged = state.into_bytes();
+        forged[0] = if forged[0] == b'A' { b'B' } else { b'A' };
+        let callback = format!("/v1/auth/callback?{}", encode(&[("code", "c"), ("state", std::str::from_utf8(&forged).unwrap())]));
+        let (status, location, _) = send(&app, Request::get(callback).body(Body::empty()).unwrap()).await;
         assert_eq!((status, location), (StatusCode::BAD_REQUEST, None));
     })
     .await;
