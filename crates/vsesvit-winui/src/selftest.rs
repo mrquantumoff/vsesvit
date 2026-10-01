@@ -727,7 +727,6 @@ fn bar_entries(window: &BrowserWindow) -> Vec<IInspectable> {
         .collect()
 }
 
-/// A tab's engine view exists and its first navigation has settled.
 /// Back to the default shortcuts with no dialog open, whether or not a shortcuts check passed.
 fn restore_shortcuts(window: &BrowserWindow, browser: &Browser) {
     window.close_scripted_dialog();
@@ -736,6 +735,7 @@ fn restore_shortcuts(window: &BrowserWindow, browser: &Browser) {
     }
 }
 
+/// A tab's engine view exists and its first navigation has settled.
 async fn wait_ready(tab: &Rc<Tab>, probe: &Probe) {
     until(probe, |p| {
         let s = tab.state();
