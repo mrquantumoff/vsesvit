@@ -168,6 +168,23 @@ fn top_sites_are_origins_by_frecency() {
 }
 
 #[test]
+fn the_history_page_and_sync_read_the_same_visits() {
+    let (mut p, time, _dir) = open();
+    let a = url("https://a.example/");
+    p.history().record_visit(&a, Transition::Typed).unwrap();
+    time.set(T0 + 1000);
+    p.history().record_visit(&a, Transition::Link).unwrap();
+    time.set(T0 + 2000);
+    p.history().record_visit(&a, Transition::Reload).unwrap();
+
+    let shown: BTreeSet<Visit> = p.history().visits_between(0, i64::MAX, 10).unwrap().into_iter().map(|(_, v)| v).collect();
+    let synced = pages(&mut p).remove(0).visits;
+    assert_eq!(shown, synced);
+    assert_eq!(shown.len(), 3);
+    assert!(shown.iter().all(|v| v.device == DeviceId(3)));
+}
+
+#[test]
 fn top_sites_look_past_one_site_with_many_pages() {
     let (mut p, time, _dir) = open();
     let visit = |p: &mut Profile, u: &str| {

@@ -283,15 +283,7 @@ impl History<'_> {
              FROM history_visits v JOIN history_pages p ON p.url = v.url \
              WHERE v.at_ms >= ?1 AND v.at_ms < ?2 ORDER BY v.at_ms DESC, v.device LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![from_ms, to_ms, limit as i64], |row| {
-            let entry = row_entry(row)?;
-            let visit = Visit {
-                at_ms: row.get(5)?,
-                device: DeviceId(row.get::<_, i64>(6)? as u64),
-                transition: Transition::from_code(row.get(7)?).ok_or_else(|| crate::db::bad_column(7, "transition"))?,
-            };
-            Ok((entry, visit))
-        })?;
+        let rows = stmt.query_map(params![from_ms, to_ms, limit as i64], |row| Ok((row_entry(row)?, row_visit(row, 5)?)))?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -332,19 +324,22 @@ fn row_entry(row: &rusqlite::Row<'_>) -> Result<HistoryEntry, rusqlite::Error> {
     })
 }
 
+/// A visit from the `at_ms, device, transition` columns starting at `at`.
+fn row_visit(row: &rusqlite::Row<'_>, at: usize) -> Result<Visit, rusqlite::Error> {
+    Ok(Visit {
+        at_ms: row.get(at)?,
+        device: DeviceId(row.get::<_, i64>(at + 1)? as u64),
+        transition: Transition::from_code(row.get(at + 2)?).ok_or_else(|| crate::db::bad_column(at + 2, "transition"))?,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Storage
 // ---------------------------------------------------------------------------
 
 fn load_visits(conn: &rusqlite::Connection, url: &str) -> Result<BTreeSet<Visit>, rusqlite::Error> {
     let mut stmt = conn.prepare_cached("SELECT at_ms, device, transition FROM history_visits WHERE url = ?1")?;
-    let rows = stmt.query_map([url], |row| {
-        Ok(Visit {
-            at_ms: row.get(0)?,
-            device: DeviceId(row.get::<_, i64>(1)? as u64),
-            transition: Transition::from_code(row.get(2)?).ok_or_else(|| crate::db::bad_column(2, "transition"))?,
-        })
-    })?;
+    let rows = stmt.query_map([url], |row| row_visit(row, 0))?;
     rows.collect()
 }
 
