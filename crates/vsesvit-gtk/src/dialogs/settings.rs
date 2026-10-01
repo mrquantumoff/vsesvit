@@ -341,7 +341,14 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
     let browser = window.browser();
 
     let startup = group("Startup");
-    startup.add(&startup_row(browser));
+    startup.add(&choice_row(
+        browser,
+        "On Startup",
+        None,
+        &STARTUPS,
+        |browser| browser.pref(&keys::STARTUP),
+        |browser, startup| browser.set_pref(&keys::STARTUP, &startup),
+    ));
     startup.add(&homepage_row(browser));
 
     let downloads = group("Downloads");
@@ -376,7 +383,14 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
     if let Some(updates) = browser.updates() {
         let group = group("Updates");
         group.add(&update_status_row(updates));
-        group.add(&update_channel_row(browser));
+        group.add(&choice_row(
+            browser,
+            "Update Channel",
+            Some("Vsesvit moves to a steadier channel once that channel has a version newer than this one."),
+            &CHANNELS,
+            |browser| browser.pref(&keys::UPDATES_CHANNEL),
+            Browser::set_updates_channel,
+        ));
         group.add(&pref_switch_row(
             browser,
             "Automatic Updates",
@@ -435,35 +449,17 @@ fn update_status_row(updates: &Updates) -> adw::ActionRow {
     row
 }
 
-fn update_channel_row(browser: &Browser) -> adw::ComboRow {
-    let names: Vec<&str> = CHANNELS.iter().map(|(_, name)| *name).collect();
-    let current = browser
-        .core()
-        .borrow_mut()
-        .prefs()
-        .get(&keys::UPDATES_CHANNEL);
-    let row = adw::ComboRow::builder()
-        .title("Update Channel")
-        .subtitle("Vsesvit moves to a steadier channel once that channel has a version newer than this one.")
-        .model(&gtk::StringList::new(&names))
-        .selected(index_of(&CHANNELS, &current))
-        .build();
-    row.connect_selected_notify(glib::clone!(
-        #[strong]
-        browser,
-        move |row| {
-            if let Some((channel, _)) = CHANNELS.get(row.selected() as usize) {
-                browser.set_updates_channel(*channel);
-            }
-        }
-    ));
-    row
-}
-
 fn appearance_page(browser: &Browser) -> adw::PreferencesPage {
     let appearance = group("");
-    appearance.add(&theme_row(browser));
-    appearance.add(&tabs_position_row(browser));
+    appearance.add(&choice_row(browser, "Theme", None, &THEMES, Browser::theme, Browser::set_theme));
+    appearance.add(&choice_row(
+        browser,
+        "Tab Position",
+        Some("Vertical tabs in a sidebar, or a bar above the page"),
+        &POSITIONS,
+        Browser::tabs_position,
+        Browser::set_tabs_position,
+    ));
     appearance.add(&pref_switch_row(
         browser,
         "Show Bookmarks Bar",
@@ -679,38 +675,6 @@ fn change_site_setting(content: &adw::Bin, browser: &Browser, origin: &Origin, p
     ));
 }
 
-fn startup_row(browser: &Browser) -> adw::ComboRow {
-    let names: Vec<&str> = STARTUPS.iter().map(|(_, name)| *name).collect();
-    let current = browser.core().borrow_mut().prefs().get(&keys::STARTUP);
-    let row = adw::ComboRow::builder()
-        .title("On Startup")
-        .model(&gtk::StringList::new(&names))
-        .selected(index_of(&STARTUPS, &current))
-        .build();
-    row.connect_selected_notify(glib::clone!(
-        #[strong]
-        browser,
-        move |row| {
-            if let Some((startup, _)) = STARTUPS.get(row.selected() as usize)
-                && browser.core().borrow_mut().prefs().get(&keys::STARTUP) != *startup
-            {
-                browser.set_pref(&keys::STARTUP, startup);
-            }
-        }
-    ));
-    browser.watch_prefs(glib::clone!(
-        #[weak]
-        row,
-        #[upgrade_or]
-        false,
-        move |browser: &Browser| {
-            row.set_selected(index_of(&STARTUPS, &browser.core().borrow_mut().prefs().get(&keys::STARTUP)));
-            true
-        }
-    ));
-    row
-}
-
 fn homepage_row(browser: &Browser) -> adw::EntryRow {
     let current = browser.core().borrow_mut().prefs().get(&keys::HOMEPAGE);
     let row = adw::EntryRow::builder()
@@ -738,38 +702,6 @@ fn homepage_row(browser: &Browser) -> adw::EntryRow {
             if row.text() != homepage {
                 row.set_text(&homepage);
             }
-            true
-        }
-    ));
-    row
-}
-
-fn tabs_position_row(browser: &Browser) -> adw::ComboRow {
-    let names: Vec<&str> = POSITIONS.iter().map(|(_, name)| *name).collect();
-    let row = adw::ComboRow::builder()
-        .title("Tab Position")
-        .subtitle("Vertical tabs in a sidebar, or a bar above the page")
-        .model(&gtk::StringList::new(&names))
-        .selected(index_of(&POSITIONS, &browser.tabs_position()))
-        .build();
-    row.connect_selected_notify(glib::clone!(
-        #[strong]
-        browser,
-        move |row| {
-            if let Some((position, _)) = POSITIONS.get(row.selected() as usize)
-                && browser.tabs_position() != *position
-            {
-                browser.set_tabs_position(*position);
-            }
-        }
-    ));
-    browser.watch_prefs(glib::clone!(
-        #[weak]
-        row,
-        #[upgrade_or]
-        false,
-        move |browser: &Browser| {
-            row.set_selected(index_of(&POSITIONS, &browser.tabs_position()));
             true
         }
     ));
@@ -825,21 +757,32 @@ fn search_engine_row(browser: &Browser) -> adw::ComboRow {
     row
 }
 
-fn theme_row(browser: &Browser) -> adw::ComboRow {
-    let names: Vec<&str> = THEMES.iter().map(|(_, name)| *name).collect();
+/// A choice among fixed `options`. `get` reads the stored value and `set` writes and applies
+/// it. Like [`pref_switch_row`], `set` is not called for the value already stored, so showing a
+/// value sync brought does not write it back.
+fn choice_row<T: Copy + PartialEq + 'static, const N: usize>(
+    browser: &Browser,
+    title: &str,
+    subtitle: Option<&str>,
+    options: &'static [(T, &'static str); N],
+    get: fn(&Browser) -> T,
+    set: fn(&Browser, T),
+) -> adw::ComboRow {
+    let names: Vec<&str> = options.iter().map(|(_, name)| *name).collect();
     let row = adw::ComboRow::builder()
-        .title("Theme")
+        .title(title)
+        .subtitle(subtitle.unwrap_or_default())
         .model(&gtk::StringList::new(&names))
-        .selected(index_of(&THEMES, &browser.theme()))
+        .selected(index_of(options, &get(browser)))
         .build();
     row.connect_selected_notify(glib::clone!(
         #[strong]
         browser,
         move |row| {
-            if let Some((theme, _)) = THEMES.get(row.selected() as usize)
-                && browser.theme() != *theme
+            if let Some(&(value, _)) = options.get(row.selected() as usize)
+                && get(&browser) != value
             {
-                browser.set_theme(*theme);
+                set(&browser, value);
             }
         }
     ));
@@ -849,7 +792,7 @@ fn theme_row(browser: &Browser) -> adw::ComboRow {
         #[upgrade_or]
         false,
         move |browser: &Browser| {
-            row.set_selected(index_of(&THEMES, &browser.theme()));
+            row.set_selected(index_of(options, &get(browser)));
             true
         }
     ));
