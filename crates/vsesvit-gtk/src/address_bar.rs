@@ -721,7 +721,6 @@ impl AddressBar {
     }
 
     /// The bubble open from the address bar, if any.
-    #[cfg_attr(not(any(test, feature = "self-test")), allow(dead_code))]
     pub(crate) fn bubble(&self) -> Option<gtk::Popover> {
         self.imp().bubble.borrow().clone()
     }
