@@ -9,7 +9,7 @@ use vsesvit_core::sync::{ApplyReport, DataType, Kind, SyncStore, WireRecord};
 use vsesvit_sync_proto::{Limits, MAX_ID_BYTES, Page, Record, Upload};
 
 use crate::auth;
-use crate::server::{self, Call};
+use crate::server;
 use crate::{Error, Http, now_secs};
 
 /// The key in core's `sync_state`. An empty value means signed out.
@@ -151,8 +151,7 @@ impl Account {
     /// out there. Each keeps its copy; signing in again starts a device's cursors over, and uploads
     /// everything it holds.
     pub fn delete_server_data(self, http: &Http) -> Result<Account, Error> {
-        let server = self.server.clone();
-        authorized(&self, |token| server::delete_account(http, &server, token))?;
+        server::delete_account(http, &self.server, &self.session)?;
         Ok(self)
     }
 }
@@ -231,8 +230,7 @@ impl Round {
             // have changed.
             more_up = matches!(e, Error::Server { status: 413, .. }) && relearn_limits(http, &mut account);
         }
-        let since = account.download_cursor;
-        let result = authorized(&account, |token| server::download(http, &account.server, token, since, account.limits));
+        let result = server::download(http, &account.server, &account.session, account.download_cursor, account.limits);
         Exchanged { account, upto, more_up, types, refused, result }
     }
 }
@@ -240,7 +238,7 @@ impl Round {
 fn upload(http: &Http, account: &Account, records: Vec<Record>) -> Result<(), Error> {
     for chunk in chunks(records, account.limits) {
         let upload = Upload { records: chunk, download_cursor: account.download_cursor };
-        authorized(account, |token| server::upload(http, &account.server, token, &upload))?;
+        server::upload(http, &account.server, &account.session, &upload)?;
     }
     Ok(())
 }
@@ -258,15 +256,6 @@ fn relearn_limits(http: &Http, account: &mut Account) -> bool {
             log::warn!("asking the sync server for its limits: {e}");
             false
         }
-    }
-}
-
-/// Calls with the session. A session the server no longer knows (signed out elsewhere, unused too
-/// long) means signing in again.
-fn authorized<T>(account: &Account, call: impl FnOnce(&str) -> Result<Call<T>, Error>) -> Result<T, Error> {
-    match call(&account.session)? {
-        Call::Done(value) => Ok(value),
-        Call::Unauthorized => Err(Error::SignInExpired),
     }
 }
 

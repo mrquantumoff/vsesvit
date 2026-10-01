@@ -20,43 +20,36 @@ pub(crate) fn info(http: &Http, server: &str) -> Result<ServerInfo, Error> {
     Ok(info)
 }
 
-/// `Unauthorized` when the access token was refused, so the caller can refresh it and retry.
-pub(crate) enum Call<T> {
-    Done(T),
-    Unauthorized,
-}
-
-pub(crate) fn upload(http: &Http, server: &str, token: &str, upload: &Upload) -> Result<Call<Uploaded>, Error> {
+pub(crate) fn upload(http: &Http, server: &str, token: &str, upload: &Upload) -> Result<Uploaded, Error> {
     let url = format!("{server}{RECORDS_PATH}");
     let request = http.0.post(&url).header("Authorization", &format!("Bearer {token}"));
-    authorized(request.send_json(upload).map_err(network(&url))?, &url, MAX_BODY_BYTES)
+    read(authorized(request.send_json(upload), &url)?, &url)
 }
 
 /// A page of up to `limits.max_batch` records. The server fills one to about
 /// `limits.max_request_bytes` of JSON, or past it with one record alone, which is at most half of
 /// that before base64.
-pub(crate) fn download(http: &Http, server: &str, token: &str, since: u64, limits: Limits) -> Result<Call<Page>, Error> {
+pub(crate) fn download(http: &Http, server: &str, token: &str, since: u64, limits: Limits) -> Result<Page, Error> {
     let url = format!("{server}{RECORDS_PATH}?since={since}&limit={}", limits.max_batch);
     let request = http.0.get(&url).header("Authorization", &format!("Bearer {token}"));
     let max_bytes = (u64::from(limits.max_request_bytes) * 2).clamp(MAX_BODY_BYTES, MAX_PAGE_BYTES);
-    authorized(request.call().map_err(network(&url))?, &url, max_bytes)
+    read_at_most(authorized(request.call(), &url)?, &url, max_bytes)
 }
 
-pub(crate) fn delete_account(http: &Http, server: &str, token: &str) -> Result<Call<()>, Error> {
+pub(crate) fn delete_account(http: &Http, server: &str, token: &str) -> Result<(), Error> {
     let url = format!("{server}{ACCOUNT_PATH}");
-    let response = http.0.delete(&url).header("Authorization", &format!("Bearer {token}")).call().map_err(network(&url))?;
+    authorized(http.0.delete(&url).header("Authorization", &format!("Bearer {token}")).call(), &url).map(drop)
+}
+
+/// A request sent with the session. A session the server no longer knows (signed out elsewhere,
+/// unused too long) means signing in again.
+fn authorized(sent: Result<ureq::http::Response<ureq::Body>, ureq::Error>, url: &str) -> Result<ureq::http::Response<ureq::Body>, Error> {
+    let response = sent.map_err(network(url))?;
     match response.status().as_u16() {
-        401 => Ok(Call::Unauthorized),
-        200..=299 => Ok(Call::Done(())),
+        401 => Err(Error::SignInExpired),
+        200..=299 => Ok(response),
         _ => Err(failure(response)),
     }
-}
-
-fn authorized<T: DeserializeOwned>(response: ureq::http::Response<ureq::Body>, url: &str, max_bytes: u64) -> Result<Call<T>, Error> {
-    if response.status().as_u16() == 401 {
-        return Ok(Call::Unauthorized);
-    }
-    read_at_most(response, url, max_bytes).map(Call::Done)
 }
 
 pub(crate) fn read<T: DeserializeOwned>(response: ureq::http::Response<ureq::Body>, url: &str) -> Result<T, Error> {
@@ -92,8 +85,9 @@ mod tests {
 
     use super::*;
 
-    /// Answers one request with `body` as JSON.
-    fn serve_once(body: Vec<u8>) -> String {
+    /// Answers one request with `status` and `body` as JSON.
+    fn serve_once(status: &str, body: Vec<u8>) -> String {
+        let status = status.to_owned();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         std::thread::spawn(move || {
@@ -103,7 +97,7 @@ mod tests {
             while reader.read_line(&mut line).unwrap() > 2 {
                 line.clear();
             }
-            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let head = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
             let _ = stream.write_all(head.as_bytes());
             let _ = stream.write_all(&body);
         });
@@ -115,12 +109,20 @@ mod tests {
         let records = (0..12).map(|i| Record { kind: 1, id: i.to_string(), body: vec![b'x'; 1_000_000] }).collect();
         let page = serde_json::to_vec(&Page { records, cursor: 12, more: false, epoch: 0 }).unwrap();
         assert!(page.len() > 10 << 20);
-        let server = serve_once(page);
+        let server = serve_once("200 OK", page);
         let limits = Limits { max_batch: 500, max_record_bytes: 1 << 20, max_request_bytes: 32 << 20 };
-        match download(&Http::new(), &server, "t", 0, limits) {
-            Ok(Call::Done(page)) => assert_eq!(page.records.len(), 12),
-            Ok(Call::Unauthorized) => panic!("unauthorized"),
-            Err(e) => panic!("{e}"),
-        }
+        assert_eq!(download(&Http::new(), &server, "t", 0, limits).unwrap().records.len(), 12);
+    }
+
+    #[test]
+    fn deleting_the_account_says_whether_the_server_did() {
+        let delete = |status: &str, body: &str| {
+            let limits = Limits { max_batch: 1, max_record_bytes: 1, max_request_bytes: 1 };
+            let server = serve_once(status, body.as_bytes().to_vec());
+            crate::engine::Account::new(server, None, "t".to_owned(), limits).delete_server_data(&Http::new()).map(drop)
+        };
+        assert!(delete("204 No Content", "").is_ok());
+        assert!(matches!(delete("401 Unauthorized", ""), Err(Error::SignInExpired)));
+        assert!(matches!(delete("500 Internal Server Error", r#"{"error":"x"}"#), Err(Error::Server { status: 500, message }) if message == "x"));
     }
 }
