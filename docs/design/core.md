@@ -381,7 +381,7 @@ are no locks, per separate-before-serializing-shared-state.
 | # | Call | Cost |
 |---|---|---|
 | 1 | `record_visit` + `is_bookmarked` | 1 WAL transaction (upsert page, insert visit, refresh stats) + 1 in-memory hash lookup |
-| 2 | `omnibox().resolve` / `suggest` | pure `classify` over engines / in-memory bookmark scan + 1 query on `url_key` / `frecency` indexes with LIMIT |
+| 2 | `omnibox().resolve` / `suggest` | pure `classify` over engines / in-memory bookmark scan + 1 history scan in `frecency` order with LIMIT |
 | 3 | bookmark CRUD, `children` | validate in memory, 1 transaction, re-materialize in memory / clone of one `Vec` |
 | 4 | install / `list` / enable | worker job + 1 rename + 1 transaction / 1 query, no disk scan |
 | 5 | `prefs().get/set` | primary-key lookup / 1 transaction |

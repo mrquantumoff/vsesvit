@@ -70,6 +70,21 @@ fn visits_titles_and_search() {
     assert_eq!(p.history().visits_between(0, T0 as i64 + 1, 10).unwrap().len(), 1);
 }
 
+/// SQLite's own LIKE folds only ASCII case; titles in other scripts must match either case too.
+#[test]
+fn title_search_folds_case_beyond_ascii() {
+    let (mut p, _time, _dir) = open();
+    let kyiv = url("https://uk.wikipedia.org/wiki/Kyiv");
+    p.history().record_visit(&kyiv, Transition::Link).unwrap();
+    p.history().set_title(&kyiv, "Київ — Вікіпедія").unwrap();
+    let ecole = url("https://ecole.example/");
+    p.history().record_visit(&ecole, Transition::Link).unwrap();
+    p.history().set_title(&ecole, "École").unwrap();
+    for needle in ["київ", "Київ", "ВІКІ", "école", "ÉCOLE"] {
+        assert_eq!(p.history().search(needle, 10).unwrap().len(), 1, "{needle}");
+    }
+}
+
 #[test]
 fn same_millisecond_is_one_visit_and_unchanged_title_mints_nothing() {
     let (mut p, _time, _dir) = open();

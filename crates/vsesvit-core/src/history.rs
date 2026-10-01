@@ -231,8 +231,9 @@ impl History<'_> {
         })
     }
 
-    /// Omnibox source: host/url prefix match (indexed `url_key` column, see schema) plus
-    /// title substring, ordered by frecency.
+    /// Omnibox source: `url_key` prefix match (lowercased, scheme and leading `www.` stripped)
+    /// or title substring in any case, ordered by frecency. A scan: the title wildcard rules
+    /// out an index.
     pub fn search(&mut self, text: &str, limit: usize) -> Result<Vec<HistoryEntry>, Error> {
         let needle = text.trim().to_lowercase();
         if needle.is_empty() || limit == 0 {
@@ -242,7 +243,7 @@ impl History<'_> {
         let substring = format!("%{}%", like_escape(&needle));
         let mut stmt = self.p.conn.prepare_cached(
             "SELECT url, title, last_visit_ms, visit_count, typed_count FROM history_pages \
-             WHERE url_key LIKE ?1 ESCAPE '\\' OR title LIKE ?2 ESCAPE '\\' \
+             WHERE url_key LIKE ?1 ESCAPE '\\' OR unicode_lower(title) LIKE ?2 ESCAPE '\\' \
              ORDER BY frecency DESC, last_visit_ms DESC LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![prefix, substring, limit as i64], row_entry)?;

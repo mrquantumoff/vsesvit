@@ -8,6 +8,7 @@
 
 use std::path::Path;
 
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::crdt::{Clock, DeviceId, Hlc, Seq, Stamp};
@@ -21,7 +22,8 @@ pub(crate) const SCHEMA_V1_EXTENSIONS: &str = include_str!("extensions/schema.sq
 pub(crate) const SCHEMA_V4_EXTENSIONS: &str = include_str!("extensions/schema_v4.sql");
 
 /// `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=0`
-/// (a single process holds the profile, so contention is a bug, not a wait).
+/// (a single process holds the profile, so contention is a bug, not a wait), and
+/// `unicode_lower(text)`: Rust's lowercasing, as SQLite's `lower` and `LIKE` fold only ASCII.
 pub(crate) fn open(path: &Path) -> Result<Connection, OpenError> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::ZERO)?;
@@ -31,6 +33,9 @@ pub(crate) fn open(path: &Path) -> Result<Connection, OpenError> {
     }
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.create_scalar_function("unicode_lower", 1, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
+        Ok(ctx.get::<String>(0)?.to_lowercase())
+    })?;
     Ok(conn)
 }
 
