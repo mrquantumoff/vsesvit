@@ -106,11 +106,12 @@ pub(crate) struct Server {
 
 impl Server {
     /// `host` is a loopback address: `127.0.0.1`, or another in `127/8` to give a page a
-    /// different site.
+    /// different site. Core fetches bookmark icons from such hosts too from now on.
     pub(crate) fn start(
         host: &'static str,
         route: impl Fn(&str) -> Reply + Send + Sync + 'static,
     ) -> Server {
+        vsesvit_core::favicons::allow_local_hosts();
         let listener = TcpListener::bind((host, 0)).expect("a loopback port");
         let port = listener.local_addr().expect("a bound address").port();
         let route = Arc::new(route);

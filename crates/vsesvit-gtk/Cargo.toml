@@ -36,3 +36,8 @@ futures-util = { version = "0.3", default-features = false }
 # `ApplicationCommandLine::printerr_literal` (the system has GLib 2.88).
 glib = { version = "0.22", features = ["log"] }
 gio = { version = "0.22", features = ["v2_80"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The tests' fixture servers let core fetch icons from loopback hosts, with or without the
+# self-test feature.
+vsesvit-core = { workspace = true, features = ["testkit"] }
