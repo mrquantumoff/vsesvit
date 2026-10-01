@@ -377,11 +377,9 @@ impl Manifest {
 
 type Object = serde_json::Map<String, Value>;
 
-/// A text file with an optional UTF-8 BOM, as Chrome reads manifest and message files.
+/// A UTF-8 text file. [`parse_tolerant_json`] drops a leading BOM, as Chrome does.
 pub(crate) fn read_text(path: &Path) -> Result<String, ManifestError> {
-    let bytes = std::fs::read(path)?;
-    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
-    String::from_utf8(bytes.to_vec()).map_err(|_| ManifestError::Json(format!("{} is not UTF-8", path.display())))
+    String::from_utf8(std::fs::read(path)?).map_err(|_| ManifestError::Json(format!("{} is not UTF-8", path.display())))
 }
 
 /// `Ok(None)` when absent, `Err(Field(name))` when present with the wrong type.

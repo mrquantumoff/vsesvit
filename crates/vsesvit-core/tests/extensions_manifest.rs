@@ -140,6 +140,19 @@ fn default_locale_cannot_escape_the_extension_dir() {
 }
 
 #[test]
+fn files_may_start_with_one_byte_order_mark() {
+    let dir = TempDir::new();
+    let manifest = r#"{"manifest_version": 3, "name": "__MSG_n__", "version": "1", "default_locale": "en"}"#;
+    dir.write("manifest.json", &format!("\u{feff}{manifest}"));
+    dir.write("_locales/en/messages.json", "\u{feff}{\"n\": {\"message\": \"Hi\"}}");
+    assert_eq!(Manifest::load(dir.path(), "en").unwrap().name, "Hi");
+
+    // Chrome skips one BOM; a second is not JSON.
+    dir.write("manifest.json", &format!("\u{feff}\u{feff}{manifest}"));
+    assert!(matches!(Manifest::load(dir.path(), "en"), Err(ManifestError::Json(_))));
+}
+
+#[test]
 fn tolerant_json() {
     let m = parse(
         "\u{feff}// comment\n{\n  \"manifest_version\": 3, /* block */\n  \"name\": \"A // not a comment\",\n  \"version\": \"1\",\n  \"permissions\": [\"storage\",],\n}\n",
