@@ -182,9 +182,7 @@ impl Browser {
         window: &BrowserWindow,
         args: &CoreWebView2DownloadStartingEventArgs,
     ) {
-        if let Err(e) = self.place_download(window, args) {
-            log::warn!("download: {e}");
-        }
+        cancel_unplaced(self.place_download(window, args), || args.SetCancel(true));
     }
 
     fn place_download(
@@ -218,9 +216,7 @@ impl Browser {
                     args.SetCancel(true)
                 }
             };
-            if let Err(e) = placed {
-                log::warn!("download: {e}");
-            }
+            cancel_unplaced(placed, || args.SetCancel(true));
             let _ = deferral.Complete();
         });
         Ok(())
@@ -334,6 +330,15 @@ impl Browser {
     }
 }
 
+/// Logs a download that could not be sent to its path or recorded, and cancels it: the engine
+/// would otherwise save it with no entry in the list and no way to stop it.
+fn cancel_unplaced(placed: Result<()>, cancel: impl FnOnce() -> Result<()>) {
+    if let Err(e) = placed {
+        log::warn!("download: {e}");
+        let _ = cancel();
+    }
+}
+
 /// The list's state for the engine's; `None` while the download runs.
 fn final_state(
     state: CoreWebView2DownloadState,
@@ -392,6 +397,19 @@ mod tests {
             final_state(Engine::Interrupted, Reason::NetworkFailed),
             Some(State::Failed)
         );
+    }
+
+    #[test]
+    fn failed_placement_cancels_the_engine_download() {
+        let cancelled = Cell::new(false);
+        let cancel = || {
+            cancelled.set(true);
+            Ok(())
+        };
+        cancel_unplaced(Ok(()), cancel);
+        assert!(!cancelled.get());
+        cancel_unplaced(Err(windows_core::Error::new(E_FAIL, "locked")), cancel);
+        assert!(cancelled.get());
     }
 
     #[test]
