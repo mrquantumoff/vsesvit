@@ -714,8 +714,9 @@ mod linux {
     }
 
     /// An MV3 add-on with a Gecko id. Its host permission covers the fixture server only,
-    /// its content scripts match `/index.html` only, and its background logs lifecycle
-    /// events per life into `storage.local`.
+    /// its content scripts match `/index.html` only, and its background (a classic service
+    /// worker that imports its helpers with `importScripts`) logs lifecycle events per life
+    /// into `storage.local`.
     fn twin_files() -> Vec<(&'static str, String)> {
         vec![
             (
@@ -746,8 +747,7 @@ mod linux {
             ("main.js", "window.__twinMain = (typeof chrome === \"object\" && chrome.runtime && chrome.runtime.id) ? \"api\" : \"page\";\n".to_owned()),
             (
                 "background.js",
-                r#"const life = "life:" + Math.random().toString(36).slice(2);
-const events = [];
+                r#"importScripts("lib/life.js");
 const log = (e) => { events.push(e); return chrome.storage.local.set({ [life]: events.slice() }); };
 chrome.runtime.onInstalled.addListener((d) => log("installed:" + d.reason));
 chrome.runtime.onStartup.addListener(() => log("startup"));
@@ -760,6 +760,8 @@ log("alive");
 "#
                 .to_owned(),
             ),
+            ("lib/life.js", "importScripts('lib/events.js');\nself.life = \"life:\" + Math.random().toString(36).slice(2);\n".to_owned()),
+            ("lib/events.js", "self.events = [];\n".to_owned()),
             ("popup.html", "<!doctype html><html><head><meta charset=\"utf-8\"><title>twin</title></head><body><script src=\"popup.js\"></script></body></html>".to_owned()),
             ("popup.js", "document.title = \"twin-popup:\" + chrome.runtime.id;\n".to_owned()),
             ("options.html", "<!doctype html><html><head><meta charset=\"utf-8\"><title>Twin options</title></head><body><script>window.__twinInline = true;</script><script src=\"options.js\"></script></body></html>".to_owned()),

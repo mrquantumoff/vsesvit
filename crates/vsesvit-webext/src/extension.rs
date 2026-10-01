@@ -244,21 +244,7 @@ impl Extension {
 
     /// The page that hosts `background.scripts` or the MV3 service worker.
     pub fn generated_background_page(&self) -> Option<String> {
-        let mut html = format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title>", html_escape(&self.manifest.name));
-        match &self.manifest.background {
-            Some(Background::Scripts { scripts, .. }) => {
-                for s in scripts {
-                    html.push_str(&format!("<script src=\"{}\"></script>", html_escape(&self.url(s.as_str()))));
-                }
-            }
-            Some(Background::ServiceWorker { script, module }) => {
-                let kind = if *module { " type=\"module\"" } else { "" };
-                html.push_str(&format!("<script{kind} src=\"{}\"></script>", html_escape(&self.url(script.as_str()))));
-            }
-            _ => return None,
-        }
-        html.push_str("</head><body></body></html>");
-        Some(html)
+        background_page(&self.manifest, &self.base_url, |path| RelPath::parse(path).ok().and_then(|rel| std::fs::read_to_string(rel.resolve(&self.dir)).ok()))
     }
 
     pub fn web_extension_mode(&self) -> webkit::WebExtensionMode {
@@ -321,6 +307,107 @@ impl Extension {
         }
         v
     }
+}
+
+/// [`Extension::generated_background_page`] for `manifest`, served from `base_url`, with
+/// `read` giving the text of a file inside the extension. A classic service worker runs as
+/// a page script here, where `importScripts` can load nothing (it is synchronous, and the
+/// CSP rules out `eval`), so the page loads the scripts the worker imports by string
+/// literal ahead of it, and the shim's `importScripts` only checks that it did. Code a
+/// worker runs before its `importScripts` call therefore runs after the imports.
+fn background_page(manifest: &Manifest, base_url: &str, read: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let mut html = format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title>", html_escape(&manifest.name));
+    let mut script = |kind: &str, src: &str| html.push_str(&format!("<script{kind} src=\"{}\"></script>", html_escape(src)));
+    match &manifest.background {
+        Some(Background::Scripts { scripts, .. }) => {
+            for s in scripts {
+                script("", &format!("{base_url}{}", s.as_str()));
+            }
+        }
+        Some(Background::ServiceWorker { script: worker, module }) => {
+            let worker = format!("{base_url}{}", worker.as_str());
+            if *module {
+                script(" type=\"module\"", &worker);
+            } else {
+                let mut imports = Vec::new();
+                if let Ok(worker_url) = url::Url::parse(&worker) {
+                    imported_scripts(base_url, &worker_url, &worker, &read, &mut vec![worker.clone()], &mut imports);
+                }
+                for src in imports.iter().chain([&worker]) {
+                    script("", src);
+                }
+            }
+        }
+        _ => return None,
+    }
+    html.push_str("</head><body></body></html>");
+    Some(html)
+}
+
+/// Appends to `out` the extension scripts that `script_url` imports by string literal,
+/// each after its own imports, so in the order they run. A worker resolves every import
+/// against its own URL (`worker`), whichever script makes it. `seen` stops cycles.
+fn imported_scripts(base_url: &str, worker: &url::Url, script_url: &str, read: &impl Fn(&str) -> Option<String>, seen: &mut Vec<String>, out: &mut Vec<String>) {
+    let Some(source) = crate::scheme::split_uri(script_url).and_then(|(_, path)| read(&path)) else { return };
+    for argument in import_scripts_arguments(&source) {
+        let Ok(url) = worker.join(&argument).map(String::from) else { continue };
+        if !url.starts_with(base_url) || seen.contains(&url) {
+            continue;
+        }
+        seen.push(url.clone());
+        imported_scripts(base_url, worker, &url, read, seen, out);
+        out.push(url);
+    }
+}
+
+/// The arguments of every `importScripts(..)` call in `source` whose arguments are all
+/// string literals, in order. A call after `//` on its line is taken as commented out.
+fn import_scripts_arguments(source: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for (at, name) in source.match_indices("importScripts") {
+        let line = &source[source[..at].rfind('\n').map_or(0, |n| n + 1)..at];
+        if line.contains("//") || line.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '$') {
+            continue;
+        }
+        let Some(mut rest) = source[at + name.len()..].trim_start().strip_prefix('(') else { continue };
+        let mut arguments = Vec::new();
+        let complete = loop {
+            rest = rest.trim_start();
+            if rest.starts_with(')') {
+                break true;
+            }
+            let Some(quote) = rest.chars().next().filter(|c| matches!(c, '\'' | '"' | '`')) else { break false };
+            let Some((literal, after)) = string_literal(&rest[1..], quote) else { break false };
+            arguments.push(literal);
+            rest = after.trim_start();
+            match rest.strip_prefix(',') {
+                Some(next) => rest = next,
+                None if rest.starts_with(')') => {}
+                None => break false,
+            }
+        };
+        if complete {
+            found.extend(arguments);
+        }
+    }
+    found
+}
+
+/// The text of a JavaScript string literal that opened with `quote` just before `s`, and
+/// what follows it. `None` for a template with substitutions or an unterminated literal.
+fn string_literal(s: &str, quote: char) -> Option<(String, &str)> {
+    let mut text = String::new();
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            c if c == quote => return Some((text, &s[i + 1..])),
+            '\\' => text.push(chars.next()?.1),
+            '\n' if quote != '`' => return None,
+            '$' if quote == '`' && s[i + 1..].starts_with('{') => return None,
+            c => text.push(c),
+        }
+    }
+    None
 }
 
 /// Chrome-style ids are URL hosts already. Gecko ids (`{uuid}`, `name@domain`) are not,
@@ -422,5 +509,31 @@ mod tests {
         let mv2 = content_security_policy(&manifest(r#"{"manifest_version":2,"name":"t","version":"1","content_security_policy":"script-src 'self' 'unsafe-eval'; object-src 'self'"}"#));
         assert_eq!(mv2, "script-src 'self' 'unsafe-eval'; object-src 'self'");
         assert_eq!(content_security_policy(&manifest(r#"{"manifest_version":3,"name":"t","version":"1"}"#)), default);
+    }
+
+    #[test]
+    fn a_classic_service_worker_page_loads_its_imports_first() {
+        let base = "chrome-extension://abc/";
+        let files = |path: &str| match path {
+            "js/bg.js" => Some("importScripts('lib.js', \"../poly.js\");\n// importScripts('old.js');\nimportScripts(dynamic);\nchrome.runtime.onMessage.addListener(() => {});\n".to_owned()),
+            "js/lib.js" => Some("self.importScripts(`deep/helper.js`, 'https://cdn.example/x.js');\n".to_owned()),
+            "poly.js" => Some("importScripts('lib.js', 'extra.js');\n".to_owned()),
+            _ => None,
+        };
+        let html = background_page(&manifest(r#"{"manifest_version":3,"name":"t","version":"1","background":{"service_worker":"js/bg.js"}}"#), base, files).unwrap();
+        let sources: Vec<&str> = html.split("<script src=\"").skip(1).map(|s| s.split('"').next().unwrap()).collect();
+        // Every import resolves against the worker, as in a real one: poly.js's extra.js is js/extra.js.
+        assert_eq!(sources, ["chrome-extension://abc/js/deep/helper.js", "chrome-extension://abc/js/lib.js", "chrome-extension://abc/js/extra.js", "chrome-extension://abc/poly.js", "chrome-extension://abc/js/bg.js"]);
+
+        let module = background_page(&manifest(r#"{"manifest_version":3,"name":"t","version":"1","background":{"service_worker":"js/bg.js","type":"module"}}"#), base, files).unwrap();
+        assert_eq!(module.matches("<script").count(), 1);
+        assert!(module.contains("<script type=\"module\" src=\"chrome-extension://abc/js/bg.js\">"));
+    }
+
+    #[test]
+    fn import_scripts_arguments_are_string_literals_only() {
+        assert_eq!(import_scripts_arguments("importScripts ( 'a.js' , \"b\\\"c.js\" , `d.js`, );"), ["a.js", "b\"c.js", "d.js"]);
+        assert!(import_scripts_arguments("importScripts('a.js', name); importScripts(`${x}.js`); myimportScripts('b.js'); importScripts('c.js' 'd.js')").is_empty());
+        assert!(import_scripts_arguments("if (typeof importScripts === 'function') {}").is_empty());
     }
 }

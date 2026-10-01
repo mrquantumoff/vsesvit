@@ -69,7 +69,8 @@
 //!   Extension pages keep the manifest's CSP wherever they are shown; an MV3 policy that
 //!   Chrome would refuse (remote or `eval`'d script) gets Chrome's default instead.
 //! - A background context: `background.scripts`, `background.page`, and MV3
-//!   `background.service_worker` (run as a generated page; `type: module` honoured).
+//!   `background.service_worker` (run as a generated page; `type: module` honoured; a
+//!   classic worker's `importScripts` of string literals is loaded by the page ahead of it).
 //! - Content scripts with `matches`, `exclude_matches`, `run_at`, `all_frames` and `css`,
 //!   each extension in its own isolated world (named by its id); `"world": "MAIN"` ones in
 //!   the page's world, without the extension API, as in Chrome.

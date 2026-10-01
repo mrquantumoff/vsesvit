@@ -201,6 +201,22 @@
     runtime.getBackgroundPage = local(() => { throw new Error("runtime.getBackgroundPage is not supported by Vsesvit"); });
     runtime.reload = () => g.location.reload();
 
+    // A classic MV3 service worker runs as the generated background page's script. The
+    // page loads what the worker imports by string literal ahead of it (extension.rs), so
+    // importScripts only checks that it did; anything else cannot load synchronously.
+    const background = config.manifest && config.manifest.background;
+    if (background && background.service_worker && background.type !== "module" && String(g.location && g.location.href) === baseUrl + "_generated_background_page.html") {
+      const worker = new URL(String(background.service_worker), baseUrl);
+      g.importScripts = function (...urls) {
+        for (const u of urls) {
+          const url = new URL(String(u), worker).href;
+          if (!Array.from(g.document.scripts).some((s) => s.src === url)) {
+            throw new Error("Vsesvit: importScripts(" + JSON.stringify(String(u)) + ") cannot load " + url + "; only scripts named by string literals in the extension's own files are imported");
+          }
+        }
+      };
+    }
+
     const tabs = {
       query: bridged("tabs.query"),
       get: bridged("tabs.get"),
