@@ -313,6 +313,23 @@ impl SearchEngines<'_> {
                 (None, None) => return Err(Error::NotFound),
             };
             let Record::Live(f) = &mut rec.state else { return Err(Error::NotFound) };
+            // Zero-stamped fields show the shipped values, whatever release stored them, so an
+            // edit compares against those.
+            if let Some(b) = Builtin::find(&id) {
+                let code = b.fields();
+                if f.name.at == Stamp::ZERO {
+                    f.name = code.name;
+                }
+                if f.keyword.at == Stamp::ZERO {
+                    f.keyword = code.keyword;
+                }
+                if f.search_url.at == Stamp::ZERO {
+                    f.search_url = code.search_url;
+                }
+                if f.suggest_url.at == Stamp::ZERO {
+                    f.suggest_url = code.suggest_url;
+                }
+            }
             let at = tx.stamp();
             let mut changed = false;
             if let Some(v) = edit.name {

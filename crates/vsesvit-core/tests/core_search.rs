@@ -4,9 +4,9 @@ use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use vsesvit_core::crdt::{DeviceId, Record, Seq, Stamp, TimeSource};
-use vsesvit_core::search::{EngineEdit, EngineRecord, NavTarget, SearchEngineId, UrlTemplate};
-use vsesvit_core::sync::Kind;
+use vsesvit_core::crdt::{DeviceId, Extra, Hlc, Lww, Record, Seq, Stamp, TimeSource};
+use vsesvit_core::search::{EngineEdit, EngineFields, EngineRecord, NavTarget, SearchEngineId, UrlTemplate};
+use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::{Error, OpenOptions, Profile};
 
 struct TempDir(PathBuf);
@@ -108,4 +108,33 @@ fn custom_engines_and_removal() {
     assert!(matches!(p.search_engines().default_engine(), Err(Error::NotFound)));
     assert_eq!(p.omnibox().resolve("example.com").unwrap().unwrap().url().as_str(), "https://example.com/");
     assert!(p.omnibox().resolve("just words").unwrap().is_none());
+}
+
+#[test]
+fn editing_a_builtin_back_to_a_stale_stored_value_takes_effect() {
+    let (mut p, _dir) = open();
+    // A rename made on an older release, whose Bing searched old.example: the untouched
+    // search url is stored with that release's value at the zero stamp.
+    let old = UrlTemplate("https://old.example/?q={searchTerms}".into());
+    let bing = id("builtin:bing");
+    let renamed = EngineRecord {
+        id: bing.clone(),
+        state: Record::Live(EngineFields {
+            name: Lww::new("Old Bing".into(), Stamp { hlc: Hlc(1_779_000_000_000 << 16), device: DeviceId(9) }),
+            keyword: Lww::new(Some("b".into()), Stamp::ZERO),
+            search_url: Lww::new(old.clone(), Stamp::ZERO),
+            suggest_url: Lww::new(None, Stamp::ZERO),
+            extra: Extra::default(),
+        }),
+    };
+    let wire = WireRecord { kind: Kind::SearchEngines, id: bing.0.clone(), body: serde_json::to_vec(&renamed).unwrap() };
+    p.sync().apply(vec![wire]).unwrap();
+    let shown = |p: &mut Profile| p.search_engines().list().unwrap().into_iter().find(|e| e.id == bing).unwrap();
+    assert_eq!(shown(&mut p).search_url.0, "https://www.bing.com/search?q={searchTerms}", "the zero-stamped url reads through");
+
+    p.search_engines().update(&bing, EngineEdit { search_url: Some(old.clone()), ..EngineEdit::default() }).unwrap();
+    assert_eq!(shown(&mut p).search_url, old);
+    assert_eq!(shown(&mut p).name, "Old Bing");
+    let Record::Live(f) = &records(&mut p)[0].state else { panic!("live") };
+    assert_ne!(f.search_url.at, Stamp::ZERO);
 }
