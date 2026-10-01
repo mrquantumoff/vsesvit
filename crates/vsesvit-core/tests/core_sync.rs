@@ -171,3 +171,31 @@ fn extension_desired_state_merges_and_is_exported() {
     assert_eq!((report.merged, report.unchanged), (0, 2));
     assert!(b.sync().changes_since(Kind::Extensions, cursor, usize::MAX).unwrap().records.is_empty());
 }
+
+/// A stamp far ahead of this device's clock (a broken or hostile peer, or a forged body) is
+/// refused: observing it would pin the clock there, and at the top of the range a register
+/// that no later edit can beat. Ordinary clock skew still merges.
+#[test]
+fn records_stamped_far_in_the_future_are_rejected() {
+    use vsesvit_core::crdt::JsonText;
+    use vsesvit_core::prefs::{keys, PrefRecord};
+    let (mut p, _dir) = open(2);
+    let homepage = |value: &str, at: Stamp| {
+        let rec = PrefRecord { key: keys::HOMEPAGE.key.into(), value: Lww::new(Some(JsonText::from_value(&serde_json::json!(value))), at) };
+        WireRecord { kind: Kind::Prefs, id: rec.key.clone(), body: serde_json::to_vec(&rec).unwrap() }
+    };
+    let forged = homepage("https://forged.example/", Stamp { hlc: Hlc(u64::MAX), device: DeviceId(u64::MAX) });
+    let report = p.sync().apply(vec![forged.clone()]).unwrap();
+    assert_eq!((report.rejected.len(), report.merged), (1, 0));
+    assert_eq!(p.prefs().get(&keys::HOMEPAGE), "about:home");
+
+    p.prefs().set(&keys::HOMEPAGE, &"https://mine.example/".to_owned()).unwrap();
+    p.prefs().set(&keys::HOMEPAGE, &"https://mine.example/again".to_owned()).unwrap();
+    assert_eq!(p.sync().apply(vec![forged]).unwrap().rejected.len(), 1);
+    assert_eq!(p.prefs().get(&keys::HOMEPAGE), "https://mine.example/again");
+
+    let skewed = Stamp { hlc: Hlc((1_780_000_000_000 + 3_600_000) << 16), device: DeviceId(9) };
+    let report = p.sync().apply(vec![homepage("https://skewed.example/", skewed)]).unwrap();
+    assert_eq!((report.rejected.len(), report.merged), (0, 1), "an hour of skew is ordinary");
+    assert_eq!(p.prefs().get(&keys::HOMEPAGE), "https://skewed.example/");
+}

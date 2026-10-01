@@ -89,7 +89,7 @@ impl Clock {
     /// persists `last` in the same transaction that uses the value.
     pub(crate) fn tick(&mut self) -> Hlc {
         let wall = Hlc(self.now_ms() << 16);
-        let next = Hlc(self.last.0 + 1);
+        let next = Hlc(self.last.0.saturating_add(1));
         self.last = wall.max(next);
         self.last
     }
@@ -403,6 +403,14 @@ mod tests {
         assert!(third > Hlc(5_000 << 16));
         t.set(9_000);
         assert_eq!(c.tick().wall_ms(), 9_000);
+    }
+
+    /// A clock already at the top of the range (persisted before sync bounded remote stamps)
+    /// stays there instead of overflowing back to wall time.
+    #[test]
+    fn a_clock_at_the_top_of_its_range_saturates() {
+        let mut c = Clock::new(TimeSource::Manual(Rc::new(Cell::new(1_000))), Hlc(u64::MAX));
+        assert_eq!(c.tick(), Hlc(u64::MAX));
     }
 
     #[test]

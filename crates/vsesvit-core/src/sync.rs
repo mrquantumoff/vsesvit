@@ -463,7 +463,12 @@ fn apply_wire(tx: &mut Tx<'_>, wire: &WireRecord, report: &mut ApplyReport, effe
 
 type MergedPair<R> = Option<(Option<R>, Option<R>)>;
 
-/// Boundary: parse and validate the body, check the id, observe stamps, merge. Returns
+/// How far ahead of this device's clock an incoming stamp may be. Observing a stamp pins the
+/// clock at least that far ahead for good, and one at the top of the range would win every
+/// later merge, so a record beyond ordinary clock skew is refused.
+const MAX_FUTURE_SKEW_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Boundary: parse and validate the body, check the id, bound and observe stamps, merge. Returns
 /// `(before, after)` when local state changed.
 fn apply_typed<T: SyncTable>(tx: &mut Tx<'_>, wire: &WireRecord, report: &mut ApplyReport) -> Result<MergedPair<T::Record>, Error> {
     let mut reject = |reason: String| {
@@ -481,6 +486,10 @@ fn apply_typed<T: SyncTable>(tx: &mut Tx<'_>, wire: &WireRecord, report: &mut Ap
         return Ok(None);
     }
     if let Some(s) = T::max_stamp(&rec) {
+        if s.hlc.wall_ms() > tx.now_ms().saturating_add(MAX_FUTURE_SKEW_MS) {
+            reject("stamp is too far in the future".to_owned());
+            return Ok(None);
+        }
         tx.observe(s);
     }
     match apply_one::<T>(tx, rec)? {

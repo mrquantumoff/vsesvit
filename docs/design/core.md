@@ -235,7 +235,11 @@ three files.
 - **`Stamp { hlc, device }`** is a hybrid logical clock value, `(ms << 16) | counter`, plus a random nonzero 64-bit
   `DeviceId`. It is totally ordered and stored as a 16-byte big-endian BLOB, so byte order equals `Ord`. The clock is
   persisted in `meta` inside every write transaction, so a crash can never reuse a stamp. `observe()` runs on every
-  incoming stamp, so an edit made after seeing X always beats X, even with skewed clocks.
+  incoming stamp, so an edit made after seeing X always beats X, even with skewed clocks. `apply()` rejects a record
+  whose greatest stamp is more than a day ahead of the local clock, unobserved, so a broken or hostile peer cannot pin
+  every clock in the future or mint a register no later edit beats. The trade-off: a device whose clock runs more than a
+  day behind drops honest records too, and since the sync engine only logs a rejection and moves past it, fixing the
+  clock later does not fetch them again.
 - **`Lww<T>`**: join is the max by `(stamp, value)`. The value tiebreak keeps the order total even if a copied profile
   produces duplicate stamps. `set()` of an unchanged value mints no stamp, so idempotent UI actions cause no sync
   traffic.
@@ -490,8 +494,6 @@ and requires a valid tree covering exactly the live records.
   need a compatibility gate in `reconcile()`.
 - Pinning the Web Store publisher key means installs fail closed if Google ever serves ECDSA-only publisher proofs
   (`rsa` is the only verifier available). Is that acceptable?
-- Should `Clock::observe` clamp remote stamps more than a day ahead? A peer with a broken clock otherwise pushes our
-  HLC forward permanently. That is harmless for ordering but ugly.
 - A copied profile directory duplicates the device id. Merge stays convergent thanks to the value tiebreak, but the
   two devices share one Sessions record. Should `meta` hold a machine fingerprint and re-mint on mismatch?
 
