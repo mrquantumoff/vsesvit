@@ -432,6 +432,25 @@ async fn a_session_unused_for_too_long_ends() {
 }
 
 #[tokio::test]
+async fn signing_in_clears_sessions_left_unused_too_long() {
+    each_database_with(&[("SESSION_IDLE_DAYS", "1")], async |app| {
+        let (abandoned, kept) = (sign_in(&app, "alice").await, sign_in(&app, "carol").await);
+        let two_days_ago = chrono::Utc::now() - chrono::Duration::days(2);
+        sessions::Entity::update_many()
+            .col_expr(sessions::Column::LastUsedAt, sea_orm::sea_query::Expr::value(two_days_ago))
+            .filter(sessions::Column::TokenHash.eq(store::token_hash(&abandoned)))
+            .exec(&app.db)
+            .await
+            .unwrap();
+        let bob = sign_in(&app, "bob").await;
+        assert!(sessions::Entity::find_by_id(store::token_hash(&abandoned)).one(&app.db).await.unwrap().is_none());
+        assert_eq!(download(&app, &kept, 0).await.records, []);
+        assert_eq!(download(&app, &bob, 0).await.records, []);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_download_pages_through_writes_in_order_and_sees_each_rewrite_once() {
     each_database(async |app| {
         let alice = sign_in(&app, "alice").await;

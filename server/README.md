@@ -85,7 +85,7 @@ Vsesvit signs in to this server, not to the provider. It uses the authorization 
 4. The server sends the tab to the browser's loopback address with a one-time code. Only the browser that started the sign-in listens there, so someone who sends a person their own sign-in link gets nothing.
 5. The browser trades the code, with its PKCE verifier, at `/v1/auth/token` for a session: an opaque token the server keeps only as a SHA-256 hash.
 
-The provider sees one request per sign-in and no others: requests for records use the session. A session ends when its browser signs out (`DELETE /v1/auth/session`), or after `SESSION_IDLE_DAYS` unused. Disabling someone at the provider does not end their sessions here; delete their rows from `sessions` to do that.
+The provider sees one request per sign-in and no others: requests for records use the session. A session ends when its browser signs out (`DELETE /v1/auth/session`), or after `SESSION_IDLE_DAYS` unused, and its row goes when anyone next signs in. Disabling someone at the provider does not end their sessions here; delete their rows from `sessions` to do that.
 
 `DELETE /v1/account` deletes an account's records and ends all its sessions, so every device signs in again and then uploads everything it holds. The account stays, so its sequence numbers keep counting.
 

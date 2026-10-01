@@ -232,7 +232,7 @@ async fn token(State(state): State<AppState>, Form(form): Form<TokenForm>) -> Re
         _ => return oauth_error("invalid_grant", "the code was issued for another sign-in"),
     };
     let session = random_token();
-    if let Err(e) = store::start_session(&state.db, account, token_hash(&session)).await {
+    if let Err(e) = store::start_session(&state.db, account, token_hash(&session), state.session_idle).await {
         return Error::Db(e).into_response();
     }
     let body = TokenResponse { access_token: session, token_type: "Bearer".to_owned(), name: login.name };

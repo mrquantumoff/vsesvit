@@ -316,8 +316,11 @@ pub async fn take_login(db: &DatabaseConnection, code_hash: &[u8]) -> Result<Opt
     Ok((deleted == 1 && fresh).then_some(login))
 }
 
-pub async fn start_session(db: &DatabaseConnection, account: AccountId, token_hash: Vec<u8>) -> Result<(), DbErr> {
+/// Sessions unused for longer than `idle` are cleared first, as the devices that held them may
+/// never come back to end them.
+pub async fn start_session(db: &DatabaseConnection, account: AccountId, token_hash: Vec<u8>, idle: chrono::Duration) -> Result<(), DbErr> {
     let now = Utc::now();
+    sessions::Entity::delete_many().filter(sessions::Column::LastUsedAt.lt(now - idle)).exec(db).await?;
     let row = sessions::ActiveModel { token_hash: Set(token_hash), account_id: Set(account), created_at: Set(now), last_used_at: Set(now) };
     sessions::Entity::insert(row).exec_without_returning(db).await.map(drop)
 }
