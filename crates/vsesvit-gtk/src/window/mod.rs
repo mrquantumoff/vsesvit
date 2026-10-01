@@ -11,6 +11,7 @@ mod tab_list;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -43,6 +44,9 @@ pub(crate) use layout::{LayoutProbe, classify as classify_layout};
 /// The compact address bar's widest.
 const COMPACT_ADDRESS_WIDTH: i32 = 720;
 
+/// How long the notice naming a page that went full screen stays.
+const FULLSCREEN_NOTICE_TIME: Duration = Duration::from_secs(4);
+
 /// Whether a newly opened tab is selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Focus {
@@ -73,6 +77,9 @@ struct Ui {
     bookmarks_bar: BookmarksBar,
     find_bar: FindBar,
     toasts: adw::ToastOverlay,
+    /// Over the page for a few seconds after it goes full screen.
+    fullscreen_notice: gtk::Revealer,
+    fullscreen_text: gtk::Label,
     extension_actions: Rc<ExtensionActions>,
     update_banner: adw::Banner,
 }
@@ -100,6 +107,7 @@ mod imp {
         pub(super) chrome_tab: glib::WeakRef<Tab>,
         pub(super) closing: Cell<bool>,
         pub(super) prompt: RefCell<Option<ShownPrompt>>,
+        pub(super) fullscreen_notice_timeout: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -248,8 +256,23 @@ impl BrowserWindow {
         let update_banner = adw::Banner::builder().action_name("app.update").build();
         let bookmarks_bar = BookmarksBar::new();
         let find_bar = FindBar::new();
+        let fullscreen_text = gtk::Label::builder()
+            .justify(gtk::Justification::Center)
+            .css_classes(["osd", "fullscreen-notice"])
+            .build();
+        let fullscreen_notice = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::Crossfade)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Start)
+            .margin_top(24)
+            .can_target(false)
+            .child(&fullscreen_text)
+            .build();
+        let page = gtk::Overlay::new();
+        page.set_child(Some(&tab_view));
+        page.add_overlay(&fullscreen_notice);
         let toasts = adw::ToastOverlay::new();
-        toasts.set_child(Some(&tab_view));
+        toasts.set_child(Some(&page));
 
         let split = adw::OverlaySplitView::builder()
             .sidebar(tab_list.widget())
@@ -299,6 +322,8 @@ impl BrowserWindow {
             bookmarks_bar,
             find_bar,
             toasts,
+            fullscreen_notice,
+            fullscreen_text,
             extension_actions,
             update_banner,
         }
@@ -414,8 +439,42 @@ impl BrowserWindow {
                 .ui()
                 .toolbar
                 .set_reveal_top_bars(!window.is_fullscreen());
+            if !window.is_fullscreen() {
+                window.hide_fullscreen_notice();
+            }
             window.sync_permission_prompt();
         });
+    }
+
+    /// Names the site whose page just went full screen, and how to leave, for a few seconds:
+    /// with the header hidden, a page could otherwise draw a fake one (Chrome warns the same).
+    pub(crate) fn show_fullscreen_notice(&self, site: &str) {
+        let ui = self.ui();
+        ui.fullscreen_text
+            .set_label(&format!("{site} is now full screen\nPress Esc to exit full screen"));
+        ui.fullscreen_notice.set_reveal_child(true);
+        let timeout = glib::timeout_add_local_once(
+            FULLSCREEN_NOTICE_TIME,
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move || {
+                    // The source is gone once this runs; forget its id instead of removing it.
+                    window.imp().fullscreen_notice_timeout.take();
+                    window.hide_fullscreen_notice();
+                }
+            ),
+        );
+        if let Some(earlier) = self.imp().fullscreen_notice_timeout.replace(Some(timeout)) {
+            earlier.remove();
+        }
+    }
+
+    pub(crate) fn hide_fullscreen_notice(&self) {
+        if let Some(timeout) = self.imp().fullscreen_notice_timeout.take() {
+            timeout.remove();
+        }
+        self.ui().fullscreen_notice.set_reveal_child(false);
     }
 
     /// The last window saves the session while its tabs still exist (one closed with its last
@@ -1131,26 +1190,31 @@ mod tests {
     }
 
     #[gtk::test]
-    fn closing_the_last_tab_of_the_last_window_keeps_it_in_the_session() {
-        let server = Server::start("127.0.0.1", |_| Reply::Page("Kept"));
-        let browser = browser();
-        let window = BrowserWindow::new(&browser);
+    fn a_page_gone_full_screen_is_named_with_the_way_out() {
+        let page = "<script>document.onfullscreenchange = () => \
+                    document.title = document.fullscreenElement ? 'full' : 'windowed'</script>";
+        let server = Server::start("127.0.0.1", |_| Reply::Body("text/html", page.into()));
+        let window = BrowserWindow::new(&browser());
         window.present();
-        let url = server.url("/kept");
+        let url = server.url("/");
         let tab = window.open_tab(Some(&url), None, Focus::Foreground);
         wait_until("the page", || tab.committed_uri().as_deref() == Some(url.as_str()));
-        let alone = browser.windows().len() == 1;
-        window.close_tab(&tab);
-        wait_until("the window to close", || browser.windows().is_empty());
-        let saved = browser.core().borrow_mut().session().restore().unwrap();
-        let urls: Vec<String> = saved
-            .into_iter()
-            .flat_map(|s| s.windows)
-            .flat_map(|w| w.tabs)
-            .map(|t| t.url.to_string())
-            .collect();
-        assert!(alone, "no other test's window is open");
-        assert_eq!(urls, [url]);
+        let run = |script: &str| {
+            tab.web_view().evaluate_javascript(script, None, None, None::<&gio::Cancellable>, |_| {});
+        };
+        let title = || tab.web_view().title().unwrap_or_default();
+        run("document.documentElement.requestFullscreen()");
+        wait_until("full screen", || window.is_fullscreen() && title() == "full");
+        let notice = &window.ui().fullscreen_notice;
+        let shown = (notice.reveals_child(), window.ui().fullscreen_text.label());
+        run("document.exitFullscreen()");
+        wait_until("the window back", || !window.is_fullscreen() && title() == "windowed");
+        let hidden = !notice.reveals_child();
+        window.destroy();
+        assert!(shown.0, "the notice shows");
+        let site = url.trim_start_matches("http://").trim_end_matches('/');
+        assert!(shown.1.contains(site) && shown.1.contains("Esc"), "{}", shown.1);
+        assert!(hidden, "the notice goes with full screen");
     }
 
     #[gtk::test]
@@ -1182,6 +1246,29 @@ mod tests {
                 None,
             ]
         );
+    }
+
+    #[gtk::test]
+    fn closing_the_last_tab_of_the_last_window_keeps_it_in_the_session() {
+        let server = Server::start("127.0.0.1", |_| Reply::Page("Kept"));
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        let url = server.url("/kept");
+        let tab = window.open_tab(Some(&url), None, Focus::Foreground);
+        wait_until("the page", || tab.committed_uri().as_deref() == Some(url.as_str()));
+        let alone = browser.windows().len() == 1;
+        window.close_tab(&tab);
+        wait_until("the window to close", || browser.windows().is_empty());
+        let saved = browser.core().borrow_mut().session().restore().unwrap();
+        let urls: Vec<String> = saved
+            .into_iter()
+            .flat_map(|s| s.windows)
+            .flat_map(|w| w.tabs)
+            .map(|t| t.url.to_string())
+            .collect();
+        assert!(alone, "no other test's window is open");
+        assert_eq!(urls, [url]);
     }
 
     #[gtk::test]

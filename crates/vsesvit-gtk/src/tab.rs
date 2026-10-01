@@ -11,7 +11,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, glib};
 use vsesvit_core::history::Transition;
-use vsesvit_core::permissions::Capturing;
+use vsesvit_core::permissions::{Capturing, Origin};
 use vsesvit_core::session::TabId as SessionTabId;
 use vsesvit_webext::TabId;
 use webkit::prelude::*;
@@ -476,6 +476,33 @@ impl Tab {
                 }
                 notification.close();
                 true
+            }
+        ));
+        web_view.connect_enter_fullscreen(glib::clone!(
+            #[weak(rename_to = tab)]
+            self,
+            #[upgrade_or]
+            false,
+            move |_| {
+                if let Some(window) = tab.window() {
+                    let site = tab.committed_uri().as_deref().and_then(Origin::parse);
+                    let site = site.map_or_else(|| "This page".to_owned(), |o| o.host_for_display());
+                    window.show_fullscreen_notice(&site);
+                }
+                // WebKit then makes the window full screen.
+                false
+            }
+        ));
+        web_view.connect_leave_fullscreen(glib::clone!(
+            #[weak(rename_to = tab)]
+            self,
+            #[upgrade_or]
+            false,
+            move |_| {
+                if let Some(window) = tab.window() {
+                    window.hide_fullscreen_notice();
+                }
+                false
             }
         ));
         web_view.connect_mouse_target_changed(glib::clone!(

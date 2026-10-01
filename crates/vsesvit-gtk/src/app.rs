@@ -33,6 +33,7 @@ pub(crate) const CSS: &str = "
   box-shadow: 0 0 0 1px alpha(currentColor, 0.15);
   font-size: 0.9em;
 }
+.fullscreen-notice { padding: 12px 20px; border-radius: 12px; }
 .bookmarks-bar { min-height: 28px; padding: 2px 6px; }
 .bookmarks-bar button { padding: 2px 6px; min-height: 24px; }
 .bookmarks-bar .drop-before { box-shadow: inset 2px 0 @accent_bg_color; }
