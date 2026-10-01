@@ -131,6 +131,12 @@ fn write_private(path: &Path, key: &str) -> Result {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let mut file = options.open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // `mode` only applies to a new file; a key file being replaced keeps its mode otherwise.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
     std::io::Write::write_all(&mut file, key.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -216,6 +222,18 @@ mod tests {
         let (sk, _) = generate("").unwrap();
         let file = temp_file("b.rpm", b"rpm");
         assert!(sign_with(&secret_key(&sk, "").unwrap(), &file, "1.0.0\tversion:9.9.9").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rewriting_an_existing_key_file_makes_it_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_file("old.key", b"old");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&path, "new").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     }
 
     #[test]
