@@ -285,7 +285,7 @@ impl BrowserWindow {
         });
         let _ = slot.set(this.me.clone());
         this.side.set_width(f64::from(prefs.pane_width));
-        this.side.set_compact(prefs.pane_collapsed);
+        this.set_pane_collapsed(prefs.pane_collapsed);
         this.show_layout(prefs.tabs)?;
         this.apply_theme(prefs.theme);
         this.apply_backdrop(prefs.backdrop);
