@@ -32,7 +32,6 @@ windows-future = "0.100"
 windows-collections = "0.100"
 windows-link = "0.100"
 windows-reference = "0.100"
-windows-bindgen = "0.100"
 
 # Tauri-format signing keys are scrypt-encrypted; unoptimized scrypt makes key tests take seconds.
 [profile.dev.package.scrypt]
