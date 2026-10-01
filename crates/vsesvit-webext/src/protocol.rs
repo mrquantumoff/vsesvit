@@ -268,6 +268,44 @@ impl Dispatched {
     }
 }
 
+/// The one answer a message sender gets from every context the message went to, as in
+/// Chrome: the first response (or listener error) wins; without one, `undefined` once
+/// every context has finished, or [`NO_RECEIVER`] when none had a listener.
+#[derive(Clone, Debug)]
+pub struct Replies {
+    remaining: usize,
+    any_listener: bool,
+    done: bool,
+}
+
+impl Replies {
+    pub fn new(targets: usize) -> Replies {
+        Replies { remaining: targets, any_listener: false, done: false }
+    }
+
+    /// One context finished. `Some` is the answer, exactly once.
+    pub fn settle(&mut self, d: Dispatched) -> Option<Result<Option<Value>, String>> {
+        self.remaining = self.remaining.saturating_sub(1);
+        if self.done {
+            return None;
+        }
+        self.any_listener |= !d.none;
+        let answer = if let Some(e) = d.error {
+            Err(e)
+        } else if d.value.is_some() {
+            Ok(d.value)
+        } else if self.remaining > 0 {
+            return None;
+        } else if self.any_listener {
+            Ok(None)
+        } else {
+            Err(NO_RECEIVER.to_owned())
+        };
+        self.done = true;
+        Some(answer)
+    }
+}
+
 /// `chrome.runtime.MessageSender` for a message the runtime delivers.
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 pub struct Sender {
@@ -393,6 +431,32 @@ mod tests {
         assert!(Dispatched::parse(Some("garbage")).none);
         let d = Dispatched::parse(Some("{}"));
         assert!(!d.none && d.value.is_none() && d.error.is_none());
+    }
+
+    /// Chrome delivers `runtime.sendMessage` to every context and the first response wins,
+    /// so a background listener that does not answer keeps no other page from answering.
+    #[test]
+    fn replies_wait_for_every_context_and_take_the_first_answer() {
+        let parsed = |j: &str| Dispatched::parse(Some(j));
+        let mut r = Replies::new(2);
+        assert_eq!(r.settle(parsed("{}")), None, "a listener without an answer");
+        assert_eq!(r.settle(parsed(r#"{"v":"pong"}"#)), Some(Ok(Some(json!("pong")))));
+
+        let mut r = Replies::new(3);
+        assert_eq!(r.settle(parsed(r#"{"v":1}"#)), Some(Ok(Some(json!(1)))));
+        assert_eq!(r.settle(parsed(r#"{"e":"late"}"#)), None, "answered once");
+        assert_eq!(r.settle(parsed(r#"{"v":2}"#)), None);
+
+        let mut r = Replies::new(2);
+        assert_eq!(r.settle(parsed(r#"{"none":true}"#)), None);
+        assert_eq!(r.settle(parsed(r#"{"none":true}"#)), Some(Err(NO_RECEIVER.to_owned())));
+
+        let mut r = Replies::new(2);
+        assert_eq!(r.settle(parsed(r#"{"none":true}"#)), None);
+        assert_eq!(r.settle(parsed("{}")), Some(Ok(None)), "undefined once every context finished");
+
+        let mut r = Replies::new(2);
+        assert_eq!(r.settle(parsed(r#"{"e":"boom"}"#)), Some(Err("boom".to_owned())));
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! handler is also visible to whatever else shares the view (a web page in the same
 //! tab, a foreign iframe), which is why page calls must carry `Extension::page_token`.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,7 +19,7 @@ use webkit::prelude::*;
 use webkit::{gio, glib};
 
 use crate::extension::{Alarm, Extension, ViewId};
-use crate::protocol::{self, Call, Dispatched, Method, NO_RECEIVER, Sender, StorageArea};
+use crate::protocol::{self, Call, Dispatched, Method, NO_RECEIVER, Replies, Sender, StorageArea};
 use crate::runtime::Inner;
 use crate::tabs::{TabId, TabInfo};
 
@@ -234,7 +234,7 @@ fn send_to_pages(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &
             .filter(|(tab, _)| origin != Origin::TabPage { tab: *tab })
             .map(|(_, view)| Target { view, body: guarded.clone(), world: None }),
     );
-    deliver(targets.into_iter(), reply);
+    deliver(targets, reply);
 }
 
 fn send_to_tab(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call, reply: Reply) {
@@ -246,28 +246,35 @@ fn send_to_tab(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Ca
     if view.uri().is_some_and(|u| ext.owns_url(&u)) {
         targets.push(Target { view, body: Rc::new(protocol::dispatch_source_in_page(&ext.host, message, &sender)), world: None });
     }
-    deliver(targets.into_iter(), reply);
+    deliver(targets, reply);
 }
 
-/// Offer the message to each target in turn; the first context with a listener answers.
-fn deliver(mut targets: std::vec::IntoIter<Target>, reply: Reply) {
-    let Some(target) = targets.next() else { return reply.err(NO_RECEIVER) };
-    target.view.call_async_javascript_function(&target.body, None, target.world.as_deref(), None, None::<&gio::Cancellable>, move |result| {
-        let dispatched = match result {
-            Ok(value) => Dispatched::parse(value.to_json(0).as_deref()),
-            Err(e) => {
-                log::debug!("message dispatch: {e}");
-                Dispatched { none: true, value: None, error: None }
+/// Deliver the message to every target at once; the sender gets the answer [`Replies`]
+/// settles on.
+fn deliver(targets: Vec<Target>, reply: Reply) {
+    if targets.is_empty() {
+        return reply.err(NO_RECEIVER);
+    }
+    let state = Rc::new(RefCell::new((Replies::new(targets.len()), Some(reply))));
+    for target in targets {
+        let state = state.clone();
+        target.view.call_async_javascript_function(&target.body, None, target.world.as_deref(), None, None::<&gio::Cancellable>, move |result| {
+            let dispatched = match result {
+                Ok(value) => Dispatched::parse(value.to_json(0).as_deref()),
+                Err(e) => {
+                    log::debug!("message dispatch: {e}");
+                    Dispatched { none: true, value: None, error: None }
+                }
+            };
+            let settled = {
+                let (replies, reply) = &mut *state.borrow_mut();
+                replies.settle(dispatched).and_then(|answer| Some((reply.take()?, answer)))
+            };
+            if let Some((reply, answer)) = settled {
+                reply.finish(answer);
             }
-        };
-        if dispatched.none {
-            deliver(targets, reply);
-        } else if let Some(e) = dispatched.error {
-            reply.err(&e);
-        } else {
-            reply.ok(dispatched.value);
-        }
-    });
+        });
+    }
 }
 
 // --- storage ----------------------------------------------------------------------------

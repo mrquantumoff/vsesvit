@@ -329,6 +329,11 @@ mod linux {
             let updated = self.wait_for_js(&options_view, "JSON.stringify((window.__twinOptions && window.__twinOptions.updated) || [])", None, |v| v.contains(&self.tab.0.to_string())).await;
             self.note("tab_page_events", updated.as_deref().is_some_and(|u| u.contains(&self.tab.0.to_string())), format!("tabs.onUpdated ids seen in the options page = {updated:?}"));
 
+            // runtime.sendMessage reaches every page, not just the first with a listener:
+            // the background listens but does not answer this one, the options page does.
+            let broadcast = self.eval_async(&popup, "return await chrome.runtime.sendMessage({ type: 'to-options' });").await;
+            self.note("send_message_reaches_every_page", broadcast.as_ref().is_some_and(|v| v["options"] == "pong"), format!("popup -> runtime.sendMessage(to-options) = {broadcast:?}"));
+
             // More tabs: one the twin may not touch, one it may but has no content script in.
             let other = self.host.create_tab("data:text/html,<title>Vsesvit other</title>", false).expect("data tab");
             let plain = self.host.create_tab(&self.url("/page2.html"), false).expect("page2 tab");
