@@ -30,8 +30,8 @@ pub(crate) enum Command {
 
 pub(crate) type Host = Rc<dyn Fn(Command)>;
 
-const PIN_GLYPH: &str = "&#xE718;";
-const PINNED_GLYPH: &str = "&#xE842;";
+const PIN_GLYPH: &str = "\u{E718}";
+const PINNED_GLYPH: &str = "\u{E842}";
 
 pub(crate) struct Toolbar {
     list: ListView,
@@ -308,7 +308,7 @@ impl Toolbar {
                 .Click(move |_, _| {
                     let pin = !state.get();
                     state.set(pin);
-                    let _ = glyph.SetGlyph(if pin { "\u{E842}" } else { "\u{E718}" });
+                    let _ = glyph.SetGlyph(if pin { PINNED_GLYPH } else { PIN_GLYPH });
                     host(Command::Pin(id.clone(), pin));
                 })?
                 .forget();
