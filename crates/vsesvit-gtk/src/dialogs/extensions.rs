@@ -28,6 +28,10 @@ struct State {
 }
 
 pub(crate) fn present(window: &BrowserWindow) {
+    build(window).dialog.present(Some(window));
+}
+
+fn build(window: &BrowserWindow) -> Rc<State> {
     let source = adw::EntryRow::builder()
         .title("Chrome Web Store, Edge Add-ons or Firefox Add-ons link or ID")
         .show_apply_button(true)
@@ -94,7 +98,7 @@ pub(crate) fn present(window: &BrowserWindow) {
         state,
         move |_| state.choose_folder()
     ));
-    state.dialog.present(Some(window));
+    state
 }
 
 impl State {
@@ -228,14 +232,22 @@ impl State {
             self,
             #[strong(rename_to = id)]
             ext.id,
-            move |_, active| {
-                let Some(browser) = state.browser() else { return glib::Propagation::Stop };
+            move |switch, active| {
+                let Some(browser) = state.browser() else {
+                    // Back to the state it shows, after this handler returns.
+                    let switch = switch.clone();
+                    glib::idle_add_local_once(move || switch.set_active(switch.state()));
+                    return glib::Propagation::Stop;
+                };
                 let failed_before = browser.extension_error(&id).is_some();
                 match browser.set_extension_enabled(&id, active) {
                     Ok(()) => {}
                     Err(EnableFailure::Load(e)) => state.toast(&format!("Enabled, but it cannot run: {e}")),
                     Err(e) => {
                         state.toast(&format!("Cannot change the extension: {e}"));
+                        // Shows what the profile holds, or no row for an extension gone from it.
+                        let state = state.clone();
+                        glib::idle_add_local_once(move || state.refresh());
                         return glib::Propagation::Stop;
                     }
                 }
@@ -322,4 +334,51 @@ fn icon_image(path: Option<&Path>) -> gtk::Image {
     };
     image.set_pixel_size(32);
     image
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{browser, scratch_dir};
+
+    /// The extensions' Enabled switches, not the row's own hidden one.
+    fn switches(widget: &gtk::Widget) -> Vec<gtk::Switch> {
+        let enabled = widget.downcast_ref::<gtk::Switch>().filter(|s| s.tooltip_text().as_deref() == Some("Enabled"));
+        let mut found: Vec<gtk::Switch> = enabled.cloned().into_iter().collect();
+        for child in std::iter::successors(widget.first_child(), |child| child.next_sibling()) {
+            found.extend(switches(&child));
+        }
+        found
+    }
+
+    fn row_titled(state: &State, title: &str) -> Option<gtk::Widget> {
+        let is_titled = |row: &&gtk::Widget| row.downcast_ref::<adw::ExpanderRow>().is_some_and(|r| r.title() == title);
+        state.rows.borrow().iter().find(is_titled).cloned()
+    }
+
+    #[gtk::test]
+    async fn a_switch_that_cannot_change_the_extension_shows_what_the_profile_holds() {
+        let browser = browser();
+        let dir = scratch_dir("switch-fails");
+        let manifest = r#"{ "manifest_version": 3, "name": "Switched", "version": "1.0" }"#;
+        std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+        let installed = browser.install(InstallSource::from_path(&dir).unwrap(), |_| {}).await;
+        let id = installed.expect("the extension installs").expect("and is committed").id;
+        let window = BrowserWindow::new(&browser);
+        let state = build(&window);
+        let row = row_titled(&state, "Switched").expect("the extension's row");
+        let switch = switches(&row).pop().expect("its switch");
+        assert!(switch.is_active() && switch.state());
+
+        // Removed elsewhere, say by sync, while the dialog shows it.
+        browser.core().borrow_mut().extensions().uninstall(&id).unwrap();
+        switch.set_active(false);
+        while glib::MainContext::default().iteration(false) {}
+
+        let shown: Vec<gtk::Switch> = state.rows.borrow().iter().flat_map(switches).collect();
+        assert!(shown.iter().all(|s| s.is_active() == s.state()), "a switch is left half-way");
+        assert!(row_titled(&state, "Switched").is_none(), "the list shows what the profile holds");
+        browser.uninstall_extension(&id).ok();
+        window.destroy();
+    }
 }
