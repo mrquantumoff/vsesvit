@@ -31,6 +31,8 @@ const SYNC_SOON: Duration = Duration::from_secs(10);
 const FINAL_SYNC_WAIT: Duration = Duration::from_secs(3);
 /// Rounds one sync runs at most; the next tick takes what is left.
 const MAX_ROUNDS: usize = 50;
+/// How long deleting the data on the server waits for a sync that is running.
+const DELETE_WAIT: Duration = Duration::from_secs(120);
 
 /// Called with the state after every change, and dropped once it returns false.
 type Watcher = Box<dyn Fn(&State) -> bool>;
@@ -42,10 +44,9 @@ struct Inner {
     browser: Weak<browser::Inner>,
     http: Http,
     state: RefCell<State>,
-    /// A sync is running. Kept apart from `State::SignedIn.syncing`, because a round can outlive
-    /// the sign-in it started under.
+    /// A sync, or the deletion of the data on the server, is running. Kept apart from
+    /// `State::SignedIn.syncing`, because a round can outlive the sign-in it started under.
     running: Cell<bool>,
-    deleting: Cell<bool>,
     last_start: Cell<Option<Instant>>,
     /// `Profile::change_seq` when the last sync started; `None` asks for a sync at the next tick.
     start_seq: Cell<Option<Seq>>,
@@ -66,7 +67,6 @@ impl Syncer {
             http: Http::new(),
             state: RefCell::new(stored_state(profile, None, false)),
             running: Cell::new(false),
-            deleting: Cell::new(false),
             last_start: Cell::new(None),
             start_seq: Cell::new(None),
             synced_seq: Cell::new(None),
@@ -175,7 +175,7 @@ impl Syncer {
     }
 
     fn sync_now(&self) {
-        if self.0.deleting.get() || !should_sync(&self.0.state.borrow(), self.0.running.get()) {
+        if !should_sync(&self.0.state.borrow(), self.0.running.get()) {
             return;
         }
         let start_seq = self.change_seq();
@@ -311,17 +311,28 @@ impl Syncer {
         Ok(())
     }
 
-    /// Deletes everything the server holds for the account, then signs out. On failure the
-    /// profile stays signed in.
-    pub(crate) async fn delete_server_data(&self) -> Result<(), Error> {
+    /// Deletes everything the server holds for the account, then signs out. On failure, or when
+    /// a sync is still running after [`DELETE_WAIT`], the profile stays signed in.
+    pub(crate) async fn delete_server_data(&self) -> Result<(), String> {
+        // A round running meanwhile could upload again what the deletion removes.
+        let deadline = Instant::now() + DELETE_WAIT;
+        while self.0.running.replace(true) {
+            if Instant::now() >= deadline {
+                return Err("a sync is still running; try again".to_owned());
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        let deleted = self.delete_and_forget().await;
+        self.0.running.set(false);
+        deleted.map_err(|e| e.to_string())
+    }
+
+    async fn delete_and_forget(&self) -> Result<(), Error> {
         let browser = self.browser().ok_or(Error::SignedOut)?;
         let account = Account::load(&mut browser.core().borrow_mut().sync())?.ok_or(Error::SignedOut)?;
         drop(browser);
-        self.0.deleting.set(true);
         let http = self.0.http.clone();
-        let deleted = on_worker(move || account.delete_server_data(&http)).await;
-        self.0.deleting.set(false);
-        let account = deleted?;
+        let account = on_worker(move || account.delete_server_data(&http)).await?;
         let browser = self.browser().ok_or(Error::SignedOut)?;
         self.forget(&browser, Some(account))
     }
@@ -333,7 +344,7 @@ impl Syncer {
         self.cancel_timer();
         let Some(browser) = self.browser() else { return };
         let changed = self.change_seq() != self.0.synced_seq.get();
-        if self.0.deleting.get() || !changed || !should_sync(&self.0.state.borrow(), self.0.running.get()) {
+        if !changed || !should_sync(&self.0.state.borrow(), self.0.running.get()) {
             return;
         }
         let round = match gather(&mut browser.core().borrow_mut()) {
@@ -498,6 +509,39 @@ mod tests {
         let mut state = signed_in_state(true, false);
         settle(&mut state, Err(Error::SignInExpired), None);
         assert_eq!(state, signed_in_state(false, true));
+    }
+
+    #[test]
+    fn deleting_the_data_on_the_server_waits_for_the_running_sync() {
+        let context = glib::MainContext::new();
+        context
+            .with_thread_default(|| {
+                let root = crate::test_support::scratch_dir("delete-waits");
+                let mut profile = Profile::open(&root, vsesvit_core::OpenOptions::default()).expect("a scratch profile");
+                let syncer = Syncer::new(Weak::new(), &mut profile);
+                syncer.0.running.set(true);
+                let deleted = Rc::new(RefCell::new(None));
+                let (slot, deleting) = (deleted.clone(), syncer.clone());
+                context.spawn_local(async move {
+                    slot.replace(Some(deleting.delete_server_data().await));
+                });
+                let iterate = |until: &dyn Fn() -> bool| {
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while !until() && Instant::now() < deadline {
+                        if !context.iteration(false) {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
+                };
+                iterate(&|| false);
+                let while_running = deleted.borrow().is_some();
+                syncer.0.running.set(false);
+                iterate(&|| deleted.borrow().is_some());
+                assert!(!while_running, "the deletion waits for the sync");
+                assert!(deleted.take().is_some_and(|result| result.is_err()), "with no browser there is nothing to delete");
+                assert!(!syncer.0.running.get(), "the deletion lets syncs run again");
+            })
+            .expect("a main context of its own");
     }
 
     #[test]
