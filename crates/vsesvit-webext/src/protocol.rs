@@ -61,6 +61,26 @@ pub fn page_guard(host: &str) -> String {
     format!("(location.protocol === \"chrome-extension:\" && location.host === {})", js_string(host))
 }
 
+/// A JavaScript expression that is true only in a document at the origin of one of
+/// `urls`: for an extension page that extension's (see [`page_guard`]), for a URL with an
+/// opaque origin (`data:`, `about:blank`, `file:`) any document of its scheme. Like
+/// `page_guard`, it cannot be made true by the page it runs in.
+pub fn document_guard(urls: &[String]) -> String {
+    let checks: Vec<String> = urls
+        .iter()
+        .filter_map(|u| url::Url::parse(u).ok())
+        .map(|u| match u.origin() {
+            url::Origin::Tuple(..) => format!("location.origin === {}", js_string(&u.origin().ascii_serialization())),
+            url::Origin::Opaque(_) if u.scheme() == "chrome-extension" => page_guard(u.host_str().unwrap_or_default()),
+            url::Origin::Opaque(_) => format!("location.protocol === {}", js_string(&format!("{}:", u.scheme()))),
+        })
+        .collect();
+    if checks.is_empty() { "false".to_owned() } else { format!("({})", checks.join(" || ")) }
+}
+
+/// What a script injected behind [`document_guard`] throws in any other document.
+pub const CANNOT_ACCESS_PAGE: &str = "Cannot access contents of the page. Extension manifest must request permission to access the respective host.";
+
 impl Call {
     pub fn from_json(text: &str) -> Result<Call, String> {
         serde_json::from_str(text).map_err(|e| format!("malformed call: {e}"))
@@ -506,6 +526,18 @@ mod tests {
         assert!(shim.contains(r#"const baseUrl = "chrome-extension://" + config.host + "/";"#), "getURL must use config.host");
         assert!(!shim.contains(r#""chrome-extension://" + config.id"#));
         assert!(shim.contains("t: config.token"), "calls must carry the page token");
+    }
+
+    #[test]
+    fn document_guards_name_the_origins() {
+        let urls = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(document_guard(&urls(&["http://127.0.0.1:8080/index.html"])), r#"(location.origin === "http://127.0.0.1:8080")"#);
+        assert_eq!(
+            document_guard(&urls(&["https://a.test/x", "chrome-extension://abc/popup.html"])),
+            format!(r#"(location.origin === "https://a.test" || {})"#, page_guard("abc"))
+        );
+        assert_eq!(document_guard(&urls(&["data:text/html,x"])), r#"(location.protocol === "data:")"#);
+        assert_eq!(document_guard(&urls(&["", "not a url"])), "false");
     }
 
     #[test]

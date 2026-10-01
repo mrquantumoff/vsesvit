@@ -400,19 +400,37 @@ fn open_options_page(inner: &Rc<Inner>, ext: &Rc<Extension>) -> Result<Option<Va
 
 // --- scripting --------------------------------------------------------------------------
 
-/// The tab view an injection may target: the `scripting` permission, and host access to
-/// what the tab shows (host permissions, or an `activeTab` grant), as Chrome requires.
-fn injection_target(inner: &Inner, ext: &Extension, injection: &Value, api: &str) -> Result<webkit::WebView, String> {
+/// The tab view an injection may target, and the guard its source must run behind: the
+/// `scripting` permission, and host access (host permissions, or an `activeTab` grant) to
+/// what the tab shows, as Chrome requires. That is the committed document, not the URL the
+/// web view may still be loading; while a load is pending, the script may land in either,
+/// so that URL needs host access too (an `activeTab` grant covers only its own origin, as
+/// it ends when the tab leaves it), and the guard stops the script in any other document.
+fn injection_target(inner: &Inner, ext: &Extension, injection: &Value, api: &str) -> Result<(webkit::WebView, String), String> {
     let tab = TabId::from_json(&injection["target"]["tabId"]).ok_or("target.tabId must be an integer")?;
     if !ext.has_permission("scripting") {
         return Err(format!("{api} requires the \"scripting\" permission"));
     }
     let view = inner.host.web_view(tab).ok_or_else(|| format!("No tab with id: {}.", tab.0))?;
-    let url = view.uri().map(String::from).unwrap_or_default();
-    if !ext.host_access(&url, Some(tab)) {
-        return Err(format!("Cannot access contents of url \"{url}\". Extension manifest must request permission to access this host."));
+    let denied = |url: &str| format!("Cannot access contents of url \"{url}\". Extension manifest must request permission to access this host.");
+    let committed = inner.tab_info(tab).map(|t| t.url).unwrap_or_default();
+    if !ext.host_access(&committed, Some(tab)) {
+        return Err(denied(&committed));
     }
-    Ok(view)
+    let mut documents = vec![committed];
+    if let Some(pending) = view.uri().map(String::from).filter(|u| *u != documents[0]) {
+        let same_origin = Sender::origin_of(&pending).is_some_and(|o| Sender::origin_of(&documents[0]) == Some(o));
+        if !same_origin && !ext.host_access(&pending, None) {
+            return Err(denied(&pending));
+        }
+        documents.push(pending);
+    }
+    Ok((view, protocol::document_guard(&documents)))
+}
+
+/// A statement that ends the injected source unless `guard` holds.
+fn guard_statement(guard: &str) -> String {
+    format!("if (!{guard}) throw new Error({});\n", protocol::js_string(protocol::CANNOT_ACCESS_PAGE))
 }
 
 fn read_files(ext: &Extension, files: &Value) -> Result<String, String> {
@@ -433,10 +451,13 @@ enum Injection {
 
 fn execute_script(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: Reply) {
     let injection = call.arg(0);
-    let view = match injection_target(inner, ext, injection, "scripting.executeScript") {
+    let (view, guard) = match injection_target(inner, ext, injection, "scripting.executeScript") {
         Ok(v) => v,
         Err(e) => return reply.err(&e),
     };
+    // A navigation may commit between the check above and the script's arrival, so the
+    // script first checks which document it is in.
+    let guard = guard_statement(&guard);
     // Isolated-world code gets the content-script API whether or not a manifest content
     // script ran there; MAIN-world code gets none, as in Chrome.
     let (world, bootstrap) = match injection["world"].as_str() {
@@ -445,12 +466,12 @@ fn execute_script(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: Re
     };
     let what = if injection.get("files").is_some() {
         match read_files(ext, &injection["files"]) {
-            Ok(source) => Injection::Files(format!("{bootstrap}{source}")),
+            Ok(source) => Injection::Files(format!("{guard}{bootstrap}{source}")),
             Err(e) => return reply.err(&e),
         }
     } else if let Some(func) = injection["func"].as_str() {
         let args = injection.get("args").cloned().unwrap_or_else(|| json!([]));
-        Injection::Func { body: format!("{bootstrap}return ({func}).apply(null, {});", protocol::js_literal(&args)) }
+        Injection::Func { body: format!("{guard}{bootstrap}return ({func}).apply(null, {});", protocol::js_literal(&args)) }
     } else {
         return reply.err("scripting.executeScript: either files or func is required");
     };
@@ -469,13 +490,13 @@ fn execute_script(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: Re
 
 fn insert_css(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<Value>, String> {
     let injection = call.arg(0);
-    let view = injection_target(inner, ext, injection, "scripting.insertCSS")?;
+    let (view, guard) = injection_target(inner, ext, injection, "scripting.insertCSS")?;
     let css = match injection.get("css").and_then(Value::as_str) {
         Some(css) => css.to_owned(),
         None => read_files(ext, &injection["files"])?,
     };
     let source = format!(
-        "(function(){{const s=document.createElement('style');s.textContent={};(document.head||document.documentElement).appendChild(s);}})();",
+        "(function(){{if(!{guard})return;const s=document.createElement('style');s.textContent={};(document.head||document.documentElement).appendChild(s);}})();",
         protocol::js_string(&css)
     );
     view.evaluate_javascript(&source, Some(&ext.world), None, None::<&gio::Cancellable>, |_| {});

@@ -364,6 +364,20 @@ mod linux {
             let granted = self.eval_async(&popup, &format!("try {{ return await chrome.scripting.executeScript({{ target: {{ tabId: {} }}, func: () => document.title }}); }} catch (e) {{ return String(e.message); }}", other.0)).await;
             self.note("active_tab_grant", granted.as_ref().is_some_and(|v| v[0]["result"] == "Vsesvit other"), format!("after activate_action on tab {} = {granted:?}", other.0));
 
+            // Injection follows the committed document: navigating a tab the twin may not
+            // touch to one of its own pages does not let a script into the page still shown.
+            let third = self.host.create_tab("data:text/html,<title>Vsesvit third</title>", false).expect("third tab");
+            let third_view = self.host.web_view(third).expect("third tab view");
+            wait_until(|| third_view.title().as_deref() == Some("Vsesvit third"), TIMEOUT).await;
+            let pending = self
+                .eval_async(
+                    &popup,
+                    &format!("chrome.tabs.update({0}, {{ url: chrome.runtime.getURL('popup.html') }}); try {{ const r = await chrome.scripting.executeScript({{ target: {{ tabId: {0} }}, world: 'MAIN', func: () => location.href }}); return r[0].result; }} catch (e) {{ return String(e.message); }}", third.0),
+                )
+                .await;
+            let followed = pending.as_ref().and_then(Value::as_str).is_some_and(|s| s.starts_with("Cannot access contents") || s.starts_with("chrome-extension://"));
+            self.note("scripting_follows_committed_document", followed, format!("executeScript on tab {} while it loads the twin's page = {pending:?}", third.0));
+
             // Chrome-valid resource references.
             let paths = self
                 .eval_async(&popup, "await chrome.action.setPopup({ popup: chrome.runtime.getURL('popup.html') }); await chrome.action.setIcon({ path: '/icon.png' }); return [await chrome.action.getPopup({}), chrome.runtime.getURL('popup.html')];")
@@ -513,6 +527,9 @@ mod linux {
     struct Tab {
         id: TabId,
         view: webkit::WebView,
+        /// The document on screen, as the GTK shell reports it: set on commit, never the
+        /// URL still loading.
+        committed: Rc<RefCell<String>>,
     }
 
     /// Builds every tab the way the GTK shell does: a WebView on the runtime's
@@ -543,7 +560,7 @@ mod linux {
                     id: t.id,
                     window_id: 1,
                     index: i as u32,
-                    url: t.view.uri().map(String::from).unwrap_or_default(),
+                    url: t.committed.borrow().clone(),
                     title: t.view.title().map(String::from).unwrap_or_default(),
                     active: i == 0,
                 })
@@ -556,7 +573,16 @@ mod linux {
             self.next_id.set(id.0 + 1);
             let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id)).build();
             self.container.append(&view);
-            self.tabs.borrow_mut().push(Tab { id, view: view.clone() });
+            let committed = Rc::new(RefCell::new(String::new()));
+            view.connect_load_changed({
+                let committed = committed.clone();
+                move |view, event| {
+                    if event == webkit::LoadEvent::Committed {
+                        *committed.borrow_mut() = view.uri().map(String::from).unwrap_or_default();
+                    }
+                }
+            });
+            self.tabs.borrow_mut().push(Tab { id, view: view.clone(), committed });
             self.created.borrow_mut().push(url.to_owned());
             println!("[harness] host: create_tab({url}) -> tab {}", id.0);
             view.load_uri(url);
