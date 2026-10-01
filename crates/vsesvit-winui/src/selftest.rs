@@ -19,6 +19,7 @@ use vsesvit_core::downloads::State;
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
 use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::NavTarget;
+use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
 
 use windows_core::{IInspectable, Interface};
@@ -28,7 +29,7 @@ use crate::browser::Browser;
 use crate::dialogs::{self, Dialog};
 use crate::layout;
 use crate::popup::Activation;
-use crate::report::{Check, Report};
+use crate::report::expected;
 use crate::shortcuts::Command;
 use crate::tab::{Tab, TabId};
 use crate::window::BrowserWindow;
@@ -85,27 +86,27 @@ pub(crate) fn absent(removed: std::io::Result<()>) -> std::io::Result<()> {
 
 /// The profile did not open, so nothing else can run.
 pub(crate) fn report_failed_start(out_dir: &Path, network: bool, ms: u128, error: &str) {
-    let mut report = Report::default();
+    let mut report = Report::new("windows", expected(network));
     report.push(Check {
         name: "profile_open",
         ok: false,
         ms,
         detail: error.to_owned(),
     });
-    report.complete(network, "the profile did not open");
-    if let Err(e) = report.write(out_dir, network) {
+    report.complete("the profile did not open");
+    if let Err(e) = report.write(out_dir) {
         log::error!("report.json: {e}");
     }
 }
 
 pub(crate) async fn run(browser: Rc<Browser>, out_dir: PathBuf, network: bool) {
-    let mut report = Report::default();
+    let mut report = Report::new("windows", expected(network));
     if let Err(e) = checks(&browser, &out_dir, network, &mut report).await {
         log::error!("self-test stopped: {e}");
-        report.complete(network, &e);
+        report.complete(&e);
     }
-    let ok = report.ok(network);
-    match report.write(&out_dir, network) {
+    let ok = report.ok();
+    match report.write(&out_dir) {
         Ok(()) => log::info!("self-test: ok={ok}, report in {}", out_dir.display()),
         Err(e) => log::error!("self-test: writing report.json: {e}"),
     }

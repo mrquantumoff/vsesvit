@@ -1,11 +1,12 @@
 //! Test helpers shared by core's tests and the shells' `--self-test`: a fixture HTTP
-//! server and a CRX3 writer. Behind the `testkit` feature; never in a release build.
+//! server, a CRX3 writer and the self-test's report. Behind the `testkit` feature; never in a release build.
 //!
 //! Everything is embedded at compile time (`include_bytes!`), so the helpers work from
 //! any working directory, including an installed self-test binary.
 
 mod crx_writer;
 mod fixture_server;
+pub mod report;
 
 pub use crx_writer::{CrxKey, encode_crx3, sign_crx3, write_crx3, zip_files};
 pub use fixture_server::FixtureServer;

@@ -58,3 +58,5 @@ Both shells also accept `--profile-dir <path>` in normal runs, so development ne
   "checks": [ { "name": "navigate", "ok": true, "ms": 812, "detail": "title=Vsesvit fixture" } ]
 }
 ```
+
+Both shells write it with `vsesvit_core::testkit::report`. Each shell lists the checks its platform runs; one that never ran (the run stopped early) is reported as failed with `detail` `not run: <reason>`, so `ok` is true only when every listed check ran and passed.

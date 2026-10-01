@@ -20,6 +20,7 @@ use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
 use vsesvit_core::search::{NavTarget, SearchEngineId, UrlTemplate};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
+use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::{OpenOptions, Profile};
 use webkit::prelude::*;
@@ -57,41 +58,60 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 /// Selects the fixture page's heading and returns the selected text.
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
-struct Check {
-    name: &'static str,
-    ok: bool,
-    ms: u128,
-    detail: String,
+/// Every check the self-test runs, in order; a run that misses one fails.
+const CHECKS: [&str; 34] = [
+    "profile_open",
+    "install_crx",
+    "engine_loaded_extension",
+    "favicon_preload",
+    "navigate",
+    "history_recorded",
+    "content_script",
+    "dnr_blocked",
+    "bookmark",
+    "star_bubble",
+    "tabs",
+    "tab_animation",
+    "tab_layout",
+    "popup",
+    "extension_toolbar",
+    "omnibox",
+    "address_completion",
+    "selection_search",
+    "session",
+    "download",
+    "new_tab_page",
+    "address_progress",
+    "settings",
+    "bookmarks_bar_menus",
+    "ctrl_s_toggles_sidebar",
+    "shortcuts",
+    "save_page",
+    "zoom_indicator",
+    "zoom_is_remembered_per_site",
+    "connection_info",
+    "site_permissions",
+    "capture_in_use",
+    "welcome",
+    "screenshot",
+];
+
+/// Only with `--network`.
+const NETWORK_CHECK: &str = "cws_install";
+
+fn expected(network: bool) -> Vec<&'static str> {
+    let mut names = CHECKS.to_vec();
+    if network {
+        names.push(NETWORK_CHECK);
+    }
+    names
 }
 
-#[derive(Default)]
-struct Report {
-    checks: Vec<Check>,
-}
-
-impl Report {
-    fn push(&mut self, name: &'static str, ok: bool, started: Instant, detail: String) {
-        let ms = started.elapsed().as_millis();
-        println!("[self-test] {name}: {} ({ms} ms) {detail}", if ok { "ok" } else { "FAIL" });
-        self.checks.push(Check { name, ok, ms, detail });
-    }
-
-    fn ok(&self) -> bool {
-        self.checks.iter().all(|c| c.ok)
-    }
-
-    fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "platform": "linux",
-            "ok": self.ok(),
-            "checks": self.checks.iter().map(|c| serde_json::json!({
-                "name": c.name,
-                "ok": c.ok,
-                "ms": u64::try_from(c.ms).unwrap_or(u64::MAX),
-                "detail": c.detail,
-            })).collect::<Vec<_>>(),
-        })
-    }
+/// Records one check and prints it as it happens.
+fn record(report: &RefCell<Report>, name: &'static str, ok: bool, started: Instant, detail: String) {
+    let ms = started.elapsed().as_millis();
+    println!("[self-test] {name}: {} ({ms} ms) {detail}", if ok { "ok" } else { "FAIL" });
+    report.borrow_mut().push(Check { name, ok, ms, detail });
 }
 
 /// The last value a check observed while waiting, reported when it times out.
@@ -124,16 +144,16 @@ pub(crate) fn run(out_dir: &Path, network: bool) -> ExitCode {
     let profile_dir = out_dir.join("profile");
     let _ = std::fs::remove_dir_all(&profile_dir);
     crate::SCRIPTED.set(true);
-    let report = Rc::new(RefCell::new(Report::default()));
+    let report = Rc::new(RefCell::new(Report::new("linux", expected(network))));
 
     let started = Instant::now();
     let profile = match Profile::open(&profile_dir, OpenOptions::default()) {
         Ok(profile) => {
-            report.borrow_mut().push("profile_open", true, started, format!("root={}", profile_dir.display()));
+            record(&report, "profile_open", true, started, format!("root={}", profile_dir.display()));
             profile
         }
         Err(e) => {
-            report.borrow_mut().push("profile_open", false, started, e.to_string());
+            record(&report, "profile_open", false, started, e.to_string());
             return finish(out_dir, &report);
         }
     };
@@ -144,13 +164,13 @@ pub(crate) fn run(out_dir: &Path, network: bool) -> ExitCode {
             server
         }
         Err(e) => {
-            report.borrow_mut().push("fixture_server", false, started, e.to_string());
+            record(&report, "fixture_server", false, started, e.to_string());
             return finish(out_dir, &report);
         }
     };
     let crx_path = out_dir.join("probe.crx");
     if let Err(e) = std::fs::write(&crx_path, testkit::probe_crx()) {
-        report.borrow_mut().push("probe_crx", false, started, e.to_string());
+        record(&report, "probe_crx", false, started, e.to_string());
         return finish(out_dir, &report);
     }
     println!("[self-test] fixture server on {}", server.origin());
@@ -194,26 +214,18 @@ pub(crate) fn run(out_dir: &Path, network: bool) -> ExitCode {
 }
 
 fn finish(out_dir: &Path, report: &Rc<RefCell<Report>>) -> ExitCode {
+    report.borrow_mut().complete("the self-test stopped before it");
     let report = report.borrow();
-    let json = report.to_json();
     let path = out_dir.join("report.json");
-    match serde_json::to_string_pretty(&json) {
-        Ok(text) => {
-            if let Err(e) = std::fs::write(&path, text) {
-                eprintln!("vsesvit: cannot write {}: {e}", path.display());
-                return ExitCode::FAILURE;
-            }
-        }
-        Err(e) => {
-            eprintln!("vsesvit: cannot serialize the report: {e}");
-            return ExitCode::FAILURE;
-        }
+    if let Err(e) = report.write(out_dir) {
+        eprintln!("vsesvit: cannot write {}: {e}", path.display());
+        return ExitCode::FAILURE;
     }
-    let passed = report.checks.iter().filter(|c| c.ok).count();
+    let passed = report.checks().iter().filter(|c| c.ok).count();
     println!(
         "[self-test] {}: {passed}/{} checks passed; report at {}",
         if report.ok() { "PASS" } else { "FAIL" },
-        report.checks.len(),
+        report.checks().len(),
         path.display()
     );
     if report.ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
@@ -235,7 +247,7 @@ impl Context {
             Ok(Err(detail)) => (false, detail),
             Err(_) => (false, format!("timed out after {} s; last observed: {}", timeout.as_secs(), last.get())),
         };
-        self.report.borrow_mut().push(name, ok, started, detail);
+        record(&self.report, name, ok, started, detail);
         ok
     }
 }
@@ -268,7 +280,7 @@ fn title_of(view: &webkit::WebView) -> String {
 
 async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     let Some(window) = browser.windows().into_iter().next() else {
-        ctx.report.borrow_mut().push("window", false, Instant::now(), "startup opened no window".into());
+        record(&ctx.report, "window", false, Instant::now(), "startup opened no window".into());
         return;
     };
     let probe_id = ExtensionId::parse(testkit::PROBE_ID).expect("the probe id is valid");
@@ -1737,4 +1749,34 @@ fn distinct_colors(texture: &gdk::Texture, cap: usize) -> usize {
         }
     }
     seen.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_that_stops_early_fails() {
+        let report = RefCell::new(Report::new("linux", expected(false)));
+        record(&report, "profile_open", true, Instant::now(), String::new());
+        let mut report = report.into_inner();
+        assert!(!report.ok());
+        report.complete("stopped");
+        assert_eq!(report.checks()[1].name, "install_crx");
+        assert!(!report.checks()[1].ok);
+        assert!(!report.ok());
+    }
+
+    #[test]
+    fn checks_lists_every_check_run_checks_runs() {
+        let source = include_str!("self_test.rs");
+        let run: Vec<&str> = source
+            .split("ctx.check(\"")
+            .skip(1)
+            .filter_map(|rest| rest.split_once('"').map(|(name, _)| name))
+            .collect();
+        let mut listed = expected(true);
+        listed.remove(0);
+        assert_eq!(run, listed);
+    }
 }
