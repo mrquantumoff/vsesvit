@@ -49,17 +49,15 @@ fn main() -> std::process::ExitCode {
 #[cfg(target_os = "linux")]
 mod linux {
     use std::cell::{Cell, RefCell};
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::{TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
     use std::process::ExitCode;
     use std::rc::Rc;
-    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use serde_json::Value;
     use vsesvit_core::ext_storage::Area;
     use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension};
+    use vsesvit_core::testkit::FixtureServer;
     use vsesvit_core::{OpenOptions, Profile};
     use vsesvit_webext::{LoadReason, Runtime, TabHost, TabId, TabInfo};
     use webkit::glib;
@@ -78,10 +76,8 @@ mod linux {
         }
         gtk::init().expect("gtk::init");
 
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let site = repo.join("tests/fixtures/site");
-        let server = FixtureServer::start(site);
-        println!("[harness] fixture server on 127.0.0.1:{}", server.port);
+        let server = FixtureServer::start().expect("fixture server");
+        println!("[harness] fixture server on 127.0.0.1:{}", server.port());
 
         let out_dir = std::env::temp_dir().join(format!("vsesvit-webext-harness-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out_dir);
@@ -108,7 +104,7 @@ mod linux {
         let twin_xpi = out_dir.join("twin.xpi");
         write_xpi(&twin_xpi, &twin_files());
         let widget_xpi = out_dir.join("widget.xpi");
-        write_xpi(&widget_xpi, &widget_files(server.port));
+        write_xpi(&widget_xpi, &widget_files(server.port()));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -134,8 +130,7 @@ mod linux {
             profile: profile.clone(),
             view,
             tab,
-            server_port: server.port,
-            hits: server.hits.clone(),
+            server,
             probe,
             twin: RefCell::new(twin),
             twin_xpi,
@@ -175,8 +170,7 @@ mod linux {
         profile: Rc<RefCell<Profile>>,
         view: webkit::WebView,
         tab: TabId,
-        server_port: u16,
-        hits: Arc<Mutex<Vec<String>>>,
+        server: FixtureServer,
         probe: InstalledExtension,
         twin: RefCell<InstalledExtension>,
         twin_xpi: PathBuf,
@@ -219,7 +213,7 @@ mod linux {
 
             // 2. declarativeNetRequest: control image requested, blocked image never
             glib::timeout_future(Duration::from_millis(1000)).await;
-            let hits = self.hits.lock().unwrap().clone();
+            let hits = self.server.hits();
             let allowed = hits.iter().any(|p| p == "/allowed.png");
             let blocked = hits.iter().any(|p| p == "/vsesvit-blocked/pixel.png");
             self.note("dnr_blocked", allowed && !blocked, format!("server saw {hits:?}"));
@@ -297,13 +291,13 @@ mod linux {
         }
 
         async fn widget_popup(&self) {
-            let before = self.hits.lock().unwrap().iter().filter(|p| *p == "/page2.html").count();
+            let before = self.server.hits().iter().filter(|p| *p == "/page2.html").count();
             let Some(popup) = self.runtime.activate_action(&self.widget_id, Some(self.tab)) else {
                 self.note("iframe_in_popup", false, "activate_action returned no popup view");
                 return;
             };
             let _window = self.park(&popup);
-            let framed = wait_until(|| self.hits.lock().unwrap().iter().filter(|p| *p == "/page2.html").count() > before, Duration::from_secs(5)).await;
+            let framed = wait_until(|| self.server.hits().iter().filter(|p| *p == "/page2.html").count() > before, Duration::from_secs(5)).await;
             glib::timeout_future(Duration::from_millis(300)).await;
             let opened: Vec<String> = self.host.created.borrow().iter().filter(|u| u.contains("/page2.html")).cloned().collect();
             self.note("iframe_in_popup", framed && opened.is_empty(), format!("server got the frame = {framed}; tabs opened for it = {opened:?}"));
@@ -512,7 +506,7 @@ mod linux {
         }
 
         fn url(&self, path: &str) -> String {
-            format!("http://127.0.0.1:{}{path}", self.server_port)
+            self.server.url(path).to_string()
         }
 
         /// A window for a popup view (never presented), so it renders like the shell's popover.
@@ -814,52 +808,5 @@ log("alive");
                 format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>widget</title></head><body><iframe src=\"http://127.0.0.1:{port}/page2.html\"></iframe></body></html>"),
             ),
         ]
-    }
-
-    // --- fixture HTTP server --------------------------------------------------------------
-
-    struct FixtureServer {
-        port: u16,
-        hits: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl FixtureServer {
-        fn start(dir: PathBuf) -> FixtureServer {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
-            let port = listener.local_addr().expect("local addr").port();
-            let hits = Arc::new(Mutex::new(Vec::new()));
-            let hits_for_thread = hits.clone();
-            std::thread::spawn(move || {
-                for stream in listener.incoming().flatten() {
-                    let (dir, hits) = (dir.clone(), hits_for_thread.clone());
-                    std::thread::spawn(move || serve(stream, &dir, &hits));
-                }
-            });
-            FixtureServer { port, hits }
-        }
-    }
-
-    fn serve(mut stream: TcpStream, dir: &Path, hits: &Mutex<Vec<String>>) {
-        let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
-        let mut request_line = String::new();
-        if reader.read_line(&mut request_line).is_err() {
-            return;
-        }
-        let mut line = String::new();
-        while reader.read_line(&mut line).is_ok() && line != "\r\n" && !line.is_empty() {
-            line.clear();
-        }
-        let path = request_line.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap_or("/").to_owned();
-        hits.lock().unwrap().push(path.clone());
-        let safe = path.trim_start_matches('/');
-        let file = if safe.split('/').any(|seg| seg == "..") { None } else { Some(dir.join(safe)) };
-        let (status, body, mime) = match file.filter(|f| f.is_file()).and_then(|f| std::fs::read(&f).ok()) {
-            Some(bytes) => ("200 OK", bytes, vsesvit_webext::mime::for_path(&path)),
-            None => ("404 Not Found", b"not found".to_vec(), "text/plain"),
-        };
-        let head = format!("HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", body.len());
-        let _ = stream.write_all(head.as_bytes());
-        let _ = stream.write_all(&body);
-        let _ = stream.flush();
     }
 }
