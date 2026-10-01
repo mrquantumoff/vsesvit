@@ -23,6 +23,7 @@ fn hosts_and_paths_read_decoded() {
         ("https://example.com/100%", "https://example.com/100%"),
         ("https://user@xn--bcher-kva.example/", "https://user@bücher.example/"),
         ("file:///C:/%D0%B4%D0%BE%D0%BA.txt", "file:///C:/док.txt"),
+        ("data:text/plain,%D0%B2", "data:text/plain,в"),
         ("about:blank", "about:blank"),
         ("", ""),
     ] {

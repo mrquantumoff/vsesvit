@@ -15,9 +15,8 @@ pub fn readable_url(url: &str) -> String {
         return url.to_owned();
     };
     let serialized = parsed.as_str();
-    let (host_start, host_end) = match (parsed.host_str(), host_span(&parsed)) {
-        (Some(_), Some(span)) => span,
-        _ => return decode_escapes(serialized),
+    let Some((host_start, host_end)) = host_span(&parsed) else {
+        return decode_escapes(serialized);
     };
     let host = readable_host(&serialized[host_start..host_end]);
     format!("{}{}{}", &serialized[..host_start], host, decode_escapes(&serialized[host_end..]))
