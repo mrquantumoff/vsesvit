@@ -38,6 +38,10 @@ pub struct Account {
     /// passed them, so turning one on starts the download over.
     #[serde(default = "every_type")]
     downloading: BTreeSet<DataType>,
+    /// The `Kind` codes of the build that last moved `download_cursor`. Records of kinds it did not
+    /// know were skipped as it passed them, so a build that knows more starts the download over.
+    #[serde(default = "kinds_before_tracking")]
+    known_kinds: BTreeSet<u8>,
     /// The [`Page::epoch`] the cursors belong to. `None` while they are at the start, until a page
     /// comes.
     #[serde(default = "epoch_before_tracking")]
@@ -47,6 +51,16 @@ pub struct Account {
 
 fn every_type() -> BTreeSet<DataType> {
     DataType::ALL.into_iter().collect()
+}
+
+fn every_kind() -> BTreeSet<u8> {
+    Kind::ALL.iter().map(|k| k.code()).collect()
+}
+
+/// The kinds there were when the account began keeping `known_kinds`. Fixed, not `Kind::ALL`, so
+/// a build with a new kind still sees that an older account's download skipped it.
+fn kinds_before_tracking() -> BTreeSet<u8> {
+    BTreeSet::from([1, 2, 3, 4, 5, 6, 7, 8, 12])
 }
 
 /// The epoch of every page before servers had them, so an account saved then still sees a new one.
@@ -65,6 +79,7 @@ impl Account {
             download_cursor: 0,
             upload_cursors: BTreeMap::new(),
             downloading: every_type(),
+            known_kinds: every_kind(),
             epoch: None,
             last_synced: None,
         }
@@ -158,10 +173,12 @@ impl Round {
     /// a type on uploads what changed while it was off.
     pub fn gather(store: &mut SyncStore<'_>, mut account: Account, types: &[DataType]) -> Result<Round, Error> {
         let types: BTreeSet<DataType> = types.iter().copied().collect();
-        if !types.is_subset(&account.downloading) {
+        let kinds = every_kind();
+        if !types.is_subset(&account.downloading) || !kinds.is_subset(&account.known_kinds) {
             account.download_cursor = 0;
         }
         account.downloading = types.clone();
+        account.known_kinds = kinds;
         let budget = account.limits.max_batch as usize;
         let mut records = Vec::new();
         let mut upto = BTreeMap::new();
@@ -348,8 +365,9 @@ impl Exchanged {
     }
 }
 
-/// Applies the page's records of the `types` this device syncs. The cursor passes the others; turning
-/// one of them on later starts the download over (see [`Round::gather`]).
+/// Applies the page's records of the `types` this device syncs. The cursor passes the others, and
+/// records of kinds this build does not know; turning one of those types on later, or updating to a
+/// build that knows the kind, starts the download over (see [`Round::gather`]).
 fn apply(store: &mut SyncStore<'_>, account: &mut Account, page: Page, types: &BTreeSet<DataType>) -> Result<ApplyReport, Error> {
     let records = page
         .records
@@ -406,6 +424,45 @@ mod tests {
         assert_eq!(ids, ["https://example.com/short".len()], "the long URL is left out");
         let all = store.changes_since(Kind::HistoryPages, Seq(0), 100).unwrap();
         assert_eq!(round.upto[&Kind::HistoryPages.code()], all.upto.0, "the cursor passes the long one too");
+        drop(profile);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An account as some build saved it, with its download cursor at 100 and these kind codes
+    /// known, or no list at all.
+    fn saved_account(known_kinds: Option<&[u8]>) -> Account {
+        let limits = Limits { max_batch: 100, max_record_bytes: 1 << 20, max_request_bytes: 4 << 20 };
+        let mut json = serde_json::to_value(Account::new("https://sync.example.com".to_owned(), None, "session".to_owned(), limits)).unwrap();
+        json["download_cursor"] = 100.into();
+        match known_kinds {
+            Some(codes) => json["known_kinds"] = codes.into(),
+            None => drop(json.as_object_mut().unwrap().remove("known_kinds")),
+        }
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn a_build_that_knows_a_new_kind_downloads_everything_again() {
+        use vsesvit_core::vault::KeyStore;
+        use vsesvit_core::{OpenOptions, Profile};
+
+        let dir = std::env::temp_dir().join(format!("vsesvit-sync-new-kind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut profile = Profile::open(&dir, OpenOptions { key_store: KeyStore::Basic, ..OpenOptions::default() }).unwrap();
+        let mut store = profile.sync();
+        let every_code: Vec<u8> = Kind::ALL.iter().map(|k| k.code()).collect();
+        let mut gather = |account: Account| {
+            let round = Round::gather(&mut store, account, &DataType::ALL).unwrap();
+            let known = serde_json::to_value(&round.account).unwrap()["known_kinds"].clone();
+            (round.account.download_cursor, serde_json::from_value::<Option<Vec<u8>>>(known).unwrap())
+        };
+
+        // Saved by a build that knew every kind but SitePermissions: the records of it passed then
+        // were skipped.
+        assert_eq!(gather(saved_account(Some(&[1, 2, 3, 4, 5, 6, 7, 8]))), (0, Some(every_code.clone())));
+        assert_eq!(gather(saved_account(Some(&every_code))), (100, Some(every_code.clone())), "no new kind, no new start");
+        // Saved before the account kept the list, by a build that knew the kinds there were then.
+        assert_eq!(gather(saved_account(None)), (100, Some(every_code.clone())));
         drop(profile);
         let _ = std::fs::remove_dir_all(&dir);
     }
