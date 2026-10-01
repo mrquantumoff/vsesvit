@@ -1726,11 +1726,12 @@ fn heading_of(bubble: &gtk::Popover) -> Option<String> {
     find::<gtk::Label>(bubble.upcast_ref(), |l| l.has_css_class("heading")).map(|l| l.label().into())
 }
 
-/// How many different pixel values the image has, stopping at `cap`.
+/// The text's length in characters, as GTK's `i32` text positions count it.
 fn char_len(text: &str) -> i32 {
     i32::try_from(text.chars().count()).unwrap_or(i32::MAX)
 }
 
+/// How many different pixel values the image has, stopping at `cap`.
 fn distinct_colors(texture: &gdk::Texture, cap: usize) -> usize {
     let downloader = gdk::TextureDownloader::new(texture);
     let (bytes, stride) = downloader.download_bytes();
