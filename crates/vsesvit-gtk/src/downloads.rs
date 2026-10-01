@@ -191,11 +191,11 @@ impl Downloads {
             weak,
             move |download, suggested| {
                 match (weak.upgrade(), chosen.take()) {
-                    (Some(_), Some(path)) => {
+                    (Some(downloads), Some(path)) => {
                         download.set_allow_overwrite(true);
                         match path.to_str() {
                             Some(path) => download.set_destination(path),
-                            None => download.cancel(),
+                            None => refuse(downloads.window_for(download), download, NOT_UTF8),
                         }
                     }
                     (Some(downloads), None) => downloads.decide_destination(download, suggested),
@@ -267,8 +267,7 @@ impl Downloads {
     fn decide_destination(&self, download: &webkit::Download, suggested: &str) {
         let dir = self.directory();
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            log::warn!("cannot create {}: {e}", dir.display());
-            download.cancel();
+            refuse(self.window_for(download), download, &format!("Cannot save to {}: {e}", dir.display()));
             return;
         }
         let ask = self.core.borrow_mut().prefs().get(&keys::DOWNLOADS_ASK);
@@ -276,7 +275,7 @@ impl Downloads {
             let destination = unique_destination(&dir, suggested, Path::exists);
             match destination.to_str() {
                 Some(path) => download.set_destination(path),
-                None => download.cancel(),
+                None => refuse(self.window_for(download), download, NOT_UTF8),
             }
             return;
         }
@@ -290,12 +289,13 @@ impl Downloads {
         let download = download.clone();
         glib::spawn_future_local(async move {
             let chosen = dialog.save_future(window.as_ref()).await.ok().and_then(|file| file.path());
-            match chosen.as_deref().and_then(Path::to_str) {
-                Some(path) => {
+            match chosen.as_deref().map(Path::to_str) {
+                Some(Some(path)) => {
                     // The dialog already asked before replacing a file.
                     download.set_allow_overwrite(true);
                     download.set_destination(path);
                 }
+                Some(None) => refuse(window, &download, NOT_UTF8),
                 None => download.cancel(),
             }
         });
@@ -394,6 +394,18 @@ impl Downloads {
     }
 }
 
+const NOT_UTF8: &str = "Cannot save the download: its path is not valid UTF-8";
+
+/// Cancels a download the shell cannot place, saying why: WebKit reports the cancel as the
+/// user's, which shows nothing.
+fn refuse(window: Option<BrowserWindow>, download: &webkit::Download, why: &str) {
+    log::warn!("download refused: {why}");
+    if let Some(window) = window {
+        window.toast(adw::Toast::builder().title(why).use_markup(false).build());
+    }
+    download.cancel();
+}
+
 /// The size the server announced, if it did.
 fn total_of(download: &webkit::Download) -> Option<u64> {
     download.response().map(|r| r.content_length()).filter(|&length| length > 0)
@@ -486,6 +498,35 @@ mod tests {
         assert_eq!(changes.borrow().last(), Some(&Change::List), "the end is announced");
 
         downloads.unsubscribe(subscription);
+        window.destroy();
+        let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);
+        reset.expect("the folder preference is reset");
+    }
+
+    fn shows_text(widget: &gtk::Widget, text: &str) -> bool {
+        widget.downcast_ref::<gtk::Label>().is_some_and(|label| label.label().contains(text))
+            || std::iter::successors(widget.first_child(), |child| child.next_sibling()).any(|child| shows_text(&child, text))
+    }
+
+    #[gtk::test]
+    fn a_download_into_a_folder_that_cannot_be_made_says_why() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/big.bin" => Reply::StalledFile,
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let file = scratch_dir("downloads-blocked").join("file");
+        std::fs::write(&file, b"").expect("a file in the way");
+        let dir = file.join("sub");
+        let set = browser.core().borrow_mut().prefs().set(&keys::DOWNLOADS_DIR, &Some(dir.clone()));
+        set.expect("the folder preference is written");
+        let window = BrowserWindow::new(&browser);
+        window.open_tab(Some(&server.url("/big.bin")), None, Focus::Foreground);
+
+        wait_until("a toast saying why", || shows_text(window.upcast_ref(), "Cannot save to"));
+        let downloads = browser.downloads();
+        assert!(!downloads.list().iter().any(|d| d.path.starts_with(&file)), "nothing is listed");
+
         window.destroy();
         let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);
         reset.expect("the folder preference is reset");
