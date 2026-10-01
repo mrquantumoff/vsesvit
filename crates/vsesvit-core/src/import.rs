@@ -497,10 +497,10 @@ fn read_firefox(places: &Path) -> Result<Vec<ImportItem>, ImportError> {
 /// holds the whole browsing history, and on Linux `/tmp` is shared with every other user.
 fn private_temp_dir() -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir().join(format!("vsesvit-import-{}", uuid::Uuid::new_v4()));
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(&dir)?;
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir)?;
+    #[cfg(not(unix))]
+    std::fs::create_dir(&dir)?;
     Ok(dir)
 }
 
