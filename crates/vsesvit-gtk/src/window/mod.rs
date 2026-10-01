@@ -1154,6 +1154,37 @@ mod tests {
     }
 
     #[gtk::test]
+    fn the_homepage_setting_reads_like_an_address() {
+        let browser = browser();
+        let homepage = |text: &str| {
+            browser.core().borrow_mut().prefs().set(&keys::HOMEPAGE, &text.to_owned()).unwrap();
+            browser.homepage().map(String::from)
+        };
+        let resolved = [
+            homepage("example.com"),
+            homepage("localhost:3000"),
+            homepage("https://start.example/x"),
+            homepage(" about:home "),
+            homepage("about:blank"),
+            homepage("javascript:alert(1)"),
+            homepage("mailto:someone@example.com"),
+        ];
+        browser.core().borrow_mut().prefs().reset(&keys::HOMEPAGE).unwrap();
+        assert_eq!(
+            resolved.each_ref().map(Option::as_deref),
+            [
+                Some("https://example.com/"),
+                Some("http://localhost:3000/"),
+                Some("https://start.example/x"),
+                None,
+                None,
+                None,
+                None,
+            ]
+        );
+    }
+
+    #[gtk::test]
     fn a_compact_address_bar_is_narrow_and_a_full_one_fills_the_header() {
         let browser = browser();
         let window = BrowserWindow::new(&browser);

@@ -35,7 +35,7 @@ use crate::sync::Syncer;
 use crate::tab::{Commit, Tab};
 use crate::updates::Updates;
 use crate::window::{BrowserWindow, Focus};
-use crate::{dialogs, favicons, keymap, omnibox, permissions, session};
+use crate::{dialogs, favicons, keymap, location, omnibox, permissions, session};
 
 const CLOSED_TABS_KEPT: usize = 25;
 /// How many sites one background favicon fetch looks up.
@@ -768,14 +768,9 @@ impl Browser {
         keymap::apply(self.app(), &self.keymap());
     }
 
-    /// The homepage preference as a URL. `about:home`, the default, means the new tab page.
+    /// The homepage preference as a URL, or `None` for the new tab page.
     pub(crate) fn homepage(&self) -> Option<Url> {
-        let text = self.core().borrow_mut().prefs().get(&keys::HOMEPAGE);
-        let text = text.trim();
-        if text.is_empty() || text == "about:home" {
-            return None;
-        }
-        Url::parse(text).ok()
+        location::homepage_url(&self.core().borrow_mut().prefs().get(&keys::HOMEPAGE))
     }
 
     /// What the shell refreshes after sync applied remote records (`ApplyReport::changed`). The

@@ -1,9 +1,9 @@
-//! Turns command-line arguments into URLs to load.
+//! Turns command-line arguments and the homepage preference into URLs to load.
 //!
-//! An existing file relative to the invoking process's working directory comes first; other
-//! text reads the way the address bar reads it (core's `classify_url`), minus searching: a URL
+//! Both read text the way the address bar does (core's `classify_url`), minus searching: a URL
 //! with a scheme the engine can show loads as is, a path or something shaped like a host gets
-//! the scheme it needs, and anything else resolves to nothing.
+//! the scheme it needs, and anything else resolves to nothing. On the command line a file
+//! relative to the invoking process's working directory comes first.
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -23,6 +23,15 @@ pub(crate) fn resolve_cli_target(
         return Url::from_file_path(&path).ok();
     }
     arg.to_str().and_then(classify_url).map(|target| target.url().clone())
+}
+
+/// The homepage preference as a URL. `about:home`, the default, and `about:blank` mean the
+/// new tab page, as on Windows; text that is not an address does too.
+pub(crate) fn homepage_url(pref: &str) -> Option<Url> {
+    match pref.trim() {
+        "" | "about:home" | "about:blank" => None,
+        text => classify_url(text).map(|target| target.url().clone()),
+    }
 }
 
 #[cfg(test)]
