@@ -11,7 +11,7 @@ use windows_core::{Interface, Result};
 use super::{Wired, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::extensions::{Progress, verification_label};
+use crate::extensions::Progress;
 use crate::popup::{best_icon, icon_markup};
 use crate::window::BrowserWindow;
 use crate::{exec, pickers, xaml};
@@ -235,7 +235,7 @@ impl Manager {
         let details = format!(
             "{} \u{00B7} {} \u{00B7} {}",
             ext.version,
-            verification_label(&ext.verification),
+            ext.verification.label(),
             ext.id.as_str()
         );
         let error =

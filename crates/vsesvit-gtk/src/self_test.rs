@@ -15,7 +15,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::downloads::{State, status_line};
-use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
+use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Verification};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
 use vsesvit_core::search::{NavTarget, SearchEngineId, UrlTemplate};
@@ -26,7 +26,6 @@ use webkit::prelude::*;
 
 use crate::browser::Browser;
 use crate::dialogs::{Windowed, shortcut_settings};
-use crate::extensions::describe_phase;
 use crate::keymap;
 use crate::window::{Focus, classify_layout};
 
@@ -1601,7 +1600,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             let id = ExtensionId::parse(CWS_EXTENSION).map_err(|e| e.to_string())?;
             let progress = {
                 let last = last.clone();
-                move |phase| last.set(describe_phase(&phase))
+                move |phase: InstallPhase| last.set(phase.describe())
             };
             let ext = browser
                 .install(InstallSource::ChromeWebStore { id: id.clone() }, progress)

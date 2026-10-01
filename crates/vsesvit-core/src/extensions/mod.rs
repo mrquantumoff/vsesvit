@@ -228,6 +228,19 @@ impl Verification {
         matches!(self, Verification::ChromeWebStore { .. } | Verification::EdgeAddons | Verification::LocalCrx)
     }
 
+    /// Where the install came from and how it was checked, as both shells' extensions pages say it.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Verification::ChromeWebStore { publisher_verified: true } => "Chrome Web Store, publisher verified",
+            Verification::ChromeWebStore { publisher_verified: false } => "Chrome Web Store, developer key only",
+            Verification::EdgeAddons => "Edge Add-ons, publisher verified",
+            Verification::AmoHash => "Firefox Add-ons, hash checked",
+            Verification::LocalCrx => "Local CRX, signature verified",
+            Verification::LocalXpi => "Local XPI, not verified",
+            Verification::Unpacked => "Unpacked folder, not verified",
+        }
+    }
+
     fn id_hold(&self) -> IdHold {
         match self {
             _ if self.binds_key() => IdHold::Key,
@@ -840,6 +853,16 @@ mod tests {
         }
         assert!(ExtensionId::parse("console").is_ok());
         assert!(ExtensionId::parse("com10").is_ok());
+    }
+
+    #[test]
+    fn verification_labels() {
+        assert_eq!(
+            Verification::ChromeWebStore { publisher_verified: true }.label(),
+            "Chrome Web Store, publisher verified"
+        );
+        assert_eq!(Verification::EdgeAddons.label(), "Edge Add-ons, publisher verified");
+        assert_eq!(Verification::Unpacked.label(), "Unpacked folder, not verified");
     }
 
     #[test]

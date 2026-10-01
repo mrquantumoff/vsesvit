@@ -27,6 +27,7 @@ use super::crx::{self, CrxError, CrxStore, VerifyPolicy};
 use super::manifest::{self, Manifest, ManifestError};
 use super::{ExtensionId, StoreRef, Verification, is_windows_reserved_name};
 use crate::Url;
+use crate::downloads::describe_size;
 
 /// Largest package (`.crx` / `.xpi`) the pipeline reads, from the network or from disk.
 pub const MAX_ARCHIVE_BYTES: u64 = 256 << 20;
@@ -276,6 +277,33 @@ pub enum InstallPhase {
     Unpacking,
     /// Validating and localizing `manifest.json`.
     ReadingManifest,
+}
+
+impl InstallPhase {
+    /// One line for the install progress UI, identical in both shells. Sizes read as in
+    /// the Downloads window (`downloads::describe_size`).
+    pub fn describe(&self) -> String {
+        match self {
+            InstallPhase::Resolving => "Looking up the add-on…".to_owned(),
+            InstallPhase::Downloading { received, total: Some(total) } if *total > 0 => {
+                format!("Downloading… {} of {}", describe_size(*received), describe_size(*total))
+            }
+            InstallPhase::Downloading { received, .. } => format!("Downloading… {}", describe_size(*received)),
+            InstallPhase::Verifying => "Verifying the signature…".to_owned(),
+            InstallPhase::Unpacking => "Unpacking…".to_owned(),
+            InstallPhase::ReadingManifest => "Reading the manifest…".to_owned(),
+        }
+    }
+
+    /// How much of the download has arrived, 0 to 1; `None` while the amount of work is unknown.
+    pub fn fraction(&self) -> Option<f64> {
+        match self {
+            InstallPhase::Downloading { received, total: Some(total) } if *total > 0 => {
+                Some((*received as f64 / *total as f64).clamp(0.0, 1.0))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `Send`, no DB handle, no `Profile` borrow. Built by `Extensions::prepare_install` or
@@ -864,6 +892,23 @@ mod tests {
         assert_eq!(ui_locale_from([s(""), s("pt-BR"), None]), "pt_BR");
         assert_eq!(ui_locale_from([None, None, s("de_DE@euro")]), "de_DE");
         assert_eq!(ui_locale_from([None, None, None]), "en");
+    }
+
+    #[test]
+    fn phases_read_the_same_in_both_shells() {
+        let downloading = |received, total| InstallPhase::Downloading { received, total };
+        assert_eq!(downloading(1_250_000, Some(9_763_168)).describe(), "Downloading… 1.3 MB of 9.8 MB");
+        assert_eq!(downloading(3_400_000, Some(10_000_000)).describe(), "Downloading… 3.4 MB of 10 MB");
+        assert_eq!(downloading(500_000, None).describe(), "Downloading… 500 KB");
+        assert_eq!(downloading(500_000, Some(0)).describe(), "Downloading… 500 KB");
+        assert_eq!(downloading(5, Some(10)).fraction(), Some(0.5));
+        assert_eq!(downloading(20, Some(10)).fraction(), Some(1.0));
+        assert_eq!(downloading(5, Some(0)).fraction(), None);
+        assert_eq!(downloading(5, None).fraction(), None);
+        assert_eq!(InstallPhase::Verifying.describe(), "Verifying the signature…");
+        assert_eq!(InstallPhase::Verifying.fraction(), None);
+        // Edge Add-ons resolves too, so the text names no store.
+        assert_eq!(InstallPhase::Resolving.describe(), "Looking up the add-on…");
     }
 
     #[test]

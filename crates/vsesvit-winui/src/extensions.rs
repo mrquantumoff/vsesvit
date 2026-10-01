@@ -13,7 +13,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use vsesvit_core::extensions::{
-    ExtensionId, InstallJob, InstallPhase, InstallSource, InstalledExtension, Verification,
+    ExtensionId, InstallJob, InstallPhase, InstallSource, InstalledExtension,
 };
 
 use crate::bindings::CoreWebView2Profile;
@@ -73,50 +73,6 @@ pub(crate) struct Progress {
     pub text: String,
     /// `None` while the amount of work is unknown.
     pub fraction: Option<f64>,
-}
-
-pub(crate) fn describe(phase: &InstallPhase) -> Progress {
-    const MB: f64 = 1024.0 * 1024.0;
-    let text = |t: &str| Progress {
-        text: t.to_owned(),
-        fraction: None,
-    };
-    match phase {
-        InstallPhase::Resolving => text("Looking up the add-on on addons.mozilla.org"),
-        InstallPhase::Downloading { received, total } => {
-            let received_mb = *received as f64 / MB;
-            match total.filter(|t| *t > 0) {
-                Some(total) => Progress {
-                    text: format!(
-                        "Downloading: {received_mb:.1} of {:.1} MB",
-                        total as f64 / MB
-                    ),
-                    fraction: Some((*received as f64 / total as f64).clamp(0.0, 1.0)),
-                },
-                None => text(&format!("Downloading: {received_mb:.1} MB")),
-            }
-        }
-        InstallPhase::Verifying => text("Checking the signatures"),
-        InstallPhase::Unpacking => text("Unpacking"),
-        InstallPhase::ReadingManifest => text("Reading the manifest"),
-    }
-}
-
-/// How an install was verified, in words.
-pub(crate) fn verification_label(verification: &Verification) -> &'static str {
-    match verification {
-        Verification::ChromeWebStore {
-            publisher_verified: true,
-        } => "Chrome Web Store, signed by the store",
-        Verification::ChromeWebStore {
-            publisher_verified: false,
-        } => "Chrome Web Store",
-        Verification::EdgeAddons => "Edge Add-ons, signed by the store",
-        Verification::AmoHash => "addons.mozilla.org, checksum verified",
-        Verification::LocalCrx => "Local .crx, developer signature verified",
-        Verification::LocalXpi => "Local .xpi, not verified",
-        Verification::Unpacked => "Unpacked folder",
-    }
 }
 
 impl Browser {
@@ -241,7 +197,10 @@ impl Browser {
             }
             let phase = latest.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(phase) = phase {
-                progress(describe(&phase));
+                progress(Progress {
+                    text: phase.describe(),
+                    fraction: phase.fraction(),
+                });
             }
         };
         let staged = staged.map_err(|e| e.to_string())?;
@@ -602,25 +561,10 @@ async fn engine_call<T>(
 mod tests {
     use std::path::PathBuf;
 
+    use vsesvit_core::extensions::Verification;
     use vsesvit_core::extensions::manifest::Manifest;
 
     use super::*;
-
-    #[test]
-    fn download_progress_has_a_fraction_when_the_size_is_known() {
-        let p = describe(&InstallPhase::Downloading {
-            received: 5 << 20,
-            total: Some(10 << 20),
-        });
-        assert_eq!(p.text, "Downloading: 5.0 of 10.0 MB");
-        assert_eq!(p.fraction, Some(0.5));
-        let p = describe(&InstallPhase::Downloading {
-            received: 1 << 20,
-            total: None,
-        });
-        assert_eq!((p.text.as_str(), p.fraction), ("Downloading: 1.0 MB", None));
-        assert_eq!(describe(&InstallPhase::Verifying).fraction, None);
-    }
 
     #[test]
     fn deep_folders_explain_the_refusal() {
@@ -947,19 +891,5 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(ids[0], ids[1]);
-    }
-
-    #[test]
-    fn verification_labels() {
-        assert_eq!(
-            verification_label(&Verification::ChromeWebStore {
-                publisher_verified: true
-            }),
-            "Chrome Web Store, signed by the store"
-        );
-        assert_eq!(
-            verification_label(&Verification::Unpacked),
-            "Unpacked folder"
-        );
     }
 }

@@ -13,8 +13,7 @@ use vsesvit_core::extensions::{InstallSource, InstalledExtension, SourceParseErr
 
 use crate::browser::Browser;
 use crate::extensions::{
-    EnableFailure, InstallFailure, describe_verification, icon_path, progress_to,
-    unsupported_notice,
+    EnableFailure, InstallFailure, icon_path, progress_to, unsupported_notice,
 };
 use crate::window::BrowserWindow;
 
@@ -214,7 +213,7 @@ impl State {
     fn extension_row(self: &Rc<Self>, ext: &InstalledExtension, error: Option<String>) -> adw::ExpanderRow {
         let row = adw::ExpanderRow::builder()
             .title(&ext.manifest.name)
-            .subtitle(format!("{} · {}", ext.version, describe_verification(&ext.verification)))
+            .subtitle(format!("{} · {}", ext.version, ext.verification.label()))
             .use_markup(false)
             .build();
         row.add_prefix(&icon_image(icon_path(ext).as_deref()));

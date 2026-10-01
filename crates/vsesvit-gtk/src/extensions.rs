@@ -14,7 +14,6 @@ use gtk::{gio, glib};
 use vsesvit_core::extensions::manifest::Manifest;
 use vsesvit_core::extensions::{
     ExtensionId, InstallError, InstallJob, InstallPhase, InstallSource, InstalledExtension,
-    Verification,
 };
 use vsesvit_webext::{LoadError, Unsupported};
 
@@ -200,37 +199,6 @@ impl Browser {
     }
 }
 
-/// One line for the install progress row.
-pub(crate) fn describe_phase(phase: &InstallPhase) -> String {
-    match phase {
-        InstallPhase::Resolving => "Looking up the add-on…".to_owned(),
-        InstallPhase::Downloading { received, total: Some(total) } if *total > 0 => {
-            format!("Downloading… {} of {}", megabytes(*received), megabytes(*total))
-        }
-        InstallPhase::Downloading { received, .. } => format!("Downloading… {}", megabytes(*received)),
-        InstallPhase::Verifying => "Verifying the signature…".to_owned(),
-        InstallPhase::Unpacking => "Unpacking…".to_owned(),
-        InstallPhase::ReadingManifest => "Reading the manifest…".to_owned(),
-    }
-}
-
-fn megabytes(bytes: u64) -> String {
-    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
-}
-
-/// How the extensions page describes an install's provenance.
-pub(crate) fn describe_verification(verification: &Verification) -> &'static str {
-    match verification {
-        Verification::ChromeWebStore { publisher_verified: true } => "Chrome Web Store, publisher verified",
-        Verification::ChromeWebStore { publisher_verified: false } => "Chrome Web Store, developer key only",
-        Verification::EdgeAddons => "Edge Add-ons, publisher verified",
-        Verification::AmoHash => "Firefox Add-ons, hash checked",
-        Verification::LocalCrx => "Local CRX, signature verified",
-        Verification::LocalXpi => "Local XPI, not verified",
-        Verification::Unpacked => "Unpacked folder, not verified",
-    }
-}
-
 /// The notice under an extension whose manifest asks for things the Linux runtime lacks.
 pub(crate) fn unsupported_notice(manifest: &Manifest) -> Option<String> {
     let unsupported = vsesvit_webext::unsupported_features(manifest);
@@ -254,25 +222,12 @@ pub(crate) fn icon_path(ext: &InstalledExtension) -> Option<std::path::PathBuf> 
 /// A progress callback that never has to be `Send`: the pump runs it on the UI thread.
 pub(crate) fn progress_to<F: Fn(String) + 'static>(f: F) -> impl Fn(InstallPhase) + 'static {
     let f = Rc::new(f);
-    move |phase| f(describe_phase(&phase))
+    move |phase: InstallPhase| f(phase.describe())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn phases_read_as_progress() {
-        assert_eq!(
-            describe_phase(&InstallPhase::Downloading { received: 1_250_000, total: Some(9_763_168) }),
-            "Downloading… 1.2 MB of 9.8 MB"
-        );
-        assert_eq!(
-            describe_phase(&InstallPhase::Downloading { received: 500_000, total: None }),
-            "Downloading… 0.5 MB"
-        );
-        assert_eq!(describe_phase(&InstallPhase::Verifying), "Verifying the signature…");
-    }
 
     #[test]
     fn unsupported_notice_lists_what_the_runtime_lacks() {
