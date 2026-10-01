@@ -311,6 +311,53 @@ async fn ask(window: &Rc<BrowserWindow>, markup: &str) -> Result<bool> {
     Ok(dialog.ShowAsync()?.await? == ContentDialogResult::Primary)
 }
 
+/// An entry down the side of a dialog and the panel it shows.
+pub(crate) struct Category {
+    pub label: &'static str,
+    /// Segoe Fluent Icons.
+    pub glyph: &'static str,
+    /// The `x:Name` of its panel in the dialog's markup.
+    pub panel: &'static str,
+}
+
+/// Fills the list `list_name` down the side of a dialog from `entries` and shows the selected
+/// entry's panel.
+fn side_list(root: &FrameworkElement, list_name: &str, entries: &[Category]) -> Result<()> {
+    let list: ListView = xaml::find(root, list_name)?;
+    let items = list.cast::<ItemsControl>()?.Items()?;
+    let mut panels = Vec::new();
+    for entry in entries {
+        let item: UIElement = xaml::load(&format!(
+            r#"<StackPanel {{ns}} Orientation="Horizontal" Spacing="12">
+  <FontIcon Glyph="{}" FontSize="16"/>
+  <TextBlock Text="{}" VerticalAlignment="Center"/>
+</StackPanel>"#,
+            entry.glyph,
+            xaml::escape(entry.label)
+        ))?;
+        items.Append(&item)?;
+        panels.push(xaml::find::<UIElement>(root, entry.panel)?);
+    }
+    let selector = list.cast::<Selector>()?;
+    let source = selector.clone();
+    selector
+        .SelectionChanged(move |_, _| {
+            // Ctrl+click can leave nothing selected; the panel shown stays.
+            let Some(selected) = source
+                .SelectedIndex()
+                .ok()
+                .and_then(|i| usize::try_from(i).ok())
+            else {
+                return;
+            };
+            for (index, panel) in panels.iter().enumerate() {
+                let _ = xaml::set_visible(panel, index == selected);
+            }
+        })?
+        .forget();
+    selector.SetSelectedIndex(0)
+}
+
 /// Wires a button's click.
 pub(crate) fn on_click(button: &impl Interface, handler: impl Fn() + 'static) -> Result<()> {
     button

@@ -9,7 +9,7 @@ use vsesvit_core::history::HistoryEntry;
 use vsesvit_core::sync::Changed;
 use windows_core::{IInspectable, Interface, Result};
 
-use super::{Wired, on_click};
+use super::{Category, Wired, on_click, side_list};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::window::BrowserWindow;
@@ -46,10 +46,18 @@ pub(super) const MARKUP: &str = r#"
     {other_devices}
   </Grid>"#;
 
-/// The sections down the side: each one's label, Segoe Fluent Icons glyph, and panel.
-const SECTIONS: [(&str, &str, &str); 2] = [
-    ("History", "\u{E81C}", "HistoryPanel"),
-    ("Tabs from other devices", "\u{E772}", "OtherDevicesPanel"),
+/// The sections down the side.
+const SECTIONS: [Category; 2] = [
+    Category {
+        label: "History",
+        glyph: "\u{E81C}",
+        panel: "HistoryPanel",
+    },
+    Category {
+        label: "Tabs from other devices",
+        glyph: "\u{E772}",
+        panel: "OtherDevicesPanel",
+    },
 ];
 
 const SHOWN: usize = 300;
@@ -143,7 +151,7 @@ pub(super) fn wire(
             }
         })?;
     }
-    wire_sections(root)?;
+    side_list(root, "HistorySections", &SECTIONS)?;
     let devices = super::other_devices::wire(root, browser, window)?;
     let (p, d) = (Rc::downgrade(&page), Rc::downgrade(&devices));
     let synced: Rc<dyn Fn(&Changed)> = Rc::new(move |changed| {
@@ -285,41 +293,6 @@ fn row(entry: &HistoryEntry, now_ms: i64) -> Result<IInspectable> {
         when = xaml::escape(&ago(now_ms, entry.last_visit_ms)),
     ))?;
     element.cast()
-}
-
-/// Fills the section list from `SECTIONS` and shows the selected one's panel.
-fn wire_sections(root: &FrameworkElement) -> Result<()> {
-    let list: ListView = xaml::find(root, "HistorySections")?;
-    let items = list.cast::<ItemsControl>()?.Items()?;
-    let mut panels = Vec::new();
-    for (label, glyph, panel) in SECTIONS {
-        let item: UIElement = xaml::load(&format!(
-            r#"<StackPanel {{ns}} Orientation="Horizontal" Spacing="12">
-  <FontIcon Glyph="{glyph}" FontSize="16"/>
-  <TextBlock Text="{}" VerticalAlignment="Center"/>
-</StackPanel>"#,
-            xaml::escape(label)
-        ))?;
-        items.Append(&item)?;
-        panels.push(xaml::find::<UIElement>(root, panel)?);
-    }
-    let selector = list.cast::<Selector>()?;
-    let source = selector.clone();
-    selector
-        .SelectionChanged(move |_, _| {
-            let Some(selected) = source
-                .SelectedIndex()
-                .ok()
-                .and_then(|i| usize::try_from(i).ok())
-            else {
-                return;
-            };
-            for (index, panel) in panels.iter().enumerate() {
-                let _ = xaml::set_visible(panel, index == selected);
-            }
-        })?
-        .forget();
-    selector.SetSelectedIndex(0)
 }
 
 /// "just now", "5 minutes ago", "3 hours ago", "2 days ago".

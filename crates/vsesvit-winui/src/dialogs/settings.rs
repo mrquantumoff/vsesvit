@@ -10,7 +10,7 @@ use vsesvit_core::search::{SearchEngineId, classify_url};
 use vsesvit_core::sync::Changed;
 use windows_core::{Interface, Result};
 
-use super::{Wired, on_click};
+use super::{Category, Wired, on_click, side_list};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::sync::Applied;
@@ -182,15 +182,6 @@ pub(super) const MARKUP: &str = r#"
     {shortcuts}
   </Grid>"#;
 
-/// A category down the side of the dialog and the panel of settings it shows.
-pub(crate) struct Category {
-    pub label: &'static str,
-    /// Segoe Fluent Icons.
-    pub glyph: &'static str,
-    /// The `x:Name` of its `ScrollViewer` in `MARKUP`.
-    pub panel: &'static str,
-}
-
 pub(crate) const CATEGORIES: [Category; 7] = [
     Category {
         label: "General",
@@ -328,7 +319,7 @@ pub(super) fn wire(
     host: &Window,
 ) -> Result<Wired> {
     let weak = Rc::downgrade(browser);
-    wire_categories(root)?;
+    side_list(root, "SettingsCategories", &CATEGORIES)?;
     wire_downloads(root, browser, super::window_id(host)?)?;
     wire_clear_browsing_data(root, browser)?;
     super::site_permissions::wire(root, browser)?;
@@ -464,43 +455,6 @@ pub(super) fn wire(
             }
         })),
     })
-}
-
-/// Fills the category list from `CATEGORIES` and shows the selected one's panel.
-fn wire_categories(root: &FrameworkElement) -> Result<()> {
-    let list: ListView = xaml::find(root, "SettingsCategories")?;
-    let items = list.cast::<ItemsControl>()?.Items()?;
-    let mut panels = Vec::new();
-    for category in &CATEGORIES {
-        let item: UIElement = xaml::load(&format!(
-            r#"<StackPanel {{ns}} Orientation="Horizontal" Spacing="12">
-  <FontIcon Glyph="{}" FontSize="16"/>
-  <TextBlock Text="{}" VerticalAlignment="Center"/>
-</StackPanel>"#,
-            category.glyph,
-            xaml::escape(category.label)
-        ))?;
-        items.Append(&item)?;
-        panels.push(xaml::find::<UIElement>(root, category.panel)?);
-    }
-    let selector = list.cast::<Selector>()?;
-    let source = selector.clone();
-    selector
-        .SelectionChanged(move |_, _| {
-            // Ctrl+click can leave nothing selected; the panel shown stays.
-            let Some(selected) = source
-                .SelectedIndex()
-                .ok()
-                .and_then(|i| usize::try_from(i).ok())
-            else {
-                return;
-            };
-            for (index, panel) in panels.iter().enumerate() {
-                let _ = xaml::set_visible(panel, index == selected);
-            }
-        })?
-        .forget();
-    selector.SetSelectedIndex(0)
 }
 
 /// Sets the switch `name` to `on`, and calls `toggled` when the user flips it.
