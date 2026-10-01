@@ -18,7 +18,7 @@ use crate::extension::{Extension, ViewKind};
 use crate::lifecycle::{self, InstallEvent, LoadReason};
 use crate::protocol::{Sender, StorageArea};
 use crate::tabs::{TabHost, TabId, TabInfo};
-use crate::{filters, scheme, views};
+use crate::{filters, patterns, scheme, views};
 
 /// One toolbar action, for the shell to render.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,6 +171,20 @@ impl Runtime {
         let ucm = state.ucm.clone();
         self.0.tabs.borrow_mut().insert(tab, state);
         ucm
+    }
+
+    /// The shell's navigation policy for every tab: refuse a `NavigationAction` or
+    /// `NewWindowAction` to `target` unless this is true. `source` is the deciding view's
+    /// URL, or for a new window's first load its opener's. As in Chrome, a web page reaches
+    /// an extension's pages only where `web_accessible_resources` lets it; the extension
+    /// itself and the browser reach them all, and an unloaded extension's URL is left to
+    /// fail on its own.
+    pub fn may_navigate(&self, source: &str, target: &str) -> bool {
+        if patterns::may_enter(source, target) {
+            return true;
+        }
+        let Some((host, path)) = scheme::split_uri(target) else { return true };
+        self.0.extension_by_host(&host).is_none_or(|ext| ext.web_accessible(&path, source))
     }
 
     /// The shell reports a navigation or title change; extensions see `tabs.onUpdated`

@@ -26,6 +26,11 @@
 //!     .user_content_manager(&runtime.user_content_manager(tab_id))
 //!     .build();
 //!
+//! // Its navigation policy refuses a NavigationAction or NewWindowAction to a target that
+//! // `may_navigate` refuses from the view's URL (the opener's for a new window's first
+//! // load), so a web page cannot open an extension page that is not web-accessible.
+//! if !runtime.may_navigate(&source, &target) { decision.ignore(); }
+//!
 //! // Lifecycle: load/unload installed extensions (content scripts apply to loads that
 //! // start afterwards, as in Chrome). `load` returns after the synchronous part; DNR
 //! // rulesets compile in the background, `pending_filters()` counts them and
@@ -59,7 +64,8 @@
 //! What extensions get:
 //!
 //! - Files served from `chrome-extension://<id>/<path>` (secure, CORS-enabled scheme).
-//!   Documents outside the extension origin may load only `web_accessible_resources`.
+//!   Documents outside the extension origin may load only `web_accessible_resources`,
+//!   and navigate only to those (with the shell's navigation policy, see above).
 //! - A background context: `background.scripts`, `background.page`, and MV3
 //!   `background.service_worker` (run as a generated page; `type: module` honoured).
 //! - Content scripts with `matches`, `exclude_matches`, `run_at`, `all_frames` and `css`,
@@ -91,8 +97,12 @@
 //! in subframes); no `runtime.connect` ports; no `webRequest`; one runtime per process;
 //! `about:blank` frames inside extension pages get no API; in a background or popup view,
 //! an `http(s)` iframe loads only for an extension without host permissions (WebKitGTK
-//! applies the view's CORS allowlist to every frame). Runtime state (compiled filters,
-//! install markers) lives in `<profile>/webext/`.
+//! applies the view's CORS allowlist to every frame); WebKitGTK does not say which frame
+//! requests a file, so a request without a `Referer` is judged by its view's top document:
+//! an extension frame inside a web page loads only web-accessible files (extension
+//! documents send no `Referer`), and a frame whose referrer policy sends none passes for
+//! its top document. Runtime state (compiled filters, install markers) lives in
+//! `<profile>/webext/`.
 
 pub mod dnr;
 pub mod i18n;

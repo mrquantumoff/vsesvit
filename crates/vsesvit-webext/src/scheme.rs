@@ -9,6 +9,7 @@ use webkit::{gio, glib, soup};
 
 use crate::extension::{Extension, GENERATED_BACKGROUND, SCHEME};
 use crate::mime;
+use crate::patterns;
 use crate::runtime::Inner;
 
 pub(crate) fn register(inner: &Rc<Inner>) {
@@ -32,11 +33,11 @@ fn serve(inner: &Inner, request: &webkit::URISchemeRequest) {
         return respond(request, 404, "Not Found", b"", "text/plain", false);
     };
     let requester = request.web_view();
-    let page_url = requester.as_ref().and_then(|v| v.uri()).map(String::from).unwrap_or_default();
-    let same_origin = page_url.starts_with(&ext.base_url)
-        || page_url == ext.base_url.trim_end_matches('/')
-        || requester.as_ref().is_some_and(|v| ext.owns_view(v));
-    if !same_origin && !ext.web_accessible(&path, &page_url) {
+    let view_url = requester.as_ref().and_then(|v| v.uri()).map(String::from).unwrap_or_default();
+    let referer = request.http_headers().and_then(|h| h.one("Referer")).map(String::from);
+    let own_view = requester.as_ref().is_some_and(|v| ext.owns_view(v));
+    let (page_url, same_origin) = patterns::requesting_document(&ext.base_url, &view_url, referer.as_deref(), own_view);
+    if !same_origin && !ext.web_accessible(&path, page_url) {
         log::debug!("{}: {} refused to {}", ext.id.as_str(), path, page_url);
         return respond(request, 403, "Forbidden", b"", "text/plain", false);
     }

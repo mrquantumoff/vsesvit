@@ -106,6 +106,38 @@ pub fn navigation_url(base_url: &str, caller: Option<&str>, raw: &str) -> Result
     }
 }
 
+/// The document a request for a file of the extension at `base_url`
+/// (`chrome-extension://<host>/`) comes from, and whether that document is the
+/// extension's own. WebKit names only the requesting view, whose URL (`view_url`) is its
+/// top document, so a web page framed into an extension page would pass for the
+/// extension, and a frame on a site would be judged as the site. A `Referer` names the
+/// requesting frame and decides when there is one. WebKit sends one only from http(s)
+/// documents, never from the extension's, so without one (an extension document, a load
+/// the browser started, or a referrer policy that sends none) the view decides: its URL,
+/// or `own_view` for the extension's background and popup views.
+pub fn requesting_document<'a>(base_url: &str, view_url: &'a str, referer: Option<&'a str>, own_view: bool) -> (&'a str, bool) {
+    let own = |url: &str| url.starts_with(base_url) || url == base_url.trim_end_matches('/');
+    match referer.filter(|r| !r.is_empty()) {
+        Some(referer) => (referer, own(referer)),
+        None => (view_url, own(view_url) || own_view),
+    }
+}
+
+/// May the document at `source` navigate a tab, frame or new window to `target`, without
+/// `target` being web-accessible to it? Only when `target` is no extension page, is a page of
+/// the extension `source` belongs to, or is `source` itself: a load the browser starts
+/// (the address bar, `tabs.create`, a restored session, a reload) has already made the
+/// view's URL its target when WebKit asks for the navigation policy. Chrome refuses the
+/// rest, so a web page cannot drive an extension page through its URL, whatever Referer it
+/// sends.
+pub fn may_enter(source: &str, target: &str) -> bool {
+    let Ok(target) = url::Url::parse(target) else { return true };
+    if target.scheme() != "chrome-extension" {
+        return true;
+    }
+    url::Url::parse(source).is_ok_and(|source| source == target || (source.scheme() == target.scheme() && source.host_str() == target.host_str()))
+}
+
 /// May a document at `page_url` load `path` (no leading slash) from an extension with
 /// these `web_accessible_resources` entries? Core gives MV2's bare resource list
 /// `<all_urls>`, so an entry with no `matches` (an MV3 entry naming only `extension_ids`)
@@ -160,6 +192,39 @@ mod tests {
         assert!(web_accessible(&legacy, "public.js", "http://127.0.0.1:8080/"));
         assert!(!web_accessible(&legacy, "public.js", "chrome-extension://abc/"));
         assert!(!web_accessible(&[], "public.js", "https://anything.test/"));
+    }
+
+    #[test]
+    fn the_referer_names_the_requesting_document() {
+        let base = "chrome-extension://abc/";
+        // A web page framed into an extension page, or one that navigates a tab there.
+        assert_eq!(requesting_document(base, "chrome-extension://abc/options.html", Some("https://site.test/"), false), ("https://site.test/", false));
+        assert_eq!(requesting_document(base, "chrome-extension://abc/popup.html", Some("https://ad.test/frame"), true), ("https://ad.test/frame", false));
+        // A frame on a site is judged as the frame, not the site.
+        assert_eq!(requesting_document(base, "https://site.test/", Some("https://ad.test/"), false), ("https://ad.test/", false));
+        // Without a Referer, the view decides.
+        assert_eq!(requesting_document(base, "chrome-extension://abc/options.html", None, false), ("chrome-extension://abc/options.html", true));
+        assert_eq!(requesting_document(base, "chrome-extension://abc", Some(""), false), ("chrome-extension://abc", true));
+        assert_eq!(requesting_document(base, "", None, true), ("", true));
+        assert_eq!(requesting_document(base, "https://site.test/", None, false), ("https://site.test/", false));
+    }
+
+    #[test]
+    fn web_pages_cannot_enter_extension_pages() {
+        let options = "chrome-extension://abc/options.html?action=x#y";
+        assert!(!may_enter("https://evil.test/", options));
+        assert!(!may_enter("chrome-extension://other/x.html", options));
+        // A new window whose opener the shell does not know.
+        assert!(!may_enter("", options));
+        assert!(!may_enter("about:blank", options));
+        // The extension's own documents, and loads the browser starts (the view already
+        // shows the target).
+        assert!(may_enter("chrome-extension://abc/popup.html", options));
+        assert!(may_enter("chrome-extension://abc", options));
+        assert!(may_enter(options, options));
+        // Anything else is not this gate's business.
+        assert!(may_enter("https://a.test/", "https://b.test/"));
+        assert!(may_enter("https://a.test/", "data:text/html,x"));
     }
 
     #[test]

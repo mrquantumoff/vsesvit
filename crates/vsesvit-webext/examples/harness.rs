@@ -23,7 +23,8 @@
 //!    `activeTab` grants it and for one still showing such a page while it loads another;
 //!    `tabs.query` hides that tab's URL; `action.setPopup(getURL(..))` and `setIcon('/..')`
 //!    resolve; `tabs.create` resolves relative URLs and `tabs.update` refuses
-//!    `javascript:` and `file:`;
+//!    `javascript:` and `file:`; a web page cannot navigate a tab to the options page, with
+//!    or without a Referer, nor get it by a reload, while going back to it still works;
 //! 8. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!    and an uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -402,6 +403,39 @@ mod linux {
             let created = self.host.created.borrow().last().cloned().unwrap_or_default();
             let refused = navigation.as_ref().and_then(Value::as_array).is_some_and(|r| r.len() == 2 && r.iter().all(|m| m.as_str().is_some_and(|m| m != "navigated")));
             self.note("tabs_url_resolved_and_gated", created.starts_with("chrome-extension://") && created.ends_with("/data.json") && refused, format!("created {created:?}; javascript:/file: updates = {navigation:?}"));
+
+            // A web page cannot drive the options page (not web-accessible) through its URL.
+            let lure = self.host.create_tab(&self.url("/page2.html"), false).expect("lure tab");
+            let lure_view = self.host.web_view(lure).expect("lure tab view");
+            wait_until(|| lure_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
+            let target = format!("chrome-extension://{url_host}/options.html?from=web");
+            self.eval(&lure_view, &format!("location.href = {}; 'navigating'", Value::String(target.clone())), None).await;
+            glib::timeout_future(Duration::from_millis(1500)).await;
+            let ran = self.eval(&lure_view, "String(window.__twinOptions && window.__twinOptions.id)", None).await;
+            self.note("web_page_cannot_open_extension_page", ran.is_some() && ran.as_deref() != Some(TWIN_ID), format!("options.js in tab {} after a web page navigated it to {target} = {ran:?}", lure.0));
+            // Nor by sending no Referer, which the page's own referrer policy decides, and not
+            // when the user then reloads the tab, which the browser starts.
+            let quiet = self.host.create_tab(&self.url("/page2.html"), false).expect("no-referrer lure tab");
+            let quiet_view = self.host.web_view(quiet).expect("no-referrer lure tab view");
+            wait_until(|| quiet_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
+            let lure_script = format!("document.head.insertAdjacentHTML('beforeend', '<meta name=\"referrer\" content=\"no-referrer\">'); location.href = {}; 'navigating'", Value::String(target.clone()));
+            self.eval(&quiet_view, &lure_script, None).await;
+            glib::timeout_future(Duration::from_millis(1500)).await;
+            quiet_view.reload();
+            glib::timeout_future(Duration::from_millis(1500)).await;
+            let ran = self.eval(&quiet_view, "String(window.__twinOptions && window.__twinOptions.id)", None).await;
+            self.note("web_page_without_referrer_cannot_open_extension_page", ran.is_some() && ran.as_deref() != Some(TWIN_ID), format!("options.js in tab {} after a no-referrer page navigated it to {target} and it reloaded = {ran:?}", quiet.0));
+            // The browser's own navigations still reach the extension's pages: back to the
+            // options page from a site it linked to.
+            let back = self.host.create_tab(&format!("chrome-extension://{url_host}/options.html"), false).expect("options tab");
+            let back_view = self.host.web_view(back).expect("options tab view");
+            let options_title = format!("options:{TWIN_ID}");
+            wait_until(|| back_view.title().as_deref() == Some(options_title.as_str()), TIMEOUT).await;
+            self.eval(&back_view, &format!("location.href = {}; 'leaving'", Value::String(self.url("/page2.html"))), None).await;
+            wait_until(|| back_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
+            back_view.go_back();
+            let returned = wait_until(|| back_view.title().as_deref() == Some(options_title.as_str()), TIMEOUT).await;
+            self.note("browser_navigates_back_to_extension_page", returned, format!("tab {} title after going back = {:?}", back.0, back_view.title()));
         }
 
         async fn lifecycle(&self) {
@@ -589,6 +623,20 @@ mod linux {
             self.next_id.set(id.0 + 1);
             let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id)).build();
             self.container.append(&view);
+            // The navigation gate every shell installs (lib.rs).
+            view.connect_decide_policy(move |view, decision, kind| {
+                if !matches!(kind, webkit::PolicyDecisionType::NavigationAction | webkit::PolicyDecisionType::NewWindowAction) {
+                    return false;
+                }
+                let target = decision.downcast_ref::<webkit::NavigationPolicyDecision>().and_then(|d| d.navigation_action()).and_then(|a| a.request()).and_then(|r| r.uri());
+                let source = view.uri().map(String::from).unwrap_or_default();
+                if target.is_none_or(|target| runtime.may_navigate(&source, &target)) {
+                    return false;
+                }
+                println!("[harness] host: refused a navigation from {source}");
+                decision.ignore();
+                true
+            });
             let committed = Rc::new(RefCell::new(String::new()));
             view.connect_load_changed({
                 let committed = committed.clone();
