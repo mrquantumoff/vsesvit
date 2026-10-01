@@ -1,6 +1,7 @@
 //! Settings' Site permissions page: every stored site setting, grouped by site, each with its
 //! Allow / Block choice and a button that removes it (back to Ask).
 
+use std::cell::Cell;
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::permissions::{Origin, Permission, Setting, SiteSetting};
@@ -45,6 +46,21 @@ fn choices(permission: Permission) -> Vec<Setting> {
         vec![Setting::Allow, Setting::Block]
     } else {
         vec![Setting::Block]
+    }
+}
+
+/// The setting a combo box last stored. A combo box raises SelectionChanged for its initial
+/// selection too, so only a pick that differs from this is the user's.
+struct Shown(Cell<Setting>);
+
+impl Shown {
+    /// `picked`, when it differs from the setting stored.
+    fn change(&self, picked: Setting) -> Option<Setting> {
+        (picked != self.0.get()).then_some(picked)
+    }
+
+    fn applied(&self, setting: Setting) {
+        self.0.set(setting);
     }
 }
 
@@ -112,6 +128,7 @@ fn fill(page: &Rc<Page>) -> Result<()> {
             let selector = xaml::find::<ComboBox>(&site, &format!("SiteChoice{index}{key}"))?
                 .cast::<Selector>()?;
             let (source, b, o) = (selector.clone(), page.browser.clone(), origin.clone());
+            let shown = Shown(Cell::new(setting));
             selector
                 .SelectionChanged(move |_, _| {
                     let picked = source
@@ -119,10 +136,11 @@ fn fill(page: &Rc<Page>) -> Result<()> {
                         .ok()
                         .and_then(|i| usize::try_from(i).ok())
                         .and_then(|i| options.get(i).copied());
-                    // A combo box raises this for its initial selection too.
-                    if let (Some(picked), Some(b)) = (picked.filter(|p| *p != setting), b.upgrade())
+                    if let (Some(picked), Some(b)) =
+                        (picked.and_then(|p| shown.change(p)), b.upgrade())
+                        && set(&b, &o, permission, Some(picked))
                     {
-                        set(&b, &o, permission, Some(picked));
+                        shown.applied(picked);
                     }
                 })?
                 .forget();
@@ -147,19 +165,26 @@ fn fill(page: &Rc<Page>) -> Result<()> {
     Ok(())
 }
 
-/// Stores `setting`; a block, or a removal, ends what the site captures under it.
-fn set(browser: &Rc<Browser>, origin: &Origin, permission: Permission, setting: Option<Setting>) {
+/// Stores `setting`, saying whether it could; a block, or a removal, ends what the site captures
+/// under it.
+fn set(
+    browser: &Rc<Browser>,
+    origin: &Origin,
+    permission: Permission,
+    setting: Option<Setting>,
+) -> bool {
     if let Err(e) = browser.core(|p| p.site_permissions().set(origin, permission, setting)) {
         log::warn!(
             "site permission {permission:?} for {}: {e}",
             origin.as_str()
         );
-        return;
+        return false;
     }
     if setting.is_none() {
         permissions::stop_captures(browser, origin, &[permission]);
     }
     permissions::settings_changed(browser);
+    true
 }
 
 #[cfg(test)]
@@ -194,5 +219,16 @@ mod tests {
             ]
         );
         assert_eq!(choices(Permission::ScreenShare), [Setting::Block]);
+    }
+
+    #[test]
+    fn switching_back_to_the_filled_setting_is_stored() {
+        let shown = Shown(Cell::new(Setting::Allow));
+        // The initial selection.
+        assert_eq!(shown.change(Setting::Allow), None);
+        assert_eq!(shown.change(Setting::Block), Some(Setting::Block));
+        shown.applied(Setting::Block);
+        assert_eq!(shown.change(Setting::Block), None);
+        assert_eq!(shown.change(Setting::Allow), Some(Setting::Allow));
     }
 }
