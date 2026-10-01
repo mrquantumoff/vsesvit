@@ -566,9 +566,9 @@ impl Bar {
     /// item container style, which only reaches entries the list has laid out: `fit` measures
     /// entries it keeps collapsed too.
     fn entry(&self, item: &BarItem) -> Result<ListViewItem> {
-        let (title, glyph, tip) = match item {
-            BarItem::Link { title, url, .. } => (title, "&#xE774;", format!("{title}\n{url}")),
-            BarItem::Folder { title, .. } => (title, "&#xE8B7;", title.clone()),
+        let (title, glyph) = match item {
+            BarItem::Link { title, .. } => (title, "&#xE774;"),
+            BarItem::Folder { title, .. } => (title, "&#xE8B7;"),
         };
         let element: ListViewItem = xaml::load(&format!(
             r#"<ListViewItem {{ns}} MinWidth="0" MinHeight="24" Height="24" Padding="6,0" Margin="0,0,1,0"
@@ -582,7 +582,7 @@ impl Bar {
                               VerticalAlignment="Center"/>
                  </StackPanel>
                </ListViewItem>"#,
-            tip = xaml::escape(&tip),
+            tip = tip_markup(item),
             name = xaml::escape(title),
         ))?;
         let target = element.cast::<UIElement>()?;
@@ -726,6 +726,17 @@ fn same_but_icons(old: &BarItem, new: &BarItem) -> bool {
                     .all(|(old, new)| same_but_icons(old, new))
         }
         _ => false,
+    }
+}
+
+/// The tooltip of a bar entry, as escaped attribute text: a link's title over its URL. The
+/// line break is a character reference, as XML reads a literal one in an attribute as a space.
+fn tip_markup(item: &BarItem) -> String {
+    match item {
+        BarItem::Link { title, url, .. } => {
+            format!("{}&#10;{}", xaml::escape(title), xaml::escape(url))
+        }
+        BarItem::Folder { title, .. } => xaml::escape(title),
     }
 }
 
@@ -1015,6 +1026,24 @@ mod tests {
                 "Show bookmarks bar",
                 "Bookmark manager"
             ]
+        );
+    }
+
+    #[test]
+    fn link_tooltip_keeps_line_break_between_title_and_url() {
+        let link = |title: &str| BarItem::Link {
+            id: BookmarkId::MOBILE,
+            title: title.into(),
+            url: "https://blog.rust-lang.org/".into(),
+            icon: None,
+        };
+        assert_eq!(
+            tip_markup(&link("Rust Blog")),
+            "Rust Blog&#10;https://blog.rust-lang.org/"
+        );
+        assert_eq!(
+            tip_markup(&link("a<b")),
+            "a&lt;b&#10;https://blog.rust-lang.org/"
         );
     }
 
