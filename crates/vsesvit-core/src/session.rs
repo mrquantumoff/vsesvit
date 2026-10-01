@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::crdt::{DeviceId, Lattice, Lww, Seq, Stamp};
-use crate::db::{seq_col, stamp_col};
+use crate::db::{seq_col, stamp_col, uuid_col};
 use crate::sync::{Kind, SyncTable, changed_rows};
 use crate::{Error, Profile, Url};
 
@@ -195,11 +195,7 @@ impl Session<'_> {
 
 fn load_restore_state(conn: &rusqlite::Connection) -> Result<HashMap<TabId, Vec<u8>>, Error> {
     let mut stmt = conn.prepare_cached("SELECT tab_id, state FROM tab_restore_state")?;
-    let rows = stmt.query_map([], |row| {
-        let id: Vec<u8> = row.get(0)?;
-        let id = Uuid::from_slice(&id).map_err(|_| crate::db::bad_column(0, "tab id"))?;
-        Ok((TabId(id), row.get::<_, Vec<u8>>(1)?))
-    })?;
+    let rows = stmt.query_map([], |row| Ok((TabId(uuid_col(row, 0)?), row.get::<_, Vec<u8>>(1)?)))?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
@@ -275,5 +271,16 @@ mod tests {
         assert_ne!(a, c);
         assert!(serde_json::to_string(&b).unwrap().contains("\"title\":\"t\""));
         assert!(!serde_json::to_string(&b).unwrap().contains("restore_state"));
+    }
+
+    #[test]
+    fn restore_state_rows_need_a_whole_tab_id() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE tab_restore_state (tab_id BLOB PRIMARY KEY, state BLOB NOT NULL)", []).unwrap();
+        let id = TabId(Uuid::from_u128(7));
+        conn.execute("INSERT INTO tab_restore_state VALUES (?1, ?2)", params![id.0.as_bytes().to_vec(), vec![9u8]]).unwrap();
+        assert_eq!(load_restore_state(&conn).unwrap(), HashMap::from([(id, vec![9u8])]));
+        conn.execute("INSERT INTO tab_restore_state VALUES (?1, ?2)", params![vec![1u8, 2, 3], vec![9u8]]).unwrap();
+        assert!(load_restore_state(&conn).is_err());
     }
 }
