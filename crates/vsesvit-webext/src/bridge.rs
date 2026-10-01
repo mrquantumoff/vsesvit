@@ -7,7 +7,7 @@
 //! handler is also visible to whatever else shares the view (a web page in the same
 //! tab, a foreign iframe), which is why page calls must carry `Extension::page_token`.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -610,17 +610,14 @@ fn schedule_alarm(inner: &Rc<Inner>, ext: &Rc<Extension>, name: String, delay_ms
     let weak_inner = Rc::downgrade(inner);
     let weak_ext = Rc::downgrade(ext);
     let delay = Duration::from_millis(delay_ms.round().max(0.0) as u64);
-    let fired = Cell::new(false);
     let alarm_name = name.clone();
-    let source = glib::timeout_add_local(delay, move || {
-        // A one-shot timeout: the alarm is re-armed explicitly so a changed period applies.
-        if fired.replace(true) {
-            return glib::ControlFlow::Break;
-        }
-        let (Some(inner), Some(ext)) = (weak_inner.upgrade(), weak_ext.upgrade()) else { return glib::ControlFlow::Break };
+    // A periodic alarm is re-armed with a new one-shot source each time, so a changed
+    // period applies.
+    let source = glib::timeout_add_local_once(delay, move || {
+        let (Some(inner), Some(ext)) = (weak_inner.upgrade(), weak_ext.upgrade()) else { return };
         let next = {
             let mut alarms = ext.alarms.borrow_mut();
-            let Some(alarm) = alarms.get_mut(&alarm_name) else { return glib::ControlFlow::Break };
+            let Some(alarm) = alarms.get_mut(&alarm_name) else { return };
             alarm.source = None;
             let payload = Extension::alarm_json(&alarm_name, alarm);
             match alarm.period_minutes {
@@ -636,9 +633,8 @@ fn schedule_alarm(inner: &Rc<Inner>, ext: &Rc<Extension>, name: String, delay_ms
         };
         emit_to_pages(&inner, &ext, "alarms.onAlarm", &[next.0]);
         if let Some(period_ms) = next.1 {
-            schedule_alarm(&inner, &ext, alarm_name.clone(), period_ms);
+            schedule_alarm(&inner, &ext, alarm_name, period_ms);
         }
-        glib::ControlFlow::Break
     });
     if let Some(alarm) = ext.alarms.borrow_mut().get_mut(&name) {
         alarm.source = Some(source);
