@@ -10,13 +10,19 @@ use crate::bindings::*;
 
 pub(crate) const NAMESPACES: &str = r#"xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml""#;
 
-/// Parses markup whose root element carries `{ns}` in place of the XAML namespaces. Every
-/// `{acrylic_menu}` becomes [`ACRYLIC_MENU`].
+/// Parses markup whose root element carries `{ns}` in place of the XAML namespaces.
 pub(crate) fn load<T: Interface>(markup: &str) -> Result<T> {
-    let markup = markup
-        .replacen("{ns}", NAMESPACES, 1)
-        .replace("{acrylic_menu}", ACRYLIC_MENU);
-    XamlReader::Load(&markup)?.cast()
+    XamlReader::Load(&expand(markup))?.cast()
+}
+
+fn expand(markup: &str) -> String {
+    markup.replacen("{ns}", NAMESPACES, 1)
+}
+
+/// Replaces every `{acrylic_menu}` in a fixed template with [`ACRYLIC_MENU`]. Only for markup
+/// that holds no interpolated text yet, which could carry the placeholder too.
+pub(crate) fn with_acrylic_menu(markup: &str) -> String {
+    markup.replace("{acrylic_menu}", ACRYLIC_MENU)
 }
 
 /// Children of a `MenuFlyout` that give it its own acrylic backdrop, as Windows 11 menus have,
@@ -32,15 +38,17 @@ const ACRYLIC_MENU: &str = r#"
 /// An empty menu with the acrylic backdrop, opening below its anchor. It may extend past the
 /// window (Windows keeps it on the screen), so a long menu is never cut at the window's edge.
 pub(crate) fn acrylic_menu() -> Result<MenuFlyout> {
-    load(
+    load(&with_acrylic_menu(
         r#"<MenuFlyout {ns} Placement="BottomEdgeAlignedLeft" ShouldConstrainToRootBounds="False">
              {acrylic_menu}</MenuFlyout>"#,
-    )
+    ))
 }
 
 /// An empty context menu with the acrylic backdrop, which opens where it was asked for.
 pub(crate) fn context_menu() -> Result<MenuFlyout> {
-    load(r#"<MenuFlyout {ns} ShouldConstrainToRootBounds="False">{acrylic_menu}</MenuFlyout>"#)
+    load(&with_acrylic_menu(
+        r#"<MenuFlyout {ns} ShouldConstrainToRootBounds="False">{acrylic_menu}</MenuFlyout>"#,
+    ))
 }
 
 /// Decodes a PNG into an image source.
@@ -261,7 +269,7 @@ pub(crate) fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::escape;
+    use super::{escape, expand, with_acrylic_menu};
 
     #[test]
     fn escapes_markup() {
@@ -285,6 +293,20 @@ mod tests {
         assert_eq!(
             escape("\u{FDD0}\u{1FFFF}\u{1F600}"),
             "\u{FDD0}\u{1FFFF}\u{1F600}"
+        );
+    }
+
+    #[test]
+    fn user_text_cannot_expand_the_acrylic_menu() {
+        let markup = expand(&format!(
+            r#"<TextBlock {{ns}} Text="{}"/>"#,
+            escape("{acrylic_menu}")
+        ));
+        assert!(!markup.contains("SystemBackdrop"), "{markup}");
+        assert!(markup.contains("{acrylic_menu}"));
+        assert!(
+            with_acrylic_menu("<MenuFlyout {ns}>{acrylic_menu}</MenuFlyout>")
+                .contains("DesktopAcrylicBackdrop")
         );
     }
 }

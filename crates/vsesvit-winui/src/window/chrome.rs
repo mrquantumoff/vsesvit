@@ -400,7 +400,7 @@ pub(super) struct Chrome {
 
 impl Chrome {
     pub(super) fn load() -> Result<Self> {
-        let root: FrameworkElement = xaml::load(WINDOW_XAML)?;
+        let root: FrameworkElement = xaml::load(&xaml::with_acrylic_menu(WINDOW_XAML))?;
         Ok(Self {
             tab_view: xaml::find(&root, "Tabs")?,
             drag_region: xaml::find(&root, "DragRegion")?,
