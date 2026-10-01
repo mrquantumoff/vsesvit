@@ -91,114 +91,62 @@ impl Call {
     }
 }
 
-/// Every API the runtime implements on the Rust side. Anything else (`i18n`, `getURL`,
-/// `permissions.contains`) is answered inside the shim from the embedded manifest.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Method {
-    RuntimeSendMessage,
-    RuntimeOpenOptionsPage,
-    RuntimeReload,
-    StorageGet,
-    StorageSet,
-    StorageRemove,
-    StorageClear,
-    StorageGetBytesInUse,
-    TabsQuery,
-    TabsGet,
-    TabsGetCurrent,
-    TabsCreate,
-    TabsUpdate,
-    TabsRemove,
-    TabsReload,
-    TabsSendMessage,
-    ScriptingExecuteScript,
-    ScriptingInsertCss,
-    ActionSetBadgeText,
-    ActionGetBadgeText,
-    ActionSetTitle,
-    ActionGetTitle,
-    ActionSetIcon,
-    ActionSetPopup,
-    ActionGetPopup,
-    ActionNoop,
-    AlarmsCreate,
-    AlarmsGet,
-    AlarmsGetAll,
-    AlarmsClear,
-    AlarmsClearAll,
+macro_rules! methods {
+    ($($variant:ident = $name:literal,)*) => {
+        /// Every API the runtime implements on the Rust side. Anything else (`i18n`, `getURL`,
+        /// `permissions.contains`) is answered inside the shim from the embedded manifest.
+        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        pub enum Method {
+            $($variant,)*
+        }
+
+        impl Method {
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(Method::$variant => $name,)*
+                }
+            }
+
+            const ALL: &'static [Method] = &[$(Method::$variant,)*];
+        }
+    };
+}
+
+methods! {
+    RuntimeSendMessage = "runtime.sendMessage",
+    RuntimeOpenOptionsPage = "runtime.openOptionsPage",
+    RuntimeReload = "runtime.reload",
+    StorageGet = "storage.get",
+    StorageSet = "storage.set",
+    StorageRemove = "storage.remove",
+    StorageClear = "storage.clear",
+    StorageGetBytesInUse = "storage.getBytesInUse",
+    TabsQuery = "tabs.query",
+    TabsGet = "tabs.get",
+    TabsGetCurrent = "tabs.getCurrent",
+    TabsCreate = "tabs.create",
+    TabsUpdate = "tabs.update",
+    TabsRemove = "tabs.remove",
+    TabsReload = "tabs.reload",
+    TabsSendMessage = "tabs.sendMessage",
+    ScriptingExecuteScript = "scripting.executeScript",
+    ScriptingInsertCss = "scripting.insertCSS",
+    ActionSetBadgeText = "action.setBadgeText",
+    ActionGetBadgeText = "action.getBadgeText",
+    ActionSetTitle = "action.setTitle",
+    ActionGetTitle = "action.getTitle",
+    ActionSetIcon = "action.setIcon",
+    ActionSetPopup = "action.setPopup",
+    ActionGetPopup = "action.getPopup",
+    ActionNoop = "action.noop",
+    AlarmsCreate = "alarms.create",
+    AlarmsGet = "alarms.get",
+    AlarmsGetAll = "alarms.getAll",
+    AlarmsClear = "alarms.clear",
+    AlarmsClearAll = "alarms.clearAll",
 }
 
 impl Method {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Method::RuntimeSendMessage => "runtime.sendMessage",
-            Method::RuntimeOpenOptionsPage => "runtime.openOptionsPage",
-            Method::RuntimeReload => "runtime.reload",
-            Method::StorageGet => "storage.get",
-            Method::StorageSet => "storage.set",
-            Method::StorageRemove => "storage.remove",
-            Method::StorageClear => "storage.clear",
-            Method::StorageGetBytesInUse => "storage.getBytesInUse",
-            Method::TabsQuery => "tabs.query",
-            Method::TabsGet => "tabs.get",
-            Method::TabsGetCurrent => "tabs.getCurrent",
-            Method::TabsCreate => "tabs.create",
-            Method::TabsUpdate => "tabs.update",
-            Method::TabsRemove => "tabs.remove",
-            Method::TabsReload => "tabs.reload",
-            Method::TabsSendMessage => "tabs.sendMessage",
-            Method::ScriptingExecuteScript => "scripting.executeScript",
-            Method::ScriptingInsertCss => "scripting.insertCSS",
-            Method::ActionSetBadgeText => "action.setBadgeText",
-            Method::ActionGetBadgeText => "action.getBadgeText",
-            Method::ActionSetTitle => "action.setTitle",
-            Method::ActionGetTitle => "action.getTitle",
-            Method::ActionSetIcon => "action.setIcon",
-            Method::ActionSetPopup => "action.setPopup",
-            Method::ActionGetPopup => "action.getPopup",
-            Method::ActionNoop => "action.noop",
-            Method::AlarmsCreate => "alarms.create",
-            Method::AlarmsGet => "alarms.get",
-            Method::AlarmsGetAll => "alarms.getAll",
-            Method::AlarmsClear => "alarms.clear",
-            Method::AlarmsClearAll => "alarms.clearAll",
-        }
-    }
-
-    const ALL: [Method; 31] = [
-        Method::RuntimeSendMessage,
-        Method::RuntimeOpenOptionsPage,
-        Method::RuntimeReload,
-        Method::StorageGet,
-        Method::StorageSet,
-        Method::StorageRemove,
-        Method::StorageClear,
-        Method::StorageGetBytesInUse,
-        Method::TabsQuery,
-        Method::TabsGet,
-        Method::TabsGetCurrent,
-        Method::TabsCreate,
-        Method::TabsUpdate,
-        Method::TabsRemove,
-        Method::TabsReload,
-        Method::TabsSendMessage,
-        Method::ScriptingExecuteScript,
-        Method::ScriptingInsertCss,
-        Method::ActionSetBadgeText,
-        Method::ActionGetBadgeText,
-        Method::ActionSetTitle,
-        Method::ActionGetTitle,
-        Method::ActionSetIcon,
-        Method::ActionSetPopup,
-        Method::ActionGetPopup,
-        Method::ActionNoop,
-        Method::AlarmsCreate,
-        Method::AlarmsGet,
-        Method::AlarmsGetAll,
-        Method::AlarmsClear,
-        Method::AlarmsClearAll,
-    ];
-
     /// Content scripts get the subset Chrome gives them; everything else is for
     /// extension pages only.
     pub fn allowed_in_content_script(self) -> bool {
@@ -436,13 +384,55 @@ mod tests {
 
     #[test]
     fn every_method_round_trips_through_its_name() {
-        for m in Method::ALL {
+        for &m in Method::ALL {
             assert_eq!(m.name().parse::<Method>().unwrap(), m);
             assert_eq!(m.to_string(), m.name());
         }
         assert!(Method::StorageSet.allowed_in_content_script());
         assert!(!Method::TabsCreate.allowed_in_content_script());
         assert!(!Method::RuntimeReload.allowed_in_content_script());
+    }
+
+    /// The wire names the shim sends, spelled out so a renamed variant cannot change one.
+    #[test]
+    fn every_wire_name_parses() {
+        let names = [
+            "runtime.sendMessage",
+            "runtime.openOptionsPage",
+            "runtime.reload",
+            "storage.get",
+            "storage.set",
+            "storage.remove",
+            "storage.clear",
+            "storage.getBytesInUse",
+            "tabs.query",
+            "tabs.get",
+            "tabs.getCurrent",
+            "tabs.create",
+            "tabs.update",
+            "tabs.remove",
+            "tabs.reload",
+            "tabs.sendMessage",
+            "scripting.executeScript",
+            "scripting.insertCSS",
+            "action.setBadgeText",
+            "action.getBadgeText",
+            "action.setTitle",
+            "action.getTitle",
+            "action.setIcon",
+            "action.setPopup",
+            "action.getPopup",
+            "action.noop",
+            "alarms.create",
+            "alarms.get",
+            "alarms.getAll",
+            "alarms.clear",
+            "alarms.clearAll",
+        ];
+        for name in names {
+            assert_eq!(name.parse::<Method>().unwrap().name(), name);
+        }
+        assert_eq!(names.len(), Method::ALL.len());
     }
 
     #[test]
