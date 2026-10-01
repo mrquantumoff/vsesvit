@@ -2,8 +2,9 @@
 //!
 //! The shells hand over the PNG a page shows once it has loaded. It is kept when that page,
 //! or another page of the same site, is bookmarked, so a bookmark shows its own page's icon,
-//! or its site's icon until that page has been visited (imported bookmarks, for one). Icons
-//! of sites with no bookmark left are dropped when the profile opens.
+//! or its site's icon until that page has been visited (imported bookmarks, for one). A site
+//! keeps one icon, the latest, however many of its pages are visited. Icons of sites with no
+//! bookmark left are dropped when the profile opens.
 //!
 //! Bookmarks whose site has no icon yet (imported ones, say) get one without a visit:
 //!
@@ -157,22 +158,36 @@ impl Favicons<'_> {
             .optional()?)
     }
 
-    /// Drops the icons of pages and sites that have no bookmark any more.
+    /// Drops the icons of pages and sites that have no bookmark any more, and the icons that
+    /// profiles once kept for every page visited of a bookmarked site, but the newest: that
+    /// one becomes the site's icon unless the site has one.
     pub(crate) fn prune(&mut self) -> Result<usize, Error> {
         let rows: Vec<(String, Option<String>)> = {
-            let mut stmt = self.p.conn.prepare("SELECT page_url, origin FROM favicons")?;
+            let mut stmt =
+                self.p.conn.prepare("SELECT page_url, origin FROM favicons ORDER BY updated_ms DESC")?;
             stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?
         };
         let tree = &self.p.bookmarks.tree;
-        let stale: Vec<String> = rows
-            .into_iter()
-            .filter(|(page, site)| {
-                let page_kept = Url::parse(page).is_ok_and(|u| !tree.ids_for_url(&u).is_empty());
-                let site_kept = site.as_deref().is_some_and(|o| tree.has_origin(o));
-                !page_kept && !site_kept
-            })
-            .map(|(page, _)| page)
-            .collect();
+        let mut sites: HashSet<String> =
+            rows.iter().filter(|(page, site)| site.as_ref() == Some(page)).map(|(page, _)| page.clone()).collect();
+        let (mut stale, mut promoted) = (Vec::new(), Vec::new());
+        for (page, site) in rows {
+            let page_kept = Url::parse(&page).is_ok_and(|u| !tree.ids_for_url(&u).is_empty());
+            match site {
+                _ if page_kept => {}
+                Some(site) if tree.has_origin(&site) => {
+                    if site == page {
+                        continue;
+                    }
+                    if sites.insert(site) { promoted.push(page) } else { stale.push(page) }
+                }
+                _ => stale.push(page),
+            }
+        }
+        let mut promote = self.p.conn.prepare("UPDATE favicons SET page_url = origin WHERE page_url = ?1")?;
+        for page in &promoted {
+            promote.execute([page])?;
+        }
         let mut delete = self.p.conn.prepare("DELETE FROM favicons WHERE page_url = ?1")?;
         for page in &stale {
             delete.execute([page])?;
@@ -186,19 +201,26 @@ impl Favicons<'_> {
 /// [`Favicons::record`] on a connection or an open transaction.
 fn store(conn: &Connection, tree: &Tree, now_ms: i64, page: &Url, png: &[u8]) -> Result<bool, Error> {
     let site = origin(page);
-    let bookmarked = !tree.ids_for_url(page).is_empty() || site.as_deref().is_some_and(|o| tree.has_origin(o));
-    if !bookmarked || png.is_empty() || png.len() > MAX_BYTES {
+    let page_bookmarked = !tree.ids_for_url(page).is_empty();
+    let site_bookmarked = site.as_deref().is_some_and(|o| tree.has_origin(o));
+    if !(page_bookmarked || site_bookmarked) || png.is_empty() || png.len() > MAX_BYTES {
         return Ok(false);
     }
+    // A page that is not bookmarked itself only stands in for its site: one row per site, keyed
+    // by the bare origin (`https://example.com`), which no page's URL equals.
+    let key = match &site {
+        Some(site) if !page_bookmarked => site.as_str(),
+        _ => page.as_str(),
+    };
     let stored: Option<Vec<u8>> =
-        conn.query_row("SELECT png FROM favicons WHERE page_url = ?1", [page.as_str()], |r| r.get(0)).optional()?;
+        conn.query_row("SELECT png FROM favicons WHERE page_url = ?1", [key], |r| r.get(0)).optional()?;
     if stored.as_deref() == Some(png) {
         return Ok(false);
     }
     conn.execute(
         "INSERT INTO favicons (page_url, origin, png, updated_ms) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (page_url) DO UPDATE SET origin = ?2, png = ?3, updated_ms = ?4",
-        params![page.as_str(), site, png, now_ms],
+        params![key, site, png, now_ms],
     )?;
     Ok(true)
 }

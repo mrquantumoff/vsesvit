@@ -62,6 +62,57 @@ fn only_bookmarked_pages_and_sites_keep_their_icon() {
 }
 
 #[test]
+fn visiting_more_of_a_bookmarked_site_keeps_one_site_icon() {
+    let (mut p, dir, clock) = open_with_clock();
+    p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "a", &url("https://docs.example/a")).unwrap();
+    p.favicons().record(&url("https://docs.example/a"), b"page").unwrap();
+    for i in 0..50 {
+        clock.set(clock.get() + 1);
+        p.favicons().record(&url(&format!("https://docs.example/p{i}?q={i}")), b"site").unwrap();
+    }
+    assert!(!p.favicons().record(&url("https://docs.example/p50"), b"site").unwrap(), "the site's icon is unchanged");
+    assert_eq!(icon_rows(&dir), 2, "the bookmarked page's icon and one for the site");
+    assert_eq!(p.favicons().get(&url("https://docs.example/a")).unwrap().as_deref(), Some(&b"page"[..]));
+    assert_eq!(p.favicons().get(&url("https://docs.example/never")).unwrap().as_deref(), Some(&b"site"[..]));
+}
+
+#[test]
+fn icons_kept_per_page_visited_collapse_to_one_per_site_at_open() {
+    let (mut p, dir) = open();
+    p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "a", &url("https://docs.example/a")).unwrap();
+    p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "b", &url("https://blog.example/b")).unwrap();
+    p.favicons().record(&url("https://blog.example/"), b"blog").unwrap();
+    drop(p);
+    // How profiles stored the icons of other pages of a bookmarked site before.
+    let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
+    for (page, png, at) in [
+        ("https://docs.example/a", "page", 1),
+        ("https://docs.example/x", "old", 2),
+        ("https://docs.example/y", "new", 3),
+        ("https://docs.example/z", "older", 0),
+        ("https://blog.example/old", "blog-old", 0),
+    ] {
+        conn.execute(
+            "INSERT OR REPLACE INTO favicons (page_url, origin, png, updated_ms) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![page, Url::parse(page).unwrap().origin().ascii_serialization(), png.as_bytes(), at],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let mut p = Profile::open(&dir.0, OpenOptions::default()).unwrap();
+    assert_eq!(icon_rows(&dir), 3, "the bookmarked page's icon and one per site");
+    assert_eq!(p.favicons().get(&url("https://docs.example/a")).unwrap().as_deref(), Some(&b"page"[..]));
+    assert_eq!(p.favicons().get(&url("https://docs.example/x")).unwrap().as_deref(), Some(&b"new"[..]), "the newest");
+    assert_eq!(p.favicons().get(&url("https://blog.example/old")).unwrap().as_deref(), Some(&b"blog"[..]));
+}
+
+fn icon_rows(dir: &TempDir) -> i64 {
+    let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
+    conn.query_row("SELECT COUNT(*) FROM favicons", [], |r| r.get(0)).unwrap()
+}
+
+#[test]
 fn file_pages_never_share_an_icon() {
     let (mut p, _dir) = open();
     let page = url("file:///C:/notes/a.html");
