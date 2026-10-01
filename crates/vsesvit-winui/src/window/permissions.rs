@@ -457,10 +457,12 @@ impl BrowserWindow {
                         .and_then(|i| choices.get(i).copied());
                     // A combo box raises this for its initial selection too.
                     if let Some(picked) = picked.filter(|p| *p != current) {
-                        site_choice(&w, &t, origin.as_ref(), row.permission, picked);
+                        site_choice(&w, &t, origin.as_ref(), row.permission, current, picked);
                     }
                 })?
                 .forget();
+            // Stop leaves the permission as it is, so the page may capture again at will, and
+            // its script is trusted to end the capture; Block and Reset reload (`must_reload`).
             if row.live {
                 let stop: Button = xaml::find(&section, &format!("PermissionStop{key}"))?;
                 let t = Rc::downgrade(tab);
@@ -518,13 +520,14 @@ fn refocus(section: &FrameworkElement, name: &str, first: &str) {
     }
 }
 
-/// A choice in the site-info popup. Block (or back to Ask) also ends a grant this tab had,
-/// and Block ends the capture it governs.
+/// A choice in the site-info popup, replacing `current`. Block (or back to Ask) also ends a
+/// grant this tab had, and Block ends the capture it governs (see `must_reload`).
 fn site_choice(
     window: &Weak<BrowserWindow>,
     tab: &Weak<Tab>,
     origin: Option<&Origin>,
     permission: Permission,
+    current: SiteChoice,
     choice: SiteChoice,
 ) {
     let (Some(w), Some(t)) = (window.upgrade(), tab.upgrade()) else {
@@ -548,30 +551,48 @@ fn site_choice(
     if origin.is_none() && choice.setting() == Some(Setting::Block) {
         t.stop_capture(permission);
     }
+    let allowed = matches!(current, SiteChoice::Allow | SiteChoice::AllowedThisTime);
+    let reload = choice == SiteChoice::Block && must_reload(allowed, permission);
     permissions::settings_changed(&browser);
+    if reload {
+        t.reload();
+    }
     BrowserWindow::refill_site_permissions(window, tab);
 }
 
 /// "Reset permissions": every setting of the site back to Ask, this tab's grants ended, and
-/// what the site captured under a setting stopped.
+/// what the site captured under a setting stopped (see `must_reload`).
 fn reset_site(window: &Weak<BrowserWindow>, tab: &Weak<Tab>, origin: &Origin) {
     let (Some(w), Some(t)) = (window.upgrade(), tab.upgrade()) else {
         return;
     };
     let Some(browser) = w.browser() else { return };
-    let stored: Vec<Permission> = browser.core(|p| {
+    let settings = browser.core(|p| {
         let mut site = p.site_permissions();
-        let stored = site.for_site(origin).into_iter().map(|(p, _)| p).collect();
+        let settings = site.for_site(origin);
         if let Err(e) = site.reset_site(origin) {
             log::warn!("reset site permissions: {e}");
         }
-        stored
+        settings
     });
+    let stored: Vec<Permission> = settings.iter().map(|(p, _)| *p).collect();
+    let mut allowed: Vec<Permission> = settings
+        .iter()
+        .filter(|(_, s)| *s == Setting::Allow)
+        .map(|(p, _)| *p)
+        .collect();
     for permission in t.permissions().grants() {
         t.permissions().revoke(permission);
+        allowed.push(permission);
     }
+    let reload = Permission::ALL
+        .iter()
+        .any(|p| must_reload(allowed.contains(p), *p));
     permissions::stop_captures(&browser, origin, &stored);
     permissions::settings_changed(&browser);
+    if reload {
+        t.reload();
+    }
     BrowserWindow::refill_site_permissions(window, tab);
 }
 
@@ -625,5 +646,26 @@ impl BrowserWindow {
     /// Whether the tab's entry in the tab list shows its in-use icon.
     pub fn tab_capture_shown(&self, tab: TabId) -> bool {
         self.strip().capture_shown(tab)
+    }
+}
+
+/// Whether blocking or resetting `permission` must reload the tab to end its capture: the shell
+/// let the page capture (`allowed`: a grant, or the site's Allow), whatever the page reports.
+/// The page can hide a capture from its script or keep the script from stopping it, so only
+/// tearing down the document is sure to release the device.
+fn must_reload(allowed: bool, permission: Permission) -> bool {
+    crate::capturing::stop_script(permission).is_some() && allowed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_capture_the_shell_allowed_ends_whatever_the_page_reports() {
+        assert!(must_reload(true, Permission::Camera));
+        assert!(must_reload(true, Permission::Microphone));
+        assert!(!must_reload(false, Permission::Camera));
+        assert!(!must_reload(true, Permission::Notifications));
     }
 }
