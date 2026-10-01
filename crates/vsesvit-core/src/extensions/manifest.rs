@@ -412,24 +412,18 @@ fn manifest_path(s: &str) -> Result<RelPath, ManifestError> {
     RelPath::parse(s.strip_prefix('/').unwrap_or(s)).map_err(|_| ManifestError::BadPath(s.to_owned()))
 }
 
-fn path_list(v: Option<&Value>, name: &'static str) -> Result<Vec<RelPath>, ManifestError> {
+/// Items of an optional array: absent or null is empty, any other type is an error.
+fn array<'a>(v: Option<&'a Value>, name: &'static str) -> Result<&'a [Value], ManifestError> {
     match v {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => {
-            items.iter().map(|item| item.as_str().ok_or(ManifestError::Field(name)).and_then(manifest_path)).collect()
-        }
+        None | Some(Value::Null) => Ok(&[]),
+        Some(Value::Array(items)) => Ok(items),
         Some(_) => Err(ManifestError::Field(name)),
     }
 }
 
-fn pattern_list(v: Option<&Value>, name: &'static str) -> Result<Vec<MatchPattern>, ManifestError> {
-    match v {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => {
-            items.iter().map(|item| item.as_str().ok_or(ManifestError::Field(name)).and_then(MatchPattern::parse)).collect()
-        }
-        Some(_) => Err(ManifestError::Field(name)),
-    }
+/// An optional array of strings, each read by `parse`.
+fn list<T>(v: Option<&Value>, name: &'static str, parse: impl Fn(&str) -> Result<T, ManifestError>) -> Result<Vec<T>, ManifestError> {
+    array(v, name)?.iter().map(|item| item.as_str().ok_or(ManifestError::Field(name)).and_then(&parse)).collect()
 }
 
 /// `{"16": "a.png", "48": "b.png"}`.
@@ -497,7 +491,7 @@ fn parse_background(v: Option<&Value>, mv: ManifestVersion) -> Result<Option<Bac
         .map(manifest_path)
         .transpose()?
         .map(|script| Background::ServiceWorker { script, module });
-    let scripts = Some(path_list(b.get("scripts"), "background.scripts")?)
+    let scripts = Some(list(b.get("scripts"), "background.scripts", manifest_path)?)
         .filter(|s| !s.is_empty())
         .map(|scripts| Background::Scripts { scripts, persistent });
     let page = str_field(b, "page", "background.page")?.map(manifest_path).transpose()?.map(|page| Background::Page { page, persistent });
@@ -508,16 +502,11 @@ fn parse_background(v: Option<&Value>, mv: ManifestVersion) -> Result<Option<Bac
 }
 
 fn parse_content_scripts(v: Option<&Value>) -> Result<Vec<ContentScript>, ManifestError> {
-    let items = match v {
-        None | Some(Value::Null) => return Ok(Vec::new()),
-        Some(Value::Array(items)) => items,
-        Some(_) => return Err(ManifestError::Field("content_scripts")),
-    };
-    items
+    array(v, "content_scripts")?
         .iter()
         .map(|item| {
             let cs = item.as_object().ok_or(ManifestError::Field("content_scripts"))?;
-            let matches = pattern_list(cs.get("matches"), "content_scripts.matches")?;
+            let matches = list(cs.get("matches"), "content_scripts.matches", MatchPattern::parse)?;
             if matches.is_empty() {
                 return Err(ManifestError::Field("content_scripts.matches"));
             }
@@ -534,9 +523,9 @@ fn parse_content_scripts(v: Option<&Value>) -> Result<Vec<ContentScript>, Manife
             };
             Ok(ContentScript {
                 matches,
-                exclude_matches: pattern_list(cs.get("exclude_matches"), "content_scripts.exclude_matches")?,
-                js: path_list(cs.get("js"), "content_scripts.js")?,
-                css: path_list(cs.get("css"), "content_scripts.css")?,
+                exclude_matches: list(cs.get("exclude_matches"), "content_scripts.exclude_matches", MatchPattern::parse)?,
+                js: list(cs.get("js"), "content_scripts.js", manifest_path)?,
+                css: list(cs.get("css"), "content_scripts.css", manifest_path)?,
                 run_at,
                 all_frames: bool_field(cs, "all_frames", "content_scripts.all_frames")?.unwrap_or(false),
                 match_about_blank: bool_field(cs, "match_about_blank", "content_scripts.match_about_blank")?.unwrap_or(false),
@@ -550,19 +539,14 @@ fn parse_content_scripts(v: Option<&Value>) -> Result<Vec<ContentScript>, Manife
 /// `{resources, matches}` objects. Both shapes normalize to [`WebAccessible`].
 fn parse_web_accessible(v: Option<&Value>) -> Result<Vec<WebAccessible>, ManifestError> {
     const NAME: &str = "web_accessible_resources";
-    let items = match v {
-        None | Some(Value::Null) => return Ok(Vec::new()),
-        Some(Value::Array(items)) => items,
-        Some(_) => return Err(ManifestError::Field(NAME)),
-    };
     let mut out = Vec::new();
     let mut legacy = Vec::new();
-    for item in items {
+    for item in array(v, NAME)? {
         match item {
             Value::String(s) => legacy.push(s.clone()),
             Value::Object(o) => out.push(WebAccessible {
                 resources: strings(o.get("resources")).map(str::to_owned).collect(),
-                matches: pattern_list(o.get("matches"), NAME)?,
+                matches: list(o.get("matches"), NAME, MatchPattern::parse)?,
             }),
             _ => return Err(ManifestError::Field(NAME)),
         }
@@ -576,12 +560,8 @@ fn parse_web_accessible(v: Option<&Value>) -> Result<Vec<WebAccessible>, Manifes
 fn parse_dnr(v: Option<&Value>) -> Result<Vec<DnrRuleset>, ManifestError> {
     const NAME: &str = "declarative_net_request.rule_resources";
     let Some(dnr) = v.filter(|v| !v.is_null()) else { return Ok(Vec::new()) };
-    let resources = match dnr.as_object().ok_or(ManifestError::Field("declarative_net_request"))?.get("rule_resources") {
-        None | Some(Value::Null) => return Ok(Vec::new()),
-        Some(Value::Array(items)) => items,
-        Some(_) => return Err(ManifestError::Field(NAME)),
-    };
-    resources
+    let dnr = dnr.as_object().ok_or(ManifestError::Field("declarative_net_request"))?;
+    array(dnr.get("rule_resources"), NAME)?
         .iter()
         .map(|r| {
             let r = r.as_object().ok_or(ManifestError::Field(NAME))?;
@@ -931,6 +911,39 @@ mod tests {
     fn message_placeholders_expand() {
         let placeholders = BTreeMap::from([("who".to_owned(), "you")]);
         assert_eq!(expand_placeholders("Hi $WHO$, $$5 $none$", &placeholders), "Hi you, $5 $none$");
+    }
+
+    #[test]
+    fn array_fields_treat_null_as_empty_and_reject_other_types() {
+        let parse = |extra: &str| {
+            let text = format!(r#"{{"manifest_version": 2, "name": "A", "version": "1"{extra}}}"#);
+            Manifest::parse(&text, &|_| None)
+        };
+        // Absent and null both read as an empty list.
+        for extra in [
+            "",
+            r#", "content_scripts": null, "web_accessible_resources": null, "declarative_net_request": {"rule_resources": null}, "background": {"scripts": null}"#,
+            r#", "declarative_net_request": {}, "background": {}"#,
+        ] {
+            let m = parse(extra).unwrap();
+            assert!(m.content_scripts.is_empty() && m.web_accessible_resources.is_empty() && m.dnr_rulesets.is_empty(), "{extra}");
+            assert!(m.background.is_none(), "{extra}");
+        }
+        for wrong in ["\"a\"", "{}"] {
+            for (extra, name) in [
+                (format!(r#", "content_scripts": {wrong}"#), "content_scripts"),
+                (format!(r#", "web_accessible_resources": {wrong}"#), "web_accessible_resources"),
+                (format!(r#", "declarative_net_request": {{"rule_resources": {wrong}}}"#), "declarative_net_request.rule_resources"),
+                (format!(r#", "background": {{"scripts": {wrong}}}"#), "background.scripts"),
+                (format!(r#", "content_scripts": [{{"matches": {wrong}}}]"#), "content_scripts.matches"),
+            ] {
+                assert!(matches!(parse(&extra), Err(ManifestError::Field(n)) if n == name), "{extra}");
+            }
+        }
+        let js = |item: &str| parse(&format!(r#", "content_scripts": [{{"matches": ["<all_urls>"], "js": [{item}]}}]"#));
+        assert!(matches!(js("1"), Err(ManifestError::Field("content_scripts.js"))));
+        assert!(matches!(js("\"../a.js\""), Err(ManifestError::BadPath(p)) if p == "../a.js"));
+        assert!(matches!(js("\"nope\"").map(|m| m.content_scripts[0].js[0].as_str().to_owned()), Ok(p) if p == "nope"));
     }
 
     #[test]
