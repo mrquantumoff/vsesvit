@@ -6,10 +6,9 @@
 //! loads the extension.
 
 use std::fmt;
-use std::rc::Rc;
-use std::sync::mpsc::{self, TryRecvError};
-use std::time::Duration;
 
+use futures_channel::mpsc;
+use futures_util::StreamExt;
 use gtk::{gio, glib};
 use vsesvit_core::extensions::manifest::Manifest;
 use vsesvit_core::extensions::{
@@ -18,9 +17,6 @@ use vsesvit_core::extensions::{
 use vsesvit_webext::{LoadError, Unsupported};
 
 use crate::browser::Browser;
-
-/// How often the worker's progress is polled while an install runs.
-const PROGRESS_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub(crate) enum InstallFailure {
@@ -93,20 +89,16 @@ impl Browser {
         job: InstallJob,
         progress: impl Fn(InstallPhase) + 'static,
     ) -> Result<Option<InstalledExtension>, InstallFailure> {
-        let (tx, rx) = mpsc::channel::<InstallPhase>();
+        let (tx, mut rx) = mpsc::unbounded::<InstallPhase>();
         let handle = gio::spawn_blocking(move || {
             job.run(&mut |phase| {
-                let _ = tx.send(phase);
+                let _ = tx.unbounded_send(phase);
             })
         });
         // The worker's sender drops when the job ends, which ends this pump.
         let pump = glib::spawn_future_local(async move {
-            loop {
-                match rx.try_recv() {
-                    Ok(phase) => progress(phase),
-                    Err(TryRecvError::Empty) => glib::timeout_future(PROGRESS_POLL).await,
-                    Err(TryRecvError::Disconnected) => break,
-                }
+            while let Some(phase) = rx.next().await {
+                progress(phase);
             }
         });
         let staged = handle.await.map_err(|_| InstallFailure::WorkerPanicked)?;
@@ -231,7 +223,6 @@ pub(crate) fn icon_path(ext: &InstalledExtension) -> Option<std::path::PathBuf> 
 
 /// A progress callback that never has to be `Send`: the pump runs it on the UI thread.
 pub(crate) fn progress_to<F: Fn(String) + 'static>(f: F) -> impl Fn(InstallPhase) + 'static {
-    let f = Rc::new(f);
     move |phase: InstallPhase| f(phase.describe())
 }
 
