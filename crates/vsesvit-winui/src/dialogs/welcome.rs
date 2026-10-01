@@ -12,14 +12,14 @@ use vsesvit_core::search::SearchEngineId;
 use vsesvit_sync::status::{Action, State};
 use windows_core::{Interface, Result};
 
-use super::bookmarks::import_bookmarks;
+use super::bookmarks::{import_bookmarks, pick_bookmarks_file};
 use super::sync_settings::{ServerBox, server_markup};
 use super::{Wired, default_browser, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::extensions::Progress;
 use crate::window::BrowserWindow;
-use crate::{anim, exec, pickers, sync, xaml};
+use crate::{anim, exec, sync, xaml};
 
 /// A fixed size, so the dialog does not jump between pages.
 pub(super) const MARKUP: &str = r#"
@@ -426,15 +426,8 @@ impl Importer {
         };
         let me = self.clone();
         exec::spawn(async move {
-            match pickers::pick_file(owner, &[".html", ".htm", ".json"]).await {
-                Ok(Some(path)) => {
-                    let name = path.file_name().map_or_else(
-                        || path.display().to_string(),
-                        |n| n.to_string_lossy().into_owned(),
-                    );
-                    let folder = import::FILE_FOLDER_TITLE.to_owned();
-                    me.run(vec![(folder, name, Source::File(path))]);
-                }
+            match pick_bookmarks_file(owner).await {
+                Ok(Some(file)) => me.run(vec![file]),
                 Ok(None) => {}
                 Err(e) => {
                     let _ = me

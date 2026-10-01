@@ -5,6 +5,7 @@
 //! bookmarks.
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::Url;
@@ -617,18 +618,8 @@ impl Editor {
         let owner = self.owner;
         let me = self.clone();
         exec::spawn(async move {
-            match pickers::pick_file(owner, &[".html", ".htm", ".json"]).await {
-                Ok(Some(path)) => {
-                    let name = path.file_name().map_or_else(
-                        || path.display().to_string(),
-                        |n| n.to_string_lossy().into_owned(),
-                    );
-                    me.import_source(
-                        import::FILE_FOLDER_TITLE.to_owned(),
-                        name,
-                        Source::File(path),
-                    );
-                }
+            match pick_bookmarks_file(owner).await {
+                Ok(Some((folder, from, source))) => me.import_source(folder, from, source),
                 Ok(None) => {}
                 Err(e) => {
                     let _ = me
@@ -675,6 +666,29 @@ pub(crate) async fn import_bookmarks(
     };
     browser.bookmarks_changed();
     text
+}
+
+/// A bookmarks file the user picks, as `(folder, from, source)` to import, or `None` when they
+/// cancel.
+pub(super) async fn pick_bookmarks_file(
+    owner: WindowId,
+) -> Result<Option<(String, String, Source)>> {
+    Ok(pickers::pick_file(owner, &[".html", ".htm", ".json"])
+        .await?
+        .map(file_import))
+}
+
+/// What importing the bookmarks file at `path` adds: its folder, the file's name and its source.
+fn file_import(path: PathBuf) -> (String, String, Source) {
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    (
+        import::FILE_FOLDER_TITLE.to_owned(),
+        name,
+        Source::File(path),
+    )
 }
 
 /// A bookmark and its descendants, read from core in one borrow.
@@ -767,5 +781,20 @@ mod tests {
         }
         assert!(branch.children.is_empty());
         assert_eq!(depth, MAX_DEPTH);
+    }
+
+    #[test]
+    fn a_bookmarks_file_is_imported_under_its_name() {
+        let path = PathBuf::from(r"C:\x\bookmarks.html");
+        assert_eq!(
+            file_import(path.clone()),
+            (
+                import::FILE_FOLDER_TITLE.to_owned(),
+                "bookmarks.html".to_owned(),
+                Source::File(path)
+            )
+        );
+        let root = PathBuf::from(r"C:\");
+        assert_eq!(file_import(root.clone()).1, root.display().to_string());
     }
 }
