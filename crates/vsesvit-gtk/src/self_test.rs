@@ -880,23 +880,27 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         .await;
 
         gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
-        let settings = settings_window(browser)?;
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
         let mut shots = Vec::new();
         for name in ["general", "sync", "appearance", "search", "privacy", "shortcuts"] {
-            if show_settings_page(&settings, name).is_none() {
-                settings.close();
+            dialog.set_visible_page_name(name);
+            if dialog.visible_page_name().as_deref() != Some(name) {
+                dialog.close();
                 return Err(format!("Settings has no {name:?} page"));
             }
             glib::timeout_future(Duration::from_millis(500)).await;
             let file = format!("settings-{name}.png");
-            let shot = crate::screenshot::save_png(&settings, &ctx.out_dir.join(&file)).await;
+            let shot = crate::screenshot::save_png(window, &ctx.out_dir.join(&file)).await;
             if let Err(e) = shot {
-                settings.close();
+                dialog.close();
                 return Err(format!("{file}: {e}"));
             }
             shots.push(file);
         }
-        settings.close();
+        dialog.close();
         browser.set_home_button_visible(false);
         browser.core().borrow_mut().prefs().reset(&keys::HOMEPAGE).map_err(|e| e.to_string())?;
         Ok(format!(
@@ -1039,10 +1043,17 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         }
 
         gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
-        let settings = settings_window(browser)?;
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
         let shown = async {
+            dialog.set_visible_page_name("shortcuts");
+            if dialog.visible_page_name().as_deref() != Some("shortcuts") {
+                return Err("Settings has no \"shortcuts\" page".to_owned());
+            }
             // Only the Shortcuts page: the Sync page has a "History" row of its own.
-            let page = show_settings_page(&settings, "shortcuts").ok_or_else(|| "Settings has no \"shortcuts\" page".to_owned())?;
+            let page = dialog.visible_page().ok_or_else(|| "the shortcuts page is not shown".to_owned())?;
             let row_shows = |title: &str| {
                 find::<adw::ActionRow>(page.upcast_ref(), |row| row.title() == title)
                     .and_then(|row| find::<adw::ShortcutLabel>(row.upcast_ref(), |_| true))
@@ -1059,12 +1070,12 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
                 at.set_value(at.upper() - at.page_size());
             }
             glib::timeout_future(Duration::from_millis(300)).await;
-            crate::screenshot::save_png(&settings, &ctx.out_dir.join("shortcuts-edited.png")).await.map_err(|e| e.to_string())?;
-            let capture = shortcut_settings::capture(&settings, browser, Command::ShowHistory, || {});
+            crate::screenshot::save_png(window, &ctx.out_dir.join("shortcuts-edited.png")).await.map_err(|e| e.to_string())?;
+            let capture = shortcut_settings::capture(&dialog, browser, Command::ShowHistory, || {});
             capture.press(keymap::pressed(gdk::Key::t, gdk::ModifierType::CONTROL_MASK, gdk::ModifierType::empty(), Some(gdk::Key::t)));
             let note = capture.note();
             glib::timeout_future(POPOVER_SETTLE).await;
-            let shot = crate::screenshot::save_png(&settings, &ctx.out_dir.join("shortcut-capture.png")).await;
+            let shot = crate::screenshot::save_png(window, &ctx.out_dir.join("shortcut-capture.png")).await;
             capture.close();
             shot.map_err(|e| e.to_string())?;
             if note != "Also used by New tab. Saving moves it here." {
@@ -1073,7 +1084,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             Ok(note)
         }
         .await;
-        settings.close();
+        dialog.close();
         let note = shown?;
 
         browser.edit_keymap(Keymap::reset_all);
@@ -1234,9 +1245,6 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             if let Some(dialog) = window.visible_dialog() {
                 dialog.close();
             }
-            if let Some(settings) = browser.windowed(Windowed::Settings) {
-                settings.close();
-            }
             if let Err(e) = browser.core().borrow_mut().site_permissions().reset_site(&origin) {
                 log::warn!("site permissions: {e}");
             }
@@ -1294,21 +1302,24 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let asked_when_blocked = address.prompt().is_some();
 
         gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
-        let settings = settings_window(browser)?;
-        show_settings_page(&settings, "privacy").ok_or_else(|| "Settings has no \"privacy\" page".to_owned())?;
-        find::<adw::ActionRow>(settings.upcast_ref(), |r| r.title() == "Site Permissions")
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        dialog.set_visible_page_name("privacy");
+        find::<adw::ActionRow>(dialog.upcast_ref(), |r| r.title() == "Site Permissions")
             .ok_or_else(|| "the Privacy page has no Site Permissions row".to_owned())?
             .emit_by_name::<()>("activated", &[]);
         glib::timeout_future(Duration::from_millis(600)).await;
-        crate::screenshot::save_png(&settings, &ctx.out_dir.join("settings-site-permissions.png")).await.map_err(|e| e.to_string())?;
-        let listed = find::<adw::ComboRow>(settings.upcast_ref(), |r| r.title() == Permission::Location.label() && r.is_mapped()).map(|r| selected_label(&r));
-        find::<gtk::Button>(settings.upcast_ref(), |b| b.tooltip_text().as_deref() == Some("Remove") && b.is_mapped())
+        crate::screenshot::save_png(window, &ctx.out_dir.join("settings-site-permissions.png")).await.map_err(|e| e.to_string())?;
+        let listed = find::<adw::ComboRow>(dialog.upcast_ref(), |r| r.title() == Permission::Location.label() && r.is_mapped()).map(|r| selected_label(&r));
+        find::<gtk::Button>(dialog.upcast_ref(), |b| b.tooltip_text().as_deref() == Some("Remove") && b.is_mapped())
             .ok_or_else(|| "the Location row has no Remove button".to_owned())?
             .emit_clicked();
         wait_for(&last, || if stored().is_none() { Ok(()) } else { Err(format!("after Remove, location is stored as {:?}", stored())) }).await;
         glib::timeout_future(POPOVER_SETTLE).await;
-        let empty = find::<adw::StatusPage>(settings.upcast_ref(), |p| p.is_mapped()).and_then(|p| p.description()).map(String::from);
-        crate::screenshot::save_png(&settings, &ctx.out_dir.join("settings-site-permissions-empty.png")).await.map_err(|e| e.to_string())?;
+        let empty = find::<adw::StatusPage>(dialog.upcast_ref(), |p| p.is_mapped()).and_then(|p| p.description()).map(String::from);
+        crate::screenshot::save_png(window, &ctx.out_dir.join("settings-site-permissions-empty.png")).await.map_err(|e| e.to_string())?;
 
         let detail = format!(
             "prompt {heading:?} (permission-prompt.png); Allow while visiting stored Allow and the page's permissions.query reads {state:?}, after a reload {state_after_reload:?}; the reloaded page's request prompted={asked_again} (outcome {second:?}; without GeoClue the position never arrives); Block in site info stored Block (site-info-permissions.png) and the next request failed with code {blocked:?}, prompted={asked_when_blocked}; Settings lists Location as {listed:?} (settings-site-permissions.png); Remove there went back to Ask and left {empty:?} (settings-site-permissions-empty.png)"
@@ -1595,22 +1606,6 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
 }
 
 /// The first widget of type `W` under `root` (itself included) that `matches`.
-/// The window `win.show-settings` opened. Its type is deprecated (see `dialogs::settings`).
-#[allow(deprecated)]
-fn settings_window(browser: &Browser) -> Result<adw::PreferencesWindow, String> {
-    browser
-        .windowed(Windowed::Settings)
-        .and_downcast()
-        .ok_or_else(|| "win.show-settings opened no Settings window".to_owned())
-}
-
-/// Shows Settings' page named `name`, if it has one.
-#[allow(deprecated)]
-fn show_settings_page(settings: &adw::PreferencesWindow, name: &str) -> Option<adw::PreferencesPage> {
-    settings.set_visible_page_name(name);
-    settings.visible_page().filter(|page| page.name().as_deref() == Some(name))
-}
-
 fn find<W: IsA<gtk::Widget>>(root: &gtk::Widget, matches: impl Fn(&W) -> bool + Copy) -> Option<W> {
     if let Some(widget) = root.downcast_ref::<W>()
         && matches(widget)

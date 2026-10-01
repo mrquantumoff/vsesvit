@@ -72,7 +72,7 @@ pub(crate) struct Inner {
     /// Open Settings controls, shown again when sync changes a preference; each is dropped once
     /// it returns false.
     pref_views: RefCell<Vec<PrefView>>,
-    /// Bookmarks, History, Downloads and Settings, each in a window of its own while open.
+    /// Bookmarks, History and Downloads, each in a window of its own while open.
     windowed: RefCell<Vec<(Windowed, glib::WeakRef<adw::Window>)>>,
     updates: Option<Updates>,
     sync: Syncer,

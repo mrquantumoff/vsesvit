@@ -299,9 +299,9 @@ fn install_actions(app: &adw::Application, slot: &Slot) {
 /// - `app.debug-apply-sync(path)` applies a JSON file of wire records
 ///   (`[{"kind": "prefs", "id": "theme", "body": {...}}, ...]`) through core's sync store
 ///   and refreshes the UI the way a sync engine would.
-/// - `app.debug-set-tabs-position(left|right|top)` is what the Settings window does.
+/// - `app.debug-set-tabs-position(left|right|top)` is what the Settings dialog does.
 /// - `app.debug-close-dialog()` closes the active window's dialog, if one is open, or the
-///   active window itself when it is Bookmarks, History, Downloads or Settings.
+///   active window itself when it is Bookmarks, History or Downloads.
 #[cfg(debug_assertions)]
 fn install_debug_actions(app: &adw::Application, slot: &Slot) {
     app.add_action_entries([

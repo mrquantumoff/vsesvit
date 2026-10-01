@@ -1,6 +1,6 @@
-//! What the primary menu opens, all on core data: Bookmarks, History, Downloads and Settings,
-//! each in a window of its own, and the Extensions, About, keyboard shortcuts and first-run
-//! welcome dialogs.
+//! What the primary menu opens, all on core data: Bookmarks, History and Downloads, each in a
+//! window of its own, and the Settings, Extensions, About, keyboard shortcuts and first-run
+//! welcome dialogs. Adwaita keeps preferences in a dialog over the window.
 
 pub(crate) mod about;
 pub(crate) mod bookmarks;
@@ -23,7 +23,6 @@ pub(crate) enum Windowed {
     Bookmarks,
     History,
     Downloads,
-    Settings,
 }
 
 /// Brings `kind`'s window forward, or shows the one `build` makes. The window belongs to
