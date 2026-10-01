@@ -99,15 +99,17 @@ impl ExtStorage<'_> {
 
     /// All-or-nothing: quota is checked for the whole batch before anything is written.
     pub fn set(&mut self, ext: &ExtensionId, area: Area, items: BTreeMap<String, serde_json::Value>) -> Result<Vec<StorageChange>, Error> {
+        let items: Vec<(String, JsonText)> = items.into_iter().map(|(k, v)| (k, JsonText::from_value(&v))).collect();
         let current = self.live(ext, area)?;
         let mut after = current.clone();
-        for (k, v) in &items {
-            after.insert(k.clone(), JsonText::from_value(v));
-        }
+        after.extend(items.iter().cloned());
         check_quota(area, &after)?;
         let changes: Vec<(String, Option<JsonText>, JsonText)> = items
             .into_iter()
-            .map(|(k, v)| (k.clone(), current.get(&k).cloned(), JsonText::from_value(&v)))
+            .map(|(k, v)| {
+                let old = current.get(&k).cloned();
+                (k, old, v)
+            })
             .filter(|(_, old, new)| old.as_ref() != Some(new))
             .collect();
         if changes.is_empty() {
