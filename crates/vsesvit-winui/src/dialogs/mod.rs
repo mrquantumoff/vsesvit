@@ -343,11 +343,7 @@ fn side_list(root: &FrameworkElement, list_name: &str, entries: &[Category]) -> 
     selector
         .SelectionChanged(move |_, _| {
             // Ctrl+click can leave nothing selected; the panel shown stays.
-            let Some(selected) = source
-                .SelectedIndex()
-                .ok()
-                .and_then(|i| usize::try_from(i).ok())
-            else {
+            let Some(selected) = selected_index(&source) else {
                 return;
             };
             for (index, panel) in panels.iter().enumerate() {
@@ -356,6 +352,15 @@ fn side_list(root: &FrameworkElement, list_name: &str, entries: &[Category]) -> 
         })?
         .forget();
     selector.SetSelectedIndex(0)
+}
+
+/// The selected row of a `Selector` (a ComboBox, a ListView, ...); `None` when nothing is.
+pub(crate) fn selected_index(selector: &impl Interface) -> Option<usize> {
+    let index = selector
+        .cast::<Selector>()
+        .and_then(|s| s.SelectedIndex())
+        .ok()?;
+    usize::try_from(index).ok()
 }
 
 /// Wires a button's click.

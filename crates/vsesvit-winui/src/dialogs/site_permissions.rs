@@ -131,11 +131,8 @@ fn fill(page: &Rc<Page>) -> Result<()> {
             let shown = Shown(Cell::new(setting));
             selector
                 .SelectionChanged(move |_, _| {
-                    let picked = source
-                        .SelectedIndex()
-                        .ok()
-                        .and_then(|i| usize::try_from(i).ok())
-                        .and_then(|i| options.get(i).copied());
+                    let picked =
+                        super::selected_index(&source).and_then(|i| options.get(i).copied());
                     if let (Some(picked), Some(b)) =
                         (picked.and_then(|p| shown.change(p)), b.upgrade())
                         && set(&b, &o, permission, Some(picked))

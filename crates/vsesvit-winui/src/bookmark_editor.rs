@@ -14,7 +14,7 @@ use windows_core::{Interface, Result};
 use crate::bindings::*;
 use crate::bookmarks_bar::MAX_DEPTH;
 use crate::window::BrowserWindow;
-use crate::{exec, xaml};
+use crate::{dialogs, exec, xaml};
 
 /// What the editor works on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -351,12 +351,7 @@ impl Editor {
         } else {
             None
         };
-        let index = self
-            .folder
-            .cast::<Selector>()
-            .and_then(|s| s.SelectedIndex())
-            .ok()
-            .and_then(|i| usize::try_from(i).ok());
+        let index = dialogs::selected_index(&self.folder);
         let folder = index
             .and_then(|i| self.folders.get(i).copied())
             .unwrap_or(BookmarkId::TOOLBAR);

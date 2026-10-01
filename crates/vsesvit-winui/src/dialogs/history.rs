@@ -218,11 +218,8 @@ impl Page {
     }
 
     fn selected(&self) -> Option<HistoryEntry> {
-        let index = self.list.cast::<Selector>().ok()?.SelectedIndex().ok()?;
-        self.shown
-            .borrow()
-            .get(usize::try_from(index).ok()?)
-            .cloned()
+        let index = super::selected_index(&self.list)?;
+        self.shown.borrow().get(index).cloned()
     }
 
     fn open(&self) {
@@ -248,12 +245,7 @@ impl Page {
         let Some(browser) = self.browser.upgrade() else {
             return;
         };
-        let index = self
-            .range
-            .cast::<Selector>()
-            .and_then(|s| s.SelectedIndex())
-            .ok()
-            .and_then(|i| usize::try_from(i).ok());
+        let index = super::selected_index(&self.range);
         let Some((range, _)) = index.and_then(|i| RANGES.get(i)) else {
             return;
         };

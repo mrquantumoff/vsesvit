@@ -436,12 +436,7 @@ impl Editor {
         let Some(node) = self.selected_node() else {
             return;
         };
-        let index = self
-            .folder
-            .cast::<Selector>()
-            .and_then(|s| s.SelectedIndex())
-            .ok()
-            .and_then(|i| usize::try_from(i).ok());
+        let index = super::selected_index(&self.folder);
         let Some(folder) = index.and_then(|i| self.folders.borrow().get(i).copied()) else {
             return;
         };
@@ -604,12 +599,7 @@ impl Editor {
     }
 
     fn import(self: &Rc<Self>) {
-        let index = self
-            .import_from
-            .cast::<Selector>()
-            .and_then(|s| s.SelectedIndex())
-            .ok()
-            .and_then(|i| usize::try_from(i).ok());
+        let index = super::selected_index(&self.import_from);
         match index.and_then(|i| self.import_choices.get(i)) {
             Some(ImportChoice::Browser(found)) => {
                 self.import_source(

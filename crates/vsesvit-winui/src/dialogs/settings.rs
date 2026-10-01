@@ -700,10 +700,7 @@ fn choices<T: Clone + PartialEq + 'static>(
     let (source, seen, listed) = (selector.clone(), shown.clone(), values.clone());
     selector
         .SelectionChanged(move |_, _| {
-            let index = source
-                .SelectedIndex()
-                .ok()
-                .and_then(|i| usize::try_from(i).ok());
+            let index = super::selected_index(&source);
             if let Some(value) = index.and_then(|i| listed.get(i))
                 && *value != *seen.borrow()
             {
