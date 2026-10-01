@@ -16,8 +16,8 @@
 //!    `scripting.executeScript` is refused (no `scripting` permission); its `<all_urls>`
 //!    reaches no `file:` page (no content script, no tab URL, not in `permissions.contains`);
 //! 6. the widget popup's iframe loads in place instead of being blanked and opened as a tab;
-//! 7. the twin popup answers `permissions.contains` by pattern coverage and opens the
-//!    options page in a tab, where `chrome.*` works
+//! 7. the twin popup answers `permissions.contains` by pattern coverage and Chrome's
+//!    predefined `@@` messages, and opens the options page in a tab, where `chrome.*` works
 //!    (storage, `runtime.getURL` on the hashed host, messaging both ways, `tabs.getCurrent`,
 //!    `tabs.onUpdated`) and its CSP holds; `runtime.sendMessage` reaches every page;
 //!    `scripting.executeScript` injects the content-script API into a tab without a
@@ -344,6 +344,12 @@ mod linux {
                 && report.get("error").is_none();
             self.note("options_page", options_ok, format!("tab {} at {}; page report = {report}", options_tab.id.0, options_tab.url));
             let hashed = url_host.len() == 32 && url_host.bytes().all(|b| b.is_ascii_hexdigit()) && url_host != TWIN_ID;
+            let predefined = self
+                .eval_async(&popup, "return ['@@extension_id', '@@ui_locale', '@@bidi_dir', '@@bidi_reversed_dir', '@@bidi_start_edge', '@@bidi_end_edge'].map((m) => chrome.i18n.getMessage(m));")
+                .await;
+            let p = |i: usize| predefined.as_ref().and_then(|v| v[i].as_str()).unwrap_or_default().to_owned();
+            let ltr = [p(2), p(3), p(4), p(5)] == ["ltr", "rtl", "left", "right"] || [p(2), p(3), p(4), p(5)] == ["rtl", "ltr", "right", "left"];
+            self.note("i18n_predefined_messages", p(0) == url_host && !p(1).is_empty() && ltr, format!("@@ messages = {predefined:?}, URL host = {url_host}"));
             self.note("gecko_id_get_url", hashed && get_url == format!("chrome-extension://{url_host}/data.json"), format!("getURL = {get_url}, URL host = {url_host}"));
             // The extension's CSP applies in a tab as in its own views: no inline script.
             let inline = self.eval(&options_view, "String(window.__twinInline)", None).await;

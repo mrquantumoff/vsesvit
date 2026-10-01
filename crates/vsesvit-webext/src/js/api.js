@@ -147,8 +147,22 @@
 
   // --- i18n --------------------------------------------------------------------------
   const messages = (config.i18n && config.i18n.messages) || {};
+  const uiLocale = (config.i18n && config.i18n.locale) || "en";
+  const rtl = /^(ar|fa|he|iw|ps|sd|ug|ur|yi|dv|ckb)(_|$)/i.test(uiLocale);
+  // Chrome's predefined messages; `@@extension_id` is the URL host, which is what
+  // extensions build `chrome-extension://` URLs from.
+  const predefined = {
+    "@@extension_id": config.host,
+    "@@ui_locale": uiLocale,
+    "@@bidi_dir": rtl ? "rtl" : "ltr",
+    "@@bidi_reversed_dir": rtl ? "ltr" : "rtl",
+    "@@bidi_start_edge": rtl ? "right" : "left",
+    "@@bidi_end_edge": rtl ? "left" : "right",
+  };
   function getMessage(name, substitutions) {
-    const entry = messages[String(name).toLowerCase()];
+    const key = String(name).toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(predefined, key)) return predefined[key];
+    const entry = messages[key];
     if (!entry || typeof entry.message !== "string") return "";
     const subs = substitutions == null ? [] : (Array.isArray(substitutions) ? substitutions : [substitutions]);
     const sub = (ref) => {
@@ -168,8 +182,8 @@
   }
   const i18n = {
     getMessage,
-    getUILanguage: () => ((config.i18n && config.i18n.locale) || "en").replace("_", "-"),
-    getAcceptLanguages: local(() => [((config.i18n && config.i18n.locale) || "en").replace("_", "-")]),
+    getUILanguage: () => uiLocale.replace("_", "-"),
+    getAcceptLanguages: local(() => [uiLocale.replace("_", "-")]),
     detectLanguage: local(() => ({ isReliable: false, languages: [] })),
   };
 
