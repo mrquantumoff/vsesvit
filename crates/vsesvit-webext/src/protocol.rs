@@ -274,12 +274,17 @@ pub struct Dispatched {
     /// No `runtime.onMessage` listener in that context.
     #[serde(default)]
     pub none: bool,
-    /// The response, when a listener answered with a value.
-    #[serde(rename = "v")]
+    /// The response, when a listener answered with a value (`Some(Null)` for `null`).
+    #[serde(rename = "v", default, deserialize_with = "present")]
     pub value: Option<Value>,
     /// A listener's Promise rejected.
     #[serde(rename = "e")]
     pub error: Option<String>,
+}
+
+/// A present `v`, `null` included: plain `Option` would read `null` as absent.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
 }
 
 impl Dispatched {
@@ -451,6 +456,9 @@ mod tests {
         assert!(Dispatched::parse(Some("garbage")).none);
         let d = Dispatched::parse(Some("{}"));
         assert!(!d.none && d.value.is_none() && d.error.is_none());
+        // `sendResponse(null)` answers null, not undefined.
+        assert_eq!(Dispatched::parse(Some(r#"{"v":null}"#)).value, Some(Value::Null));
+        assert_eq!(reply_json(Dispatched::parse(Some(r#"{"v":null}"#)).value), r#"{"v":null}"#);
     }
 
     /// Chrome delivers `runtime.sendMessage` to every context and the first response wins,
