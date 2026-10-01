@@ -197,7 +197,7 @@ pub struct Changed {
     pub sessions: bool,
     /// Call `extensions().reconcile()`.
     pub extensions: bool,
-    /// For `storage.onChanged` in the Linux runtime.
+    /// For `storage.onChanged` in the Linux runtime: only keys whose value changed.
     pub ext_storage: Vec<(ExtensionId, Vec<StorageChange>)>,
     pub prefs: Vec<String>,
     pub search_engines: bool,
@@ -432,7 +432,9 @@ fn apply_wire(tx: &mut Tx<'_>, wire: &WireRecord, report: &mut ApplyReport, effe
             }
         }
         Kind::ExtStorageSync => {
-            if let Some((before, Some(after))) = apply_typed::<StorageTable>(tx, wire, report)? {
+            if let Some((before, Some(after))) = apply_typed::<StorageTable>(tx, wire, report)?
+                && before.as_ref().and_then(|b| b.value.v.as_ref()) != after.value.v.as_ref()
+            {
                 let change = storage_change(before.as_ref(), &after);
                 effects.ext_storage.entry(after.ext.clone()).or_default().push(change);
             }

@@ -164,3 +164,29 @@ fn quotas_are_all_or_nothing_and_local_only() {
     assert_eq!(changes[0].old_value, Some(json!(0)));
     assert_eq!(changes[0].new_value.as_ref().unwrap().as_str().unwrap().len(), 200_000);
 }
+
+/// Like Chrome, `storage.onChanged` fires only when the value an extension sees changes: not
+/// for a newer stamp on the same value, nor for the tombstone of a key this device never had.
+#[test]
+fn remote_apply_reports_only_visible_value_changes() {
+    let (mut a, _da) = open_as(2);
+    let (mut b, _db) = open_as(3);
+    a.ext_storage().set(&ext(), Area::Sync, items(&[("k", json!(1))])).unwrap();
+    b.ext_storage().set(&ext(), Area::Sync, items(&[("k", json!(1))])).unwrap();
+    let report = a.sync().apply(synced_wire(&mut b)).unwrap();
+    assert_eq!(report.merged, 1, "the later stamp still merges");
+    assert!(report.changed.ext_storage.is_empty());
+
+    let (mut c, _dc) = open_as(4);
+    c.ext_storage().set(&ext(), Area::Sync, items(&[("gone", json!(1))])).unwrap();
+    c.ext_storage().remove(&ext(), Area::Sync, &keys(&["gone"])).unwrap();
+    let (mut d, _dd) = open_as(5);
+    let report = d.sync().apply(synced_wire(&mut c)).unwrap();
+    assert_eq!(report.merged, 1);
+    assert!(report.changed.ext_storage.is_empty());
+    assert!(d.ext_storage().get(&ext(), Area::Sync, None).unwrap().is_empty());
+}
+
+fn synced_wire(p: &mut Profile) -> Vec<WireRecord> {
+    p.sync().changes_since(Kind::ExtStorageSync, Seq::ZERO, usize::MAX).unwrap().records
+}
