@@ -5,7 +5,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 /// The checks, in the order the contract lists and runs them.
-pub(crate) const CHECKS: [&str; 18] = [
+pub(crate) const CHECKS: [&str; 19] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -14,6 +14,7 @@ pub(crate) const CHECKS: [&str; 18] = [
     "content_script",
     "dnr_blocked",
     "bookmark",
+    "bookmarks_bar_icons",
     "tabs",
     "tab_layout",
     "popup",

@@ -21,7 +21,9 @@ use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::NavTarget;
 use vsesvit_core::testkit::{self, FixtureServer};
 
-use crate::bindings::Panel;
+use windows_core::{IInspectable, Interface};
+
+use crate::bindings::{ItemsControl, Panel};
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog};
 use crate::layout;
@@ -30,7 +32,7 @@ use crate::report::{Check, Report};
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
-use crate::{app, engine, exec};
+use crate::{app, engine, exec, xaml};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// WebView2 validates and registers an extension on first load.
@@ -45,6 +47,8 @@ const DOWNLOAD_FIXTURE: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/site/download.bin"));
 /// The new tab page's tile links, once its search box is there.
 const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...document.querySelectorAll('.tile')].map(a => a.href).join(' ') : 'no search box'";
+/// Gives the page a new favicon four times, 300 ms apart, as pages that badge their icon do.
+const FAVICON_SWAPS: &str = "(() => { let n = 0; const swap = () => { const c = document.createElement('canvas'); c.width = c.height = 16; const g = c.getContext('2d'); g.fillStyle = ['#d33', '#3a3', '#33d', '#da3'][n]; g.fillRect(0, 0, 16, 16); let link = document.querySelector('link[rel=icon]'); if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.append(link); } link.href = c.toDataURL(); if (++n < 4) setTimeout(swap, 300); }; swap(); return 'swapping'; })()";
 /// uBlock Origin Lite.
 const CWS_ID: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
 
@@ -327,6 +331,45 @@ async fn checks(
             editor.close();
         }
         Ok(seen)
+    })
+    .await;
+
+    check(report, "bookmarks_bar_icons", DEFAULT_TIMEOUT, async |p| {
+        let before = bar_entries(&window);
+        eval(&tab, FAVICON_SWAPS).await?;
+        let mut icons: Vec<Vec<u8>> = Vec::new();
+        until(p, |p| {
+            let icon = window
+                .bookmarks_bar_items()
+                .iter()
+                .find_map(|item| match item {
+                    crate::bookmarks_bar::BarItem::Link { url, icon, .. }
+                        if url == index.as_str() =>
+                    {
+                        icon.clone()
+                    }
+                    _ => None,
+                });
+            if let Some(icon) = icon.filter(|i| !icons.contains(i)) {
+                icons.push(icon);
+            }
+            p.observe(format!("{} distinct icons on the bar item", icons.len()));
+            (icons.len() >= 3).then_some(())
+        })
+        .await;
+        let after = bar_entries(&window);
+        let kept = before.len() == after.len()
+            && before
+                .iter()
+                .zip(&after)
+                .all(|(a, b)| xaml::same_object(a, b));
+        let detail = format!(
+            "{} distinct icons shown; {} entries before, {} after, same entries={kept}",
+            icons.len(),
+            before.len(),
+            after.len()
+        );
+        kept.then_some(detail.clone()).ok_or(detail)
     })
     .await;
 
@@ -659,6 +702,20 @@ async fn expect_layout(window: &Rc<BrowserWindow>, want: TabsPosition, probe: &P
         })
     })
     .await
+}
+
+/// The bookmarks bar's list entries, in order.
+fn bar_entries(window: &BrowserWindow) -> Vec<IInspectable> {
+    let Ok(items) = window
+        .bookmarks_bar_list()
+        .cast::<ItemsControl>()
+        .and_then(|list| list.Items())
+    else {
+        return Vec::new();
+    };
+    (0..items.Size().unwrap_or(0))
+        .filter_map(|i| items.GetAt(i).ok())
+        .collect()
 }
 
 /// A tab's engine view exists and its first navigation has settled.
