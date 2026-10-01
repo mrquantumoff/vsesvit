@@ -122,30 +122,38 @@ fn digit_value(c: u8) -> Option<usize> {
 }
 
 /// Midpoint of two digit strings, `a < b`, neither ending in `'0'`; `a = ""` is the low
-/// end and `b = None` the high end.
-fn midpoint(a: &[u8], b: Option<&[u8]>) -> Vec<u8> {
-    if let Some(b) = b {
-        let mut n = 0;
-        while n < b.len() && a.get(n).copied().unwrap_or(b'0') == b[n] {
-            n += 1;
+/// end and `b = None` the high end. A loop, not recursion: synced keys can be any length.
+fn midpoint(mut a: &[u8], mut b: Option<&[u8]>) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        if let Some(bb) = b {
+            let mut n = 0;
+            while n < bb.len() && a.get(n).copied().unwrap_or(b'0') == bb[n] {
+                n += 1;
+            }
+            if n > 0 {
+                out.extend_from_slice(&bb[..n]);
+                a = &a[n.min(a.len())..];
+                b = Some(&bb[n..]);
+                continue;
+            }
         }
-        if n > 0 {
-            let mut out = b[..n].to_vec();
-            out.extend(midpoint(&a[n.min(a.len())..], Some(&b[n..])));
+        let da = a.first().and_then(|&c| digit_value(c)).unwrap_or(0);
+        let db = b.and_then(|b| b.first()).and_then(|&c| digit_value(c)).unwrap_or(DIGITS.len());
+        if db - da > 1 {
+            out.push(DIGITS[(da + db).div_ceil(2)]);
             return out;
         }
-    }
-    let da = a.first().and_then(|&c| digit_value(c)).unwrap_or(0);
-    let db = b.and_then(|b| b.first()).and_then(|&c| digit_value(c)).unwrap_or(DIGITS.len());
-    if db - da > 1 {
-        return vec![DIGITS[(da + db).div_ceil(2)]];
-    }
-    match b {
-        Some(b) if b.len() > 1 => vec![b[0]],
-        _ => {
-            let mut out = vec![DIGITS[da]];
-            out.extend(midpoint(a.get(1..).unwrap_or(&[]), None));
-            out
+        match b {
+            Some(bb) if bb.len() > 1 => {
+                out.push(bb[0]);
+                return out;
+            }
+            _ => {
+                out.push(DIGITS[da]);
+                a = a.get(1..).unwrap_or(&[]);
+                b = None;
+            }
         }
     }
 }
@@ -1163,6 +1171,25 @@ mod tests {
             prev = Some(next);
         }
         assert!(longest <= 6, "longest appended key has {longest} chars");
+    }
+
+    /// A synced key can be any length. Its length must not drive the stack depth, or a
+    /// forged pair of neighbours crashes the browser when the user drops between them.
+    #[test]
+    fn between_long_z_run_does_not_overflow_stack() {
+        let lo = pos(&format!("y{}1", "z".repeat(200_000)));
+        let hi = pos("z");
+        let mid = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn({
+                let (lo, hi) = (lo.clone(), hi.clone());
+                move || Position::between(Some(&lo), Some(&hi))
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(Position::parse(mid.as_str()).is_some(), "malformed");
+        assert!(lo < mid && mid < hi);
     }
 
     #[test]
