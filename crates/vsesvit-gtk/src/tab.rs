@@ -523,14 +523,20 @@ impl Tab {
                 permissions::committed(self);
                 self.notify(TabChange::Committed(commit));
             }
-            webkit::LoadEvent::Finished => imp.load.set(LoadPhase::Idle),
+            webkit::LoadEvent::Finished => {
+                imp.load.set(LoadPhase::Idle);
+                // A fragment or History API navigation made while the page still loaded
+                // (images, say) was waiting for this.
+                self.check_same_document_commit();
+            }
             _ => {}
         }
     }
 
     /// WebKit emits no load events for fragment and History API navigations. The URI changing
-    /// while no load is in flight, to the back/forward list's current entry, is that commit.
-    /// Both signals involved call this, because their order is not specified.
+    /// while no load is in flight, to the back/forward list's current entry, is that commit;
+    /// one made during a load commits when the load finishes. Both signals involved call
+    /// this, because their order is not specified.
     fn check_same_document_commit(&self) {
         let imp = self.imp();
         let web_view = self.web_view();
@@ -673,7 +679,11 @@ pub(crate) fn display_uri(uri: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
+    use crate::test_support::{Reply, Server, browser, wait_until};
     use gdk::ModifierType as M;
     use webkit::NavigationType::{LinkClicked, Other};
 
@@ -719,8 +729,6 @@ mod tests {
 
     #[gtk::test]
     fn saved_state_the_engine_cannot_read_falls_back_to_the_url() {
-        use crate::test_support::{Reply, Server, browser, wait_until};
-
         let server = Server::start("127.0.0.1", |_| Reply::Page("Restored"));
         let window = BrowserWindow::new(&browser());
         let tab = window.open_tab(None, None, Focus::Background);
@@ -730,5 +738,39 @@ mod tests {
             tab.committed_uri().as_deref() == Some(url.as_str())
         });
         window.destroy();
+    }
+
+    #[gtk::test]
+    fn a_history_navigation_made_while_the_page_loads_commits_when_it_finishes() {
+        let stalled = Arc::new(AtomicBool::new(true));
+        let server = Server::start("127.0.0.1", {
+            let stalled = stalled.clone();
+            move |path| match path {
+                "/" => Reply::Body(
+                    "text/html",
+                    b"<img src=/slow><script>history.pushState(null, '', '/moved')</script>".to_vec(),
+                ),
+                "/slow" => {
+                    while stalled.load(Ordering::SeqCst) {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Reply::NotFound
+                }
+                _ => Reply::NotFound,
+            }
+        });
+        let (first, moved) = (server.url("/"), server.url("/moved"));
+        let window = BrowserWindow::new(&browser());
+        let tab = window.open_tab(Some(&first), None, Focus::Background);
+        wait_until("the page to move while it loads", || {
+            tab.web_view().uri().as_deref() == Some(moved.as_str())
+        });
+        let loading = tab.web_view().is_loading();
+        stalled.store(false, Ordering::SeqCst);
+        wait_until("the load to finish", || !tab.web_view().is_loading());
+        let committed = tab.committed_uri();
+        window.destroy();
+        assert!(loading, "the image held the load open");
+        assert_eq!(committed.as_deref(), Some(moved.as_str()));
     }
 }
