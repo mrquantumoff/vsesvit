@@ -510,8 +510,9 @@ pub fn classify_url(text: &str) -> Option<NavTarget> {
 ///    `view-source`, `vsesvit`) -> `Url`; an absolute file path (`/usr/…`, `C:\…`,
 ///    `\\server\share`) -> `file:` URL
 /// 3. no whitespace and looks like a host: `localhost`, an IPv4/IPv6 literal, or dotted
-///    labels ending in an alphabetic TLD, with optional `:port` and `/path` ->
-///    `https://` + text (`http://` for localhost and IP literals)
+///    labels ending in an alphabetic TLD, internationalized names (`пример.укр`) included,
+///    with optional `:port` and `/path` -> `https://` + text (`http://` for localhost and IP
+///    literals)
 /// 4. first word equals an engine keyword and there is more text -> search that engine
 /// 5. otherwise -> search the default engine
 pub fn classify(text: &str, engines: &[SearchEngine], default: &SearchEngine) -> Option<NavTarget> {
@@ -593,12 +594,14 @@ fn host_url(text: &str) -> Option<Url> {
     let scheme = if host.eq_ignore_ascii_case("localhost") || plain.parse::<Ipv4Addr>().is_ok() || host.starts_with('[') {
         "http"
     } else {
-        let labels: Vec<&str> = host.split('.').collect();
-        let tld = labels.last()?;
+        // Labels are checked in their punycode form, so `пример.укр` counts as a host too.
+        let ascii = if host.is_ascii() { host.clone() } else { idna::domain_to_ascii(&host).ok()? };
+        let labels: Vec<&str> = ascii.split('.').collect();
+        // The TLD as typed: two or more letters of any script, or punycode already.
+        let tld = host.rsplit('.').next()?;
         let dotted = labels.len() >= 2
             && labels.iter().all(|l| valid_label(l))
-            && tld.len() >= 2
-            && tld.bytes().all(|b| b.is_ascii_alphabetic());
+            && ((tld.chars().count() >= 2 && tld.chars().all(char::is_alphabetic)) || tld.starts_with("xn--"));
         if !dotted {
             return None;
         }

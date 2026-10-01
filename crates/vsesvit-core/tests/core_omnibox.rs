@@ -138,6 +138,19 @@ fn not_hosts() {
 }
 
 #[test]
+fn internationalized_hosts_open_as_urls() {
+    assert_eq!(url_of("пример.укр").as_deref(), Some("https://xn--e1afmkfd.xn--j1amh/"));
+    assert_eq!(url_of("münchen.de").as_deref(), Some("https://xn--mnchen-3ya.de/"));
+    assert_eq!(url_of("яндекс.рф/вики").as_deref(), Some("https://xn--d1acpjx3f.xn--p1ai/%D0%B2%D0%B8%D0%BA%D0%B8"));
+    assert_eq!(url_of("bücher.example:8080").as_deref(), Some("https://xn--bcher-kva.example:8080/"));
+    assert_eq!(url_of("example.xn--p1ai").as_deref(), Some("https://example.xn--p1ai/"));
+    // Single words and a one-letter TLD still search, as in ASCII.
+    assert!(search_of("привіт").is_some());
+    assert!(search_of("münchen").is_some());
+    assert!(search_of("т.д").is_some());
+}
+
+#[test]
 fn keywords_and_default_engine() {
     assert_eq!(
         search_of("w rust lang"),
@@ -347,6 +360,7 @@ fn selection_actions() {
         (long.clone(), format!("Search DuckDuckGo for \u{201c}{}\u{2026}\u{201d}", "a".repeat(50)), format!("https://duckduckgo.com/?q={long}")),
         (fifty.clone(), format!("Search DuckDuckGo for \u{201c}{fifty}\u{201d}"), format!("https://duckduckgo.com/?q={fifty}")),
         ("example.com".to_owned(), "Go to example.com".to_owned(), "https://example.com/".to_owned()),
+        ("пример.укр".to_owned(), "Go to пример.укр".to_owned(), "https://xn--e1afmkfd.xn--j1amh/".to_owned()),
         (" https://a.test/x ".to_owned(), "Go to https://a.test/x".to_owned(), "https://a.test/x".to_owned()),
         (
             "see example.com now".to_owned(),
