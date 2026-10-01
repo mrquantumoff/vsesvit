@@ -66,13 +66,18 @@ pub(crate) fn popup(popover: &impl IsA<gtk::Popover>, anchor: &impl IsA<gtk::Wid
             popover.unparent();
         }
     };
-    anchor.connect_unrealize(glib::clone!(
+    let unrealize = anchor.connect_unrealize(glib::clone!(
         #[weak]
         popover,
         move |_| release(&popover)
     ));
+    let anchor = anchor.upcast_ref::<gtk::Widget>().downgrade();
+    let unrealize = Cell::new(Some(unrealize));
     // Unparenting from inside `closed` confuses GTK's popover teardown.
     popover.connect_closed(move |popover| {
+        if let (Some(anchor), Some(handler)) = (anchor.upgrade(), unrealize.take()) {
+            anchor.disconnect(handler);
+        }
         let popover = popover.clone();
         glib::idle_add_local_once(move || release(&popover));
     });
@@ -122,5 +127,35 @@ pub fn run() -> ExitCode {
             ExitCode::FAILURE
         }
         Command::Browse { profile_dir, .. } => app::run(profile_dir, &args),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::wait_until;
+    use glib::subclass::signal::SignalId;
+
+    #[gtk::test]
+    fn a_popup_leaves_nothing_on_its_anchor_once_it_closes() {
+        let anchor = gtk::Button::new();
+        let window = gtk::Window::builder().child(&anchor).build();
+        window.present();
+        wait_until("the anchor on screen", || anchor.is_mapped());
+        for _ in 0..3 {
+            let popover = gtk::Popover::builder().autohide(false).build();
+            popup(&popover, &anchor);
+            wait_until("the popover", || popover.is_mapped());
+            popover.popdown();
+            wait_until("the popover released", || popover.parent().is_none());
+        }
+        let unrealize = SignalId::lookup("unrealize", gtk::Widget::static_type()).unwrap();
+        let left = glib::signal::signal_has_handler_pending(&anchor, unrealize, None, false);
+        let open = gtk::Popover::builder().autohide(false).build();
+        popup(&open, &anchor);
+        wait_until("the popover", || open.is_mapped());
+        window.destroy();
+        assert!(!left, "closed popovers leave no handlers on the anchor");
+        assert!(open.parent().is_none(), "an open popover leaves with its anchor");
     }
 }
