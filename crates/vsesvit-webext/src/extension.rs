@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use vsesvit_core::extensions::manifest::{Background, Manifest, ManifestVersion, RelPath};
 use vsesvit_core::extensions::{ExtensionId, InstalledExtension};
+use vsesvit_core::html::escape as html_escape;
 use webkit::glib;
 
 use crate::content;
@@ -369,19 +370,4 @@ fn content_security_policy(manifest: &Manifest) -> String {
         ManifestVersion::V2 => raw.and_then(Value::as_str),
     };
     from_manifest.map(str::to_owned).unwrap_or_else(|| "script-src 'self'; object-src 'self';".to_owned())
-}
-
-pub(crate) fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
 }

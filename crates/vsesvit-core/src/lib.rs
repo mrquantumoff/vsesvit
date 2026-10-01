@@ -54,6 +54,7 @@ pub mod ext_storage;
 pub mod extensions;
 pub mod favicons;
 pub mod history;
+pub mod html;
 pub mod import;
 pub mod new_tab;
 pub mod onboarding;

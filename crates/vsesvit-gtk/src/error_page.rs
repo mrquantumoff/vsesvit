@@ -5,6 +5,7 @@
 
 use gtk::gio::TlsCertificateFlags;
 use url::Url;
+use vsesvit_core::html::escape;
 
 pub(crate) fn tls_error(uri: &str, errors: TlsCertificateFlags) -> String {
     let host = host_of(uri);
@@ -120,32 +121,9 @@ fn page(title: &str, heading: &str, body: &str, retry_uri: &str) -> String {
     )
 }
 
-fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn escapes_markup() {
-        assert_eq!(
-            escape(r#"<a href="x">'&'</a>"#),
-            "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
-        );
-    }
 
     #[test]
     fn tls_page_names_the_host_and_each_problem() {

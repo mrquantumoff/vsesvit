@@ -4,6 +4,7 @@
 
 use std::fmt::Write;
 
+use crate::html::escape;
 use crate::search::SearchEngine;
 use crate::{Error, Profile, Url};
 
@@ -69,21 +70,6 @@ pub fn html(sites: &[TopSite], engine: &SearchEngine) -> String {
          <input type=\"search\" aria-label=\"{placeholder}\" placeholder=\"{placeholder}\" autocomplete=\"off\" spellcheck=\"false\">\
          </form>{tiles}</main>\n<script>const template = {template};\n{SCRIPT}</script></body></html>\n"
     )
-}
-
-fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// FNV-1a, so a site keeps its colour across runs and devices.
