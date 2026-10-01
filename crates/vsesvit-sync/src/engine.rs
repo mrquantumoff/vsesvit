@@ -185,24 +185,52 @@ impl Round {
         self.records.is_empty()
     }
 
-    /// Worker thread: uploads, then downloads one page. Nothing it does needs finishing, so the
-    /// shell may stop waiting for it at any moment, as when the browser quits.
+    /// Worker thread: uploads, then downloads one page. An upload the server refuses, as over the
+    /// account's quota, still lets the download run, so the device keeps receiving the others'
+    /// changes. One refused as too large first asks the server for its limits again, since they may
+    /// have changed after sign-in. Nothing it does needs finishing, so the shell may stop waiting
+    /// for it at any moment, as when the browser quits.
     pub fn run(self, http: &Http) -> Exchanged {
-        let Round { account, records, upto, more_up, types } = self;
-        let result = exchange(http, &account, records);
-        Exchanged { account, upto, more_up, types, result }
+        let Round { mut account, records, upto, mut more_up, types } = self;
+        let refused = match upload(http, &account, records) {
+            Ok(()) => None,
+            Err(e @ Error::Server { .. }) => Some(e),
+            Err(e) => return Exchanged { account, upto, more_up, types, refused: None, result: Err(e) },
+        };
+        if let Some(e) = &refused {
+            log::warn!("the sync server refused this device's changes: {e}");
+            // The same records would be refused again, unless the limits they were gathered under
+            // have changed.
+            more_up = matches!(e, Error::Server { status: 413, .. }) && relearn_limits(http, &mut account);
+        }
+        let since = account.download_cursor;
+        let result = authorized(&account, |token| server::download(http, &account.server, token, since, account.limits));
+        Exchanged { account, upto, more_up, types, refused, result }
     }
 }
 
-fn exchange(http: &Http, account: &Account, records: Vec<Record>) -> Result<Page, Error> {
-    let server = &account.server;
-    let limits = account.limits;
-    for chunk in chunks(records, limits) {
+fn upload(http: &Http, account: &Account, records: Vec<Record>) -> Result<(), Error> {
+    for chunk in chunks(records, account.limits) {
         let upload = Upload { records: chunk };
-        authorized(account, |token| server::upload(http, server, token, &upload))?;
+        authorized(account, |token| server::upload(http, &account.server, token, &upload))?;
     }
-    let since = account.download_cursor;
-    authorized(account, |token| server::download(http, server, token, since, limits))
+    Ok(())
+}
+
+/// Asks the server for its limits again. `true` when they changed.
+fn relearn_limits(http: &Http, account: &mut Account) -> bool {
+    match server::info(http, &account.server) {
+        Ok(info) if info.limits != account.limits => {
+            log::info!("the sync server's limits are now {:?}", info.limits);
+            account.limits = info.limits;
+            true
+        }
+        Ok(_) => false,
+        Err(e) => {
+            log::warn!("asking the sync server for its limits: {e}");
+            false
+        }
+    }
 }
 
 /// Calls with the session. A session the server no longer knows (signed out elsewhere, unused too
@@ -242,6 +270,7 @@ pub struct Exchanged {
     upto: BTreeMap<u8, u64>,
     more_up: bool,
     types: BTreeSet<DataType>,
+    refused: Option<Error>,
     result: Result<Page, Error>,
 }
 
@@ -263,17 +292,25 @@ impl Exchanged {
     /// signed out (or in again) while the round ran, it changes nothing and says
     /// [`Error::SignedOut`].
     pub fn finish(self, store: &mut SyncStore<'_>) -> Finished {
-        let Exchanged { mut account, upto, more_up, types, result } = self;
+        let Exchanged { mut account, upto, more_up, types, refused, result } = self;
         match Account::load(store) {
             Ok(Some(current)) if current.sign_in == account.sign_in => {}
             Ok(_) => return Finished { account, result: Err(Error::SignedOut) },
             Err(e) => return Finished { account, result: Err(e) },
         }
         let mut result = result.and_then(|page| {
-            account.upload_cursors.extend(upto);
+            if refused.is_none() {
+                account.upload_cursors.extend(upto);
+            }
             let more_down = page.more;
             let report = apply(store, &mut account, page, &types)?;
-            Ok(Synced { again: more_up || more_down || report.merged > 0, report })
+            let again = more_up || more_down || report.merged > 0;
+            match refused {
+                // The refused changes wait for a later sync. Until nothing else is left, each
+                // round's page still shows; then the refusal is what the sync comes to.
+                Some(e) if !again => Err(e),
+                _ => Ok(Synced { report, again }),
+            }
         });
         if let Err(e) = account.save(store) {
             log::error!("saving the sync account: {e}");
@@ -343,7 +380,6 @@ mod tests {
         assert_eq!(ids, ["https://example.com/short".len()], "the long URL is left out");
         let all = store.changes_since(Kind::HistoryPages, Seq(0), 100).unwrap();
         assert_eq!(round.upto[&Kind::HistoryPages.code()], all.upto.0, "the cursor passes the long one too");
-        drop(store);
         drop(profile);
         let _ = std::fs::remove_dir_all(&dir);
     }

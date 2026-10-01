@@ -17,6 +17,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
+use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Theme, keys};
 use vsesvit_core::sync::DataType;
 use vsesvit_core::vault::KeyStore;
@@ -178,6 +179,11 @@ fn free_port() -> u16 {
 }
 
 fn start_server(bin: &str, issuer: &str) -> Server {
+    start_server_with(bin, issuer, &[])
+}
+
+/// With `settings` over the defaults.
+fn start_server_with(bin: &str, issuer: &str, settings: &[(&str, &str)]) -> Server {
     static SERVERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = TempDir::new(&format!("server-{}", SERVERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let database = format!("sqlite://{}?mode=rwc", dir.0.join("sync.db").display().to_string().replace('\\', "/"));
@@ -192,6 +198,7 @@ fn start_server(bin: &str, issuer: &str) -> Server {
         .env("MAX_BATCH", "7")
         .env("NO_COLOR", "1")
         .env("RUST_LOG", "info")
+        .envs(settings.iter().copied())
         .stdout(Stdio::piped())
         .spawn()
         .expect("the server starts");
@@ -237,13 +244,18 @@ fn sync(profile: &mut Profile, http: &Http) {
 }
 
 fn sync_types(profile: &mut Profile, http: &Http, types: &[DataType]) {
+    try_sync_types(profile, http, types).unwrap();
+}
+
+/// What a sync comes to in Settings.
+fn try_sync_types(profile: &mut Profile, http: &Http, types: &[DataType]) -> Result<(), Error> {
     let mut account = Account::load(&mut profile.sync()).unwrap().expect("signed in");
     for _ in 0..50 {
         let round = Round::gather(&mut profile.sync(), account, types).unwrap();
         let finished = round.run(http).finish(&mut profile.sync());
         account = finished.account;
-        if !finished.result.unwrap().again {
-            return;
+        if !finished.result?.again {
+            return Ok(());
         }
     }
     panic!("sync did not settle");
@@ -387,4 +399,74 @@ fn the_session_is_sealed_and_an_account_from_before_signs_in_again() {
 
     Account::forget(&mut a.sync()).unwrap();
     assert!(a.sync().secret_state("account.tokens").unwrap().is_none(), "signing out clears what it left");
+}
+
+#[test]
+fn a_device_whose_uploads_are_refused_still_receives_the_others_changes() {
+    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
+        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
+        return;
+    };
+    let provider = MockProvider::start();
+    let server = start_server_with(&bin, &provider.issuer, &[("MAX_ACCOUNT_RECORDS", "20")]);
+    let http = Http::new();
+    let (dir_a, dir_b) = (TempDir::new("quota-a"), TempDir::new("quota-b"));
+    let (mut a, mut b) = (open(&dir_a), open(&dir_b));
+    let bookmarks = [DataType::Bookmarks];
+    let with_history = [DataType::Bookmarks, DataType::History];
+
+    provider.sign_in_as("frank");
+    sign_in(&mut a, &http, &server.url);
+    sign_in(&mut b, &http, &server.url);
+    let shared = a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Shared", &Url::parse("https://example.com/").unwrap()).unwrap();
+    sync_types(&mut a, &http, &bookmarks);
+    for i in 0..30 {
+        b.history().record_visit(&Url::parse(&format!("https://example.com/{i}")).unwrap(), Transition::Link).unwrap();
+    }
+    let refused = try_sync_types(&mut b, &http, &with_history).expect_err("b's history fills the account");
+    assert!(matches!(refused, Error::Server { status: 507, .. }), "{refused}");
+    assert_eq!(toolbar_titles(&mut b), ["Shared"]);
+
+    a.bookmarks().rename(shared, "Renamed").unwrap();
+    sync_types(&mut a, &http, &bookmarks);
+    let refused = try_sync_types(&mut b, &http, &with_history).expect_err("the refusal is what the sync comes to");
+    assert!(matches!(refused, Error::Server { status: 507, .. }), "{refused}");
+    assert_eq!(toolbar_titles(&mut b), ["Renamed"], "the download goes on");
+    let account = Account::load(&mut b.sync()).unwrap().unwrap();
+    let round = Round::gather(&mut b.sync(), account, &with_history).unwrap();
+    assert!(!round.is_empty(), "the refused history is still waiting");
+}
+
+#[test]
+fn a_device_with_stale_limits_learns_the_servers_after_a_refusal() {
+    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
+        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
+        return;
+    };
+    let provider = MockProvider::start();
+    let server = start_server(&bin, &provider.issuer);
+    let http = Http::new();
+    let (dir_a, dir_b) = (TempDir::new("limits-a"), TempDir::new("limits-b"));
+    let (mut a, mut b) = (open(&dir_a), open(&dir_b));
+
+    provider.sign_in_as("grace");
+    sign_in(&mut a, &http, &server.url);
+    // As if the server took 500 records an upload when this device signed in, and takes 7 now.
+    let limits = |profile: &mut Profile| {
+        let saved: serde_json::Value = serde_json::from_slice(&profile.sync().engine_state("account").unwrap().unwrap()).unwrap();
+        saved["limits"]["max_batch"].as_u64().unwrap()
+    };
+    let mut saved: serde_json::Value = serde_json::from_slice(&a.sync().engine_state("account").unwrap().unwrap()).unwrap();
+    saved["limits"]["max_batch"] = 500.into();
+    a.sync().set_engine_state("account", saved.to_string().as_bytes()).unwrap();
+    for i in 0..20 {
+        let url = Url::parse(&format!("https://example.com/{i}")).unwrap();
+        a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, &format!("Page {i}"), &url).unwrap();
+    }
+    sync_types(&mut a, &http, &[DataType::Bookmarks]);
+    assert_eq!(limits(&mut a), 7);
+
+    sign_in(&mut b, &http, &server.url);
+    sync_types(&mut b, &http, &[DataType::Bookmarks]);
+    assert_eq!(toolbar_titles(&mut b).len(), 20);
 }
