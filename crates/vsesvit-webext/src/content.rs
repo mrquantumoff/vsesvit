@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use vsesvit_core::extensions::manifest::{ContentScript, Manifest, RunAt};
+use vsesvit_core::extensions::manifest::{ContentScript, Manifest, RunAt, World};
 
 use crate::dnr;
 use crate::patterns;
@@ -10,8 +10,9 @@ use crate::runtime::LoadError;
 
 /// One `UserScript` per `content_scripts` entry (its files concatenated in order, in the
 /// extension's world, with the bootstrap in front so `chrome` exists before the first
-/// line runs; every entry carries it, since WebKit gives no order between user scripts)
-/// and one `UserStyleSheet` per entry with CSS.
+/// line runs; every entry carries it, since WebKit gives no order between user scripts;
+/// a `"world": "MAIN"` entry in the page's world, without either) and one
+/// `UserStyleSheet` per entry with CSS.
 pub(crate) fn user_content(
     dir: &Path,
     manifest: &Manifest,
@@ -31,14 +32,22 @@ pub(crate) fn user_content(
             webkit::UserContentInjectedFrames::TopFrame
         };
         if !entry.js.is_empty() {
-            let mut source = String::from(bootstrap);
+            // A `"world": "MAIN"` entry shares the page's globals and gets no extension API,
+            // as in Chrome (and as `scripting.executeScript` with `world: "MAIN"`).
+            let main = entry.world == World::Main;
+            let mut source = String::from(if main { "" } else { bootstrap });
             for js in &entry.js {
                 let path = js.resolve(dir);
                 let text = std::fs::read_to_string(&path).map_err(|e| LoadError::Io { path: path.clone(), source: e })?;
                 source.push_str("\n;\n");
                 source.push_str(&text);
             }
-            scripts.push(webkit::UserScript::for_world(&source, frames, injection_time(entry), world, &allow, &block));
+            let time = injection_time(entry);
+            scripts.push(if main {
+                webkit::UserScript::new(&source, frames, time, &allow, &block)
+            } else {
+                webkit::UserScript::for_world(&source, frames, time, world, &allow, &block)
+            });
         }
         if !entry.css.is_empty() {
             let mut css = String::new();

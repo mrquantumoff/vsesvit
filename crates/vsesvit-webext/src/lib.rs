@@ -63,7 +63,8 @@
 //! - A background context: `background.scripts`, `background.page`, and MV3
 //!   `background.service_worker` (run as a generated page; `type: module` honoured).
 //! - Content scripts with `matches`, `exclude_matches`, `run_at`, `all_frames` and `css`,
-//!   each extension in its own isolated world (named by its id).
+//!   each extension in its own isolated world (named by its id); `"world": "MAIN"` ones in
+//!   the page's world, without the extension API, as in Chrome.
 //! - `chrome.*` and `browser.*` (promise and callback styles, `chrome.runtime.lastError`)
 //!   in content scripts: `runtime.sendMessage/onMessage/getURL/id/getManifest`,
 //!   `storage.local/sync` with `storage.onChanged`, `i18n`. Extension pages (background,

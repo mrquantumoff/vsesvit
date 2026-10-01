@@ -207,6 +207,9 @@ mod linux {
             let second = self.wait_for_js(&self.view, "document.documentElement.dataset.twinSecond || ''", None, |v| !v.is_empty()).await;
             let first = self.eval(&self.view, "document.documentElement.dataset.twinFirst || ''", None).await;
             self.note("second_content_script", first.as_deref() == Some("1") && second.as_deref() == Some(TWIN_ID), format!("twinFirst = {first:?}, twinSecond = {second:?}"));
+            // A `"world": "MAIN"` entry shares the page's globals and gets no extension API.
+            let main_world = self.eval(&self.view, "String(window.__twinMain)", None).await;
+            self.note("main_world_content_script", main_world.as_deref() == Some("page"), format!("window.__twinMain in the page's world = {main_world:?}"));
 
             // 2. declarativeNetRequest: control image requested, blocked image never
             glib::timeout_future(Duration::from_millis(1000)).await;
@@ -614,7 +617,8 @@ mod linux {
                     "background": { "service_worker": "background.js" },
                     "content_scripts": [
                         { "matches": ["http://127.0.0.1/index.html"], "js": ["first.js"], "run_at": "document_start" },
-                        { "matches": ["http://127.0.0.1/index.html"], "js": ["second.js"], "run_at": "document_end" }
+                        { "matches": ["http://127.0.0.1/index.html"], "js": ["second.js"], "run_at": "document_end" },
+                        { "matches": ["http://127.0.0.1/index.html"], "js": ["main.js"], "run_at": "document_start", "world": "MAIN" }
                     ],
                     "options_page": "options.html",
                     "action": { "default_title": "Vsesvit Twin", "default_popup": "popup.html" }
@@ -626,6 +630,7 @@ mod linux {
                 "second.js",
                 "document.documentElement.dataset.twinSecond = (typeof chrome === \"object\" && chrome.runtime) ? chrome.runtime.id : \"no-chrome\";\n".to_owned(),
             ),
+            ("main.js", "window.__twinMain = (typeof chrome === \"object\" && chrome.runtime && chrome.runtime.id) ? \"api\" : \"page\";\n".to_owned()),
             (
                 "background.js",
                 r#"const life = "life:" + Math.random().toString(36).slice(2);
