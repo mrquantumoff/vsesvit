@@ -5,7 +5,7 @@
 //! Downloads view and the windows' header buttons what changed.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -68,6 +68,9 @@ pub(crate) struct Downloads {
     started_this_session: Cell<bool>,
     /// The URI [`Downloads::download_to`] asked for and where it goes, until it starts.
     chosen: RefCell<Option<(String, PathBuf)>>,
+    /// Destinations handed out whose files are not made yet, so two downloads at once never
+    /// get the same one.
+    reserved: RefCell<HashSet<PathBuf>>,
 }
 
 impl Downloads {
@@ -92,6 +95,7 @@ impl Downloads {
             next_subscription: Cell::new(0),
             started_this_session: Cell::new(false),
             chosen: RefCell::new(None),
+            reserved: RefCell::new(HashSet::new()),
         });
         let weak = Rc::downgrade(&downloads);
         session.connect_download_started(move |_, download| match weak.upgrade() {
@@ -210,9 +214,9 @@ impl Downloads {
             #[strong]
             phase,
             move |download, destination| {
-                if let Some(downloads) = weak.upgrade()
-                    && let Some(id) = downloads.started(download, Path::new(destination))
-                {
+                let Some(downloads) = weak.upgrade() else { return };
+                downloads.reserved.borrow_mut().remove(Path::new(destination));
+                if let Some(id) = downloads.started(download, Path::new(destination)) {
                     phase.set(Phase::Running(id));
                 }
             }
@@ -241,6 +245,9 @@ impl Downloads {
                 }
                 let running = phase.replace(Phase::Ended);
                 let Some(downloads) = weak.upgrade() else { return };
+                if let Some(destination) = download.destination() {
+                    downloads.reserved.borrow_mut().remove(Path::new(destination.as_str()));
+                }
                 if let Phase::Running(id) = running {
                     let state = if cancelled { State::Cancelled } else { State::Failed };
                     downloads.ended(id, state, download);
@@ -272,9 +279,12 @@ impl Downloads {
         }
         let ask = self.core.borrow_mut().prefs().get(&keys::DOWNLOADS_ASK);
         if !ask {
-            let destination = unique_destination(&dir, suggested, Path::exists);
+            let destination = unique_destination(&dir, suggested, |p| p.exists() || self.reserved.borrow().contains(p));
             match destination.to_str() {
-                Some(path) => download.set_destination(path),
+                Some(path) => {
+                    download.set_destination(path);
+                    self.reserved.borrow_mut().insert(destination.clone());
+                }
                 None => refuse(self.window_for(download), download, NOT_UTF8),
             }
             return;
@@ -498,6 +508,42 @@ mod tests {
         assert_eq!(changes.borrow().last(), Some(&Change::List), "the end is announced");
 
         downloads.unsubscribe(subscription);
+        window.destroy();
+        let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);
+        reset.expect("the folder preference is reset");
+    }
+
+    #[gtk::test]
+    fn two_downloads_with_the_same_name_get_files_of_their_own() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/big.bin" => Reply::StalledFile,
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let dir = scratch_dir("downloads-same-name");
+        let set = browser.core().borrow_mut().prefs().set(&keys::DOWNLOADS_DIR, &Some(dir.clone()));
+        set.expect("the folder preference is written");
+        let downloads = browser.downloads().clone();
+        let window = BrowserWindow::new(&browser);
+        let tab = window.open_tab(None, None, Focus::Foreground);
+        // Both ask where to go before either has made its file.
+        tab.web_view().download_uri(&server.url("/big.bin"));
+        tab.web_view().download_uri(&server.url("/big.bin"));
+
+        let in_folder = || -> Vec<Download> {
+            downloads.list().into_iter().filter(|d| d.path.parent() == Some(dir.as_path())).collect()
+        };
+        wait_until("both downloads to start", || {
+            in_folder().iter().filter(|d| d.state == State::InProgress).count() == 2
+        });
+        let mut paths: Vec<PathBuf> = in_folder().into_iter().map(|d| d.path).collect();
+        paths.sort();
+        assert_eq!(paths, [dir.join("big (1).bin"), dir.join("big.bin")]);
+
+        for entry in in_folder() {
+            downloads.cancel(entry.id);
+        }
+        wait_until("both to end", || in_folder().iter().all(|d| d.state == State::Cancelled));
         window.destroy();
         let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);
         reset.expect("the folder preference is reset");
