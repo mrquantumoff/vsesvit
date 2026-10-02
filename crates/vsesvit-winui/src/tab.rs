@@ -5,7 +5,7 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use vsesvit_core::history::Transition;
@@ -16,6 +16,7 @@ use windows_core::{IInspectable, Interface, Ref, Result};
 use crate::bindings::*;
 use crate::browser::{Browser, CommitKind};
 use crate::permissions::{Requested, TabPermissions};
+use crate::session::now_ms;
 use crate::shortcuts::{self, PageMessage, PageScript};
 use crate::store;
 use crate::tab_header::{Audio, TabLook};
@@ -1102,12 +1103,6 @@ impl Tab {
             None => {}
         }
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// What a tab shows as its title: the document's, else its URL, else "New tab".

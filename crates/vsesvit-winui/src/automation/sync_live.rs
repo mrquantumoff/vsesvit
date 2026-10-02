@@ -28,6 +28,7 @@ use crate::bindings::*;
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog};
 use crate::exec;
+use crate::session::now_ms;
 use crate::window::BrowserWindow;
 
 const POLL: Duration = Duration::from_millis(250);
@@ -97,12 +98,6 @@ impl Live {
 fn marker_time(contents: &str, run: &str) -> Option<i64> {
     let (id, at) = contents.trim().rsplit_once(' ')?;
     if id == run { at.parse().ok() } else { None }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 fn has_bookmark(browser: &Browser, url: &str) -> bool {

@@ -3,7 +3,6 @@
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use vsesvit_core::history::{ClearRange, HistoryEntry};
 use vsesvit_core::sync::Changed;
@@ -12,6 +11,7 @@ use windows_core::{IInspectable, Interface, Result};
 use super::{Category, Wired, on_click, side_list};
 use crate::bindings::*;
 use crate::browser::Browser;
+pub(super) use crate::session::now_ms;
 use crate::window::BrowserWindow;
 use crate::xaml;
 
@@ -259,11 +259,6 @@ pub(super) fn ago(now_ms: i64, then_ms: i64) -> String {
     vsesvit_sync::status::ago(u64::try_from((now_ms - then_ms).max(0) / 1000).unwrap_or(0))
 }
 
-pub(super) fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
 
 #[cfg(test)]
 mod tests {

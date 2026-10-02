@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use vsesvit_core::Profile;
 use vsesvit_core::downloads::{self as list, Download, DownloadId, State};
@@ -243,8 +243,9 @@ impl Browser {
         let operation = args.DownloadOperation()?;
         let total = known_total(operation.TotalBytesToReceive()?);
         let url = operation.Uri()?;
+        let now = u64::try_from(crate::session::now_ms()).unwrap_or(0);
         let download = self
-            .core(|p| p.downloads().start(&url, path, total, now_ms()))
+            .core(|p| p.downloads().start(&url, path, total, now))
             .map_err(|e| windows_core::Error::new(E_FAIL, e.to_string()))?;
         let id = download.id;
         log::info!("downloading {url} to {}", path.display());
@@ -368,12 +369,6 @@ fn counts(operation: &CoreWebView2DownloadOperation) -> (u64, Option<u64>) {
 /// The engine reports an unknown size (no `Content-Length`) as -1.
 fn known_total(total: i64) -> Option<u64> {
     u64::try_from(total).ok()
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]

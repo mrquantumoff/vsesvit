@@ -1,9 +1,17 @@
 //! Session restore and save, as pure functions over vsesvit-core's snapshot types: what to open
 //! at startup, and what a window looks like in a snapshot.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use vsesvit_core::Url;
 use vsesvit_core::prefs::Startup;
 use vsesvit_core::session::{SessionSnapshot, TabId, TabSnapshot, WindowSnapshot};
+
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
 
 /// A window to open at startup.
 #[derive(Clone, Debug, PartialEq, Eq)]
