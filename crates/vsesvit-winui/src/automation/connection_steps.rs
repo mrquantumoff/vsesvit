@@ -118,8 +118,11 @@ async fn secure_after_navigating(
     tab.navigate(&page);
     exec::sleep(Duration::from_millis(300)).await;
     wait_loaded(tab).await?;
-    let popup = open_popup(window).await?;
-    let (title, certificate) = (headline(&popup), has(&popup, "ConnectionCertificate"));
+    let popup = open_site_info(window).await?;
+    let (title, certificate) = (
+        text_of(&popup, "ConnectionTitle"),
+        has(&popup, "ConnectionCertificate"),
+    );
     window.hide_connection();
     Ok(json!({
         "name": "13a2-connection-secure-after-navigating",
