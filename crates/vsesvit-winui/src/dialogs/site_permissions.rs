@@ -137,24 +137,39 @@ fn fill(page: &Rc<Page>) -> Result<()> {
 }
 
 /// Stores `setting`, saying whether it could; a block, or a removal, ends what the site captures
-/// under it.
+/// under it, reloading the tabs the shell let capture (see `permissions::must_reload`).
 fn set(
     browser: &Rc<Browser>,
     origin: &Origin,
     permission: Permission,
     setting: Option<Setting>,
 ) -> bool {
-    if let Err(e) = browser.core(|p| p.site_permissions().set(origin, permission, setting)) {
-        log::warn!(
-            "site permission {permission:?} for {}: {e}",
-            origin.as_str()
-        );
-        return false;
-    }
+    let before = browser.core(|p| {
+        let mut site = p.site_permissions();
+        let before = site.get(origin, permission);
+        site.set(origin, permission, setting).map(|()| before)
+    });
+    let before = match before {
+        Ok(before) => before,
+        Err(e) => {
+            log::warn!(
+                "site permission {permission:?} for {}: {e}",
+                origin.as_str()
+            );
+            return false;
+        }
+    };
     if setting.is_none() {
         permissions::stop_captures(browser, origin, &[permission]);
     }
     permissions::settings_changed(browser);
+    if setting != Some(Setting::Allow) {
+        // A removal leaves the tabs' grants as they are; a block overrides them.
+        permissions::reload_allowed_captures(browser, origin, &[permission], |tab, p| {
+            before == Some(Setting::Allow)
+                || (setting == Some(Setting::Block) && tab.permissions().grants().contains(&p))
+        });
+    }
     true
 }
 

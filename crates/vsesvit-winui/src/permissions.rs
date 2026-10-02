@@ -9,7 +9,9 @@
 //! Other kinds keep the engine's default handling.
 //!
 //! A stored Allow lets the engine grant a capture without asking, so a tab on a site that may
-//! capture is watched for as long as it stays there (see `capturing`).
+//! capture is watched for as long as it stays there (see `capturing`). What the page reports
+//! is only its word, so a block or a reset that takes back a capture the shell let it make
+//! reloads the page ([`reload_allowed_captures`]).
 //!
 //! Camera and microphone from one `getUserMedia` arrive as two requests, in two turns of the UI
 //! thread. A request joins the last prompt of its tab when that is for the same origin, even one
@@ -33,6 +35,7 @@ use windows_core::{Interface, Result};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::exec;
+use crate::tab::Tab;
 
 /// The engine's permission kinds that core has a permission for.
 const ENGINE_KINDS: [(CoreWebView2PermissionKind, Permission); 6] = [
@@ -538,6 +541,34 @@ pub(crate) fn stop_captures(browser: &Browser, origin: &Origin, permissions: &[P
     }
 }
 
+/// Whether blocking or resetting `permission` must reload a tab to end its capture: the shell
+/// let the page capture (`allowed`: a grant, or the site's Allow), whatever the page reports.
+/// The page can hide a capture from its script or keep the script from stopping it, so only
+/// tearing down the document is sure to release the device.
+pub(crate) fn must_reload(allowed: bool, permission: Permission) -> bool {
+    crate::capturing::stop_script(permission).is_some() && allowed
+}
+
+/// After a block or a reset of `permissions` for `origin`: reloads every tab showing the site,
+/// in every window, that the shell let capture under one of them (`allowed_before`), so that
+/// the capture ends (see [`must_reload`]).
+pub(crate) fn reload_allowed_captures(
+    browser: &Browser,
+    origin: &Origin,
+    permissions: &[Permission],
+    allowed_before: impl Fn(&Tab, Permission) -> bool,
+) {
+    for tab in browser.windows().iter().flat_map(|w| w.tabs_in_order()) {
+        if tab.origin().as_ref() == Some(origin)
+            && permissions
+                .iter()
+                .any(|&p| must_reload(allowed_before(&tab, p), p))
+        {
+            tab.reload();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,5 +613,13 @@ mod tests {
             Some(Permission::Midi)
         );
         assert_eq!(permission_of(CoreWebView2PermissionKind::Autoplay), None);
+    }
+
+    #[test]
+    fn a_capture_the_shell_allowed_ends_whatever_the_page_reports() {
+        assert!(must_reload(true, Permission::Camera));
+        assert!(must_reload(true, Permission::Microphone));
+        assert!(!must_reload(false, Permission::Camera));
+        assert!(!must_reload(true, Permission::Notifications));
     }
 }

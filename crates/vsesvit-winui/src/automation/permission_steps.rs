@@ -445,6 +445,63 @@ async fn allowed_camera_shows(
         window.capture_button_shown().is_none().then_some(())
     })
     .await;
+    blocked_in_settings_reloads(window, tab, steps).await
+}
+
+/// Block chosen on the Settings page for the camera the site's Allow let the page open reloads
+/// its tab, whatever the page reports: here it swapped out a built-in the capture script used.
+async fn blocked_in_settings_reloads(
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    eval(
+        tab,
+        "window.__gum = ''; navigator.mediaDevices.getUserMedia({ video: true }).then(s => { \
+         window.__stream = s; window.__gum = 'ok'; }, e => window.__gum = e.name); 0",
+    )
+    .await?;
+    let opened = page_value(tab, "window.__gum").await;
+    let shown = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        window
+            .capture_button_shown()
+            .filter(|d| d == "Using your camera")
+    })
+    .await;
+    eval(tab, "Array.prototype.find = () => undefined; 0").await?;
+    let preview = settings_on(window, "SitePermissionsPanel")
+        .await
+        .map_err(|e| e.to_string())?;
+    preview
+        .find::<Selector>("SiteChoice0camera")
+        .and_then(|choice| choice.SetSelectedIndex(1))
+        .map_err(|e| format!("SiteChoice0camera: {e}"))?;
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    let mut gum = None;
+    while Instant::now() < deadline {
+        gum = eval(tab, "typeof window.__gum").await.ok();
+        if gum.as_deref() == Some("\"undefined\"") {
+            break;
+        }
+        exec::sleep(Duration::from_millis(100)).await;
+    }
+    let reloaded = gum.as_deref() == Some("\"undefined\"");
+    wait_loaded(tab).await?;
+    let gone = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        window.capture_button_shown().is_none().then_some(())
+    })
+    .await;
+    let indicator = window.capture_button_shown();
+    drop(preview);
+    steps.push(json!({
+        "name": "24h4-blocking-an-allowed-camera-in-settings-reloads-its-tab",
+        "opened": opened,
+        "shown": shown,
+        "gum_after": gum,
+        "indicator_after": indicator,
+        "ok": opened.as_deref() == Some("ok") && shown.is_some() && reloaded && gone.is_some(),
+    }));
+    exec::sleep(Duration::from_millis(300)).await;
     Ok(())
 }
 

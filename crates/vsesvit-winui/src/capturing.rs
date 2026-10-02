@@ -65,4 +65,26 @@ mod tests {
         );
         assert_eq!(stop_script(Permission::Location), None);
     }
+
+    /// The page can replace any array method, and the iterator `for...of` takes, after the
+    /// script loaded; the script calls none of them.
+    #[test]
+    fn script_saves_array_intrinsics() {
+        for call in [
+            ".push(",
+            ".splice(",
+            ".find(",
+            ".map(",
+            ".forEach(",
+            "for (const",
+        ] {
+            assert!(!MAIN_WORLD_SCRIPT.contains(call), "capture.js has {call}");
+        }
+        for line in MAIN_WORLD_SCRIPT.lines() {
+            assert!(
+                !(line.contains("for (") && line.contains(" of ")),
+                "capture.js iterates with for...of: {line}"
+            );
+        }
+    }
 }
