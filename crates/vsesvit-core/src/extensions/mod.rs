@@ -201,14 +201,13 @@ pub struct ExtensionRecord {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Verification {
     /// Downloaded from the Chrome Web Store: every CRX3 proof verified, the developer
-    /// key derives to the requested id, and (`publisher_verified`) the Web Store
-    /// publisher key signed it. Installs without the publisher proof are refused, so
-    /// a recorded store install always has `publisher_verified: true`.
-    ChromeWebStore { publisher_verified: bool },
+    /// key derives to the requested id, and the Chrome Web Store publisher key signed it.
+    /// That proof is required. Rows written when this carried a `publisher_verified` flag
+    /// still load: the extra field is ignored.
+    ChromeWebStore,
     /// Downloaded from Microsoft Edge Add-ons, matching the update service's sha256: every
     /// CRX3 proof verified, the developer key derives to the requested id, and the Edge
-    /// Add-ons publisher key signed it. That proof is required, so unlike `ChromeWebStore`
-    /// this carries no flag.
+    /// Add-ons publisher key signed it. That proof is required.
     EdgeAddons,
     /// Downloaded from addons.mozilla.org over TLS, matching the API's sha256. Mozilla's
     /// own signature is not checked.
@@ -225,14 +224,13 @@ impl Verification {
     /// The id is the hash of a developer key this device saw sign the package. A manifest
     /// `key` proves nothing: it is a public key.
     fn binds_key(&self) -> bool {
-        matches!(self, Verification::ChromeWebStore { .. } | Verification::EdgeAddons | Verification::LocalCrx)
+        matches!(self, Verification::ChromeWebStore | Verification::EdgeAddons | Verification::LocalCrx)
     }
 
     /// Where the install came from and how it was checked, as both shells' extensions pages say it.
     pub fn label(&self) -> &'static str {
         match self {
-            Verification::ChromeWebStore { publisher_verified: true } => "Chrome Web Store, publisher verified",
-            Verification::ChromeWebStore { publisher_verified: false } => "Chrome Web Store, developer key only",
+            Verification::ChromeWebStore => "Chrome Web Store, publisher verified",
             Verification::EdgeAddons => "Edge Add-ons, publisher verified",
             Verification::AmoHash => "Firefox Add-ons, hash checked",
             Verification::LocalCrx => "Local CRX, signature verified",
@@ -857,12 +855,16 @@ mod tests {
 
     #[test]
     fn verification_labels() {
-        assert_eq!(
-            Verification::ChromeWebStore { publisher_verified: true }.label(),
-            "Chrome Web Store, publisher verified"
-        );
+        assert_eq!(Verification::ChromeWebStore.label(), "Chrome Web Store, publisher verified");
         assert_eq!(Verification::EdgeAddons.label(), "Edge Add-ons, publisher verified");
         assert_eq!(Verification::Unpacked.label(), "Unpacked folder, not verified");
+    }
+
+    #[test]
+    fn legacy_chrome_web_store_rows_still_load() {
+        let legacy = r#"{"kind":"chrome_web_store","publisher_verified":true}"#;
+        assert_eq!(serde_json::from_str::<Verification>(legacy).unwrap(), Verification::ChromeWebStore);
+        assert_eq!(serde_json::to_string(&Verification::ChromeWebStore).unwrap(), r#"{"kind":"chrome_web_store"}"#);
     }
 
     #[test]
@@ -928,7 +930,7 @@ mod store_tests {
         job.intent = intent;
         let mut staged = job.run(&mut |_| {}).unwrap();
         staged.source = InstallSource::ChromeWebStore { id: probe_id() };
-        staged.verification = Verification::ChromeWebStore { publisher_verified: true };
+        staged.verification = Verification::ChromeWebStore;
         staged
     }
 
@@ -956,7 +958,7 @@ mod store_tests {
         let staged = staged_from_store(&mut t, Intent::User);
         let ext = t.p().extensions().commit(staged).unwrap().unwrap();
         assert!(ext.enabled);
-        assert_eq!(ext.verification, Verification::ChromeWebStore { publisher_verified: true });
+        assert_eq!(ext.verification, Verification::ChromeWebStore);
         let (rec, seq) = desired(&mut t).unwrap();
         assert_eq!((rec.store.v.clone(), rec.installed.v, rec.enabled.v), (StoreRef::ChromeWebStore, true, true));
 
@@ -1121,7 +1123,7 @@ mod store_tests {
         let staged = unpacked_with_probe_key(&mut t);
         assert!(matches!(t.p().extensions().commit(staged), Err(Error::Install(InstallError::VerifiedIdTaken(_)))));
         let ext = t.p().extensions().get(&probe_id()).unwrap().unwrap();
-        assert_eq!((ext.version.as_str(), &ext.verification), ("1.0.0", &Verification::ChromeWebStore { publisher_verified: true }));
+        assert_eq!((ext.version.as_str(), &ext.verification), ("1.0.0", &Verification::ChromeWebStore));
     }
 
     #[test]
@@ -1140,7 +1142,7 @@ mod store_tests {
         let ext = t.p().extensions().commit(staged).unwrap().unwrap();
         assert_eq!(
             (ext.version.as_str(), &ext.verification),
-            ("1.0.0", &Verification::ChromeWebStore { publisher_verified: true }),
+            ("1.0.0", &Verification::ChromeWebStore),
             "the store copy replaces a newer unverified one"
         );
         let work = t.p().extensions().reconcile().unwrap();

@@ -84,7 +84,7 @@ fn installs_ublock_origin_lite_from_the_chrome_web_store() {
     println!("installed {} {} into {}; verification = {:?}", ext.manifest.name, ext.version, ext.dir.display(), ext.verification);
 
     assert_eq!(ext.id, id);
-    assert_eq!(ext.verification, Verification::ChromeWebStore { publisher_verified: true });
+    assert_eq!(ext.verification, Verification::ChromeWebStore);
     assert_eq!(ext.manifest.key_id(), Some(id), "the injected key keeps the store id");
     assert!(!ext.dir.join("_metadata").exists());
     assert!(!ext.manifest.dnr_rulesets.is_empty(), "uBO Lite filters with declarativeNetRequest");
@@ -147,7 +147,7 @@ fn install_recommended(name: &str) {
 
     assert_eq!(ext.id, r.id());
     let expected = match r.store {
-        CrxStore::ChromeWebStore => Verification::ChromeWebStore { publisher_verified: true },
+        CrxStore::ChromeWebStore => Verification::ChromeWebStore,
         CrxStore::EdgeAddons => Verification::EdgeAddons,
     };
     assert_eq!(ext.verification, expected);

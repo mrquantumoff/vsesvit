@@ -424,7 +424,7 @@ and requires a valid tree covering exactly the live records.
 
 **Grafted.**
 
-- From candidate 2: each install records its provenance as a `Verification` enum (`ChromeWebStore { publisher_verified }`, `EdgeAddons`, `AmoHash`, `LocalCrx`, `LocalXpi`, `Unpacked`). The CRX3 parser rejects zip end-of-central-directory magic inside the header and fails if any proof is invalid, as Chromium does. `InstallJob::run` takes `progress: &mut dyn FnMut(InstallPhase)` for the download UI.
+- From candidate 2: each install records its provenance as a `Verification` enum (`ChromeWebStore`, `EdgeAddons`, `AmoHash`, `LocalCrx`, `LocalXpi`, `Unpacked`). The CRX3 parser rejects zip end-of-central-directory magic inside the header and fails if any proof is invalid, as Chromium does. `InstallJob::run` takes `progress: &mut dyn FnMut(InstallPhase)` for the download UI.
 - From candidate 2: the reading list is dropped as a kind. Code 9 is retired. If it comes back, it is a new table and kind and touches no existing row.
 - From candidate 3: search-engine records use `Record<T> = Live(T) | Tombstone(Stamp)` instead of live fields next to `deleted: Option<Stamp>`.
 - From candidate 3: the reserved credential wire shape is named now: `CredentialBlob { ciphertext, wrapped_by }` for kinds 10 and 11.

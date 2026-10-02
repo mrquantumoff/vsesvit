@@ -454,9 +454,7 @@ fn stage(
             progress(InstallPhase::ReadingManifest);
             let manifest = Manifest::load(root, ui_locale)?;
             let verification = match policy {
-                VerifyPolicy::WebStore { store: CrxStore::ChromeWebStore, .. } => {
-                    Verification::ChromeWebStore { publisher_verified: verified.publisher_verified }
-                }
+                VerifyPolicy::WebStore { store: CrxStore::ChromeWebStore, .. } => Verification::ChromeWebStore,
                 VerifyPolicy::WebStore { store: CrxStore::EdgeAddons, .. } => Verification::EdgeAddons,
                 VerifyPolicy::AnyDeveloperKey => Verification::LocalCrx,
             };

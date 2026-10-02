@@ -670,10 +670,7 @@ async fn checks(
                     .unwrap_or_default()
             );
             let ok = ext.id.as_str() == CWS_ID
-                && ext.verification
-                    == (Verification::ChromeWebStore {
-                        publisher_verified: true,
-                    })
+                && ext.verification == Verification::ChromeWebStore
                 && engine_id.as_deref() == Some(CWS_ID);
             ok.then_some(detail.clone()).ok_or(detail)
         })

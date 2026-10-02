@@ -1624,7 +1624,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             })
             .await;
             let detail = format!("{} {} verification={:?}, loaded by the runtime", ext.manifest.name, ext.version, ext.verification);
-            if ext.verification == (Verification::ChromeWebStore { publisher_verified: true }) { Ok(detail) } else { Err(detail) }
+            if ext.verification == Verification::ChromeWebStore { Ok(detail) } else { Err(detail) }
         })
         .await;
     }
