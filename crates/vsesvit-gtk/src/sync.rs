@@ -226,7 +226,7 @@ impl Syncer {
             syncer.0.canceller.take();
             let Some(browser) = syncer.browser() else { return };
             let saved = result.and_then(|account| {
-                account.save(&mut browser.core().borrow_mut().sync())?;
+                account.save_signed_in(&mut browser.core().borrow_mut().sync())?;
                 Ok(account)
             });
             match saved {

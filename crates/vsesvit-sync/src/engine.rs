@@ -16,7 +16,7 @@ use crate::{Error, Http, now_secs};
 const STATE_KEY: &str = "account";
 /// The key in core's sealed `sync_secrets`, which holds the session apart from the rest.
 const SESSION_KEY: &str = "account.session";
-/// Where protocol 1 kept the provider's tokens; cleared on sign-out.
+/// Where protocol 1 kept the provider's tokens; cleared on sign-in and sign-out.
 const OLD_TOKENS_KEY: &str = "account.tokens";
 /// Rounds one sync runs at most; the next sync takes what is left.
 pub const MAX_ROUNDS: usize = 50;
@@ -134,6 +134,14 @@ impl Account {
         store.set_secret_state(SESSION_KEY, self.session.as_bytes())?;
         let bytes = serde_json::to_vec(self).expect("the account serializes");
         Ok(store.set_engine_state(STATE_KEY, &bytes)?)
+    }
+
+    /// Saves the account a sign-in just made, in place of any the profile stored, which is kept
+    /// until then so that a sign-in that fails leaves it asking for another. Drops the tokens
+    /// protocol 1 kept too, which nothing reads.
+    pub fn save_signed_in(&self, store: &mut SyncStore<'_>) -> Result<(), Error> {
+        store.set_secret_state(OLD_TOKENS_KEY, &[])?;
+        self.save(store)
     }
 
     /// Signs the profile out. The records stay on this device and on the server. Works with the
@@ -390,6 +398,27 @@ mod tests {
 
     fn record(bytes: usize) -> Record {
         Record { kind: 1, id: "x".to_owned(), body: vec![0; bytes] }
+    }
+
+    #[test]
+    fn a_sign_in_drops_the_tokens_protocol_1_kept() {
+        use vsesvit_core::vault::KeyStore;
+        use vsesvit_core::{OpenOptions, Profile};
+
+        let dir = std::env::temp_dir().join(format!("vsesvit-sync-old-tokens-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut profile = Profile::open(&dir, OpenOptions { key_store: KeyStore::Basic, ..OpenOptions::default() }).unwrap();
+        let mut store = profile.sync();
+        store.set_secret_state(OLD_TOKENS_KEY, b"protocol 1 tokens").unwrap();
+        let limits = Limits { max_batch: 100, max_record_bytes: 1 << 20, max_request_bytes: 4 << 20 };
+        let account = Account::new("https://sync.example.com".to_owned(), None, "session".to_owned(), limits);
+        account.save_signed_in(&mut store).unwrap();
+        let old = store.secret_state(OLD_TOKENS_KEY).unwrap().filter(|t| !t.is_empty());
+        let loaded = Account::load(&mut store).unwrap();
+        drop(profile);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(old, None, "the old tokens are gone");
+        assert_eq!(loaded, Some(account));
     }
 
     #[test]

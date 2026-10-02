@@ -12,7 +12,7 @@
 //! let pending = SignIn::start(&http, &server_url)?;          // worker
 //! open_tab(pending.authorize_url());                         // UI: the server's sign-in page
 //! let account = pending.finish(&http)?;                      // worker: waits for the redirect
-//! account.save(&mut profile.sync())?;                        // UI
+//! account.save_signed_in(&mut profile.sync())?;              // UI
 //!
 //! // One sync, a few rounds.
 //! let mut account = Account::load(&mut profile.sync())?.unwrap();

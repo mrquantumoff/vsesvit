@@ -279,7 +279,7 @@ fn try_sign_in(http: &Http, server: &str) -> Result<Account, Error> {
 
 fn sign_in(profile: &mut Profile, http: &Http, server: &str) -> Account {
     let account = try_sign_in(http, server).unwrap();
-    account.save(&mut profile.sync()).unwrap();
+    account.save_signed_in(&mut profile.sync()).unwrap();
     account
 }
 

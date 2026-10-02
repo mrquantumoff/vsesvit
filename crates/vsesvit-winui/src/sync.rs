@@ -440,7 +440,7 @@ pub(crate) fn sign_in(
         };
         b.sync().canceller.take();
         let saved = finished.and_then(|account| {
-            b.core(|p| account.save(&mut p.sync()))?;
+            b.core(|p| account.save_signed_in(&mut p.sync()))?;
             Ok(account)
         });
         match saved {
