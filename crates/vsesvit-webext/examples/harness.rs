@@ -28,7 +28,8 @@
 //!    resolve; `tabs.create` resolves relative URLs and `tabs.update` refuses
 //!    `javascript:` and `file:` and without a tab id updates the active tab; a web page cannot
 //!    navigate a tab to the options page, with or without a Referer, nor get it by a reload,
-//!    while going back to it still works;
+//!    nor a site by redirecting a load the browser started there, while going back to it still
+//!    works;
 //! 8. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!    `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!    uninstall followed by a reinstall fires `onInstalled(install)` again.
@@ -460,6 +461,13 @@ mod linux {
             glib::timeout_future(Duration::from_millis(1500)).await;
             let ran = self.eval(&quiet_view, "String(window.__twinOptions && window.__twinOptions.id)", None).await;
             self.note("web_page_without_referrer_cannot_open_extension_page", ran.is_some() && ran.as_deref() != Some(TWIN_ID), format!("options.js in tab {} after a no-referrer page navigated it to {target} and it reloaded = {ran:?}", quiet.0));
+            // Nor a site that redirects there, even in a load the browser started.
+            let bounce = bounce_to(format!("chrome-extension://{url_host}/options.html?bounced"));
+            let bounced = self.host.create_tab(&bounce, false).expect("bounced tab");
+            let bounced_view = self.host.web_view(bounced).expect("bounced tab view");
+            glib::timeout_future(Duration::from_millis(1500)).await;
+            let title = bounced_view.title().map(String::from);
+            self.note("redirect_cannot_open_extension_page", title.as_deref() != Some(format!("options:{TWIN_ID}").as_str()), format!("tab {} title after {bounce} redirected it to the options page = {title:?}", bounced.0));
             // The browser's own navigations still reach the extension's pages: back to the
             // options page from a site it linked to.
             let back = self.host.create_tab(&format!("chrome-extension://{url_host}/options.html"), false).expect("options tab");
@@ -680,21 +688,37 @@ mod linux {
             self.next_id.set(id.0 + 1);
             let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id)).build();
             self.container.append(&view);
-            // The navigation gate every shell installs (lib.rs).
-            view.connect_decide_policy(move |view, decision, kind| {
-                if !matches!(kind, webkit::PolicyDecisionType::NavigationAction | webkit::PolicyDecisionType::NewWindowAction) {
-                    return false;
-                }
-                let target = decision.downcast_ref::<webkit::NavigationPolicyDecision>().and_then(|d| d.navigation_action()).and_then(|a| a.request()).and_then(|r| r.uri());
-                let source = view.uri().map(String::from).unwrap_or_default();
-                if target.is_none_or(|target| runtime.may_navigate(&source, &target)) {
-                    return false;
-                }
-                println!("[harness] host: refused a navigation from {source}");
-                decision.ignore();
-                true
-            });
             let committed = Rc::new(RefCell::new(String::new()));
+            // The navigation gate every shell installs (lib.rs), judged as the GTK tab judges
+            // it (`Tab::may_navigate`).
+            view.connect_decide_policy({
+                let committed = committed.clone();
+                move |view, decision, kind| {
+                    let new_window = match kind {
+                        webkit::PolicyDecisionType::NavigationAction => false,
+                        webkit::PolicyDecisionType::NewWindowAction => true,
+                        _ => return false,
+                    };
+                    let Some(action) = decision.downcast_ref::<webkit::NavigationPolicyDecision>().and_then(|d| d.navigation_action()) else { return false };
+                    let Some(target) = action.request().and_then(|r| r.uri()) else { return false };
+                    let redirect = action.is_redirect();
+                    // A load the browser starts has already made the view's URI its target
+                    // when WebKit asks; a page's own cannot.
+                    if !new_window && !redirect && view.uri().is_some_and(|uri| uri == target) {
+                        return false;
+                    }
+                    // WebKit shows a server redirect's target as the view's URI too. Only a web
+                    // server redirects, so the web page on screen asked, or no page did.
+                    let page = committed.borrow().clone();
+                    let page = if redirect && page.starts_with("chrome-extension:") { String::new() } else { page };
+                    if runtime.may_navigate(&page, &target) {
+                        return false;
+                    }
+                    println!("[harness] host: refused a navigation from {page:?} to {target}");
+                    decision.ignore();
+                    true
+                }
+            });
             view.connect_load_changed({
                 let committed = committed.clone();
                 move |view, event| {
@@ -738,6 +762,26 @@ mod linux {
     }
 
     // --- fixtures ------------------------------------------------------------------------
+
+    /// A site that answers every request with a redirect to `location` and no Referer, served
+    /// until the harness exits. Returns its URL.
+    fn bounce_to(location: String) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bounce server");
+        let url = format!("http://{}/", listener.local_addr().expect("bounce server address"));
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                use std::io::{BufRead, Write};
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    line.clear();
+                }
+                let reply = format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = (&stream).write_all(reply.as_bytes());
+            }
+        });
+        url
+    }
 
     /// Installs through the real pipeline: parse the source, verify, unpack, commit.
     fn install(profile: &Rc<RefCell<Profile>>, path: &Path) -> InstalledExtension {
