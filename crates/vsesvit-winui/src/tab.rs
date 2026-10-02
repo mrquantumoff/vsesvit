@@ -4,6 +4,7 @@
 //! measures 0 high); the window shows the selected tab's view and collapses the others.
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
@@ -148,7 +149,9 @@ pub(crate) struct Tab {
     permissions: TabPermissions,
     /// The page's capture is being polled (see `capturing`).
     capture_polled: Cell<bool>,
-    shortcut_world: RefCell<shortcuts::World>,
+    /// The shortcut world in each DevTools session: the page's own (`""`) and each attached
+    /// frame's.
+    shortcut_worlds: RefCell<HashMap<String, shortcuts::World>>,
     closed: Cell<bool>,
 }
 
@@ -179,7 +182,7 @@ impl Tab {
             pinned: Cell::new(false),
             permissions: TabPermissions::default(),
             capture_polled: Cell::new(false),
-            shortcut_world: RefCell::new(shortcuts::World::default()),
+            shortcut_worlds: RefCell::default(),
             closed: Cell::new(false),
         }))
     }
@@ -334,24 +337,50 @@ impl Tab {
         Ok(core)
     }
 
-    /// Runs the shortcut script in its isolated world of every new document (see `shortcuts`)
-    /// and listens to its binding; runs the store script in the main world (see `store`).
+    /// Runs the shortcut script in its isolated world of every new document (see `shortcuts`),
+    /// frames from other sites included (see `attached`), and listens to its binding; runs the
+    /// store script in the main world (see `store`).
     async fn inject(self: &Rc<Self>, core: &CoreWebView2, script: &PageScript) -> Result<()> {
-        self.shortcut_world.borrow_mut().name = script.world.clone();
+        self.add_world(String::new(), script);
         for event in shortcuts::CONTEXT_EVENTS {
             core.GetDevToolsProtocolEventReceiver(event)?
                 .DevToolsProtocolEventReceived(on(
                     self,
                     move |tab, args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs| {
-                        if let Ok(params) = args.ParameterObjectAsJson() {
-                            tab.shortcut_world
-                                .borrow_mut()
-                                .track(event, &params.to_string());
+                        let session = session_of(args);
+                        if let (Some(world), Ok(params)) = (
+                            tab.shortcut_worlds.borrow_mut().get_mut(&session),
+                            args.ParameterObjectAsJson(),
+                        ) {
+                            world.track(event, &params.to_string());
                         }
                     },
                 ))?
                 .forget();
         }
+        core.GetDevToolsProtocolEventReceiver("Target.attachedToTarget")?
+            .DevToolsProtocolEventReceived(on(
+                self,
+                |tab, args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs| {
+                    if let Ok(params) = args.ParameterObjectAsJson() {
+                        tab.attached(&params.to_string());
+                    }
+                },
+            ))?
+            .forget();
+        core.GetDevToolsProtocolEventReceiver("Target.detachedFromTarget")?
+            .DevToolsProtocolEventReceived(on(
+                self,
+                |tab, args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs| {
+                    let params = args.ParameterObjectAsJson().map(|p| p.to_string());
+                    if let Some((session, _)) =
+                        params.ok().and_then(|p| shortcuts::attached_session(&p))
+                    {
+                        tab.shortcut_worlds.borrow_mut().remove(&session);
+                    }
+                },
+            ))?
+            .forget();
         core.GetDevToolsProtocolEventReceiver("Runtime.bindingCalled")?
             .DevToolsProtocolEventReceived(on(
                 self,
@@ -371,21 +400,8 @@ impl Tab {
                 },
             ))?
             .forget();
-        // Scripts for new documents need the Page domain on, and a binding reaches the worlds
-        // created later only while the Runtime domain is on.
-        let calls = [
-            ("Page.enable", "{}".to_owned()),
-            ("Runtime.enable", "{}".to_owned()),
+        let calls = shortcuts::world_calls(script).into_iter().chain([
             ("Security.enable", "{}".to_owned()),
-            (
-                "Runtime.addBinding",
-                json!({ "name": shortcuts::BINDING, "executionContextName": script.world })
-                    .to_string(),
-            ),
-            (
-                "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": script.source, "worldName": script.world }).to_string(),
-            ),
             (
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({ "source": store::MAIN_WORLD_SCRIPT }).to_string(),
@@ -398,12 +414,64 @@ impl Tab {
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({ "source": capturing::MAIN_WORLD_SCRIPT }).to_string(),
             ),
-        ];
+            ("Target.setAutoAttach", shortcuts::AUTO_ATTACH.to_owned()),
+        ]);
         for (method, params) in calls {
             core.CallDevToolsProtocolMethodAsync(method, &params)?
                 .await?;
         }
-        self.apply_shortcuts(core).await
+        self.apply_shortcuts(core, "").await
+    }
+
+    fn add_world(&self, session: String, script: &PageScript) {
+        let world = shortcuts::World {
+            name: script.world.clone(),
+            ..shortcuts::World::default()
+        };
+        self.shortcut_worlds.borrow_mut().insert(session, world);
+    }
+
+    /// A session `AUTO_ATTACH` attached, waiting to start: a frame from another site gets the
+    /// shortcut world the page has, so the keys it takes work there too.
+    fn attached(self: &Rc<Self>, params: &str) {
+        let Some((session, frame)) = shortcuts::attached_session(params) else {
+            return;
+        };
+        let (Some(core), Some(browser)) = (self.core.get().cloned(), self.browser()) else {
+            return;
+        };
+        let tab = self.clone();
+        exec::spawn(async move {
+            let set_up = if frame {
+                tab.set_up_frame(&core, &session, &browser.page_script()).await
+            } else {
+                Ok(())
+            };
+            if let Err(e) = set_up {
+                log::debug!("tab {}: frame session {session}: {e}", tab.id);
+            }
+            // A frame the setup failed in still starts, without the shortcuts.
+            let run = devtools_in(&core, &session, "Runtime.runIfWaitingForDebugger", "{}").await;
+            if let Err(e) = run {
+                log::debug!("tab {}: starting frame session {session}: {e}", tab.id);
+            }
+        });
+    }
+
+    async fn set_up_frame(
+        &self,
+        core: &CoreWebView2,
+        session: &str,
+        script: &PageScript,
+    ) -> Result<()> {
+        self.add_world(session.to_owned(), script);
+        let calls = shortcuts::world_calls(script)
+            .into_iter()
+            .chain([("Target.setAutoAttach", shortcuts::AUTO_ATTACH.to_owned())]);
+        for (method, params) in calls {
+            devtools_in(core, session, method, &params).await?;
+        }
+        self.apply_shortcuts(core, session).await
     }
 
     /// Gives the page script the key sets in effect: in documents to come, and in the ones
@@ -414,44 +482,53 @@ impl Tab {
         };
         let tab = self.clone();
         exec::spawn(async move {
-            if let Err(e) = tab.apply_shortcuts(&core).await {
-                log::warn!("tab {}: keyboard shortcuts: {e}", tab.id);
+            let sessions: Vec<String> = tab.shortcut_worlds.borrow().keys().cloned().collect();
+            for session in sessions {
+                if let Err(e) = tab.apply_shortcuts(&core, &session).await {
+                    log::warn!("tab {}: keyboard shortcuts in session {session:?}: {e}", tab.id);
+                }
             }
         });
     }
 
-    async fn apply_shortcuts(&self, core: &CoreWebView2) -> Result<()> {
+    /// Gives the shortcut world in DevTools session `session` the key sets in effect.
+    async fn apply_shortcuts(&self, core: &CoreWebView2, session: &str) -> Result<()> {
         let script = shortcuts::current().keys_script();
-        let world = self.shortcut_world.borrow().name.clone();
-        let added = core
-            .CallDevToolsProtocolMethodAsync(
-                "Page.addScriptToEvaluateOnNewDocument",
-                &json!({ "source": script, "worldName": world }).to_string(),
-            )?
-            .await?
-            .to_string_lossy();
+        let Some(world) = self.shortcut_worlds.borrow().get(session).map(|w| w.name.clone()) else {
+            return Ok(());
+        };
+        let added = devtools_in(
+            core,
+            session,
+            "Page.addScriptToEvaluateOnNewDocument",
+            &json!({ "source": script, "worldName": world }).to_string(),
+        )
+        .await?;
         let identifier = serde_json::from_str::<serde_json::Value>(&added)
             .ok()
             .and_then(|v| v["identifier"].as_str().map(str::to_owned));
         // The newer script runs after the older one, so replacing it cannot leave a new
         // document with stale keys.
-        let replaced = std::mem::replace(
-            &mut self.shortcut_world.borrow_mut().keys_script,
-            identifier,
-        );
+        let Some((replaced, contexts)) =
+            self.shortcut_worlds.borrow_mut().get_mut(session).map(|world| {
+                let replaced = std::mem::replace(&mut world.keys_script, identifier);
+                (replaced, world.contexts.clone())
+            })
+        else {
+            return Ok(());
+        };
         if let Some(old) = replaced {
-            core.CallDevToolsProtocolMethodAsync(
+            devtools_in(
+                core,
+                session,
                 "Page.removeScriptToEvaluateOnNewDocument",
                 &json!({ "identifier": old }).to_string(),
-            )?
+            )
             .await?;
         }
-        let contexts = self.shortcut_world.borrow().contexts.clone();
         for context in contexts {
             let params = json!({ "expression": script, "contextId": context }).to_string();
-            let evaluated = core
-                .CallDevToolsProtocolMethodAsync("Runtime.evaluate", &params)?
-                .await;
+            let evaluated = devtools_in(core, session, "Runtime.evaluate", &params).await;
             // A context can go away between the event and this call.
             if let Err(e) = evaluated {
                 log::debug!("tab {}: shortcut world {context}: {e}", self.id);
@@ -1083,7 +1160,8 @@ impl Tab {
         let Ok(event) = args.ParameterObjectAsJson() else {
             return;
         };
-        match shortcuts::parse_binding_call(&event, &shortcuts::current()) {
+        let in_frame = !session_of(args).is_empty();
+        match shortcuts::parse_binding_call(&event, &shortcuts::current(), in_frame) {
             // Runs on the next turn: the command may close this tab's web view (Ctrl+W).
             Some(PageMessage::Key(command)) => exec::spawn(async move { window.run(command) }),
             Some(PageMessage::BackgroundLink(url)) => {
@@ -1125,6 +1203,31 @@ fn signal(
             handler(&tab);
         }
     }
+}
+
+/// Calls a DevTools method in `session`: the page's own when it is empty, else one `AUTO_ATTACH`
+/// attached.
+async fn devtools_in(
+    core: &CoreWebView2,
+    session: &str,
+    method: &str,
+    params: &str,
+) -> Result<String> {
+    let result = if session.is_empty() {
+        core.CallDevToolsProtocolMethodAsync(method, params)?.await?
+    } else {
+        core.cast::<ICoreWebView2_11>()?
+            .CallDevToolsProtocolMethodForSessionAsync(session, method, params)?
+            .await?
+    };
+    Ok(result.to_string_lossy())
+}
+
+/// The DevTools session an event came from; empty for the page's own.
+fn session_of(args: &CoreWebView2DevToolsProtocolEventReceivedEventArgs) -> String {
+    args.cast::<ICoreWebView2DevToolsProtocolEventReceivedEventArgs2>()
+        .and_then(|args| args.SessionId())
+        .unwrap_or_default()
 }
 
 /// Wraps a tab event handler: it runs only while the tab is alive and gets non-null args.

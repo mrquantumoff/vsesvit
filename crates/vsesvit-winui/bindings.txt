@@ -220,6 +220,8 @@ Microsoft.Web.WebView2.Core.CoreWebView2ContentLoadingEventArgs
 Microsoft.Web.WebView2.Core.ICoreWebView2NewWindowRequestedEventArgs::{get_Uri, put_NewWindow, put_Handled, get_IsUserInitiated, GetDeferral}
 Microsoft.Web.WebView2.Core.ICoreWebView2DevToolsProtocolEventReceiver::DevToolsProtocolEventReceived
 Microsoft.Web.WebView2.Core.ICoreWebView2DevToolsProtocolEventReceivedEventArgs::get_ParameterObjectAsJson
+Microsoft.Web.WebView2.Core.ICoreWebView2DevToolsProtocolEventReceivedEventArgs2::get_SessionId
+Microsoft.Web.WebView2.Core.ICoreWebView2_11::CallDevToolsProtocolMethodForSessionAsync
 Windows.Foundation.IDeferral::Complete
 Microsoft.Web.WebView2.Core.ICoreWebView2WebMessageReceivedEventArgs::TryGetWebMessageAsString
 Microsoft.Web.WebView2.Core.ICoreWebView2ProcessFailedEventArgs::get_ProcessFailedKind

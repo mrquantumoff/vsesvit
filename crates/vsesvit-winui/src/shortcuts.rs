@@ -14,7 +14,9 @@
 //! own scripts: it shares the page's DOM but none of its JavaScript objects, so the page cannot
 //! redefine what the script reads a key press through, nor read or change the key sets the
 //! script holds. It reports through a DevTools binding that exists only in that world, so the
-//! page can neither see nor send its messages.
+//! page can neither see nor send its messages. Frames from other sites run in processes of their
+//! own, which the page's DevTools session does not reach: each gets a session of its own
+//! (`AUTO_ATTACH`), set up the same way before its first document runs.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -485,13 +487,52 @@ impl World {
     }
 }
 
-/// A `Runtime.bindingCalled` event's parameters: a message if it is a call of `BINDING`.
-pub(crate) fn parse_binding_call(event: &str, bindings: &Bindings) -> Option<PageMessage> {
+/// A `Runtime.bindingCalled` event's parameters: a message if it is a call of `BINDING`. A frame
+/// with a session of its own (`in_frame`) only reports keys; the rest is the top document's.
+pub(crate) fn parse_binding_call(
+    event: &str,
+    bindings: &Bindings,
+    in_frame: bool,
+) -> Option<PageMessage> {
     let value: Value = serde_json::from_str(event).ok()?;
     if value.get("name")?.as_str()? != BINDING {
         return None;
     }
     parse_page_message(value.get("payload")?.as_str()?, bindings)
+        .filter(|message| !in_frame || matches!(message, PageMessage::Key(_)))
+}
+
+/// `Target.setAutoAttach` parameters for every DevTools session of a tab: it attaches a session
+/// to each frame from another site, which waits to start until `Runtime.runIfWaitingForDebugger`.
+pub(crate) const AUTO_ATTACH: &str = r#"{"autoAttach":true,"waitForDebuggerOnStart":true,
+    "flatten":true,"filter":[{"type":"iframe"}]}"#;
+
+/// A `Target.attachedToTarget` event's parameters: the new session, and whether it is a frame's.
+pub(crate) fn attached_session(params: &str) -> Option<(String, bool)> {
+    let value: Value = serde_json::from_str(params).ok()?;
+    let session = value.get("sessionId")?.as_str()?.to_owned();
+    let frame = value.pointer("/targetInfo/type").and_then(Value::as_str) == Some("iframe");
+    Some((session, frame))
+}
+
+/// The DevTools calls that set up the shortcut world in a session, before its documents load.
+/// Scripts for new documents need the Page domain on, and a binding reaches the worlds created
+/// later only while the Runtime domain is on.
+pub(crate) fn world_calls(script: &PageScript) -> [(&'static str, String); 4] {
+    [
+        ("Page.enable", "{}".to_owned()),
+        ("Runtime.enable", "{}".to_owned()),
+        (
+            "Runtime.addBinding",
+            serde_json::json!({ "name": BINDING, "executionContextName": script.world })
+                .to_string(),
+        ),
+        (
+            "Page.addScriptToEvaluateOnNewDocument",
+            serde_json::json!({ "source": script.source, "worldName": script.world })
+                .to_string(),
+        ),
+    ]
 }
 
 fn parse_page_message(message: &str, bindings: &Bindings) -> Option<PageMessage> {
@@ -517,8 +558,8 @@ fn parse_page_message(message: &str, bindings: &Bindings) -> Option<PageMessage>
 /// The script every new document runs in the shortcut world. It reads the key sets at each key
 /// press, so `Bindings::keys_script` can change them in a loaded document. Frames report keys
 /// too, since a key pressed in a focused frame never reaches the top document (frames from
-/// other sites run in processes the script does not reach); only the top document reports
-/// links, zoom and store requests.
+/// other sites get the script through sessions of their own, see `AUTO_ATTACH`); only the top
+/// document reports links, zoom and store requests.
 fn page_script() -> String {
     format!(
         r#"(() => {{
@@ -887,7 +928,7 @@ mod tests {
     }
 
     fn parse(event: &str) -> Option<PageMessage> {
-        parse_binding_call(event, &defaults())
+        parse_binding_call(event, &defaults(), false)
     }
 
     #[test]
@@ -899,6 +940,58 @@ mod tests {
         );
         assert_eq!(parse(&called("other", key)), None);
         assert_eq!(parse(r#"{"payload":"{}"}"#), None);
+    }
+
+    #[test]
+    fn frames_with_sessions_of_their_own_only_report_keys() {
+        let in_frame =
+            |payload: &str| parse_binding_call(&called(BINDING, payload), &defaults(), true);
+        assert_eq!(
+            in_frame(r#"{"t":"key","vk":84,"m":1}"#),
+            Some(PageMessage::Key(Command::NewTab))
+        );
+        assert_eq!(in_frame(r#"{"t":"link","url":"https://a.test/x"}"#), None);
+        assert_eq!(in_frame(r#"{"t":"zoom","dpr":2.0}"#), None);
+        let store = r#"{"t":"store","origin":"https://chromewebstore.google.com","detail":"{\"seq\":1,\"op\":\"list\"}"}"#;
+        assert!(parse(&called(BINDING, store)).is_some());
+        assert_eq!(in_frame(store), None);
+    }
+
+    #[test]
+    fn frames_from_other_sites_attach_paused_in_flat_sessions() {
+        let params: Value = serde_json::from_str(AUTO_ATTACH).unwrap();
+        assert_eq!(params["autoAttach"], true);
+        assert_eq!(params["waitForDebuggerOnStart"], true);
+        assert_eq!(params["flatten"], true);
+        let attached = |kind: &str| {
+            serde_json::json!({
+                "sessionId": "S1",
+                "targetInfo": { "targetId": "T1", "type": kind, "url": "https://b.test/" },
+                "waitingForDebugger": true,
+            })
+            .to_string()
+        };
+        assert_eq!(attached_session(&attached("iframe")), Some(("S1".into(), true)));
+        assert_eq!(attached_session(&attached("worker")), Some(("S1".into(), false)));
+        assert_eq!(attached_session("{}"), None);
+    }
+
+    #[test]
+    fn a_frame_session_gets_the_shortcut_world() {
+        let script = PageScript::new("s");
+        let calls = world_calls(&script);
+        let methods: Vec<&str> = calls.iter().map(|(m, _)| *m).collect();
+        assert_eq!(
+            methods,
+            [
+                "Page.enable",
+                "Runtime.enable",
+                "Runtime.addBinding",
+                "Page.addScriptToEvaluateOnNewDocument"
+            ]
+        );
+        assert!(calls[2].1.contains("vsesvit-s") && calls[2].1.contains(BINDING));
+        assert!(calls[3].1.contains("vsesvit-s"));
     }
 
     #[test]

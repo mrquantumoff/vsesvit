@@ -6712,6 +6712,38 @@ pub struct ICoreWebView2DevToolsProtocolEventReceivedEventArgs_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2DevToolsProtocolEventReceivedEventArgs2,
+    ICoreWebView2DevToolsProtocolEventReceivedEventArgs2_Vtbl,
+    0x221728ba_635e_50d2_bd3c_fd22f4113978
+);
+impl windows_core::RuntimeType for ICoreWebView2DevToolsProtocolEventReceivedEventArgs2 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2DevToolsProtocolEventReceivedEventArgs2 {
+    pub fn SessionId(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).SessionId)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2DevToolsProtocolEventReceivedEventArgs2_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub SessionId: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2DevToolsProtocolEventReceiver,
     ICoreWebView2DevToolsProtocolEventReceiver_Vtbl,
     0xb2a2be79_65fc_5537_8715_3d92bf31090b
@@ -8242,6 +8274,24 @@ impl ICoreWebView2_11 {
             ))
         }
     }
+    pub fn CallDevToolsProtocolMethodForSessionAsync(
+        &self,
+        sessionid: &str,
+        methodname: &str,
+        parametersasjson: &str,
+    ) -> windows_core::Result<windows_future::IAsyncOperation<windows_core::HSTRING>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CallDevToolsProtocolMethodForSessionAsync)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(sessionid)),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(methodname)),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(parametersasjson)),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
 }
 #[repr(C)]
 pub struct ICoreWebView2_11_Vtbl {
@@ -8253,6 +8303,14 @@ pub struct ICoreWebView2_11_Vtbl {
     ) -> windows_core::HRESULT,
     pub RemoveContextMenuRequested:
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+    pub CallDevToolsProtocolMethodForSessionAsync:
+        unsafe extern "system" fn(
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut *mut core::ffi::c_void,
+        ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2_13,

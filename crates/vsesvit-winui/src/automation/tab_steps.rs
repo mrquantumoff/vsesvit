@@ -14,7 +14,10 @@ use vsesvit_core::prefs::TabsPosition;
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
 
-use super::{STEP_TIMEOUT, devtools, press, shoot, wait_layout, wait_loaded};
+use super::{
+    STEP_TIMEOUT, devtools, eval, press, shoot, wait_for_tab_count, wait_layout, wait_loaded,
+    wait_title,
+};
 use crate::bindings::*;
 use crate::media::MediaAction;
 use crate::shortcuts::Command;
@@ -149,6 +152,63 @@ async fn cycle_steps(window: &Rc<BrowserWindow>, steps: &mut Vec<Value>) -> Resu
     Ok(())
 }
 
+/// Ctrl+T, which WebView2 never hands to the shell, works with the focus in a frame: one the
+/// page's own process runs, and one from another site, which runs in a process of its own.
+async fn frame_shortcut_steps(
+    window: &Rc<BrowserWindow>,
+    server: &FixtureServer,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let other_site = format!("http://localhost:{}/page2.html", server.port());
+    let input = "<body style='margin:0'><input id=i style='width:100%;height:290px'>";
+    for (name, frame) in [
+        ("36b-ctrl-t-in-a-frame", format!("f.srcdoc = \"{input}\"")),
+        ("36c-ctrl-t-in-another-sites-frame", format!("f.src = '{other_site}'")),
+    ] {
+        let tab = window
+            .open_url_tab(server.url("/page2.html").as_str(), true)
+            .map_err(|e| e.to_string())?;
+        wait_loaded(&tab).await?;
+        let add = format!(
+            "const f = document.createElement('iframe'); \
+             f.style.cssText = 'width:400px;height:300px;border:0'; \
+             f.onload = () => {{ document.title = 'Framed' }}; {frame}; document.body.append(f); 0"
+        );
+        eval(&tab, &add).await?;
+        wait_title(&tab, "Framed").await?;
+        // A click near the frame's bottom focuses it (and the input in the first one).
+        let point = eval(
+            &tab,
+            "(() => { const r = document.querySelector('iframe').getBoundingClientRect(); \
+             return [r.x + r.width / 2, r.y + r.height - 20]; })()",
+        )
+        .await?;
+        let [x, y] = serde_json::from_str::<[f64; 2]>(&point).map_err(|e| e.to_string())?;
+        for kind in ["mousePressed", "mouseReleased"] {
+            let params = json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 });
+            devtools(&tab, "Input.dispatchMouseEvent", &params).await?;
+        }
+        let focused = eval(&tab, "document.activeElement === document.querySelector('iframe')")
+            .await
+            .unwrap_or_default()
+            == "true";
+        let before = window.tab_count();
+        press(&tab, 0x54, 2).await?;
+        let opened = wait_for_tab_count(window, before + 1).await.ok();
+        if let Some(new) = &opened {
+            window.close_tab(new.id);
+        }
+        window.close_tab(tab.id);
+        steps.push(json!({
+            "name": name,
+            "frame_focused": focused,
+            "ctrl_t_opened_a_tab": opened.is_some(),
+            "ok": focused && opened.is_some(),
+        }));
+    }
+    Ok(())
+}
+
 pub(super) async fn run(
     window: &Rc<BrowserWindow>,
     server: &FixtureServer,
@@ -157,6 +217,7 @@ pub(super) async fn run(
 ) -> Result<(), String> {
     let first = window.active_tab().ok_or("no tab")?;
     cycle_steps(window, steps).await?;
+    frame_shortcut_steps(window, server, steps).await?;
     select(window, &first);
     let media = open_playing(window, MEDIA_PAGE).await?;
     exec::sleep(Duration::from_millis(300)).await;
