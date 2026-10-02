@@ -80,7 +80,7 @@ Profile directory, one per profile:
 | Extension `storage.sync` | extension + key | LWW per key | value `None` |
 | Preferences | key | LWW per key; local-only prefs never exported | value `None` (default) |
 | Search engines | id | per-field LWW | tombstone |
-| Site permissions | permission + origin | LWW per (origin, permission): allow or block; screen sharing remembers only block; picture-in-picture is never asked for, so `None` blocks it | setting `None` (ask) |
+| Site permissions | permission + origin | LWW per (origin, permission): allow or block; screen sharing remembers only block; picture-in-picture is never asked for | setting `None` (ask; for picture-in-picture, block) |
 | Passwords, autofill | reserved (kinds 10, 11) | same conventions; secret columns hold ciphertext sealed by DPAPI / libsecret | tombstone |
 
 `storage.sync` data from Windows extensions stays inside WebView2, which owns the extension runtime there, so it syncs only between Linux installs until a bridge exists.
