@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::crdt::{JsonText, Lattice, Lww, Seq, Stamp};
 use crate::db::{opt_json_col, seq_col, stamp_col};
-use crate::search::SearchEngineId;
+use crate::search::{SearchEngineId, classify_url};
 use crate::shortcuts::Overrides;
 use crate::sync::{Kind, SyncTable, changed_rows};
-use crate::{Error, Profile};
+use crate::{Error, Profile, Url};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -185,6 +185,34 @@ pub mod keys {
 /// Local, as Chrome's "Customize sync" is per device.
 pub const SYNC_TYPES_KEY: &str = "sync.types";
 
+/// What the user typed as the home page, to store in [`keys::HOMEPAGE`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum HomepageValue {
+    /// The default: a new tab.
+    Default,
+    /// A web address, normalized as the address bar reads it.
+    Url(String),
+}
+
+/// `text` as a home page: nothing (the default) or a web address. `None` when it is neither,
+/// which is not stored: the home page never searches, so a synced value means the same in
+/// every shell.
+pub fn homepage_input(text: &str) -> Option<HomepageValue> {
+    match text.trim() {
+        "" => Some(HomepageValue::Default),
+        text => classify_url(text).map(|target| HomepageValue::Url(target.url().to_string())),
+    }
+}
+
+/// The [`keys::HOMEPAGE`] value as a URL to load. `None`, a new tab, for the default
+/// `about:home`, for `about:blank` and for text that is not an address.
+pub fn homepage_url(pref: &str) -> Option<Url> {
+    match pref.trim() {
+        "" | "about:home" | "about:blank" => None,
+        text => classify_url(text).map(|target| target.url().clone()),
+    }
+}
+
 pub const DEFAULT_SYNC_SERVER: &str = "https://vsesvit-service.mrquantumoff.dev";
 
 /// Sync record: one per key.
@@ -323,6 +351,18 @@ impl SyncTable for PrefsTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_homepage_is_empty_or_an_address() {
+        assert_eq!(homepage_input("  "), Some(HomepageValue::Default));
+        assert_eq!(homepage_input("example.com"), Some(HomepageValue::Url("https://example.com/".into())));
+        assert_eq!(homepage_input("javascript:alert(1)"), None);
+        assert_eq!(homepage_input("not an address"), None);
+        assert_eq!(homepage_url("about:blank"), None);
+        assert_eq!(homepage_url("about:home"), None);
+        assert_eq!(homepage_url("foo bar"), None, "a home page never searches");
+        assert_eq!(homepage_url(" https://example.com/ ").map(String::from).as_deref(), Some("https://example.com/"));
+    }
 
     #[test]
     fn a_version_names_its_channel() {

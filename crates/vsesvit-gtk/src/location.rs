@@ -25,14 +25,8 @@ pub(crate) fn resolve_cli_target(
     arg.to_str().and_then(classify_url).map(|target| target.url().clone())
 }
 
-/// The homepage preference as a URL. `about:home`, the default, and `about:blank` mean the
-/// new tab page, as on Windows; text that is not an address does too.
-pub(crate) fn homepage_url(pref: &str) -> Option<Url> {
-    match pref.trim() {
-        "" | "about:home" | "about:blank" => None,
-        text => classify_url(text).map(|target| target.url().clone()),
-    }
-}
+/// The homepage preference as a URL, read by core as on Windows.
+pub(crate) use vsesvit_core::prefs::homepage_url;
 
 #[cfg(test)]
 mod tests {

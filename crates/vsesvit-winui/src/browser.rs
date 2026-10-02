@@ -15,7 +15,7 @@ use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
 use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
-use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, keys};
+use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, homepage_url, keys};
 use vsesvit_core::search::{SelectionAction, Suggestions};
 use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::shortcuts::Keymap;
@@ -497,7 +497,7 @@ impl Browser {
                 p.prefs().get(&keys::HOMEPAGE),
             )
         });
-        let homepage = self.homepage_url(&homepage);
+        let homepage = homepage_url(&homepage).map(String::from);
         let urls = self
             .config
             .start_urls
@@ -507,18 +507,10 @@ impl Browser {
         session::startup_plan(startup, restored, homepage, urls)
     }
 
-    /// The home page as a URL to load; `None` (a new tab) for the default `about:home`.
-    fn homepage_url(&self, homepage: &str) -> Option<String> {
-        match homepage.trim() {
-            "" | "about:home" | "about:blank" => None,
-            text => self.resolve_input(text),
-        }
-    }
-
     /// What the Home button opens: the home page, or `None` for the new tab page.
     pub fn home_page(&self) -> Option<String> {
         let homepage = self.core(|p| p.prefs().get(&keys::HOMEPAGE));
-        self.homepage_url(&homepage)
+        homepage_url(&homepage).map(String::from)
     }
 
     /// Something changed that a restored session should reflect. Saved a moment later, so a

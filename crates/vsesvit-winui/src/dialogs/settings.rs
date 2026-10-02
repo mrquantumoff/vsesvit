@@ -5,8 +5,10 @@
 
 use std::rc::Rc;
 
-use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
-use vsesvit_core::search::{SearchEngineId, classify_url};
+use vsesvit_core::prefs::{
+    HomepageValue, Pref, Startup, TabsPosition, Theme, UpdateChannel, homepage_input, keys,
+};
+use vsesvit_core::search::SearchEngineId;
 use vsesvit_core::sync::Changed;
 use windows_core::{Interface, Result};
 
@@ -444,7 +446,7 @@ pub(super) fn wire(
             sync.server.apply();
             let Some(b) = w.upgrade() else { return };
             let text = homepage.Text().unwrap_or_default();
-            match homepage_value(&text) {
+            match homepage_input(&text) {
                 Some(HomepageValue::Default) => {
                     if let Err(e) = b.core(|p| p.prefs().reset(&keys::HOMEPAGE)) {
                         log::warn!("home page: {e}");
@@ -661,22 +663,6 @@ fn wire_downloads(root: &FrameworkElement, browser: &Rc<Browser>, owner: WindowI
     )
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum HomepageValue {
-    /// The default: a new tab.
-    Default,
-    Url(String),
-}
-
-/// What the home page box holds: nothing (the default) or a web address.
-fn homepage_value(text: &str) -> Option<HomepageValue> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Some(HomepageValue::Default);
-    }
-    classify_url(text).map(|target| HomepageValue::Url(target.url().to_string()))
-}
-
 /// Fills `combo` with the labels of `options`, selects `current`, and calls `chosen` when the
 /// user picks another. Returns what selects another value without calling `chosen`.
 fn choices<T: Clone + PartialEq + 'static>(
@@ -724,15 +710,5 @@ mod tests {
     #[test]
     fn every_update_channel_has_a_label() {
         assert_eq!(CHANNELS.map(|(channel, _)| channel), UpdateChannel::ALL);
-    }
-
-    #[test]
-    fn homepage_is_empty_or_an_address() {
-        assert_eq!(homepage_value("  "), Some(HomepageValue::Default));
-        assert_eq!(
-            homepage_value("example.com"),
-            Some(HomepageValue::Url("https://example.com/".into()))
-        );
-        assert_eq!(homepage_value("not an address"), None);
     }
 }

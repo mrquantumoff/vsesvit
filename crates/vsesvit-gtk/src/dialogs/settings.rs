@@ -13,7 +13,9 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::permissions::{Origin, Permission, Setting};
-use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
+use vsesvit_core::prefs::{
+    DEFAULT_SYNC_SERVER, HomepageValue, Pref, Startup, TabsPosition, Theme, UpdateChannel, homepage_input, keys,
+};
 use vsesvit_core::search::SearchEngine;
 use vsesvit_core::sync::DataType;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
@@ -686,10 +688,17 @@ fn homepage_row(browser: &Browser) -> adw::EntryRow {
     row.connect_apply(glib::clone!(
         #[strong]
         browser,
-        move |row| {
-            let text = row.text().trim().to_owned();
-            let value = if text.is_empty() { "about:home".to_owned() } else { text };
-            browser.set_pref(&keys::HOMEPAGE, &value);
+        move |row| match homepage_input(&row.text()) {
+            Some(HomepageValue::Default) => browser.set_pref(&keys::HOMEPAGE, &"about:home".to_owned()),
+            Some(HomepageValue::Url(url)) => {
+                browser.set_pref(&keys::HOMEPAGE, &url);
+                row.set_text(&url);
+            }
+            None => {
+                if let Some(dialog) = row.ancestor(adw::PreferencesDialog::static_type()).and_downcast::<adw::PreferencesDialog>() {
+                    dialog.add_toast(plain_toast("Not a web address"));
+                }
+            }
         }
     ));
     browser.watch_prefs(glib::clone!(
