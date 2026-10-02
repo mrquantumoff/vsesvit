@@ -736,9 +736,10 @@ impl Tab {
         self.zoom_memory.borrow_mut().take_wanted()
     }
 
-    /// A zoom the page reported: a change is remembered for the page's site, and a new
-    /// document that starts at another level than its site's is taken there when it can be.
-    fn zoom_reported(&self, window: &BrowserWindow, report: zoom::Report) {
+    /// A zoom the page reported with the window drawn at `scale`: a change is remembered for
+    /// the page's site once it settles, and a new document that starts at another level than
+    /// its site's is taken there when it can be.
+    fn zoom_reported(&self, window: &BrowserWindow, report: zoom::Report, scale: f64) {
         let Some(browser) = window.browser() else {
             return;
         };
@@ -755,14 +756,26 @@ impl Tab {
             }),
             None => vsesvit_core::zoom::DEFAULT,
         };
-        let remember = self
+        let change = self
             .zoom_memory
             .borrow_mut()
-            .reported(report, zoom::Level::of_factor(remembered));
-        if let (Some(level), Some(url)) = (remember, &url)
-            && let Err(e) = browser.core(|p| p.site_zoom().set(url, level.factor()))
-        {
-            log::warn!("site zoom: {e}");
+            .reported(report, zoom::Level::of_factor(remembered), scale);
+        if let (Some(change), Some(url)) = (change, url) {
+            let (window, id) = (self.window.clone(), self.id);
+            exec::spawn(async move {
+                exec::sleep(zoom::SETTLE).await;
+                let Some(window) = window.upgrade() else {
+                    return;
+                };
+                let settled = window
+                    .tab(id)
+                    .and_then(|tab| tab.zoom_memory.borrow().settled(change, window.scale()));
+                if let (Some(level), Some(browser)) = (settled, window.browser())
+                    && let Err(e) = browser.core(|p| p.site_zoom().set(&url, level.factor()))
+                {
+                    log::warn!("site zoom: {e}");
+                }
+            });
         }
         if matches!(report, zoom::Report::Start(_)) {
             window.take_to_site_zoom(self);
@@ -1263,7 +1276,8 @@ impl Tab {
                 exec::spawn(store::answer(window, self.id, request));
             }
             Some(PageMessage::Zoom { ratio, start }) => {
-                let level = zoom::Level(zoom::percent(ratio, window.scale()));
+                let scale = window.scale();
+                let level = zoom::Level(zoom::percent(ratio, scale));
                 if self.state.borrow().zoom != level {
                     log::debug!("tab {}: zoom {}", self.id, level.label());
                     self.state.borrow_mut().zoom = level;
@@ -1274,7 +1288,7 @@ impl Tab {
                 } else {
                     zoom::Report::Change(level)
                 };
-                self.zoom_reported(&window, report);
+                self.zoom_reported(&window, report, scale);
             }
             None => {}
         }

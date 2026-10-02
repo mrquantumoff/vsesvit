@@ -5,10 +5,10 @@
 //! shortcuts on the page a person would.
 //!
 //! Core remembers a level per site across restarts (`Profile::site_zoom`), as on Linux. A level
-//! that changes in a loaded page is remembered for its site; a new document that starts at
-//! another level than its site's is taken there with the same key presses ([`Memory`]). Those
-//! presses are the only way to set the level: key events sent through DevTools'
-//! `Input.dispatchKeyEvent` do not zoom.
+//! that changes in a loaded page is remembered for its site once the window's scale is known to
+//! have stayed ([`Unsettled`]); a new document that starts at another level than its site's is
+//! taken there with the same key presses ([`Memory`]). Those presses are the only way to set
+//! the level: key events sent through DevTools' `Input.dispatchKeyEvent` do not zoom.
 //!
 //! Key presses are real input, sent to whatever has the keyboard focus, so they are sent only
 //! for a click on a zoom bubble button, or in an interactive run to take the selected tab's page
@@ -18,6 +18,8 @@
 //! foreground one, the page still has the keyboard focus and no modifier or mouse button is
 //! held ([`may_press`]); otherwise nothing is sent, and the site's level waits for the next
 //! focus or selection. Scripted runs send none and only record the level the page wants.
+
+use std::time::Duration;
 
 use crate::bindings::*;
 
@@ -63,19 +65,37 @@ pub(crate) enum Report {
 }
 
 /// What a tab knows of its page's zoom beyond the level: the level remembered for its site
-/// that the page has yet to reach.
+/// that the page has yet to reach, and the changes it reported.
 #[derive(Debug, Default)]
 pub(crate) struct Memory {
     wanted: Option<Level>,
     /// The level [`Memory::take_wanted`] took, until its presses are sent or a report comes.
     taken: Option<Level>,
+    /// How many changes the page reported, which tells the latest [`Unsettled`] change.
+    changes: u64,
+}
+
+/// How long a reported change waits before it is remembered, for the window's scale to follow
+/// a move to a monitor of another scale.
+pub(crate) const SETTLE: Duration = Duration::from_secs(1);
+
+/// A level the page changed to, read with the window drawn at `scale`, to remember for its site
+/// once [`SETTLE`] has passed ([`Memory::settled`]). When the window moves to a monitor of
+/// another scale the page's ratio can change before the window's scale does, which reads as a
+/// zoom the user never made; the scale having changed meanwhile tells it apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Unsettled {
+    level: Level,
+    scale: f64,
+    seq: u64,
 }
 
 impl Memory {
-    /// Takes `report` about a page whose site is remembered at `remembered`, and returns the
-    /// level to remember for the site, if any. Only a change is remembered: a new document
-    /// starting at another level is taken to its site's instead.
-    pub fn reported(&mut self, report: Report, remembered: Level) -> Option<Level> {
+    /// Takes `report`, read with the window drawn at `scale`, about a page whose site is
+    /// remembered at `remembered`, and returns the change to remember for the site once it
+    /// settles, if any. Only a change is remembered: a new document starting at another level
+    /// is taken to its site's instead.
+    pub fn reported(&mut self, report: Report, remembered: Level, scale: f64) -> Option<Unsettled> {
         match report {
             Report::Start(level) => {
                 self.wanted = (level != remembered).then_some(remembered);
@@ -85,9 +105,21 @@ impl Memory {
             Report::Change(level) => {
                 self.wanted = None;
                 self.taken = None;
-                Some(level)
+                self.changes += 1;
+                Some(Unsettled {
+                    level,
+                    scale,
+                    seq: self.changes,
+                })
             }
         }
+    }
+
+    /// The level to remember for `change` once it has settled, with the window now drawn at
+    /// `scale`: none when the scale moved since, which the monitor did rather than the user,
+    /// or when a later change came, which is remembered in its place.
+    pub fn settled(&self, change: Unsettled, scale: f64) -> Option<Level> {
+        (change.seq == self.changes && change.scale == scale).then_some(change.level)
     }
 
     /// The site's level, while the page is not at it.
@@ -278,54 +310,80 @@ mod tests {
         assert_eq!(percent(1.5, 1.5), 100);
     }
 
+    /// The level `memory` remembers for a change reported at scale 1, settled at scale 1.
+    fn remembered(memory: &mut Memory, report: Report, site: Level) -> Option<Level> {
+        let change = memory.reported(report, site, 1.0)?;
+        memory.settled(change, 1.0)
+    }
+
     #[test]
     fn a_new_document_is_taken_to_its_sites_level_and_only_changes_are_remembered() {
         let mut memory = Memory::default();
         assert_eq!(
-            memory.reported(Report::Start(Level(100)), Level(125)),
+            remembered(&mut memory, Report::Start(Level(100)), Level(125)),
             None
         );
         assert_eq!(memory.wanted(), Some(Level(125)));
         // The shell's steps, or the user's, change the level; that is the site's now.
         assert_eq!(
-            memory.reported(Report::Change(Level(110)), Level(125)),
+            remembered(&mut memory, Report::Change(Level(110)), Level(125)),
             Some(Level(110))
         );
         assert_eq!(memory.wanted(), None);
         assert_eq!(
-            memory.reported(Report::Start(Level(125)), Level(125)),
+            remembered(&mut memory, Report::Start(Level(125)), Level(125)),
             None
         );
         assert_eq!(memory.wanted(), None, "already at the site's level");
         assert_eq!(
-            memory.reported(Report::Start(Level(150)), Level(100)),
+            remembered(&mut memory, Report::Start(Level(150)), Level(100)),
             None
         );
         assert_eq!(memory.wanted(), Some(Level(100)));
         assert_eq!(
-            memory.reported(Report::Change(Level(100)), Level(150)),
+            remembered(&mut memory, Report::Change(Level(100)), Level(150)),
             Some(Level(100)),
             "100% is remembered too, which forgets the site"
         );
     }
 
     #[test]
+    fn a_change_is_remembered_once_settled_and_not_when_the_window_scale_moved() {
+        let mut memory = Memory::default();
+        // The window went to a 150% monitor: the page's ratio moved before the window's scale,
+        // so 100% read as 150%.
+        let moved = memory.reported(Report::Change(Level(150)), Level(100), 1.0).unwrap();
+        assert_eq!(memory.settled(moved, 1.5), None);
+        let zoomed = memory.reported(Report::Change(Level(110)), Level(100), 1.5).unwrap();
+        assert_eq!(memory.settled(zoomed, 1.5), Some(Level(110)));
+        // Several presses in a row: only the last is remembered.
+        let first = memory.reported(Report::Change(Level(125)), Level(110), 1.5).unwrap();
+        let last = memory.reported(Report::Change(Level(150)), Level(110), 1.5).unwrap();
+        assert_eq!(memory.settled(first, 1.5), None);
+        assert_eq!(memory.settled(last, 1.5), Some(Level(150)));
+        // A new document after a change leaves it to be remembered for its own page's site.
+        let before_leaving = memory.reported(Report::Change(Level(90)), Level(150), 1.5).unwrap();
+        memory.reported(Report::Start(Level(100)), Level(100), 1.5);
+        assert_eq!(memory.settled(before_leaving, 1.5), Some(Level(90)));
+    }
+
+    #[test]
     fn a_site_level_whose_presses_were_not_sent_is_wanted_again_until_a_report_comes() {
         let mut memory = Memory::default();
-        memory.reported(Report::Start(Level(100)), Level(125));
+        memory.reported(Report::Start(Level(100)), Level(125), 1.0);
         assert_eq!(memory.take_wanted(), Some(Level(125)));
         assert_eq!(memory.wanted(), None, "not pressed for twice");
         assert!(memory.awaits_presses());
         memory.put_back();
         assert_eq!(memory.wanted(), Some(Level(125)), "for the next focus or selection");
         assert_eq!(memory.take_wanted(), Some(Level(125)));
-        memory.reported(Report::Change(Level(110)), Level(125));
+        memory.reported(Report::Change(Level(110)), Level(125), 1.0);
         assert!(!memory.awaits_presses(), "the steps from the old level are stale");
         memory.put_back();
         assert_eq!(memory.wanted(), None, "the user zoomed meanwhile");
-        memory.reported(Report::Start(Level(100)), Level(150));
+        memory.reported(Report::Start(Level(100)), Level(150), 1.0);
         assert_eq!(memory.take_wanted(), Some(Level(150)));
-        memory.reported(Report::Start(Level(100)), Level(125));
+        memory.reported(Report::Start(Level(100)), Level(125), 1.0);
         memory.put_back();
         assert_eq!(
             memory.wanted(),

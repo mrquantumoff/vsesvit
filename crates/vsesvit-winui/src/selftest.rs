@@ -462,6 +462,8 @@ async fn checks(
             tab.state().zoom.is_default().then_some(())
         })
         .await;
+        // A change is remembered once it settles.
+        exec::sleep(zoom::SETTLE).await;
         let kept = remembered(&index);
         seen.push(format!("100% off the web left the site at {kept}"));
 
