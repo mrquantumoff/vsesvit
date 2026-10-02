@@ -173,11 +173,14 @@ impl Runtime {
     }
 
     /// The shell's navigation policy for every tab: refuse a `NavigationAction` or
-    /// `NewWindowAction` to `target` unless this is true. `source` is the deciding view's
-    /// URL, or for a new window's first load its opener's. As in Chrome, a web page reaches
-    /// an extension's pages only where `web_accessible_resources` lets it; the extension
-    /// itself and the browser reach them all, and an unloaded extension's URL is left to
-    /// fail on its own.
+    /// `NewWindowAction` to `target` unless this is true. `source` is the page that asks: the
+    /// view's URL for a load the browser started (WebKit has already made it the target);
+    /// else the page the view shows, whose script still runs while the next one loads, or
+    /// for a new window that has shown nothing yet its opener. For a server redirect, whose
+    /// target WebKit also shows already, that page counts only when it is a web page, since
+    /// only a web server redirects. As in Chrome, a web page reaches an extension's pages
+    /// only where `web_accessible_resources` lets it; the extension itself and the browser
+    /// reach them all, and an unloaded extension's URL is left to fail on its own.
     pub fn may_navigate(&self, source: &str, target: &str) -> bool {
         if patterns::may_enter(source, target) {
             return true;

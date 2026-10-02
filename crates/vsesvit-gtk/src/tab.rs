@@ -13,7 +13,8 @@ use gtk::{gdk, glib};
 use vsesvit_core::history::Transition;
 use vsesvit_core::permissions::{Capturing, Origin};
 use vsesvit_core::session::TabId as SessionTabId;
-use vsesvit_webext::TabId;
+use vsesvit_core::Url;
+use vsesvit_webext::{Runtime, TabId};
 use webkit::prelude::*;
 
 use crate::address_bar::Security;
@@ -77,6 +78,10 @@ mod imp {
     pub struct Tab {
         pub(super) web_view: OnceCell<webkit::WebView>,
         pub(super) id: OnceCell<TabId>,
+        pub(super) runtime: OnceCell<Runtime>,
+        /// For a `window.open` view that has shown nothing yet, the URI of the document that
+        /// opened it, which its navigations are judged by.
+        pub(super) opener_uri: RefCell<Option<String>>,
         pub(super) session_id: Cell<SessionTabId>,
         pub(super) last_active_ms: Cell<i64>,
         /// How the next committed navigation reached this tab, when the shell knows
@@ -118,22 +123,26 @@ impl Tab {
     pub(crate) fn new(browser: &Browser) -> Self {
         let id = browser.allocate_tab_id();
         let content = browser.runtime().user_content_manager(id);
-        Self::wrap(browser.engine().web_view(&content), id)
+        Self::wrap(browser.engine().web_view(&content), id, browser.runtime())
     }
 
     pub(crate) fn new_related(browser: &Browser, opener: &Tab) -> Self {
         let id = browser.allocate_tab_id();
         let content = browser.runtime().user_content_manager(id);
-        Self::wrap(
+        let popup = Self::wrap(
             browser.engine().related_web_view(opener.web_view(), &content),
             id,
-        )
+            browser.runtime(),
+        );
+        popup.imp().opener_uri.replace(Some(opener.page_uri().unwrap_or_default()));
+        popup
     }
 
-    fn wrap(web_view: webkit::WebView, id: TabId) -> Self {
+    fn wrap(web_view: webkit::WebView, id: TabId, runtime: &Runtime) -> Self {
         let tab: Self = glib::Object::new();
         let imp = tab.imp();
         imp.id.set(id).expect("wrap runs once");
+        assert!(imp.runtime.set(runtime.clone()).is_ok(), "wrap runs once");
         web_view.set_hexpand(true);
         web_view.set_vexpand(true);
 
@@ -227,6 +236,7 @@ impl Tab {
     }
 
     pub(crate) fn load(&self, uri: &str) {
+        self.imp().opener_uri.take();
         self.web_view().load_uri(uri);
     }
 
@@ -440,7 +450,13 @@ impl Tab {
             self,
             #[upgrade_or]
             None,
-            move |_, _action| tab.create_related()
+            move |_, action| {
+                let target = action.request().and_then(|r| r.uri());
+                if target.is_some_and(|target| !tab.may_navigate(action, &target, true)) {
+                    return None;
+                }
+                tab.create_related()
+            }
         ));
         web_view.connect_close(glib::clone!(
             #[weak(rename_to = tab)]
@@ -545,6 +561,7 @@ impl Tab {
             }
             webkit::LoadEvent::Committed => {
                 imp.load.set(LoadPhase::Committed);
+                imp.opener_uri.take();
                 let error_page = imp.error_page_pending.take();
                 imp.error_page_shown.set(error_page);
                 let commit = if error_page.is_some() {
@@ -631,15 +648,19 @@ impl Tab {
                 else {
                     return false;
                 };
+                let target = action.request().and_then(|r| r.uri());
+                let new_window = kind == webkit::PolicyDecisionType::NewWindowAction;
+                if target.as_deref().is_some_and(|target| !self.may_navigate(&action, target, new_window)) {
+                    decision.ignore();
+                    return true;
+                }
                 let modifiers = gdk::ModifierType::from_bits_truncate(action.modifiers());
                 let Some(focus) =
                     new_tab_for_click(action.navigation_type(), action.mouse_button(), modifiers)
                 else {
                     return false;
                 };
-                let (Some(uri), Some(window)) =
-                    (action.request().and_then(|r| r.uri()), self.window())
-                else {
+                let (Some(uri), Some(window)) = (target, self.window()) else {
                     return false;
                 };
                 window.open_tab(Some(&uri), Some(self), focus);
@@ -661,6 +682,34 @@ impl Tab {
             }
             _ => false,
         }
+    }
+
+    /// The page whose script can navigate this view: the one on screen, which still runs while
+    /// the next one loads, or for a `window.open` view that has shown nothing yet, its opener.
+    fn page_uri(&self) -> Option<String> {
+        let opener = self.imp().opener_uri.borrow().clone();
+        opener.or_else(|| self.committed_uri())
+    }
+
+    /// Whether a navigation of this view (`new_window`: a window it opens) may go to `target`:
+    /// a web page reaches an extension's pages only where they are web-accessible to it, as in
+    /// Chrome. The scheme handler cannot tell who asked for a load without a `Referer`.
+    fn may_navigate(&self, action: &webkit::NavigationAction, target: &str, new_window: bool) -> bool {
+        let redirect = action.is_redirect();
+        // A load the browser starts (the address bar, a reload, history, tabs.create) has
+        // already made the view's URI its target when WebKit asks; a page's own cannot.
+        let started_by_browser = !new_window
+            && !redirect
+            && self.imp().opener_uri.borrow().is_none()
+            && self.web_view().uri().is_some_and(|uri| same_url(&uri, target));
+        if started_by_browser {
+            return true;
+        }
+        // WebKit shows a server redirect's target as the view's URI too. Only a web server
+        // redirects, so the web page on screen asked, or no page did.
+        let page = self.page_uri().filter(|uri| !(redirect && uri.starts_with("chrome-extension:")));
+        let runtime = self.imp().runtime.get().expect("set in Tab::wrap");
+        runtime.may_navigate(&page.unwrap_or_default(), target)
     }
 
     /// `window.open` and `target=_blank`: WebKit wants the new view now and shows it after
@@ -702,6 +751,11 @@ fn new_tab_for_click(
             Focus::Background
         }
     })
+}
+
+/// The same URL, however each is spelled (`chrome-extension://id` and `chrome-extension://id/`).
+fn same_url(a: &str, b: &str) -> bool {
+    a == b || matches!((Url::parse(a), Url::parse(b)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// How a URI reads in the address bar and in titles: `about:blank` is empty, and punycode and
@@ -876,5 +930,121 @@ mod tests {
         window.destroy();
         let found = browser.core().borrow_mut().history().search(&typed, 1).unwrap();
         assert_eq!(found.first().map(|e| e.typed_count), Some(1));
+    }
+
+    #[gtk::test]
+    fn a_web_page_cannot_open_an_extension_page_that_is_not_web_accessible() {
+        use vsesvit_core::extensions::InstallSource;
+
+        let browser = browser();
+        let dir = scratch_dir("private-options");
+        let manifest = r#"{ "manifest_version": 3, "name": "Private options", "version": "1.0",
+            "options_page": "options.html",
+            "web_accessible_resources": [{ "resources": ["public.html"], "matches": ["<all_urls>"] }] }"#;
+        std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+        std::fs::write(dir.join("options.html"), "<!doctype html><title>Private options</title>").unwrap();
+        std::fs::write(dir.join("public.html"), "<!doctype html><title>Public page</title>").unwrap();
+        let source = InstallSource::from_path(&dir).unwrap();
+        let installed = glib::MainContext::default().block_on(browser.install(source, |_| {})).unwrap().expect("installed");
+        let base = format!("chrome-extension://{}/", installed.id.as_str());
+        let (options, public) = (format!("{base}options.html"), format!("{base}public.html"));
+
+        // Every way a page can reach the options page without sending a Referer: window.open
+        // and a target=_blank link with noreferrer, and a no-referrer navigation of its own
+        // tab, which the user then reloads. The web-accessible page and a site still open.
+        let server = Server::start("127.0.0.1", {
+            let (options, public) = (options.clone(), public.clone());
+            move |path| {
+                let script = match path {
+                    "/open" => format!(
+                        "<a id=link href='{options}' target=_blank rel=noreferrer>x</a><script>
+                        window.open('{options}', '_blank', 'noreferrer');
+                        document.getElementById('link').click();
+                        window.open('{public}', '_blank', 'noreferrer');
+                        window.open('/opened', '_blank', 'noreferrer');</script>"
+                    ),
+                    "/lure" => format!(
+                        "<meta name=referrer content=no-referrer><title>Lure</title>
+                        <script>setTimeout(() => location.href = '{options}', 100)</script>"
+                    ),
+                    "/opened" => return Reply::Page("Opened"),
+                    _ => return Reply::NotFound,
+                };
+                Reply::Body("text/html", script.into_bytes())
+            }
+        });
+        let settings = browser.engine().settings().clone();
+        let popups_allowed = settings.is_javascript_can_open_windows_automatically();
+        settings.set_javascript_can_open_windows_automatically(true);
+        let window = BrowserWindow::new(&browser);
+        let titles = |window: &BrowserWindow| -> Vec<String> {
+            window.tabs().iter().map(|t| t.web_view().title().map(String::from).unwrap_or_default()).collect()
+        };
+
+        window.open_tab(Some(&server.url("/open")), None, Focus::Foreground);
+        wait_until("the site and the web-accessible page to open", || {
+            let titles = titles(&window);
+            titles.iter().any(|t| t == "Opened") && titles.iter().any(|t| t == "Public page")
+        });
+        crate::test_support::settle(std::time::Duration::from_millis(1500));
+        let opened = titles(&window);
+
+        let lure = window.open_tab(Some(&server.url("/lure")), None, Focus::Foreground);
+        wait_until("the lure", || lure.web_view().title().as_deref() == Some("Lure"));
+        crate::test_support::settle(std::time::Duration::from_millis(1500));
+        lure.web_view().reload();
+        crate::test_support::settle(std::time::Duration::from_millis(1500));
+        let lured = lure.web_view().title().map(String::from);
+
+        // Nor through a site that redirects there with no Referer, even from the address bar.
+        let bounce = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let bounce_url = format!("http://{}/", bounce.local_addr().unwrap());
+        std::thread::spawn({
+            let options = options.clone();
+            move || {
+                for stream in bounce.incoming().flatten() {
+                    use std::io::{BufRead, Write};
+                    let mut reader = std::io::BufReader::new(&stream);
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                        line.clear();
+                    }
+                    let reply = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {options}?bounced\r\nReferrer-Policy: no-referrer\r\n\
+                         Content-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = (&stream).write_all(reply.as_bytes());
+                }
+            }
+        });
+        let bounced = window.open_tab(None, None, Focus::Foreground);
+        window.navigate_with(&bounce_url, Transition::Typed);
+        crate::test_support::settle(std::time::Duration::from_millis(1500));
+        bounced.web_view().reload();
+        crate::test_support::settle(std::time::Duration::from_millis(1500));
+        let bounced = bounced.web_view().title().map(String::from);
+
+        let typed = window.open_tab(None, None, Focus::Foreground);
+        window.navigate_with(&options, Transition::Typed);
+        wait_until("the typed options page", || typed.web_view().title().as_deref() == Some("Private options"));
+        let typed_uri = typed.committed_uri();
+        // Not even when the extension's own page sent the user to that site.
+        typed.load(&bounce_url);
+        crate::test_support::settle(std::time::Duration::from_millis(1500));
+        let bounced_back = typed.committed_uri();
+        // A tab restored with its history (a closed tab, the last session) shows it again.
+        let restored = window.open_tab(None, None, Focus::Foreground);
+        restored.restore(typed.web_view().session_state().as_ref(), &options);
+        wait_until("the restored options page", || restored.committed_uri().as_deref() == Some(options.as_str()));
+
+        window.destroy();
+        settings.set_javascript_can_open_windows_automatically(popups_allowed);
+        browser.uninstall_extension(&installed.id).ok();
+        assert_ne!(lured.as_deref(), Some("Private options"));
+        assert_ne!(bounced.as_deref(), Some("Private options"));
+        assert_eq!(opened.len(), 3, "only the site and the web-accessible page opened: {opened:?}");
+        assert!(!opened.iter().any(|t| t == "Private options"), "{opened:?}");
+        assert_eq!(typed_uri.as_deref(), Some(options.as_str()));
+        assert_eq!(bounced_back, typed_uri, "the options page stays");
     }
 }

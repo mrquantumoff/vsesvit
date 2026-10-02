@@ -27,8 +27,9 @@
 //!     .build();
 //!
 //! // Its navigation policy refuses a NavigationAction or NewWindowAction to a target that
-//! // `may_navigate` refuses from the view's URL (the opener's for a new window's first
-//! // load), so a web page cannot open an extension page that is not web-accessible.
+//! // `may_navigate` refuses from the page that asks (see there), and `create` returns no
+//! // view for such a target, so a web page cannot open an extension page that is not
+//! // web-accessible.
 //! if !runtime.may_navigate(&source, &target) { decision.ignore(); }
 //!
 //! // Lifecycle: load/unload installed extensions (content scripts apply to loads that
