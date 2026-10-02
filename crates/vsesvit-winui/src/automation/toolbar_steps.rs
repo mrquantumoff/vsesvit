@@ -88,7 +88,7 @@ pub(super) async fn run(
         Some(icon.Glyph().ok()?.to_string())
     };
     let checked: Vec<bool> = (0..2)
-        .map(|i| glyph(i).as_deref() == Some("\u{E842}"))
+        .map(|i| glyph(i).as_deref() == Some(crate::extension_toolbar::PINNED_GLYPH))
         .collect();
     shoot(
         window,

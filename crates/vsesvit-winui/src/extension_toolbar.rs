@@ -31,7 +31,7 @@ pub(crate) enum Command {
 pub(crate) type Host = Rc<dyn Fn(Command)>;
 
 const PIN_GLYPH: &str = "\u{E718}";
-const PINNED_GLYPH: &str = "\u{E842}";
+pub(crate) const PINNED_GLYPH: &str = "\u{E842}";
 
 pub(crate) struct Toolbar {
     list: ListView,
