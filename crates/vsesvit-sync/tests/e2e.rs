@@ -299,8 +299,9 @@ fn try_sync_types(profile: &mut Profile, http: &Http, types: &[DataType]) -> Res
         let round = Round::gather(&mut profile.sync(), account, types).unwrap();
         let finished = round.run(http).finish(&mut profile.sync());
         account = finished.account;
-        if !finished.result?.again {
-            return Ok(());
+        let synced = finished.result?;
+        if !synced.again {
+            return synced.refused.map_or(Ok(()), Err);
         }
     }
     panic!("sync did not settle");
@@ -480,6 +481,28 @@ fn a_device_whose_uploads_are_refused_still_receives_the_others_changes() {
     let account = Account::load(&mut b.sync()).unwrap().unwrap();
     let round = Round::gather(&mut b.sync(), account, &with_history).unwrap();
     assert!(!round.is_empty(), "the refused history is still waiting");
+
+    // The page a refused round brings still reaches the shell, which applies what it changed.
+    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Added", &Url::parse("https://example.com/added").unwrap()).unwrap();
+    sync_types(&mut a, &http, &bookmarks);
+    let mut account = Account::load(&mut b.sync()).unwrap().unwrap();
+    let mut bookmarks_changed = false;
+    let mut last = None;
+    for _ in 0..50 {
+        let round = Round::gather(&mut b.sync(), account, &with_history).unwrap();
+        let finished = round.run(&http).finish(&mut b.sync());
+        account = finished.account;
+        let synced = finished.result.expect("the round's page comes with the refusal");
+        bookmarks_changed |= synced.report.changed.bookmarks;
+        if !synced.again {
+            last = Some(synced);
+            break;
+        }
+    }
+    let last = last.expect("sync settles");
+    assert!(matches!(last.refused, Some(Error::Server { status: 507, .. })), "the refusal is what the sync comes to");
+    assert!(bookmarks_changed, "a round reported a's bookmark");
+    assert_eq!(toolbar_titles(&mut b), ["Renamed", "Added"]);
 }
 
 #[test]

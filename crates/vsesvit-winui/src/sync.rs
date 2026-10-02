@@ -332,8 +332,9 @@ async fn rounds(browser: &Weak<Browser>) -> Result<Option<u64>, Error> {
         account = finished.account;
         let synced = finished.result?;
         b.sync_applied(&synced.report.changed);
+        // A refused upload waits for a later sync; it is what this one comes to.
         if !synced.again {
-            return Ok(account.last_synced());
+            return synced.refused.map_or(Ok(account.last_synced()), Err);
         }
     }
     log::info!("sync: {MAX_ROUNDS} rounds; the next sync goes on");
@@ -493,8 +494,9 @@ pub(crate) fn final_sync(browser: &Browser) {
         log::info!("final sync: no answer in {FINAL_SYNC_WAIT:?}; quitting without it");
         return;
     };
-    match browser.core(|p| exchanged.finish(&mut p.sync())).result {
-        Ok(_) => log::info!("final sync: done"),
+    let result = browser.core(|p| exchanged.finish(&mut p.sync())).result;
+    match result.and_then(|synced| synced.refused.map_or(Ok(()), Err)) {
+        Ok(()) => log::info!("final sync: done"),
         Err(e) => log::info!("final sync: {e}"),
     }
 }

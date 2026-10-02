@@ -197,8 +197,9 @@ impl Syncer {
                 Ok(synced) => {
                     *synced_at = finished.account.last_synced();
                     browser.sync_applied(&synced.report.changed);
+                    // A refused upload waits for a later sync; it is what this one comes to.
                     if !synced.again {
-                        return Ok(());
+                        return synced.refused.map_or(Ok(()), Err);
                     }
                 }
                 // Signed out while the round ran, and maybe in again: the next round is the new
@@ -346,8 +347,9 @@ impl Syncer {
             log::info!("final sync: no answer in {FINAL_SYNC_WAIT:?}; quitting without it");
             return;
         };
-        match exchanged.finish(&mut browser.core().borrow_mut().sync()).result {
-            Ok(_) => log::info!("final sync: done"),
+        let finished = exchanged.finish(&mut browser.core().borrow_mut().sync());
+        match finished.result.and_then(|synced| synced.refused.map_or(Ok(()), Err)) {
+            Ok(()) => log::info!("final sync: done"),
             Err(e) => log::info!("final sync: {e}"),
         }
     }

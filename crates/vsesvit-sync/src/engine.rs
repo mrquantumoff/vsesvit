@@ -298,6 +298,9 @@ pub struct Synced {
     /// Run another round now: more is waiting on either side, or the merge changed records that
     /// the server should hear about.
     pub again: bool,
+    /// An upload the server refused this round, which waits for a later sync. The page still
+    /// came down and is applied, so `report` stands.
+    pub refused: Option<Error>,
 }
 
 impl Exchanged {
@@ -322,7 +325,7 @@ impl Exchanged {
             account.upload_cursors.clear();
             account.download_cursor = 0;
             account.epoch = None;
-            Ok(Synced { report: ApplyReport::default(), again: true })
+            Ok(Synced { report: ApplyReport::default(), again: true, refused: None })
         } else {
             result.and_then(|page| {
                 if refused.is_none() {
@@ -332,12 +335,7 @@ impl Exchanged {
                 let more_down = page.more;
                 let report = apply(store, &mut account, page, &types)?;
                 let again = more_up || more_down || report.merged > 0;
-                match refused {
-                    // The refused changes wait for a later sync. Until nothing else is left, each
-                    // round's page still shows; then the refusal is what the sync comes to.
-                    Some(e) if !again => Err(e),
-                    _ => Ok(Synced { report, again }),
-                }
+                Ok(Synced { report, again, refused })
             })
         };
         if let Err(e) = account.save(store) {
