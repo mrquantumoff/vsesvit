@@ -435,10 +435,7 @@ impl BrowserWindow {
             let (origin, current, choices) = (origin.clone(), row.current, row.choices.clone());
             selector
                 .SelectionChanged(move |_, _| {
-                    let picked = source
-                        .SelectedIndex()
-                        .ok()
-                        .and_then(|i| usize::try_from(i).ok())
+                    let picked = crate::dialogs::selected_index(&source)
                         .and_then(|i| choices.get(i).copied());
                     // A combo box raises this for its initial selection too.
                     if let Some(picked) = picked.filter(|p| *p != current) {

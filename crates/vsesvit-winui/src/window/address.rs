@@ -166,8 +166,7 @@ impl BrowserWindow {
 
     /// The highlighted row of the open list, as the list itself has it.
     pub fn highlighted_suggestion(&self) -> Option<usize> {
-        let index = self.suggestion_list()?.SelectedIndex().ok()?;
-        usize::try_from(index).ok()
+        crate::dialogs::selected_index(&self.suggestion_list()?)
     }
 
     /// Each row's text for the box while it is highlighted.
