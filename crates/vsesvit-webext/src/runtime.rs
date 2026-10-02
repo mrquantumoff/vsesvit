@@ -164,8 +164,7 @@ impl Runtime {
             return state.ucm.clone();
         }
         let mut state = TabState { ucm: webkit::UserContentManager::new(), handlers: BTreeMap::new(), last: None };
-        let extensions: Vec<Rc<Extension>> = self.0.extensions.borrow().values().cloned().collect();
-        for ext in &extensions {
+        for ext in &self.0.loaded_extensions() {
             attach(&self.0, ext, tab, &mut state);
         }
         let ucm = state.ucm.clone();
@@ -200,8 +199,7 @@ impl Runtime {
         let url_changed = previous.as_ref().is_none_or(|p| p.url != info.url);
         let title_changed = previous.as_ref().is_none_or(|p| p.title != info.title);
         let origin_changed = previous.as_ref().is_some_and(|p| Sender::origin_of(&p.url) != Sender::origin_of(&info.url));
-        let extensions: Vec<Rc<Extension>> = self.0.extensions.borrow().values().cloned().collect();
-        for ext in extensions {
+        for ext in self.0.loaded_extensions() {
             if origin_changed {
                 ext.revoke_active_tab(tab);
             }
@@ -226,8 +224,7 @@ impl Runtime {
     pub fn tab_closed(&self, tab: TabId) {
         let removed = self.0.tabs.borrow_mut().remove(&tab);
         let Some(mut state) = removed else { return };
-        let extensions: Vec<Rc<Extension>> = self.0.extensions.borrow().values().cloned().collect();
-        for ext in &extensions {
+        for ext in &self.0.loaded_extensions() {
             detach(ext, &mut state);
             ext.revoke_active_tab(tab);
         }
@@ -364,6 +361,12 @@ impl Inner {
         self.extensions.borrow().get(id).cloned()
     }
 
+    /// Every loaded extension, snapshotted so callers never hold `extensions` borrowed
+    /// while calling into an extension or the host (which may load or unload one).
+    pub(crate) fn loaded_extensions(&self) -> Vec<Rc<Extension>> {
+        self.extensions.borrow().values().cloned().collect()
+    }
+
     pub(crate) fn tab_managers(&self) -> Vec<webkit::UserContentManager> {
         self.tabs.borrow().values().map(|s| s.ucm.clone()).collect()
     }
@@ -389,8 +392,7 @@ impl Inner {
     }
 
     pub(crate) fn emit_to_all_pages(&self, event: &str, args: &[Value]) {
-        let extensions: Vec<Rc<Extension>> = self.extensions.borrow().values().cloned().collect();
-        for ext in extensions {
+        for ext in self.loaded_extensions() {
             bridge::emit_to_pages(self, &ext, event, args);
         }
     }
