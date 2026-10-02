@@ -202,7 +202,7 @@ pub(crate) fn notification_allowed(tab: &Tab) -> bool {
 
 /// Hands WebKit the stored notification settings, which every web process it starts from
 /// now on reads for `Notification.permission`. One already running keeps what it had, even
-/// across a reload. Done at startup and after each change rather than from WebKit's
+/// across a reload, and so does one WebKit kept from a closed page to reuse for its site. Done at startup and after each change rather than from WebKit's
 /// `initialize-notification-permissions`, which fires inside WebKit calls the shell may make
 /// while it holds the profile.
 pub(crate) fn seed_notifications(browser: &Browser) {
@@ -946,8 +946,11 @@ mod tests {
 
         #[gtk::test]
         fn stored_notification_settings_reach_new_pages() {
-            let (allowed, window) = setup();
-            let blocked = Server::start("127.0.0.3", |_| Reply::Page("Blocked"));
+            let (_, window) = setup();
+            // Sites no other test loads: a new page of a site reuses the web process an earlier
+            // page of it left, which keeps the notification settings it started with.
+            let allowed = Server::start("127.0.0.6", |_| Reply::Page("Allowed"));
+            let blocked = Server::start("127.0.0.7", |_| Reply::Page("Blocked"));
             let origins = [(&allowed, Setting::Allow), (&blocked, Setting::Block)].map(|(server, setting)| {
                 let origin = Origin::parse(&server.url("/")).expect("an http origin");
                 let mut profile = window.browser().core().borrow_mut();
