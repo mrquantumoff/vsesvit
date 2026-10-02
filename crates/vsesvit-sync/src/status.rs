@@ -12,7 +12,8 @@ pub enum State {
         server: String,
         last_synced: Option<u64>,
         syncing: bool,
-        /// Why the last sync failed; cleared by the next one that completes.
+        /// Why the last sync, or the last attempt to sign in again, failed; cleared by the next
+        /// sync that completes.
         error: Option<String>,
         /// The server no longer accepts the session; signing in again fixes it.
         needs_sign_in: bool,
@@ -86,7 +87,10 @@ impl State {
                     None => format!("Signed in to {host}"),
                 };
                 let subtitle = if *needs_sign_in {
-                    "Sign in again to keep syncing.".to_owned()
+                    match error {
+                        Some(error) => format!("Sign-in failed: {error}"),
+                        None => "Sign in again to keep syncing.".to_owned(),
+                    }
                 } else if *syncing {
                     "Syncing…".to_owned()
                 } else if let Some(error) = error {
@@ -168,6 +172,19 @@ mod tests {
         assert_eq!(with(false, Some("could not reach x"), false).subtitle, "Sync failed: could not reach x");
         let s = with(false, None, true);
         assert_eq!((s.subtitle.as_str(), s.actions.as_slice()), ("Sign in again to keep syncing.", &[Action::SignIn, Action::SignOut][..]));
+    }
+
+    #[test]
+    fn a_failed_sign_in_again_shows_why() {
+        let State::SignedIn { name, server, last_synced, .. } = signed_in() else { unreachable!() };
+        let expired = |error: Option<&str>| {
+            State::SignedIn { name: name.clone(), server: server.clone(), last_synced, syncing: false, error: error.map(str::to_owned), needs_sign_in: true }
+                .status(1000)
+        };
+        let s = expired(Some("could not reach sync.example"));
+        assert!(s.subtitle.contains("could not reach sync.example"), "{}", s.subtitle);
+        assert_eq!(s.actions, [Action::SignIn, Action::SignOut]);
+        assert_eq!(expired(None).subtitle, "Sign in again to keep syncing.");
     }
 
     #[test]
