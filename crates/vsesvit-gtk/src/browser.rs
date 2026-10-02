@@ -473,7 +473,7 @@ impl Browser {
             Ok((Some(node), added)) => (node, added),
             Ok((None, _)) => return,
             Err(e) => {
-                window.toast(adw::Toast::new(&format!("Cannot bookmark the page: {e}")));
+                window.toast(dialogs::plain_toast(&format!("Cannot bookmark the page: {e}")));
                 return;
             }
         };
@@ -628,7 +628,7 @@ impl Browser {
         match resolved {
             Ok(Some(target)) => window.navigate_with(target.url().as_str(), Transition::Typed),
             Ok(None) => window.focus_page(),
-            Err(e) => window.toast(adw::Toast::new(&format!("Cannot resolve the address: {e}"))),
+            Err(e) => window.toast(dialogs::plain_toast(&format!("Cannot resolve the address: {e}"))),
         }
     }
 

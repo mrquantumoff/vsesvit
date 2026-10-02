@@ -9,6 +9,7 @@ use vsesvit_core::downloads::sanitize;
 use webkit::prelude::*;
 
 use crate::browser::Browser;
+use crate::dialogs::plain_toast;
 use crate::downloads::file_name;
 use crate::window::BrowserWindow;
 
@@ -94,9 +95,9 @@ pub(crate) fn present(window: &BrowserWindow) {
     glib::spawn_future_local(async move {
         let Some(path) = dialog.save_future(Some(&window)).await.ok().and_then(|file| file.path()) else { return };
         match save_as(window.browser(), &view, format, uri, &path).await {
-            Ok(()) if format == Format::Mhtml => window.toast(adw::Toast::new(&format!("Saved “{}”", file_name(&path)))),
+            Ok(()) if format == Format::Mhtml => window.toast(plain_toast(&format!("Saved “{}”", file_name(&path)))),
             Ok(()) => {}
-            Err(e) => window.toast(adw::Toast::new(&format!("Cannot save the page: {e}"))),
+            Err(e) => window.toast(plain_toast(&format!("Cannot save the page: {e}"))),
         }
     });
 }

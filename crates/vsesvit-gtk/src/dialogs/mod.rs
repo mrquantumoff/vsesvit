@@ -199,6 +199,27 @@ mod tests {
         assert_eq!(toast.title().as_deref(), Some("Imported 2 items from Q&A <b>.html"));
     }
 
+    /// `adw::Toast::new` reads its title as markup, so a toast built with it from a file name
+    /// or an error message shows the wrong text, or nothing.
+    #[test]
+    fn no_toast_reads_its_title_as_markup() {
+        let markup_toast = concat!("adw::Toast::", "new(");
+        let mut dirs = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+        let mut found = Vec::new();
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let source = std::fs::read_to_string(&path).unwrap();
+                    found.extend(source.lines().enumerate().filter(|(_, l)| l.contains(markup_toast)).map(|(i, _)| format!("{}:{}", path.display(), i + 1)));
+                }
+            }
+        }
+        assert!(found.is_empty(), "use plain_toast at {found:?}");
+    }
+
     #[gtk::test]
     fn a_window_of_its_own_opens_once_and_closes_with_its_browser_window() {
         let browser = browser();
