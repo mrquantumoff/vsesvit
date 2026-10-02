@@ -16,7 +16,15 @@ pub(crate) struct Engine {
     settings: webkit::Settings,
 }
 
-/// Lets the web process sandbox see the AppImage (`AppRun` sets `APPDIR`): its libraries,
+/// The AppImage this process runs from: `APPDIR`, which `AppRun` sets, when `exe` is inside it.
+/// Another AppImage that starts this browser passes its own `APPDIR` on, which is no business
+/// of a deb or rpm build.
+fn appimage_dir(appdir: Option<PathBuf>, exe: Option<PathBuf>) -> Option<PathBuf> {
+    let appdir = appdir?;
+    exe?.starts_with(&appdir).then_some(appdir)
+}
+
+/// Lets the web process sandbox see the AppImage this runs from ([`appimage_dir`]): its libraries,
 /// schemas and helpers, and the working directory the patched helper paths resolve against
 /// (`xtask/src/linux/appimage.rs`), plus the GStreamer registry and pixbuf loader cache `AppRun`
 /// writes. WebKit takes sandbox paths only before its first web process, and they hold for the
@@ -24,9 +32,10 @@ pub(crate) struct Engine {
 fn add_appimage_to_sandbox() {
     static ADDED: Once = Once::new();
     ADDED.call_once(|| {
-        let Some(appdir) = std::env::var_os("APPDIR") else { return };
+        let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
+        let Some(appdir) = appimage_dir(appdir, std::env::current_exe().ok()) else { return };
         let context = webkit::WebContext::default().expect("WebKit default web context");
-        for path in [PathBuf::from(appdir), glib::user_cache_dir().join("vsesvit/appimage")] {
+        for path in [appdir, glib::user_cache_dir().join("vsesvit/appimage")] {
             context.add_path_to_sandbox(path, true);
         }
     });
@@ -101,5 +110,26 @@ impl Engine {
             .settings(&self.settings)
             .user_content_manager(content)
             .build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_appimage_this_runs_from_reaches_the_sandbox() {
+        let dir = |p: &str| Some(PathBuf::from(p));
+        let image = "/tmp/.mount_vsesvitAbc";
+        assert_eq!(
+            appimage_dir(dir(image), dir("/tmp/.mount_vsesvitAbc/usr/lib/vsesvit/vsesvit")),
+            dir(image)
+        );
+        // A deb build that another AppImage started, which passed its APPDIR on.
+        let other = "/tmp/.mount_EditorXyz";
+        assert_eq!(appimage_dir(dir(other), dir("/usr/lib/vsesvit/vsesvit")), None);
+        assert_eq!(appimage_dir(dir("/tmp/.mount_vsesvit"), dir("/tmp/.mount_vsesvitAbc/usr/lib/vsesvit/vsesvit")), None);
+        assert_eq!(appimage_dir(None, dir("/usr/lib/vsesvit/vsesvit")), None);
+        assert_eq!(appimage_dir(dir(image), None), None, "no executable path, no sandbox paths");
     }
 }
