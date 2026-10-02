@@ -343,6 +343,7 @@ Windows.Win32.SetProcessDpiAwarenessContext
 Windows.Win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 Windows.Win32.GetDpiForWindow
 Windows.Win32.GetKeyState
+Windows.Win32.GetAsyncKeyState
 Windows.Win32.GetForegroundWindow
 Windows.Win32.TryCreatePackageDependency
 Windows.Win32.AddPackageDependency

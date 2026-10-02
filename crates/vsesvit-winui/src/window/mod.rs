@@ -778,7 +778,7 @@ impl BrowserWindow {
     /// A button of the zoom bubble.
     pub(super) fn zoom_clicked(&self, step: zoom::Step) {
         match self.active_tab() {
-            Some(tab) if self.is_foreground() => tab.zoom(vec![step]),
+            Some(tab) if self.is_foreground() => tab.zoom(vec![step], false),
             _ => log::info!("zoom {step:?}: the window is not in the foreground"),
         }
     }
@@ -786,7 +786,8 @@ impl BrowserWindow {
     /// Takes the selected tab's page to the zoom remembered for its site
     /// ([`Tab::wanted_zoom`]) with the key presses a person would use: only in the foreground
     /// window, never in scripted runs, which send no OS input, and never while the user types
-    /// in the address box, which the presses would take the focus from.
+    /// in the address box, which the presses would take the focus from. [`Tab::zoom`] checks
+    /// again just before sending them, and leaves the level wanted if it cannot.
     pub(crate) fn take_to_site_zoom(&self, tab: &Tab) {
         let interactive = self
             .browser()
@@ -805,7 +806,7 @@ impl BrowserWindow {
             let steps = zoom::steps(tab.state().zoom, level);
             log::debug!("tab {}: to its site's zoom {}", tab.id, level.label());
             if !steps.is_empty() {
-                tab.zoom(steps);
+                tab.zoom(steps, true);
             }
         }
     }

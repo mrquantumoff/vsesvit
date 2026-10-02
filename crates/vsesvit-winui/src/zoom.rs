@@ -6,9 +6,18 @@
 //!
 //! Core remembers a level per site across restarts (`Profile::site_zoom`), as on Linux. A level
 //! that changes in a loaded page is remembered for its site; a new document that starts at
-//! another level than its site's is taken there with the same key presses, once the tab is
-//! selected in the foreground window ([`Memory`]). Those presses are the only way to set the
-//! level, so scripted runs, which send no OS input, only record the level the page wants.
+//! another level than its site's is taken there with the same key presses ([`Memory`]). Those
+//! presses are the only way to set the level: key events sent through DevTools'
+//! `Input.dispatchKeyEvent` do not zoom.
+//!
+//! Key presses are real input, sent to whatever has the keyboard focus, so they are sent only
+//! for a click on a zoom bubble button, or in an interactive run to take the selected tab's page
+//! to its site's level when the tab is selected, its page focused or a new document starts in it
+//! (`BrowserWindow::take_to_site_zoom`). Either way the page is focused first, and a moment
+//! later [`press`] sends them only if, checked just before sending, the window is still the
+//! foreground one, the page still has the keyboard focus and no modifier or mouse button is
+//! held ([`may_press`]); otherwise nothing is sent, and the site's level waits for the next
+//! focus or selection. Scripted runs send none and only record the level the page wants.
 
 use crate::bindings::*;
 
@@ -58,6 +67,8 @@ pub(crate) enum Report {
 #[derive(Debug, Default)]
 pub(crate) struct Memory {
     wanted: Option<Level>,
+    /// The level [`Memory::take_wanted`] took, until its presses are sent or a report comes.
+    taken: Option<Level>,
 }
 
 impl Memory {
@@ -68,10 +79,12 @@ impl Memory {
         match report {
             Report::Start(level) => {
                 self.wanted = (level != remembered).then_some(remembered);
+                self.taken = None;
                 None
             }
             Report::Change(level) => {
                 self.wanted = None;
+                self.taken = None;
                 Some(level)
             }
         }
@@ -83,7 +96,22 @@ impl Memory {
     }
 
     pub fn take_wanted(&mut self) -> Option<Level> {
-        self.wanted.take()
+        self.taken = self.wanted.take();
+        self.taken
+    }
+
+    /// Whether the level [`Memory::take_wanted`] took still waits for its presses: the page
+    /// has reported no level since, so the steps to it still hold.
+    pub fn awaits_presses(&self) -> bool {
+        self.taken.is_some()
+    }
+
+    /// The presses for the level [`Memory::take_wanted`] took were not sent: it is wanted
+    /// again, unless the page reported a level since.
+    pub fn put_back(&mut self) {
+        if self.wanted.is_none() {
+            self.wanted = self.taken.take();
+        }
     }
 }
 
@@ -154,9 +182,57 @@ impl Step {
 
 const VK_CONTROL: u16 = 0x11;
 
-/// Presses Ctrl and the key of each of `steps` for the page that has the keyboard focus. Only
-/// for a window in the foreground.
-pub(crate) fn press(steps: &[Step]) {
+/// The keys whose being held stops presses ([`may_press`]): Shift, Ctrl, Alt, the Windows
+/// keys, and the mouse buttons.
+const HELD: [u16; 10] = [
+    0x10, VK_CONTROL, 0x12, 0x5B, 0x5C, 0x01, 0x02, 0x04, 0x05, 0x06,
+];
+
+/// Why key presses were not sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotSent {
+    /// Another window, maybe another app's, is in the foreground and would get them.
+    Background,
+    /// The page does not have the keyboard focus; something else in the window would get them.
+    PageUnfocused,
+    /// This key (a virtual-key code) is down: the presses would combine with it, and their
+    /// Ctrl release would let go of a Ctrl the user holds.
+    Held(u16),
+}
+
+/// Whether presses may be sent now: only to a page that has the keyboard focus in the foreground
+/// window, while no modifier or mouse button is down (`held`, by virtual-key code).
+pub(crate) fn may_press(
+    foreground: bool,
+    page_focused: bool,
+    held: impl Fn(u16) -> bool,
+) -> Result<(), NotSent> {
+    if !foreground {
+        return Err(NotSent::Background);
+    }
+    if !page_focused {
+        return Err(NotSent::PageUnfocused);
+    }
+    match HELD.into_iter().find(|&vk| held(vk)) {
+        Some(vk) => Err(NotSent::Held(vk)),
+        None => Ok(()),
+    }
+}
+
+/// Presses Ctrl and the key of each of `steps`, as one batch of input, for the page in window
+/// `hwnd`, if [`may_press`] allows it. That is checked right before the batch goes, in the same
+/// call, with `page_focused` asked first, so the foreground window and the keys held are read
+/// last.
+pub(crate) fn press(
+    hwnd: HWND,
+    page_focused: impl FnOnce() -> bool,
+    steps: &[Step],
+) -> Result<(), NotSent> {
+    let page_focused = page_focused();
+    let foreground = unsafe { GetForegroundWindow() } == hwnd;
+    // The high bit: the key is down now.
+    let down = |vk: u16| unsafe { GetAsyncKeyState(i32::from(vk)) } < 0;
+    may_press(foreground, page_focused, down)?;
     let key = |vk: u16, up: bool| INPUT {
         r#type: INPUT_KEYBOARD as u32,
         Anonymous: INPUT_0 {
@@ -185,6 +261,7 @@ pub(crate) fn press(steps: &[Step]) {
             inputs.len()
         );
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -229,6 +306,62 @@ mod tests {
             memory.reported(Report::Change(Level(100)), Level(150)),
             Some(Level(100)),
             "100% is remembered too, which forgets the site"
+        );
+    }
+
+    #[test]
+    fn a_site_level_whose_presses_were_not_sent_is_wanted_again_until_a_report_comes() {
+        let mut memory = Memory::default();
+        memory.reported(Report::Start(Level(100)), Level(125));
+        assert_eq!(memory.take_wanted(), Some(Level(125)));
+        assert_eq!(memory.wanted(), None, "not pressed for twice");
+        assert!(memory.awaits_presses());
+        memory.put_back();
+        assert_eq!(memory.wanted(), Some(Level(125)), "for the next focus or selection");
+        assert_eq!(memory.take_wanted(), Some(Level(125)));
+        memory.reported(Report::Change(Level(110)), Level(125));
+        assert!(!memory.awaits_presses(), "the steps from the old level are stale");
+        memory.put_back();
+        assert_eq!(memory.wanted(), None, "the user zoomed meanwhile");
+        memory.reported(Report::Start(Level(100)), Level(150));
+        assert_eq!(memory.take_wanted(), Some(Level(150)));
+        memory.reported(Report::Start(Level(100)), Level(125));
+        memory.put_back();
+        assert_eq!(
+            memory.wanted(),
+            Some(Level(125)),
+            "the new document's level, not the old one's"
+        );
+    }
+
+    #[test]
+    fn presses_go_only_to_the_focused_page_of_the_foreground_window_with_nothing_held() {
+        let none = |_: u16| false;
+        assert_eq!(may_press(true, true, none), Ok(()));
+        assert_eq!(may_press(false, true, none), Err(NotSent::Background));
+        assert_eq!(may_press(true, false, none), Err(NotSent::PageUnfocused));
+        for (vk, name) in [
+            (0x10, "Shift"),
+            (0x11, "Ctrl"),
+            (0x12, "Alt"),
+            (0x5B, "left Windows"),
+            (0x5C, "right Windows"),
+            (0x01, "left button"),
+            (0x02, "right button"),
+            (0x04, "middle button"),
+            (0x05, "X1 button"),
+            (0x06, "X2 button"),
+        ] {
+            assert_eq!(
+                may_press(true, true, |k| k == vk),
+                Err(NotSent::Held(vk)),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            may_press(true, true, |k| k == 0x41),
+            Ok(()),
+            "a letter held is no modifier"
         );
     }
 

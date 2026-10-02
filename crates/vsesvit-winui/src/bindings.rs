@@ -14,6 +14,7 @@ windows_core::link!("d3d11.dll" "system" fn D3D11CreateDevice(padapter : *mut co
 windows_core::link!("dwmapi.dll" "system" fn DwmGetWindowAttribute(hwnd : HWND, dwattribute : u32, pvattribute : *mut core::ffi::c_void, cbattribute : u32) -> windows_core::HRESULT);
 windows_core::link!("user32.dll" "system" fn EnumWindows(lpenumfunc : WNDENUMPROC, lparam : LPARAM) -> windows_core::BOOL);
 windows_core::link!("user32.dll" "system" fn GetAncestor(hwnd : HWND, gaflags : u32) -> HWND);
+windows_core::link!("user32.dll" "system" fn GetAsyncKeyState(vkey : i32) -> i16);
 windows_core::link!("user32.dll" "system" fn GetDpiForWindow(hwnd : HWND) -> u32);
 windows_core::link!("user32.dll" "system" fn GetForegroundWindow() -> HWND);
 windows_core::link!("user32.dll" "system" fn GetKeyState(nvirtkey : i32) -> i16);

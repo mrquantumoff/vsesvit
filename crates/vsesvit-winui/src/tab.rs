@@ -23,7 +23,7 @@ use crate::store;
 use crate::tab_header::{Audio, TabLook};
 use crate::window::BrowserWindow;
 use crate::media::{self, MediaAction, Playback};
-use crate::{capturing, connection, exec, xaml, zoom};
+use crate::{capturing, connection, exec, platform, xaml, zoom};
 
 /// Identifies a tab within this process.
 pub(crate) type TabId = u64;
@@ -670,15 +670,58 @@ impl Tab {
         }
     }
 
-    /// Zooms the page as its keyboard shortcuts do, one after another. Only for a window in the
-    /// foreground.
-    pub fn zoom(&self, steps: Vec<zoom::Step>) {
+    /// Zooms the page as its keyboard shortcuts do, one after another, with real key presses:
+    /// focuses the page, and a moment later sends them only if the window is still in the
+    /// foreground with the page focused and nothing held (`zoom::press`). Only for a window in
+    /// the foreground. When the presses were for the site's level (`restoring`) and were not
+    /// sent, that level is wanted again, for the next focus or selection.
+    pub fn zoom(&self, steps: Vec<zoom::Step>, restoring: bool) {
         self.focus_page();
+        let (window, id) = (self.window.clone(), self.id);
         // The page takes the focus a moment after the web view does.
         exec::spawn(async move {
             exec::sleep(Duration::from_millis(50)).await;
-            zoom::press(&steps);
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            let Some(tab) = window.tab(id) else {
+                return;
+            };
+            if restoring && !tab.zoom_memory.borrow().awaits_presses() {
+                log::debug!("tab {id}: its zoom changed before the keys went; not sent");
+                return;
+            }
+            let sent = match platform::window_handle(window.xaml_window()) {
+                Ok(hwnd) => zoom::press(hwnd, || tab.page_has_focus(), &steps),
+                Err(_) => Err(zoom::NotSent::Background),
+            };
+            if let Err(why) = sent {
+                log::info!("tab {id}: zoom keys not sent: {why:?}");
+                if restoring {
+                    tab.zoom_memory.borrow_mut().put_back();
+                }
+            }
         });
+    }
+
+    /// Whether the keyboard focus is in the page, so key presses reach it.
+    fn page_has_focus(&self) -> bool {
+        let Ok(view) = self.view.cast::<DependencyObject>() else {
+            return false;
+        };
+        let Ok(root) = self.view.cast::<UIElement>().and_then(|v| v.XamlRoot()) else {
+            return false;
+        };
+        let mut node = FocusManager::GetFocusedElementWithRoot(&root)
+            .and_then(|f| f.cast::<DependencyObject>())
+            .ok();
+        while let Some(element) = node {
+            if xaml::same_object(&element, &view) {
+                return true;
+            }
+            node = VisualTreeHelper::GetParent(&element).ok();
+        }
+        false
     }
 
     /// The zoom remembered for the page's site, while the page is not at it.
@@ -687,7 +730,8 @@ impl Tab {
     }
 
     /// Takes the level [`Tab::wanted_zoom`] says, for the shell to press its way there; it is
-    /// not wanted again, so presses that went astray are never repeated.
+    /// not wanted again unless [`Tab::zoom`] finds it cannot send the presses, so presses that
+    /// went out are never repeated.
     pub fn take_wanted_zoom(&self) -> Option<zoom::Level> {
         self.zoom_memory.borrow_mut().take_wanted()
     }
