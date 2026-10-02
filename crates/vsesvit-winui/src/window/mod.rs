@@ -139,6 +139,10 @@ pub(crate) struct WindowPrefs {
     pub compact_address: bool,
     /// Whole URLs in the address bar, instead of simplified ones while it is not focused.
     pub full_urls: bool,
+    /// The media player at the foot of the vertical tab pane.
+    pub media_player: bool,
+    /// Picture-in-picture in the media player, for the sites that allowed it.
+    pub pip: bool,
 }
 
 /// The compact address bar's widest.
@@ -295,6 +299,7 @@ impl BrowserWindow {
         this.set_compact_address(prefs.compact_address);
         this.set_bookmarks_bar_visible(prefs.bookmarks_bar);
         this.set_home_button_visible(prefs.home_button);
+        this.set_media_switches(prefs.media_player, prefs.pip);
         this.wire()?;
         this.wire_permissions()?;
         this.install_accelerators()?;

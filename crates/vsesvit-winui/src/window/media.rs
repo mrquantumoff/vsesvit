@@ -5,7 +5,8 @@
 //! The player follows the tab that started playing sound last, until the tab closes or shows a
 //! page with nothing to play. Its web view goes into the box only while the vertical pane is
 //! expanded, another tab is selected, the page has a video, and the tabs leave room for the
-//! box; once the tabs reach it, the box goes and the controls stay.
+//! box; once the tabs reach it, the box goes and the controls stay. Settings can turn off
+//! picture-in-picture, or the whole player and the box with it.
 
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
@@ -29,8 +30,32 @@ enum Pip {
     Artwork(String),
 }
 
+/// The Settings switches of the player and its picture-in-picture box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Switches {
+    pub player: bool,
+    pub pip: bool,
+}
+
+impl Default for Switches {
+    fn default() -> Self {
+        Switches {
+            player: true,
+            pip: true,
+        }
+    }
+}
+
+impl Switches {
+    /// The box goes with the player.
+    fn pip_shown(self) -> bool {
+        self.player && self.pip
+    }
+}
+
 #[derive(Default)]
 pub(super) struct MediaState {
+    switches: Cell<Switches>,
     /// The tab the player follows.
     tab: Cell<Option<TabId>>,
     playback: RefCell<Option<Playback>>,
@@ -43,6 +68,12 @@ pub(super) struct MediaState {
 const AFTER_ACTION: Duration = Duration::from_millis(300);
 
 impl BrowserWindow {
+    /// Shows or hides the player and its picture-in-picture box as Settings say.
+    pub fn set_media_switches(&self, player: bool, pip: bool) {
+        self.media.switches.set(Switches { player, pip });
+        self.show_media();
+    }
+
     /// A tab started or stopped playing sound, or was muted or unmuted.
     pub fn tab_audio_changed(&self, tab: &Tab) {
         if tab.state().audible {
@@ -98,7 +129,8 @@ impl BrowserWindow {
                 next: playback.next,
             }
         });
-        self.player.show(look.as_ref());
+        let shown = look.filter(|_| self.media.switches.get().player);
+        self.player.show(shown.as_ref());
         self.update_pip();
     }
 
@@ -136,6 +168,9 @@ impl BrowserWindow {
     }
 
     fn pip_wanted(&self) -> Option<Pip> {
+        if !self.media.switches.get().pip_shown() {
+            return None;
+        }
         let id = self.media.tab.get()?;
         let pane = StripKind::of(self.tabs_position.get()) == StripKind::Side
             && !self.side.is_compact()

@@ -177,6 +177,8 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         backdrop: profile.prefs().get(&WINDOW_BACKDROP),
         compact_address: profile.prefs().get(&keys::COMPACT_ADDRESS_BAR),
         full_urls: profile.prefs().get(&keys::SHOW_FULL_URLS),
+        media_player: profile.prefs().get(&keys::SHOW_MEDIA_PLAYER),
+        pip: profile.prefs().get(&keys::PICTURE_IN_PICTURE),
     };
     let downloads = Downloads::new(&mut profile);
     let updates = if config.mode.is_interactive() {
@@ -931,6 +933,33 @@ impl Browser {
         }
     }
 
+    pub fn media_player_visible(&self) -> bool {
+        self.prefs.get().media_player
+    }
+
+    pub fn set_media_player_visible(&self, visible: bool) {
+        self.write_pref(&keys::SHOW_MEDIA_PLAYER, &visible);
+        self.update_prefs(|p| p.media_player = visible);
+        self.apply_media_switches();
+    }
+
+    pub fn pip_enabled(&self) -> bool {
+        self.prefs.get().pip
+    }
+
+    pub fn set_pip_enabled(&self, enabled: bool) {
+        self.write_pref(&keys::PICTURE_IN_PICTURE, &enabled);
+        self.update_prefs(|p| p.pip = enabled);
+        self.apply_media_switches();
+    }
+
+    fn apply_media_switches(&self) {
+        let prefs = self.prefs.get();
+        for window in self.windows() {
+            window.set_media_switches(prefs.media_player, prefs.pip);
+        }
+    }
+
     /// Read on each request: pages open windows rarely.
     pub fn blocks_popups(&self) -> bool {
         self.core(|p| p.prefs().get(&keys::BLOCK_POPUPS))
@@ -1071,6 +1100,8 @@ impl Browser {
             home_button: p.prefs().get(&keys::SHOW_HOME_BUTTON),
             compact_address: p.prefs().get(&keys::COMPACT_ADDRESS_BAR),
             full_urls: p.prefs().get(&keys::SHOW_FULL_URLS),
+            media_player: p.prefs().get(&keys::SHOW_MEDIA_PLAYER),
+            pip: p.prefs().get(&keys::PICTURE_IN_PICTURE),
             ..old
         });
         self.prefs.set(new);
@@ -1092,6 +1123,9 @@ impl Browser {
             }
             if new.full_urls != old.full_urls {
                 window.set_full_urls(new.full_urls);
+            }
+            if (new.media_player, new.pip) != (old.media_player, old.pip) {
+                window.set_media_switches(new.media_player, new.pip);
             }
         }
     }

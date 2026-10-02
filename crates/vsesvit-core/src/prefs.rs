@@ -122,6 +122,12 @@ pub mod keys {
     pub const SHOW_FULL_URLS: Pref<bool> = Pref { key: "address_bar.full_urls", scope: Scope::Synced, default: || false };
     /// A Home button in the toolbar, next to Reload, that opens [`HOMEPAGE`].
     pub const SHOW_HOME_BUTTON: Pref<bool> = Pref { key: "toolbar.home_button", scope: Scope::Synced, default: || false };
+    /// The media player at the foot of the vertical tab list, with the tab that played sound
+    /// last. Off, picture-in-picture goes with it.
+    pub const SHOW_MEDIA_PLAYER: Pref<bool> = Pref { key: "media.player", scope: Scope::Synced, default: || true };
+    /// Picture-in-picture in the media player, for the sites the user turned it on for
+    /// ([`crate::permissions::Permission::PictureInPicture`]).
+    pub const PICTURE_IN_PICTURE: Pref<bool> = Pref { key: "media.picture_in_picture", scope: Scope::Synced, default: || true };
     /// Whether the address bar suggests pages from history ([`crate::search::Omnibox::suggest`]).
     pub const SUGGEST_HISTORY: Pref<bool> = Pref { key: "address_bar.suggest.history", scope: Scope::Synced, default: || true };
     /// Whether the address bar suggests bookmarks.

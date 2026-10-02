@@ -133,6 +133,21 @@ fn tabs_are_vertical_on_the_left_by_default_and_the_choice_is_synced() {
 }
 
 #[test]
+fn the_media_player_and_picture_in_picture_are_on_by_default_and_synced() {
+    let (mut p, _dir) = open();
+    assert_eq!((keys::SHOW_MEDIA_PLAYER.key, keys::PICTURE_IN_PICTURE.key), ("media.player", "media.picture_in_picture"));
+    assert_eq!((keys::SHOW_MEDIA_PLAYER.scope, keys::PICTURE_IN_PICTURE.scope), (Scope::Synced, Scope::Synced));
+    assert!(p.prefs().get(&keys::SHOW_MEDIA_PLAYER));
+    assert!(p.prefs().get(&keys::PICTURE_IN_PICTURE));
+    p.prefs().set(&keys::SHOW_MEDIA_PLAYER, &false).unwrap();
+    p.prefs().set(&keys::PICTURE_IN_PICTURE, &false).unwrap();
+    assert!(!p.prefs().get(&keys::SHOW_MEDIA_PLAYER));
+    assert!(!p.prefs().get(&keys::PICTURE_IN_PICTURE));
+    let synced: Vec<String> = exported(&mut p).into_iter().map(|(key, _)| key).collect();
+    assert_eq!(synced, ["media.player", "media.picture_in_picture"]);
+}
+
+#[test]
 fn the_extension_toolbar_list_round_trips_and_syncs() {
     use vsesvit_core::extensions::toolbar::{Entry, TOOLBAR};
 

@@ -601,7 +601,7 @@ pub(crate) fn delete_server_data(
 /// What the shell applies again after a sync changed a synced preference it holds or shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PrefEffect {
-    /// Theme, tab list placement, bars and buttons (`WindowPrefs`).
+    /// Theme, tab list placement, bars, buttons and the media player (`WindowPrefs`).
     Window,
     Keymap,
     Autofill,
@@ -611,13 +611,15 @@ pub(crate) enum PrefEffect {
 /// The synced preferences with an effect. The others are read where they are used: the home
 /// page, startup, the default search engine and suggestions, pop-ups, downloads, and the
 /// engine's startup switches.
-const PREF_EFFECTS: [(&str, PrefEffect); 10] = [
+const PREF_EFFECTS: [(&str, PrefEffect); 12] = [
     (keys::THEME.key, PrefEffect::Window),
     (keys::TABS_POSITION.key, PrefEffect::Window),
     (keys::SHOW_BOOKMARKS_BAR.key, PrefEffect::Window),
     (keys::SHOW_HOME_BUTTON.key, PrefEffect::Window),
     (keys::COMPACT_ADDRESS_BAR.key, PrefEffect::Window),
     (keys::SHOW_FULL_URLS.key, PrefEffect::Window),
+    (keys::SHOW_MEDIA_PLAYER.key, PrefEffect::Window),
+    (keys::PICTURE_IN_PICTURE.key, PrefEffect::Window),
     (keys::SHORTCUTS.key, PrefEffect::Keymap),
     (keys::SAVE_PASSWORDS.key, PrefEffect::Autofill),
     (keys::AUTOFILL_FORMS.key, PrefEffect::Autofill),
@@ -800,6 +802,10 @@ mod tests {
         let keys = |keys: &[&str]| keys.iter().map(|k| (*k).to_owned()).collect::<Vec<_>>();
         assert_eq!(
             pref_effects(&keys(&["tabs.position", "theme", "homepage"])),
+            [PrefEffect::Window]
+        );
+        assert_eq!(
+            pref_effects(&keys(&["media.player", "media.picture_in_picture"])),
             [PrefEffect::Window]
         );
         assert_eq!(

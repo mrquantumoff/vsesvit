@@ -110,6 +110,18 @@ pub(super) const MARKUP: &str = r#"
         </StackPanel>
         <ToggleSwitch x:Name="ShowBookmarksBar" Header="Show the bookmarks bar"/>
         <ToggleSwitch x:Name="ShowHomeButton" Header="Show the Home button"/>
+        <StackPanel Spacing="4">
+          <ToggleSwitch x:Name="ShowMediaPlayer" Header="Show media player"/>
+          <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                     Text="Controls what the last tab to play sound is playing, at the foot of the vertical tab list."/>
+        </StackPanel>
+        <StackPanel Spacing="4">
+          <ToggleSwitch x:Name="PictureInPicture" Header="Picture-in-picture"/>
+          <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                     Text="Shows the playing video in the media player while you look at other tabs, on sites where you turn it on with the picture-in-picture button in the address bar."/>
+        </StackPanel>
       </StackPanel>
     </ScrollViewer>
 
@@ -284,7 +296,7 @@ const PREF_SWITCHES: [(&str, &Pref<bool>, Written); 8] = [
 ];
 
 /// Switches for settings every window shows at once: each one's name, state and setter.
-const WINDOW_SWITCHES: [(&str, Getter, Setter); 5] = [
+const WINDOW_SWITCHES: [(&str, Getter, Setter); 7] = [
     (
         "ShowBookmarksBar",
         Browser::bookmarks_bar_visible,
@@ -301,6 +313,16 @@ const WINDOW_SWITCHES: [(&str, Getter, Setter); 5] = [
         Browser::set_compact_address,
     ),
     ("FullUrls", Browser::full_urls, Browser::set_full_urls),
+    (
+        "ShowMediaPlayer",
+        Browser::media_player_visible,
+        Browser::set_media_player_visible,
+    ),
+    (
+        "PictureInPicture",
+        Browser::pip_enabled,
+        Browser::set_pip_enabled,
+    ),
     (
         "Transparent",
         |b| b.backdrop() == Backdrop::Acrylic,
