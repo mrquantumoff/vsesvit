@@ -227,6 +227,37 @@ pub(super) async fn run(
         "ok": !media.is_pinned() && unpinned.first() == Some(&media.id),
     }));
 
+    // Pinning the selected tab moves its row in the strip; the selection stays on it, and no
+    // other tab is selected on the way.
+    browser.set_tabs_position(TabsPosition::Top);
+    wait_layout(window, TabsPosition::Top).await;
+    let last_active = |w: &BrowserWindow| {
+        let mut others: Vec<(u64, i64)> = w
+            .tabs_in_order()
+            .iter()
+            .filter(|t| t.id != first.id)
+            .map(|t| (t.id, t.last_active_ms()))
+            .collect();
+        others.sort_unstable();
+        others
+    };
+    let selected_before = window.active_tab().is_some_and(|t| t.id == first.id);
+    let before = last_active(window);
+    window.tab_action(first.id, TabAction::Pin(true));
+    exec::sleep(Duration::from_millis(300)).await;
+    let after = last_active(window);
+    let pinned_first = order(window).first() == Some(&first.id);
+    let selected_after = window.active_tab().is_some_and(|t| t.id == first.id);
+    window.tab_action(first.id, TabAction::Pin(false));
+    browser.set_tabs_position(TabsPosition::Left);
+    wait_layout(window, TabsPosition::Left).await;
+    steps.push(json!({
+        "name": "33b-pinning-the-selected-tab-keeps-it-selected",
+        "last_active_before": before,
+        "last_active_after": after,
+        "ok": selected_before && pinned_first && selected_after && before == after,
+    }));
+
     window.tab_action(first.id, TabAction::SplitWith(media.id));
     exec::sleep(Duration::from_millis(500)).await;
     let halves = (width_if_shown(&first), width_if_shown(&media));
