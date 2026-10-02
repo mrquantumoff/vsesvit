@@ -337,6 +337,7 @@ fn key_list(v: &Value) -> Result<Option<Vec<String>>, String> {
 fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> Result<Option<Value>, String> {
     let host = &inner.host;
     let find = |id: TabId| host.tabs().into_iter().find(|t| t.id == id);
+    let tab_or_active = || TabId::from_json(call.arg(0)).or_else(|| host.tabs().into_iter().find(|t| t.active).map(|t| t.id)).ok_or_else(|| format!("{}: no active tab", call.method.name()));
     let visible = |t: &TabInfo| ext.tab_json(t);
     Ok(match call.method {
         Method::TabsQuery => Some(Value::Array(host.tabs().iter().filter(|t| t.matches_query(call.arg(0), ext.sees_tab(t))).map(visible).collect())),
@@ -362,10 +363,7 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
             }))
         }
         Method::TabsUpdate => {
-            let id = match TabId::from_json(call.arg(0)) {
-                Some(id) => id,
-                None => host.tabs().into_iter().find(|t| t.active).map(|t| t.id).ok_or("tabs.update: no active tab")?,
-            };
+            let id = tab_or_active()?;
             let props = call.arg(1);
             let url = props.get("url").and_then(Value::as_str).map(|u| navigation_url(ext, call, u)).transpose()?;
             let active = props.get("active").and_then(Value::as_bool);
@@ -387,10 +385,7 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
             None
         }
         Method::TabsReload => {
-            let id = match TabId::from_json(call.arg(0)) {
-                Some(id) => id,
-                None => host.tabs().into_iter().find(|t| t.active).map(|t| t.id).ok_or("tabs.reload: no active tab")?,
-            };
+            let id = tab_or_active()?;
             host.web_view(id).ok_or_else(|| format!("No tab with id: {}.", id.0))?.reload();
             None
         }

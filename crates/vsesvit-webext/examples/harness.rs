@@ -26,8 +26,9 @@
 //!    host permissions until `activeTab` grants it and for one still showing such a page while it loads another;
 //!    `tabs.query` hides that tab's URL; `action.setPopup(getURL(..))` and `setIcon('/..')`
 //!    resolve; `tabs.create` resolves relative URLs and `tabs.update` refuses
-//!    `javascript:` and `file:`; a web page cannot navigate a tab to the options page, with
-//!    or without a Referer, nor get it by a reload, while going back to it still works;
+//!    `javascript:` and `file:` and without a tab id updates the active tab; a web page cannot
+//!    navigate a tab to the options page, with or without a Referer, nor get it by a reload,
+//!    while going back to it still works;
 //! 8. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!    `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!    uninstall followed by a reinstall fires `onInstalled(install)` again.
@@ -434,6 +435,9 @@ mod linux {
             let created = self.host.created.borrow().last().cloned().unwrap_or_default();
             let refused = navigation.as_ref().and_then(Value::as_array).is_some_and(|r| r.len() == 2 && r.iter().all(|m| m.as_str().is_some_and(|m| m != "navigated")));
             self.note("tabs_url_resolved_and_gated", created.starts_with("chrome-extension://") && created.ends_with("/data.json") && refused, format!("created {created:?}; javascript:/file: updates = {navigation:?}"));
+            let defaulted = self.eval_async(&popup, "const [active] = await chrome.tabs.query({ active: true }); const updated = await chrome.tabs.update({}); return [active.id, updated.id];").await;
+            let to_active = defaulted.as_ref().and_then(Value::as_array).is_some_and(|ids| ids.len() == 2 && ids[0].is_number() && ids[0] == ids[1]);
+            self.note("tabs_update_defaults_to_the_active_tab", to_active, format!("[active tab, tabs.update({{}}) tab] = {defaulted:?}"));
 
             // A web page cannot drive the options page (not web-accessible) through its URL.
             let lure = self.host.create_tab(&self.url("/page2.html"), false).expect("lure tab");
