@@ -69,7 +69,7 @@ async fn wait_prompt(window: &BrowserWindow) -> Option<FrameworkElement> {
 }
 
 /// An element of the site-info popup's Permissions section, which has a namescope of its own.
-fn in_popup<T: Interface>(popup: &FrameworkElement, name: &str) -> Result<T, String> {
+pub(super) fn in_popup<T: Interface>(popup: &FrameworkElement, name: &str) -> Result<T, String> {
     popup
         .cast::<DependencyObject>()
         .ok()
@@ -90,7 +90,7 @@ fn answer(prompt: &FrameworkElement, name: &str) -> Result<(), String> {
     super::dialog_steps::invoke(&button).map_err(|e| e.to_string())
 }
 
-fn select(popup: &FrameworkElement, name: &str, index: i32) -> Result<(), String> {
+pub(super) fn select(popup: &FrameworkElement, name: &str, index: i32) -> Result<(), String> {
     in_popup::<Selector>(popup, name)?
         .SetSelectedIndex(index)
         .map_err(|e| format!("{name}: {e}"))

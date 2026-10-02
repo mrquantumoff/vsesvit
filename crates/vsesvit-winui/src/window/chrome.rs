@@ -111,6 +111,7 @@ const WINDOW_XAML: &str = r#"
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
       <StackPanel Orientation="Horizontal">
         <Button x:Name="SiteButton" Margin="4,0,0,0" Width="30" Height="26" Padding="0" CornerRadius="6"
@@ -169,18 +170,25 @@ const WINDOW_XAML: &str = r#"
           </Flyout>
         </Button.Flyout>
       </Button>
-      <Button x:Name="CopyLink" Grid.Column="3" Style="{StaticResource ToolbarButton}" Width="32" Height="26"
+      <!-- While the selected tab plays a video: picture-in-picture on or off for its site. -->
+      <ToggleButton x:Name="Pip" Grid.Column="3" Style="{StaticResource ToolbarToggle}" Width="32" Height="26"
+                    Margin="0,0,2,0" CornerRadius="6" Visibility="Collapsed"
+                    ToolTipService.ToolTip="Turn on picture-in-picture for this site"
+                    AutomationProperties.Name="Picture-in-picture">
+        <FontIcon Glyph="&#xE93A;" FontSize="14"/>
+      </ToggleButton>
+      <Button x:Name="CopyLink" Grid.Column="4" Style="{StaticResource ToolbarButton}" Width="32" Height="26"
               Margin="0,0,2,0" CornerRadius="6" Visibility="Collapsed"
               ToolTipService.ToolTip="Copy link without trackers" AutomationProperties.Name="Copy link">
         <FontIcon x:Name="CopyLinkGlyph" Glyph="&#xE8C8;" FontSize="14"/>
       </Button>
-      <ToggleButton x:Name="Star" Grid.Column="4" Style="{StaticResource ToolbarToggle}" Width="32" Height="26"
+      <ToggleButton x:Name="Star" Grid.Column="5" Style="{StaticResource ToolbarToggle}" Width="32" Height="26"
                     Margin="0,0,2,0" CornerRadius="6"
                     ToolTipService.ToolTip="Bookmark this page" AutomationProperties.Name="Bookmark this page">
         <FontIcon x:Name="StarGlyph" Glyph="&#xE734;" FontSize="14"/>
       </ToggleButton>
       <!-- The page's load progress, a line along the bottom that fades in from its start. -->
-      <Grid x:Name="AddressProgressTrack" Grid.ColumnSpan="5" Margin="10,0" Height="2"
+      <Grid x:Name="AddressProgressTrack" Grid.ColumnSpan="6" Margin="10,0" Height="2"
             VerticalAlignment="Bottom" IsHitTestVisible="False">
         <Border x:Name="AddressProgress" HorizontalAlignment="Left" CornerRadius="1" Visibility="Collapsed">
           <Border.Background>
@@ -191,7 +199,7 @@ const WINDOW_XAML: &str = r#"
           </Border.Background>
         </Border>
       </Grid>
-      <Border x:Name="AddressFocusRing" Grid.ColumnSpan="5" CornerRadius="8" BorderThickness="2" Margin="-1"
+      <Border x:Name="AddressFocusRing" Grid.ColumnSpan="6" CornerRadius="8" BorderThickness="2" Margin="-1"
               BorderBrush="{ThemeResource AccentFillColorDefaultBrush}" IsHitTestVisible="False"
               Visibility="Collapsed"/>
     </Grid>
@@ -322,6 +330,12 @@ const WINDOW_XAML: &str = r#"
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="*"/>
       </Grid.ColumnDefinitions>
+      <!-- Where a selected tab's page is while its video plays in picture-in-picture. -->
+      <StackPanel x:Name="PipPlaceholder" Grid.ColumnSpan="3" Spacing="12" Visibility="Collapsed"
+                  HorizontalAlignment="Center" VerticalAlignment="Center">
+        <FontIcon Glyph="&#xE93A;" FontSize="32" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <TextBlock Text="Playing in picture-in-picture" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+      </StackPanel>
       <!-- Drags to share the width between the two pages. -->
       <Border x:Name="SplitDivider" Grid.Column="1" Width="8" Visibility="Collapsed" Background="Transparent"
               AutomationProperties.Name="Resize the split view">
@@ -371,6 +385,7 @@ pub(super) struct Chrome {
     pub(super) zoom_chip_text: TextBlock,
     pub(super) zoom_bubble: Flyout,
     pub(super) zoom_level: TextBlock,
+    pub(super) pip: ToggleButton,
     pub(super) copy_link: Button,
     pub(super) copy_link_glyph: FontIcon,
     pub(super) star: ToggleButton,
@@ -391,6 +406,7 @@ pub(super) struct Chrome {
     pub(super) share_stop: Button,
     pub(super) left_host: Panel,
     pub(super) pages: Panel,
+    pub(super) pip_placeholder: FrameworkElement,
     pub(super) split_divider: UIElement,
     pub(super) right_host: Panel,
     pub(super) overlay: UIElement,
@@ -425,6 +441,7 @@ impl Chrome {
             zoom_chip_text: xaml::find(&root, "ZoomChipText")?,
             zoom_bubble: xaml::find(&root, "ZoomBubble")?,
             zoom_level: xaml::find(&root, "ZoomLevel")?,
+            pip: xaml::find(&root, "Pip")?,
             copy_link: xaml::find(&root, "CopyLink")?,
             copy_link_glyph: xaml::find(&root, "CopyLinkGlyph")?,
             star: xaml::find(&root, "Star")?,
@@ -445,6 +462,7 @@ impl Chrome {
             share_stop: xaml::find(&root, "ShareStop")?,
             left_host: xaml::find(&root, "LeftHost")?,
             pages: xaml::find(&root, "Pages")?,
+            pip_placeholder: xaml::find(&root, "PipPlaceholder")?,
             split_divider: xaml::find(&root, "SplitDivider")?,
             right_host: xaml::find(&root, "RightHost")?,
             overlay: xaml::find(&root, "Overlay")?,

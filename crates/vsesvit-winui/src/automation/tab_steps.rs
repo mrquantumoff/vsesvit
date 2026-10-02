@@ -1,9 +1,10 @@
 //! A tab that plays sound shows a speaker, and its context menu pins it, splits the view with
 //! it and copies its link; Ctrl+Shift+C and Ctrl+Alt+Shift+C copy the clean and the whole link.
-//! The sidebar player follows the tab, drives its page, and shows its video in the pane while
-//! another tab is selected, until the tabs grow into that space.
-//! The media page plays a generated video with a tone, muted before it starts, so the run makes
-//! no sound.
+//! The sidebar player follows the tab, drives its page, and once its site allows
+//! picture-in-picture (`pip_steps`) shows its video in the pane while another tab is selected,
+//! until the tabs grow into that space.
+//! The media page (the fixture site's `/media.html`) plays a generated video with a tone, muted
+//! before it starts, so the run makes no sound.
 
 use std::path::Path;
 use std::rc::Rc;
@@ -25,26 +26,6 @@ use crate::tab::Tab;
 use crate::tab_header::Audio;
 use crate::window::{BrowserWindow, TabAction};
 use crate::{exec, xaml};
-
-/// A canvas animation and a quiet tone as one media stream in a `<video>`; `start()` plays it.
-/// Like a video site, the video sits below a header, inside a transformed and clipped player,
-/// which moves elsewhere in the page when the page is narrow.
-const MEDIA_PAGE: &str = "data:text/html,<title>Media</title>\
-<body style='margin:0;background:rgb(10,20,40);color:white;font:24px sans-serif'>\
-<header style='height:120px'>Site header</header><div style='transform:translateZ(0);overflow:hidden;\
-margin-left:60px;width:640px;height:360px'><video id=v width=640 height=360></video></div>\
-<p>Comments and more videos</p><aside id=narrow></aside><script>\
-const player=document.getElementById('v').parentElement;\
-addEventListener('resize',()=>{if(innerWidth<500)document.getElementById('narrow').appendChild(player)});\
-const c=document.createElement('canvas');c.width=320;c.height=180;const g=c.getContext('2d');let f=0;\
-setInterval(()=>{f++;g.fillStyle='rgb('+(f*5%256)+',90,160)';g.fillRect(0,0,320,180);\
-g.fillStyle='white';g.font='64px sans-serif';g.fillText(f,40,120)},33);\
-navigator.mediaSession.metadata=new MediaMetadata({title:'Smoke tone',artist:'Vsesvit'});\
-navigator.mediaSession.setActionHandler('nexttrack',()=>{document.title='Next track'});\
-window.start=async()=>{const a=new AudioContext();const o=a.createOscillator();const n=a.createGain();\
-n.gain.value=0.01;const d=a.createMediaStreamDestination();o.connect(n).connect(d);o.start();\
-const s=c.captureStream(30);s.addTrack(d.stream.getAudioTracks()[0]);const v=document.getElementById('v');\
-v.srcObject=s;await v.play();return 'playing'};</script></body>";
 
 /// Opens `page` in a background tab, muted, and calls its `start()`.
 async fn open_playing(window: &Rc<BrowserWindow>, page: &str) -> Result<Rc<Tab>, String> {
@@ -219,7 +200,7 @@ pub(super) async fn run(
     cycle_steps(window, steps).await?;
     frame_shortcut_steps(window, server, steps).await?;
     select(window, &first);
-    let media = open_playing(window, MEDIA_PAGE).await?;
+    let media = open_playing(window, server.url("/media.html").as_str()).await?;
     exec::sleep(Duration::from_millis(300)).await;
     shoot(window, out_dir, "30-tab-plays-sound", steps, |_| {
         let state = media.state();
@@ -464,6 +445,7 @@ async fn player_steps(
     out_dir: &Path,
     steps: &mut Vec<Value>,
 ) -> Result<(), String> {
+    super::pip_steps::opt_in(window, first, media, out_dir, steps).await?;
     select(window, first);
     let in_pip = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
         (window.pip_tab() == Some(media.id)).then_some(())
@@ -580,5 +562,5 @@ async fn player_steps(
     })
     .await;
     browser.set_tab_pane_width(240);
-    Ok(())
+    super::pip_steps::rows_and_switches(window, first, media, out_dir, steps).await
 }

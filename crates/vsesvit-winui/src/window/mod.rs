@@ -586,6 +586,9 @@ impl BrowserWindow {
     /// Shows the selected tab's web view, hides the rest, and refreshes the toolbar.
     fn sync_selection(&self) {
         let active = self.active_tab();
+        if self.shown_tab.get() != active.as_ref().map(|t| t.id) {
+            self.media_selection_moved();
+        }
         self.update_pip();
         self.place_views(active.as_ref().map(|t| t.id));
         if self.fullscreen.get() && !active.as_ref().is_some_and(|t| t.state().fullscreen) {
@@ -676,6 +679,7 @@ impl BrowserWindow {
         let report = report.and_then(|json| connection::parse_report(&json));
         self.show_site(&state.url, report.as_ref());
         self.show_zoom(state.zoom);
+        self.show_pip_button();
         self.show_permissions_state();
         let _ = xaml::set_visible(&self.ui.copy_link, omnibox::has_link(&state.url));
         let title = if state.title.is_empty() || state.url.is_empty() {

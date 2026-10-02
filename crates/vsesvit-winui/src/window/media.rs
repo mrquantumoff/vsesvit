@@ -4,13 +4,19 @@
 //!
 //! The player follows the tab that started playing sound last, until the tab closes or shows a
 //! page with nothing to play. Its web view goes into the box only while the vertical pane is
-//! expanded, another tab is selected, the page has a video, and the tabs leave room for the
-//! box; once the tabs reach it, the box goes and the controls stay. Settings can turn off
-//! picture-in-picture, or the whole player and the box with it.
+//! expanded, another tab is selected, the page has a video, its site allowed picture-in-picture
+//! ([`Permission::PictureInPicture`]), and the tabs leave room for the box; once the tabs reach
+//! it, the box goes and the controls stay. Settings can turn off picture-in-picture, or the
+//! whole player and the box with it.
+//!
+//! While the selected tab plays a video, the address bar's picture-in-picture button turns it
+//! on or off for the tab's site. Turning it on also puts the video in the box at once, the
+//! page's place showing where it went, until another tab is selected or the box is clicked.
 
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
+use vsesvit_core::permissions::{Permission, Setting};
 use windows_core::{Interface, Result};
 
 use super::BrowserWindow;
@@ -19,7 +25,7 @@ use crate::layout::StripKind;
 use crate::media::{MediaAction, Playback};
 use crate::player::PlayerLook;
 use crate::tab::{Tab, TabId};
-use crate::{exec, xaml};
+use crate::{exec, permissions, xaml};
 
 /// What the picture-in-picture box shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +59,41 @@ impl Switches {
     }
 }
 
+/// The toolbar's picture-in-picture button: `None` hides it, else whether it shows on. It shows
+/// while the selected tab plays a video (`video_here`) on a site that can remember the choice
+/// (`allowed` is whether that site allowed picture-in-picture), and the player and its
+/// picture-in-picture are on.
+fn pip_button(switches: Switches, video_here: bool, allowed: Option<bool>) -> Option<bool> {
+    if switches.pip_shown() && video_here {
+        allowed
+    } else {
+        None
+    }
+}
+
+/// What a click on the button stores for the site, and whether the video goes into the box at
+/// once.
+fn pip_click(allowed: bool) -> (Setting, bool) {
+    if allowed {
+        (Setting::Block, false)
+    } else {
+        (Setting::Allow, true)
+    }
+}
+
+/// What the box would show for tab `id` playing `playback`: its video when its site allowed
+/// picture-in-picture, else the artwork of what it plays.
+fn pip_content(playback: Option<&Playback>, id: TabId, video_allowed: bool) -> Option<Pip> {
+    let playback = playback?;
+    if playback.video && video_allowed {
+        Some(Pip::Video(id))
+    } else if !playback.artwork.is_empty() {
+        Some(Pip::Artwork(playback.artwork.clone()))
+    } else {
+        None
+    }
+}
+
 #[derive(Default)]
 pub(super) struct MediaState {
     switches: Cell<Switches>,
@@ -60,6 +101,8 @@ pub(super) struct MediaState {
     tab: Cell<Option<TabId>>,
     playback: RefCell<Option<Playback>>,
     pip: RefCell<Option<Pip>>,
+    /// The selected tab whose video the toolbar's button put in the box.
+    requested: Cell<Option<TabId>>,
     /// Counts playback queries, so only the latest answer is shown.
     query: Cell<u64>,
 }
@@ -78,6 +121,9 @@ impl BrowserWindow {
     pub fn tab_audio_changed(&self, tab: &Tab) {
         if tab.state().audible {
             self.media.tab.set(Some(tab.id));
+            if self.media.requested.get().is_some_and(|id| id != tab.id) {
+                self.media.requested.set(None);
+            }
         }
         if self.media.tab.get() == Some(tab.id) {
             self.refresh_media();
@@ -110,7 +156,8 @@ impl BrowserWindow {
         });
     }
 
-    pub(super) fn show_media(&self) {
+    /// Shows what the followed tab plays, and the box and the toolbar's button as they follow.
+    pub(crate) fn show_media(&self) {
         let tab = self.media.tab.get().and_then(|id| self.tab(id));
         let look = tab.map(|tab| {
             let state = tab.state();
@@ -132,6 +179,69 @@ impl BrowserWindow {
         let shown = look.filter(|_| self.media.switches.get().player);
         self.player.show(shown.as_ref());
         self.update_pip();
+        self.show_pip_button();
+    }
+
+    /// Whether the site of `tab` allowed picture-in-picture; `None` for a page without one.
+    fn pip_allowed(&self, tab: &Tab) -> Option<bool> {
+        let origin = tab.origin()?;
+        let browser = self.browser()?;
+        let setting =
+            browser.core(|p| p.site_permissions().get(&origin, Permission::PictureInPicture));
+        Some(setting == Some(Setting::Allow))
+    }
+
+    /// The toolbar's picture-in-picture button, for the selected tab.
+    pub(super) fn show_pip_button(&self) {
+        let active = self.active_tab();
+        let video_here = active
+            .as_ref()
+            .is_some_and(|t| self.media.tab.get() == Some(t.id))
+            && self.media.playback.borrow().as_ref().is_some_and(|p| p.video);
+        let allowed = active
+            .as_ref()
+            .filter(|_| video_here)
+            .and_then(|t| self.pip_allowed(t));
+        let button = pip_button(self.media.switches.get(), video_here, allowed);
+        let _ = xaml::set_visible(&self.ui.pip, button.is_some());
+        if let Some(on) = button {
+            let _ = self.ui.pip.SetIsChecked(Some(on));
+            let tip = if on {
+                "Turn off picture-in-picture for this site"
+            } else {
+                "Turn on picture-in-picture for this site"
+            };
+            let _ = xaml::set_tip(&self.ui.pip, tip);
+        }
+    }
+
+    /// The toolbar's picture-in-picture button: turns picture-in-picture on for the selected
+    /// tab's site and puts its video in the box, or turns it off there and ends it.
+    pub(crate) fn pip_clicked(&self) {
+        let (Some(tab), Some(browser)) = (self.active_tab(), self.browser()) else {
+            return;
+        };
+        let (Some(origin), Some(allowed)) = (tab.origin(), self.pip_allowed(&tab)) else {
+            return;
+        };
+        let (setting, start) = pip_click(allowed);
+        let stored = browser.core(|p| {
+            p.site_permissions()
+                .set(&origin, Permission::PictureInPicture, Some(setting))
+        });
+        if let Err(e) = stored {
+            log::warn!("picture-in-picture for {}: {e}", origin.as_str());
+        }
+        let followed = self.media.tab.get() == Some(tab.id);
+        self.media.requested.set((start && followed).then_some(tab.id));
+        // Every window shows the site's new setting, this one too.
+        permissions::settings_changed(&browser);
+    }
+
+    /// Another tab was selected: a video the button put in the box stays there only while its
+    /// tab is off screen.
+    pub(super) fn media_selection_moved(&self) {
+        self.media.requested.set(None);
     }
 
     /// Fills the picture-in-picture box as the window's state asks, moving the followed tab's
@@ -176,18 +286,17 @@ impl BrowserWindow {
             && !self.side.is_compact()
             && !self.fullscreen.get();
         let active = self.active_tab().map(|t| t.id);
-        let on_screen = active == Some(id)
+        let on_screen = (active == Some(id)
             || self
                 .split
                 .get()
-                .is_some_and(|s| s.has(id) && active.is_some_and(|a| s.has(a)));
-        let content = match self.media.playback.borrow().as_ref() {
-            Some(playback) if playback.video => Some(Pip::Video(id)),
-            Some(playback) if !playback.artwork.is_empty() => {
-                Some(Pip::Artwork(playback.artwork.clone()))
-            }
-            _ => None,
-        };
+                .is_some_and(|s| s.has(id) && active.is_some_and(|a| s.has(a))))
+            && self.media.requested.get() != Some(id);
+        let allowed = self
+            .tab(id)
+            .and_then(|tab| self.pip_allowed(&tab))
+            .unwrap_or(false);
+        let content = pip_content(self.media.playback.borrow().as_ref(), id, allowed);
         // The free space counts the box while it is shown, so both states agree on the room.
         let block = self.player.pip_block();
         let shown = if self.media.pip.borrow().is_some() {
@@ -234,6 +343,9 @@ impl BrowserWindow {
 
     /// A closing tab leaves the player; its web view is back in the page grid for removal.
     pub(super) fn media_tab_closing(&self, id: TabId) {
+        if self.media.requested.get() == Some(id) {
+            self.media.requested.set(None);
+        }
         if self.in_pip(id) {
             self.release_pip(id);
             *self.media.pip.borrow_mut() = None;
@@ -252,8 +364,14 @@ impl BrowserWindow {
         }
     }
 
+    /// The player's title or its box: selects the followed tab, and brings home a video the
+    /// toolbar's button put in the box while the tab was selected.
     pub(super) fn player_go_to_tab(&self) {
         if let Some(id) = self.media.tab.get() {
+            if self.media.requested.get() == Some(id) {
+                self.media.requested.set(None);
+                self.update_pip();
+            }
             let _ = self.strip().select(id);
             self.sync_selection();
         }
@@ -303,5 +421,83 @@ impl BrowserWindow {
 
     pub fn player_shown(&self) -> bool {
         xaml::is_visible(self.player.element())
+    }
+
+    /// The toolbar's picture-in-picture button while it shows: whether it is on.
+    pub fn pip_button_shown(&self) -> Option<bool> {
+        xaml::is_visible(&self.ui.pip)
+            .then(|| self.ui.pip.IsChecked().ok())
+            .flatten()
+    }
+
+    /// Whether the page grid shows where the selected tab's video went.
+    pub fn pip_placeholder_shown(&self) -> bool {
+        xaml::is_visible(&self.ui.pip_placeholder)
+    }
+
+    /// Clicks the picture-in-picture box, as the user would.
+    pub fn click_pip_box(&self) {
+        self.player_go_to_tab();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ART: &str = "https://a.test/art.png";
+    const ON: Switches = Switches {
+        player: true,
+        pip: true,
+    };
+
+    #[test]
+    fn the_button_shows_for_a_video_in_the_selected_tab_of_a_site() {
+        assert_eq!(pip_button(ON, true, Some(false)), Some(false));
+        assert_eq!(pip_button(ON, true, Some(true)), Some(true));
+        assert_eq!(pip_button(ON, false, Some(true)), None, "no video here");
+        assert_eq!(pip_button(ON, true, None), None, "no site to remember");
+        let no_pip = Switches { pip: false, ..ON };
+        assert_eq!(pip_button(no_pip, true, Some(true)), None);
+        let no_player = Switches {
+            player: false,
+            ..ON
+        };
+        assert_eq!(pip_button(no_player, true, Some(true)), None);
+    }
+
+    #[test]
+    fn a_click_turns_the_site_on_and_starts_or_turns_it_off() {
+        assert_eq!(pip_click(false), (Setting::Allow, true));
+        assert_eq!(pip_click(true), (Setting::Block, false));
+    }
+
+    #[test]
+    fn only_a_site_that_allowed_it_shows_its_video() {
+        let video = Playback {
+            video: true,
+            artwork: ART.into(),
+            ..Playback::default()
+        };
+        assert_eq!(pip_content(Some(&video), 7, true), Some(Pip::Video(7)));
+        assert_eq!(
+            pip_content(Some(&video), 7, false),
+            Some(Pip::Artwork(ART.into())),
+            "the player's artwork, not the site's page"
+        );
+        let silent = Playback {
+            video: true,
+            ..Playback::default()
+        };
+        assert_eq!(pip_content(Some(&silent), 7, false), None);
+        let sound = Playback {
+            artwork: ART.into(),
+            ..Playback::default()
+        };
+        assert_eq!(
+            pip_content(Some(&sound), 7, true),
+            Some(Pip::Artwork(ART.into()))
+        );
+        assert_eq!(pip_content(None, 7, true), None);
     }
 }

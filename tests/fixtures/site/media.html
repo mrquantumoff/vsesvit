@@ -1,0 +1,46 @@
+<html>
+<head><meta charset="utf-8"><title>Media</title></head>
+<!-- A canvas animation and a quiet tone as one media stream in a <video>; start() plays it. Like
+     a video site, the video sits below a header, inside a transformed and clipped player, which
+     moves elsewhere in the page when the page is narrow. -->
+<body style="margin:0;background:rgb(10,20,40);color:white;font:24px sans-serif">
+<header style="height:120px">Site header</header>
+<div style="transform:translateZ(0);overflow:hidden;margin-left:60px;width:640px;height:360px"><video id="v" width="640" height="360"></video></div>
+<p>Comments and more videos</p>
+<aside id="narrow"></aside>
+<script>
+const player = document.getElementById('v').parentElement;
+addEventListener('resize', () => { if (innerWidth < 500) document.getElementById('narrow').appendChild(player); });
+const c = document.createElement('canvas');
+c.width = 320;
+c.height = 180;
+const g = c.getContext('2d');
+let f = 0;
+setInterval(() => {
+  f++;
+  g.fillStyle = 'rgb(' + (f * 5 % 256) + ',90,160)';
+  g.fillRect(0, 0, 320, 180);
+  g.fillStyle = 'white';
+  g.font = '64px sans-serif';
+  g.fillText(f, 40, 120);
+}, 33);
+navigator.mediaSession.metadata = new MediaMetadata({ title: 'Smoke tone', artist: 'Vsesvit' });
+navigator.mediaSession.setActionHandler('nexttrack', () => { document.title = 'Next track'; });
+window.start = async () => {
+  const a = new AudioContext();
+  const o = a.createOscillator();
+  const n = a.createGain();
+  n.gain.value = 0.01;
+  const d = a.createMediaStreamDestination();
+  o.connect(n).connect(d);
+  o.start();
+  const s = c.captureStream(30);
+  s.addTrack(d.stream.getAudioTracks()[0]);
+  const v = document.getElementById('v');
+  v.srcObject = s;
+  await v.play();
+  return 'playing';
+};
+</script>
+</body>
+</html>

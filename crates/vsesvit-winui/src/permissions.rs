@@ -413,6 +413,8 @@ pub(crate) fn settings_changed(browser: &Rc<Browser>) {
             }
             tab.watch_capture();
         }
+        // Picture-in-picture follows its site setting.
+        window.show_media();
     }
     mirror(browser);
 }

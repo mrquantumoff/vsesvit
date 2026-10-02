@@ -25,6 +25,7 @@ mod connection_steps;
 mod dialog_steps;
 mod motion_steps;
 mod permission_steps;
+mod pip_steps;
 mod sync_live;
 mod progress_steps;
 mod tab_steps;

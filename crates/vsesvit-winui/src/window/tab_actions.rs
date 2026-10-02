@@ -105,12 +105,17 @@ impl BrowserWindow {
             .get()
             .filter(|s| active.is_some_and(|a| s.has(a)));
         let tabs = self.tabs.borrow().clone();
+        // The page grid's place of a tab whose web view is in picture-in-picture.
+        let mut placeholder = None;
         for tab in tabs {
-            if self.in_pip(tab.id) {
-                continue;
-            }
             let column = split.and_then(|s| s.column_of(tab.id));
             let visible = column.is_some() || (split.is_none() && active == Some(tab.id));
+            if self.in_pip(tab.id) {
+                if visible {
+                    placeholder = Some(column);
+                }
+                continue;
+            }
             if let Ok(view) = tab.view().cast::<FrameworkElement>() {
                 let _ = Grid::SetColumn(&view, column.unwrap_or(0));
                 let _ = Grid::SetColumnSpan(&view, if column.is_some() { 1 } else { 3 });
@@ -120,6 +125,14 @@ impl BrowserWindow {
             }
         }
         let _ = xaml::set_visible(&self.ui.split_divider, split.is_some());
+        if let Some(column) = placeholder {
+            let _ = Grid::SetColumn(&self.ui.pip_placeholder, column.unwrap_or(0));
+            let _ = Grid::SetColumnSpan(
+                &self.ui.pip_placeholder,
+                if column.is_some() { 1 } else { 3 },
+            );
+        }
+        let _ = xaml::set_visible(&self.ui.pip_placeholder, placeholder.is_some());
     }
 
     /// Shows `split`, with its left tab selected; it replaces any split view there was.
