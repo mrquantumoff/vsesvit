@@ -41,6 +41,12 @@ use crate::db::{extra_col, extra_text, opt_stamp_col, seq_col, stamp_col, uuid_c
 use crate::sync::{Kind, SyncTable, changed_rows};
 use crate::{Error, Profile, Url};
 
+/// How many folders deep the shells' bookmark views and folder pickers go below a root; a
+/// folder deeper still shows as empty. Sync can nest folders without end ([`materialize`]
+/// keeps any depth, since moving deep folders would change the merge rule every device must
+/// agree on), and a recursive walk over thousands of levels would overflow the UI stack.
+pub const MAX_DEPTH: usize = 64;
+
 /// Random v4 UUID. The four roots are fixed, identical on every device, and never
 /// stored: they exist implicitly at `Stamp::ZERO`, so first sync never produces
 /// duplicate roots and there is no seeding write to conflict on.

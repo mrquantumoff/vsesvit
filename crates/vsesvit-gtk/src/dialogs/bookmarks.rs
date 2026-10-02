@@ -12,7 +12,7 @@ use std::rc::{Rc, Weak};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use vsesvit_core::Profile;
-use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
+use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, MAX_DEPTH, NodeKind};
 use vsesvit_core::import::{self, Source};
 
 use super::{LibraryWindow, Windowed, confirm, prompt_choice, prompt_text};
@@ -425,7 +425,7 @@ impl State {
             let bookmarks = profile.bookmarks();
             let mut out = Vec::new();
             for root in bookmarks.children(BookmarkId::ROOT) {
-                collect_folders(&bookmarks, &root, node.id, String::new(), &mut out);
+                collect_folders(&bookmarks, &root, node.id, "", 0, &mut out);
             }
             out
         };
@@ -464,13 +464,15 @@ impl State {
     }
 }
 
-/// Live folders in tree order as "Bookmarks Bar / Work / …", leaving out `exclude`'s subtree
-/// (a folder cannot move into itself).
+/// Live folders in tree order as "Bookmarks Bar / Work / …", at most `MAX_DEPTH` below
+/// `node`'s root (`depth` below it now), leaving out `exclude`'s subtree (a folder cannot
+/// move into itself).
 fn collect_folders(
     bookmarks: &vsesvit_core::bookmarks::Bookmarks<'_>,
     node: &BookmarkNode,
     exclude: BookmarkId,
-    prefix: String,
+    prefix: &str,
+    depth: usize,
     out: &mut Vec<(BookmarkId, String)>,
 ) {
     if node.kind != NodeKind::Folder || node.id == exclude {
@@ -478,8 +480,10 @@ fn collect_folders(
     }
     let path = if prefix.is_empty() { node.title.clone() } else { format!("{prefix} / {}", node.title) };
     out.push((node.id, path.clone()));
-    for child in bookmarks.children(node.id) {
-        collect_folders(bookmarks, &child, exclude, path.clone(), out);
+    if depth < MAX_DEPTH {
+        for child in bookmarks.children(node.id) {
+            collect_folders(bookmarks, &child, exclude, &path, depth + 1, out);
+        }
     }
 }
 
@@ -628,11 +632,11 @@ fn tool_button(icon: &str, tooltip: &str) -> gtk::Button {
 
 #[cfg(test)]
 mod tests {
-    use vsesvit_core::Url;
     use vsesvit_core::bookmarks::BookmarkError;
+    use vsesvit_core::{OpenOptions, Url};
 
     use super::*;
-    use crate::test_support::{browser, wait_until};
+    use crate::test_support::{browser, scratch_dir, wait_until};
 
     fn titles(core: &Core, folder: BookmarkId) -> Vec<String> {
         core.borrow_mut().bookmarks().children(folder).into_iter().map(|node| node.title).collect()
@@ -742,5 +746,37 @@ mod tests {
         assert_eq!(before_search, Some(zebra));
         assert_eq!(while_searching, (Some("results".into()), None), "the toolbar does not act on rows the search hides");
         assert_eq!(after_removal, (Some("empty".into()), 0), "the results follow changes");
+    }
+
+    /// Sync can nest folders without end. Move To lists folders down to `MAX_DEPTH` below a
+    /// root, so listing a chain 200 deep fits a small stack.
+    #[test]
+    fn move_to_folders_stop_at_the_maximum_depth() {
+        let root = scratch_dir("move-to-deep-folders");
+        {
+            let mut profile = Profile::open(&root, OpenOptions::default()).unwrap();
+            let mut bookmarks = profile.bookmarks();
+            let mut parent = BookmarkId::TOOLBAR;
+            for _ in 0..200 {
+                parent = bookmarks.add_folder(parent, InsertAt::End, "Deep").unwrap();
+            }
+        }
+        let folders = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let mut profile = Profile::open(&root, OpenOptions::default()).unwrap();
+                let bookmarks = profile.bookmarks();
+                let toolbar = bookmarks.get(BookmarkId::TOOLBAR).unwrap();
+                let mut out = Vec::new();
+                // Nothing is excluded: ROOT is no folder's child.
+                collect_folders(&bookmarks, &toolbar, BookmarkId::ROOT, "", 0, &mut out);
+                out
+            })
+            .unwrap()
+            .join()
+            .expect("the walk fits a small stack");
+        assert_eq!(folders.len(), MAX_DEPTH + 1, "the bar and MAX_DEPTH folders below it");
+        let deepest = &folders.last().unwrap().1;
+        assert_eq!(deepest.matches(" / ").count(), MAX_DEPTH);
     }
 }

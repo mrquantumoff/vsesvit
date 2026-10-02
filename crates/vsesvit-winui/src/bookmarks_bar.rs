@@ -40,9 +40,7 @@ impl BarItem {
     }
 }
 
-/// How many folders deep the bookmark views go; a folder deeper still shows as empty. Sync
-/// can nest folders without end, and walking thousands of them would overflow the stack.
-pub(crate) const MAX_DEPTH: usize = 64;
+pub(crate) use vsesvit_core::bookmarks::MAX_DEPTH;
 
 /// The bar's items for the bookmark folder `folder`, in display order. Separators are dropped.
 pub(crate) fn items_from(

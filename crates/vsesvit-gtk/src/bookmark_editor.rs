@@ -9,7 +9,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 use vsesvit_core::Url;
-use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, Bookmarks, InsertAt, NodeKind};
+use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, Bookmarks, InsertAt, MAX_DEPTH, NodeKind};
 use vsesvit_core::search::classify_url;
 
 use crate::dialogs::plain_toast;
@@ -169,16 +169,19 @@ struct Choice {
     title: String,
 }
 
-/// Every folder in tree order, leaving out `exclude`'s subtree (a folder cannot move into
-/// itself). Mobile bookmarks only when it has anything or is where the bookmark is.
+/// Every folder in tree order and at most `MAX_DEPTH` below a root, leaving out `exclude`'s
+/// subtree (a folder cannot move into itself). Mobile bookmarks only when it has anything or
+/// is where the bookmark is.
 fn folder_choices(bookmarks: &Bookmarks<'_>, exclude: Option<BookmarkId>, current: BookmarkId) -> Vec<Choice> {
     fn walk(bookmarks: &Bookmarks<'_>, node: &BookmarkNode, depth: usize, exclude: Option<BookmarkId>, out: &mut Vec<Choice>) {
         if node.kind != NodeKind::Folder || Some(node.id) == exclude {
             return;
         }
         out.push(Choice { id: node.id, depth, title: node.title.clone() });
-        for child in bookmarks.children(node.id) {
-            walk(bookmarks, &child, depth + 1, exclude, out);
+        if depth < MAX_DEPTH {
+            for child in bookmarks.children(node.id) {
+                walk(bookmarks, &child, depth + 1, exclude, out);
+            }
         }
     }
     let mut out = Vec::new();
@@ -335,8 +338,10 @@ pub(crate) async fn edit(parent: &impl IsA<gtk::Widget>, core: &Core, subject: S
 
 #[cfg(test)]
 mod tests {
+    use vsesvit_core::{OpenOptions, Profile};
+
     use super::*;
-    use crate::test_support::browser;
+    use crate::test_support::{browser, scratch_dir};
 
     #[test]
     fn urls_must_parse() {
@@ -383,5 +388,31 @@ mod tests {
         assert_eq!(invalid, (false, true));
         assert!(valid);
         assert_eq!((saved.title.as_str(), saved.url.as_ref().map(Url::as_str), saved.parent), ("After", Some("https://after.example/"), folder));
+    }
+
+    /// Sync can nest folders without end. The folder list stops `MAX_DEPTH` folders below a
+    /// root, so listing a chain 200 deep fits a small stack.
+    #[test]
+    fn folder_choices_stop_at_the_maximum_depth() {
+        let root = scratch_dir("editor-deep-folders");
+        {
+            let mut profile = Profile::open(&root, OpenOptions::default()).unwrap();
+            let mut bookmarks = profile.bookmarks();
+            let mut parent = BookmarkId::TOOLBAR;
+            for _ in 0..200 {
+                parent = bookmarks.add_folder(parent, InsertAt::End, "Deep").unwrap();
+            }
+        }
+        let choices = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let mut profile = Profile::open(&root, OpenOptions::default()).unwrap();
+                folder_choices(&profile.bookmarks(), None, BookmarkId::TOOLBAR)
+            })
+            .unwrap()
+            .join()
+            .expect("the walk fits a small stack");
+        let chain: Vec<usize> = choices.iter().filter(|c| c.title == "Deep").map(|c| c.depth).collect();
+        assert_eq!((chain.len(), chain.last()), (MAX_DEPTH, Some(&MAX_DEPTH)), "MAX_DEPTH folders below the bar");
     }
 }
