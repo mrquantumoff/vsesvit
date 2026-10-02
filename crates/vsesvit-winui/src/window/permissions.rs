@@ -504,7 +504,8 @@ fn refocus(section: &FrameworkElement, name: &str, first: &str) {
 }
 
 /// A choice in the site-info popup, replacing `current`. Block (or back to Ask) also ends a
-/// grant this tab had, and Block ends the capture it governs in every tab of the site (see
+/// grant this tab had; Block ends the capture it governs in every tab of the site, and so does
+/// Ask in place of Allow, as removing the Allow on the Settings page does (see
 /// `permissions::must_reload`).
 fn site_choice(
     window: &Weak<BrowserWindow>,
@@ -550,6 +551,11 @@ fn site_choice(
             None if permissions::must_reload(allowed, permission) => t.reload(),
             None => {}
         }
+    }
+    if choice == SiteChoice::Ask
+        && let Some(origin) = origin
+    {
+        permissions::reload_taken_back(&browser, origin, permission, current.setting(), None);
     }
     BrowserWindow::refill_site_permissions(window, tab);
 }
