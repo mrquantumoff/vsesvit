@@ -13,7 +13,7 @@ use vsesvit_core::permissions::{
 use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::{Error, OpenOptions, Profile, Url};
 
-use Permission::{Camera, ClipboardRead, Location, Microphone, Midi, Notifications, ScreenShare};
+use Permission::{Camera, ClipboardRead, Location, Microphone, Midi, Notifications, PictureInPicture, ScreenShare};
 
 struct TempDir(PathBuf);
 impl Drop for TempDir {
@@ -88,14 +88,14 @@ fn origins_are_normalized_and_shown_by_host() {
 #[test]
 fn permission_keys_and_labels() {
     let keys: Vec<&str> = Permission::ALL.iter().map(|p| p.key()).collect();
-    assert_eq!(keys, ["camera", "microphone", "location", "notifications", "screen_share", "clipboard_read", "midi"]);
+    assert_eq!(keys, ["camera", "microphone", "location", "notifications", "screen_share", "clipboard_read", "midi", "picture_in_picture"]);
     for &p in Permission::ALL {
         assert_eq!(Permission::from_key(p.key()), Some(p));
         assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{}\"", p.key()));
     }
     assert_eq!(Permission::from_key("usb"), None);
     let labels: Vec<&str> = Permission::ALL.iter().map(|p| p.label()).collect();
-    assert_eq!(labels, ["Camera", "Microphone", "Location", "Notifications", "Screen sharing", "Clipboard", "MIDI devices"]);
+    assert_eq!(labels, ["Camera", "Microphone", "Location", "Notifications", "Screen sharing", "Clipboard", "MIDI devices", "Picture-in-picture"]);
     assert!(Permission::ALL.iter().all(|p| p.remembers_allow() == (*p != ScreenShare)));
     assert_eq!(ScreenShare.settings(), [Setting::Block]);
     for &p in Permission::ALL.iter().filter(|p| **p != ScreenShare) {
@@ -423,6 +423,66 @@ fn site_info_shows_a_live_capture_as_allowed_this_time() {
     assert_eq!(labels, ["Allowed this time", "Ask", "Allow", "Block"]);
     let settings: Vec<Option<Setting>> = [AllowedThisTime, Ask, Allow, Block].iter().map(|c| c.setting()).collect();
     assert_eq!(settings, [None, None, Some(Setting::Allow), Some(Setting::Block)]);
+}
+
+/// Picture-in-picture is the user's to turn on for a site: no site asks for it, so it is off
+/// until allowed, and its row offers Allow and Block but never Ask.
+#[test]
+fn picture_in_picture_is_off_until_allowed_and_never_asks() {
+    use SiteChoice::{Allow, Block};
+    let (mut p, _dir) = open(1);
+    let site = origin("https://video.example");
+    let none = TabGrants::default();
+    assert!(!PictureInPicture.asks());
+    assert!(Permission::ALL.iter().filter(|p| **p != PictureInPicture).all(|p| p.asks()));
+    assert_eq!(PictureInPicture.settings(), [Setting::Allow, Setting::Block]);
+
+    assert_eq!(p.site_permissions().get(&site, PictureInPicture), None);
+    assert_eq!(p.site_permissions().decide(Some(&site), &[PictureInPicture], &none), Decision::Block, "off, without a prompt");
+    assert_eq!(p.site_permissions().decide(None, &[PictureInPicture], &none), Decision::Block);
+    assert_eq!(p.site_permissions().decide(Some(&site), &[Camera, PictureInPicture], &none), Decision::Block);
+
+    p.site_permissions().set(&site, PictureInPicture, Some(Setting::Allow)).unwrap();
+    assert_eq!(p.site_permissions().decide(Some(&site), &[PictureInPicture], &none), Decision::Allow);
+    assert_eq!(p.site_permissions().decide(Some(&site), &[Camera, PictureInPicture], &none), Decision::Ask(vec![Camera]));
+    assert_eq!(p.site_permissions().for_site(&site), [(PictureInPicture, Setting::Allow)]);
+    p.site_permissions().set(&site, PictureInPicture, Some(Setting::Block)).unwrap();
+    assert_eq!(p.site_permissions().decide(Some(&site), &[PictureInPicture], &none), Decision::Block);
+
+    let row = |current, choices: &[SiteChoice]| SiteRow { permission: PictureInPicture, current, choices: choices.to_vec(), live: false };
+    assert_eq!(site_rows(true, &[(PictureInPicture, Setting::Allow)], &[], Capturing::default()), [row(Allow, &[Allow, Block])]);
+    assert_eq!(site_rows(true, &[(PictureInPicture, Setting::Block)], &[], Capturing::default()), [row(Block, &[Allow, Block])]);
+    assert!(site_rows(true, &[], &[PictureInPicture], Capturing::default()).is_empty(), "never granted this time");
+    assert!(!Capturing { camera: true, microphone: true, screen: true }.uses(PictureInPicture));
+
+    p.site_permissions().reset_site(&site).unwrap();
+    assert_eq!(p.site_permissions().get(&site, PictureInPicture), None);
+    assert_eq!(p.site_permissions().decide(Some(&site), &[PictureInPicture], &none), Decision::Block, "a reset turns it off again");
+}
+
+/// A site's picture-in-picture choice syncs like its other settings, next to the ones stored
+/// before picture-in-picture existed.
+#[test]
+fn picture_in_picture_syncs_beside_older_settings() {
+    let (mut a, _da) = open(1);
+    let (mut b, _db) = open(2);
+    let site = origin("https://video.example");
+    a.site_permissions().set(&site, Camera, Some(Setting::Allow)).unwrap();
+    a.site_permissions().set(&site, PictureInPicture, Some(Setting::Allow)).unwrap();
+    let wire = exported(&mut a);
+    assert!(wire.iter().any(|w| w.id == "picture_in_picture|https://video.example"));
+    let report = b.sync().apply(wire).unwrap();
+    assert_eq!((report.merged, report.rejected.len()), (2, 0));
+    assert!(report.changed.site_permissions);
+    assert_eq!(b.site_permissions().for_site(&site), [(Camera, Setting::Allow), (PictureInPicture, Setting::Allow)]);
+    assert_eq!(
+        b.site_permissions().by_site(),
+        [SiteGroup {
+            origin: site.clone(),
+            heading: "video.example".into(),
+            settings: vec![(Camera, Setting::Allow), (PictureInPicture, Setting::Allow)],
+        }]
+    );
 }
 
 #[test]

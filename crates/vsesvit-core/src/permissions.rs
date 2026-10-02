@@ -3,7 +3,8 @@
 //! Three layers, each owned where it lives:
 //!
 //! - **Stored settings** ([`SitePermissions`]): Allow or Block per `(origin, permission)`,
-//!   synced like Chrome's site settings. No row, or a reset row, means Ask.
+//!   synced like Chrome's site settings. No row, or a reset row, means Ask, or Block for
+//!   picture-in-picture, which no site asks for.
 //! - **One-time grants** ([`TabGrants`]): "Allow this time", held in memory by one shell tab
 //!   until it leaves the site.
 //! - **The prompt** ([`prompt`]): the words and buttons both shells show, and
@@ -48,6 +49,9 @@ pub enum Permission {
     ScreenShare,
     ClipboardRead,
     Midi,
+    /// Showing the site's playing video in the media player while another tab is selected.
+    /// No site asks for it: it is off until the user turns it on (see [`Permission::asks`]).
+    PictureInPicture,
 }
 
 impl Permission {
@@ -59,6 +63,7 @@ impl Permission {
         Permission::ScreenShare,
         Permission::ClipboardRead,
         Permission::Midi,
+        Permission::PictureInPicture,
     ];
 
     pub fn key(self) -> &'static str {
@@ -70,6 +75,7 @@ impl Permission {
             Permission::ScreenShare => "screen_share",
             Permission::ClipboardRead => "clipboard_read",
             Permission::Midi => "midi",
+            Permission::PictureInPicture => "picture_in_picture",
         }
     }
 
@@ -86,7 +92,14 @@ impl Permission {
             Permission::ScreenShare => "Screen sharing",
             Permission::ClipboardRead => "Clipboard",
             Permission::Midi => "MIDI devices",
+            Permission::PictureInPicture => "Picture-in-picture",
         }
+    }
+
+    /// Whether a site may ask for it. The user turns picture-in-picture on for a site, so with
+    /// nothing stored it is blocked, not asked for, and its rows offer no Ask.
+    pub fn asks(self) -> bool {
+        self != Permission::PictureInPicture
     }
 
     /// Screen sharing is chosen share by share, so only a block is remembered (as Chrome does),
@@ -112,6 +125,7 @@ impl Permission {
             Permission::ScreenShare => ("share your", "screen"),
             Permission::ClipboardRead => ("see", "text and images copied to the clipboard"),
             Permission::Midi => ("use your", "MIDI devices"),
+            Permission::PictureInPicture => ("show", "videos in picture-in-picture"),
         }
     }
 }
@@ -365,7 +379,8 @@ pub struct SiteRow {
 
 /// A row for every permission the site has a setting for, was granted this time, or uses, in
 /// [`Permission::ALL`] order. `storable`: the page has an origin, so Allow and Block can be
-/// remembered for it; Allow is never offered for what is asked every time.
+/// remembered for it; Allow is never offered for what is asked every time, nor Ask for what
+/// is never asked.
 pub fn site_rows(storable: bool, stored: &[(Permission, Setting)], granted: &[Permission], capturing: Capturing) -> Vec<SiteRow> {
     Permission::ALL
         .iter()
@@ -374,14 +389,16 @@ pub fn site_rows(storable: bool, stored: &[(Permission, Setting)], granted: &[Pe
             let current = match stored.iter().find(|(p, _)| *p == permission).map(|(_, s)| *s) {
                 Some(Setting::Allow) => SiteChoice::Allow,
                 Some(Setting::Block) => SiteChoice::Block,
-                None if granted.contains(&permission) || live => SiteChoice::AllowedThisTime,
+                None if permission.asks() && (granted.contains(&permission) || live) => SiteChoice::AllowedThisTime,
                 None => return None,
             };
             let mut choices = Vec::new();
             if current == SiteChoice::AllowedThisTime {
                 choices.push(SiteChoice::AllowedThisTime);
             }
-            choices.push(SiteChoice::Ask);
+            if permission.asks() {
+                choices.push(SiteChoice::Ask);
+            }
             if storable && permission.remembers_allow() {
                 choices.push(SiteChoice::Allow);
             }
@@ -442,9 +459,15 @@ pub enum Decision {
     Ask(Vec<Permission>),
 }
 
-/// Any block wins; then everything allowed (stored or granted) allows; else ask for the rest.
+/// Any block wins, and a permission that is never asked for blocks unless allowed; then
+/// everything allowed (stored or granted) allows; else ask for the rest.
 fn decision(permissions: &[Permission], mut setting: impl FnMut(Permission) -> Option<Setting>, granted: impl Fn(Permission) -> bool) -> Decision {
-    if permissions.iter().any(|&p| setting(p) == Some(Setting::Block)) {
+    let blocked = |p: Permission, setting: Option<Setting>| match setting {
+        Some(Setting::Block) => true,
+        Some(Setting::Allow) => false,
+        None => !p.asks(),
+    };
+    if permissions.iter().any(|&p| blocked(p, setting(p))) {
         return Decision::Block;
     }
     let mut undecided: Vec<Permission> = Vec::new();

@@ -192,6 +192,33 @@ fn other_records_follow_the_rule() {
     assert_eq!(serde_json::from_value::<SitePermissionRecord>(v).unwrap(), perm);
 }
 
+/// Site permission records keep their wire shape: one written before picture-in-picture
+/// existed still loads, and picture-in-picture travels under its own name.
+#[test]
+fn site_permission_records_keep_their_names() {
+    let at = serde_json::to_value(stamp(7)).unwrap();
+    let earlier = json!({ "origin": "https://meet.example.com", "permission": "camera", "setting": { "v": "allow", "at": at } });
+    let record: SitePermissionRecord = serde_json::from_value(earlier.clone()).unwrap();
+    assert_eq!((record.permission, record.setting.v), (Permission::Camera, Some(Setting::Allow)));
+    assert_eq!(serde_json::to_value(&record).unwrap(), earlier);
+    for (permission, name) in [
+        (Permission::Camera, "camera"),
+        (Permission::Microphone, "microphone"),
+        (Permission::Location, "location"),
+        (Permission::Notifications, "notifications"),
+        (Permission::ScreenShare, "screen_share"),
+        (Permission::ClipboardRead, "clipboard_read"),
+        (Permission::Midi, "midi"),
+        (Permission::PictureInPicture, "picture_in_picture"),
+    ] {
+        assert_eq!(serde_json::to_value(permission).unwrap(), name);
+    }
+    let pip = json!({ "origin": "https://video.example", "permission": "picture_in_picture", "setting": { "v": null, "at": at } });
+    let record: SitePermissionRecord = serde_json::from_value(pip.clone()).unwrap();
+    assert_eq!((record.permission, record.setting.v), (Permission::PictureInPicture, None));
+    assert_eq!(serde_json::to_value(&record).unwrap(), pip);
+}
+
 /// `Lww<Option<JsonText>>` (prefs, `storage.sync` items) has two states that a bare JSON
 /// value cannot tell apart: no value, and the value `null`. Both must round-trip.
 #[test]

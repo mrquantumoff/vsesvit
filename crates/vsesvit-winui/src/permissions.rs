@@ -88,6 +88,9 @@ fn kind_of(permission: Permission) -> Option<CoreWebView2PermissionKind> {
         .map(|(k, _)| *k)
 }
 
+/// Picture-in-picture's, in Segoe Fluent Icons (MiniExpand); the toolbar's button has it too.
+pub(crate) const PIP_GLYPH: &str = "\u{E93A}";
+
 /// Segoe Fluent Icons.
 pub(crate) fn glyph(permission: Permission) -> &'static str {
     match permission {
@@ -98,6 +101,7 @@ pub(crate) fn glyph(permission: Permission) -> &'static str {
         Permission::ScreenShare => "\u{E7F4}",
         Permission::ClipboardRead => "\u{E77F}",
         Permission::Midi => "\u{EC4F}",
+        Permission::PictureInPicture => PIP_GLYPH,
     }
 }
 
