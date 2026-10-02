@@ -344,10 +344,15 @@ mod tests {
         assert_eq!(after[kept.len()..], ["./wk/lib/x86_64-linux-gnu/webkitgtk-6.0", "./wk/lib/x86_64-linux-gnu/webkitgtk-6.0/injected-bundle/"]);
     }
 
+    /// AppRun's shebang and desktop-file-validate both fail on CRLF.
     #[test]
-    fn app_run_has_unix_line_endings() {
-        let app_run = Path::new(env!("CARGO_MANIFEST_DIR")).join("../packaging/linux/appimage/AppRun");
-        let text = std::fs::read(&app_run).unwrap();
-        assert!(!text.contains(&b'\r'), "{} has CRLF line endings; its shebang would not run", app_run.display());
+    fn the_linux_packaging_files_have_unix_line_endings() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../packaging/linux");
+        for file in util::walk(&dir).unwrap() {
+            let path = dir.join(file);
+            if path.is_file() {
+                assert!(!util::read(&path).unwrap().contains(&b'\r'), "{} has CRLF line endings", path.display());
+            }
+        }
     }
 }

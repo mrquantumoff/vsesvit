@@ -6,7 +6,7 @@
 # Usage: packaging/linux/verify.sh [deb|rpm|pacman|appimage|flatpak]... (default: all present)
 set -euo pipefail
 dist="${CARGO_TARGET_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/target}/dist"
-version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$(dirname "$0")/../../Cargo.toml")"
+version="$(tr -d '\r' < "$(dirname "$0")/../../Cargo.toml" | sed -n 's/^version = "\(.*\)"$/\1/p')"
 formats=("$@")
 [ ${#formats[@]} -gt 0 ] || formats=(deb rpm pacman appimage flatpak)
 
