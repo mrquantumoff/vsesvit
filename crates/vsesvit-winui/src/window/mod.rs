@@ -492,6 +492,9 @@ impl BrowserWindow {
 
     pub fn close_tab(&self, id: TabId) {
         let Some(tab) = self.tab(id) else { return };
+        if let Some(browser) = self.browser() {
+            browser.tab_closing(self.tab_count() - 1);
+        }
         if let Err(e) = self.remove_tab(&tab) {
             log::warn!("close tab {id}: {e}");
         }

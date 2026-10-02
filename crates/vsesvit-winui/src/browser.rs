@@ -398,7 +398,9 @@ impl Browser {
         }
     }
 
-    /// The last window is about to close: its tabs are the session to restore next time.
+    /// The last window is about to close: its tabs are the session to restore next time. A
+    /// window closing because its last tab closed has none left; [`Browser::tab_closing`] saved
+    /// the session while it still had that tab.
     pub fn window_closing(&self, window: &BrowserWindow) {
         let last = self
             .windows
@@ -406,8 +408,21 @@ impl Browser {
             .iter()
             .all(|w| std::ptr::eq(w.as_ref(), window));
         if last && !self.session_final.get() {
-            self.save_session_now();
+            if !window.tabs_in_order().is_empty() {
+                self.save_session_now();
+            }
             self.session_final.set(true);
+        }
+    }
+
+    /// A tab is about to close, leaving `tabs_left` in its window.
+    pub(crate) fn tab_closing(&self, tabs_left: usize) {
+        if save_before_closing_tab(
+            tabs_left,
+            self.windows.borrow().len(),
+            self.session_final.get(),
+        ) {
+            self.save_session_now();
         }
     }
 
@@ -1194,6 +1209,16 @@ impl Browser {
     }
 }
 
+/// Whether closing a tab saves the session first: closing the last tab of the last window closes
+/// the browser, and the session to restore next time is the one with that tab in it.
+fn save_before_closing_tab(
+    tabs_left_in_window: usize,
+    windows: usize,
+    session_final: bool,
+) -> bool {
+    tabs_left_in_window == 0 && windows <= 1 && !session_final
+}
+
 /// Saves the session, sends what changed since the last sync (`sync::final_sync`), and drops the
 /// browser (and with it every window and web view) before XAML shuts down.
 pub(crate) fn shutdown() {
@@ -1208,4 +1233,23 @@ pub(crate) fn shutdown() {
         sync::final_sync(browser);
     }
     drop(browser);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_last_tab_of_the_last_window_saves_before_it_closes() {
+        assert!(save_before_closing_tab(0, 1, false));
+        assert!(!save_before_closing_tab(1, 1, false), "other tabs remain");
+        assert!(
+            !save_before_closing_tab(0, 2, false),
+            "other windows remain"
+        );
+        assert!(
+            !save_before_closing_tab(0, 1, true),
+            "the session is already final"
+        );
+    }
 }
