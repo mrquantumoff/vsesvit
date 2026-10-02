@@ -290,3 +290,15 @@ fn patch_webkit_paths(library: &Path) -> Result {
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_run_has_unix_line_endings() {
+        let app_run = Path::new(env!("CARGO_MANIFEST_DIR")).join("../packaging/linux/appimage/AppRun");
+        let text = std::fs::read(&app_run).unwrap();
+        assert!(!text.contains(&b'\r'), "{} has CRLF line endings; its shebang would not run", app_run.display());
+    }
+}

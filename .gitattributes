@@ -1,2 +1,3 @@
 # Shell scripts run inside WSL and on Linux; CRLF breaks their shebang line.
 *.sh text eol=lf
+packaging/linux/appimage/AppRun text eol=lf
