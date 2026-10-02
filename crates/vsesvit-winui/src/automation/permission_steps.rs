@@ -359,8 +359,9 @@ async fn camera(
     block_the_camera(window, tab, steps).await
 }
 
-/// Block chosen for the camera in the site-info popup while both capture stops the camera
-/// and keeps the microphone. The one-time grant still covers the new `getUserMedia`.
+/// Block chosen for the camera in the site-info popup while both capture reloads the tab, since
+/// the shell let the page capture (the one-time grant still covers the new `getUserMedia`), and
+/// the reload ends the microphone too.
 async fn block_the_camera(
     window: &Rc<BrowserWindow>,
     tab: &Rc<Tab>,
@@ -376,32 +377,24 @@ async fn block_the_camera(
     .await;
     let popup = open_site_info(window).await?;
     select(&popup, "PermissionChoiceCamera", 3)?;
-    let left = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
-        window
-            .capture_button_shown()
-            .filter(|d| d == "Using your microphone")
-    })
-    .await;
-    let ended = page_value(tab, "String(window.__ended)").await;
-    steps.push(json!({
-        "name": "24h2-blocking-the-camera-while-in-use-stops-only-the-camera",
-        "opened": opened,
-        "prompts": window.permission_prompts_shown() - before,
-        "still_capturing": left,
-        "ended_events": ended,
-        "ok": opened.as_deref() == Some("ok") && window.permission_prompts_shown() == before
-            && left.is_some() && ended.as_deref() == Some("1"),
-    }));
-    exec::sleep(Duration::from_millis(300)).await;
-    let popup = window
-        .connection_popup()
-        .ok_or("the site-info popup closed")?;
-    super::dialog_steps::invoke(&in_popup::<Button>(&popup, "PermissionStopMicrophone")?)
-        .map_err(|e| e.to_string())?;
-    exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+    let gone = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
         window.capture_button_shown().is_none().then_some(())
     })
     .await;
+    exec::sleep(Duration::from_millis(300)).await;
+    wait_loaded(tab).await?;
+    let gum = page_value(tab, "typeof window.__gum").await;
+    let reloaded = gum.as_deref() == Some("undefined");
+    steps.push(json!({
+        "name": "24h2-blocking-the-camera-while-in-use-reloads-and-ends-the-capture",
+        "opened": opened,
+        "prompts": window.permission_prompts_shown() - before,
+        "indicator_gone": gone.is_some(),
+        "gum_after": gum,
+        "reloaded": reloaded,
+        "ok": opened.as_deref() == Some("ok") && window.permission_prompts_shown() == before
+            && gone.is_some() && reloaded,
+    }));
     window.hide_connection();
     exec::sleep(Duration::from_millis(300)).await;
     allowed_camera_shows(window, tab, steps).await
