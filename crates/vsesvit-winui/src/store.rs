@@ -6,8 +6,11 @@
 //! shortcut script's isolated world forwards the event through its binding together with the
 //! origin it runs on, which the page cannot fake. Only a store's HTTPS origin counts, so a
 //! plain-HTTP page that a network attacker serves under a store's name cannot speak for the
-//! store, and the shell also requires the tab to still show that store when it answers. It asks
-//! the user, installs or removes through core, and answers the page.
+//! store. The shell asks the user, installs or removes through core, and answers the page. The
+//! tab's committed page must be on that store's origin when the request arrives, and again when
+//! the answer, which describes installed extensions, is handed to the page: asking the user can
+//! take a while, and the tab may have gone elsewhere meanwhile, so an answer for a tab that left
+//! the store is dropped.
 
 use std::rc::Rc;
 
@@ -92,10 +95,17 @@ pub(crate) fn parse_request(origin: &str, detail: &str) -> Option<StoreRequest> 
     })
 }
 
-/// Carries out `request` from tab `tab` and answers the page.
+/// Whether a tab whose committed page is on `origin` shows `store`, so that a request from it
+/// is carried out and the answer handed to it.
+fn shows(origin: Option<&str>, store: Store) -> bool {
+    origin.and_then(Store::from_origin) == Some(store)
+}
+
+/// Carries out `request` from tab `tab` and answers the page, while the tab still shows the
+/// store that asked.
 pub(crate) async fn answer(window: Rc<BrowserWindow>, tab: TabId, request: StoreRequest) {
     let origin = window.tab(tab).and_then(|tab| tab.origin());
-    if origin.as_ref().and_then(|o| Store::from_origin(o.as_str())) != Some(request.store) {
+    if !shows(origin.as_ref().map(|o| o.as_str()), request.store) {
         log::warn!(
             "ignoring a store request from {}",
             origin.as_ref().map_or("an opaque origin", |o| o.as_str())
@@ -108,6 +118,10 @@ pub(crate) async fn answer(window: Rc<BrowserWindow>, tab: TabId, request: Store
     };
     reply["seq"] = request.seq.into();
     let Some(tab) = window.tab(tab) else { return };
+    if !shows(tab.origin().as_ref().map(|o| o.as_str()), request.store) {
+        log::info!("dropping the answer to {}: the tab left it", request.store.name());
+        return;
+    }
     if let Err(e) = tab.eval(&reply_script(&reply)).await {
         log::warn!("answering the store page: {e}");
     }
@@ -237,6 +251,16 @@ mod tests {
         ] {
             assert_eq!(Store::from_origin(origin), None, "{origin}");
         }
+    }
+
+    #[test]
+    fn a_tab_that_left_the_store_gets_no_answer() {
+        let chrome = "https://chromewebstore.google.com";
+        assert!(shows(Some(chrome), Store::Chrome));
+        assert!(!shows(Some(chrome), Store::Edge), "another store");
+        assert!(!shows(Some("https://example.com"), Store::Chrome), "a site it went to meanwhile");
+        assert!(!shows(Some("http://chromewebstore.google.com"), Store::Chrome));
+        assert!(!shows(None, Store::Chrome), "an opaque origin");
     }
 
     #[test]
