@@ -62,11 +62,7 @@ fn bar_items(
         .filter_map(|node| match node.kind {
             NodeKind::Url => node.url.map(|url| BarItem::Link {
                 id: node.id,
-                title: if node.title.is_empty() {
-                    url.to_string()
-                } else {
-                    node.title
-                },
+                title: node.title,
                 url: url.to_string(),
                 icon: None,
             }),
@@ -573,9 +569,10 @@ impl Bar {
     /// item container style, which only reaches entries the list has laid out: `fit` measures
     /// entries it keeps collapsed too.
     fn entry(&self, item: &BarItem) -> Result<ListViewItem> {
-        let (title, glyph) = match item {
-            BarItem::Link { title, .. } => (title, "&#xE774;"),
-            BarItem::Folder { title, .. } => (title, "&#xE8B7;"),
+        // An untitled entry shows only its icon; a link then goes by its URL.
+        let (title, name, glyph) = match item {
+            BarItem::Link { title, url, .. } => (title, link_name(title, url), "&#xE774;"),
+            BarItem::Folder { title, .. } => (title, title.as_str(), "&#xE8B7;"),
         };
         let element: ListViewItem = xaml::load(&format!(
             r#"<ListViewItem {{ns}} MinWidth="0" MinHeight="24" Height="24" Padding="6,0" Margin="0,0,1,0"
@@ -585,12 +582,18 @@ impl Bar {
                      <FontIcon x:Name="Glyph" Glyph="{glyph}" FontSize="11"/>
                      <Image x:Name="Favicon" Width="14" Height="14" Visibility="Collapsed"/>
                    </Grid>
-                   <TextBlock Text="{name}" FontSize="12" MaxWidth="140" TextTrimming="CharacterEllipsis"
-                              VerticalAlignment="Center"/>
+                   <TextBlock Text="{text}" FontSize="12" MaxWidth="140" TextTrimming="CharacterEllipsis"
+                              VerticalAlignment="Center" Visibility="{visibility}"/>
                  </StackPanel>
                </ListViewItem>"#,
             tip = tip_markup(item),
-            name = xaml::escape(title),
+            name = xaml::escape(name),
+            text = xaml::escape(title),
+            visibility = if untitled(title) {
+                "Collapsed"
+            } else {
+                "Visible"
+            },
         ))?;
         let target = element.cast::<UIElement>()?;
         target.SetContextFlyout(&self.item_menu.cast::<FlyoutBase>()?)?;
@@ -638,9 +641,14 @@ impl Bar {
                     title, url, icon, ..
                 } => {
                     let entry = MenuFlyoutItem::new()?;
-                    entry.SetText(&menu_label(title))?;
+                    entry.SetText(&menu_label(link_name(title, url)))?;
                     entry.SetIcon(&link_icon(icon.clone())?)?;
-                    xaml::set_tip(&entry, &format!("{title}\n{url}"))?;
+                    let tip = if untitled(title) {
+                        url.clone()
+                    } else {
+                        format!("{title}\n{url}")
+                    };
+                    xaml::set_tip(&entry, &tip)?;
                     let (url, host) = (url.clone(), self.host.clone());
                     entry
                         .Click(move |_, _| host(BarCommand::Open(url.clone(), disposition())))?
@@ -739,15 +747,27 @@ fn same_but_icons(old: &BarItem, new: &BarItem) -> bool {
     }
 }
 
-/// The tooltip of a bar entry, as escaped attribute text: a link's title over its URL. The
-/// line break is a character reference, as XML reads a literal one in an attribute as a space.
+/// The tooltip of a bar entry, as escaped attribute text: a link's title over its URL, or just
+/// the URL if untitled. The line break is a character reference, as XML reads a literal one in
+/// an attribute as a space.
 fn tip_markup(item: &BarItem) -> String {
     match item {
+        BarItem::Link { title, url, .. } if untitled(title) => xaml::escape(url),
         BarItem::Link { title, url, .. } => {
             format!("{}&#10;{}", xaml::escape(title), xaml::escape(url))
         }
         BarItem::Folder { title, .. } => xaml::escape(title),
     }
+}
+
+/// Whether a link has no title. On the bar it then shows only its favicon, as in Chrome.
+fn untitled(title: &str) -> bool {
+    title.trim().is_empty()
+}
+
+/// What a link goes by in a menu and for a screen reader: its title, or its URL if untitled.
+fn link_name<'a>(title: &'a str, url: &'a str) -> &'a str {
+    if untitled(title) { url } else { title }
 }
 
 /// A title as a menu shows it: cut to `MENU_LABEL_CHARS` with an ellipsis.
@@ -862,7 +882,7 @@ mod tests {
             [
                 BarItem::Link {
                     id: BookmarkId::MOBILE,
-                    title: "https://a.test/".into(),
+                    title: "".into(),
                     url: "https://a.test/".into(),
                     icon: None,
                 },
@@ -1070,6 +1090,43 @@ mod tests {
                 "Bookmark manager"
             ]
         );
+    }
+
+    #[test]
+    fn untitled_links_show_no_title_on_the_bar_and_their_url_in_menus() {
+        // As in Chrome, an untitled link on the bar shows only its favicon.
+        let children = |folder: BookmarkId| match folder {
+            f if f == BookmarkId::TOOLBAR => vec![
+                node(
+                    BookmarkId::MOBILE,
+                    NodeKind::Url,
+                    "",
+                    Some("https://a.test/"),
+                ),
+                node(BookmarkId::OTHER, NodeKind::Folder, "F", None),
+            ],
+            f if f == BookmarkId::OTHER => vec![node(
+                BookmarkId::MOBILE,
+                NodeKind::Url,
+                " ",
+                Some("https://b.test/"),
+            )],
+            _ => vec![],
+        };
+        let items = items_from(BookmarkId::TOOLBAR, &children);
+        let BarItem::Link { title, url, .. } = &items[0] else {
+            panic!("a link")
+        };
+        assert_eq!(title, "");
+        assert_eq!(link_name(title, url), "https://a.test/");
+        assert_eq!(tip_markup(&items[0]), "https://a.test/");
+        let BarItem::Folder { children, .. } = &items[1] else {
+            panic!("a folder")
+        };
+        let BarItem::Link { title, url, .. } = &children[0] else {
+            panic!("a link")
+        };
+        assert_eq!(menu_label(link_name(title, url)), "https://b.test/");
     }
 
     #[test]

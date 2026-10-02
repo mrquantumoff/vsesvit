@@ -17,7 +17,7 @@ use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode};
 
 use crate::bookmark_drag::{self, Zone};
-use crate::bookmark_menu::{self, Item, Target, label_for};
+use crate::bookmark_menu::{self, Item, Target};
 use crate::dialogs::plain_toast;
 use crate::favicons;
 use crate::profile::Core;
@@ -376,12 +376,16 @@ fn item_widget(item: &Item, icon: Option<&gdk::Texture>) -> gtk::Widget {
     }
 }
 
+/// As in Chrome, an untitled link shows only its favicon, and goes by its URL.
 fn url_button(title: &str, url: &Url, icon: Option<&gdk::Texture>) -> gtk::Button {
     let button = gtk::Button::builder()
-        .child(&labelled(favicons::image(icon, URL_FALLBACK_ICON), label_for(title, url)))
+        .child(&labelled(favicons::image(icon, URL_FALLBACK_ICON), title.to_owned()))
         .tooltip_text(url.as_str())
         .css_classes(["flat"])
         .build();
+    if title.trim().is_empty() {
+        button.update_property(&[gtk::accessible::Property::Label(url.as_str())]);
+    }
     bookmark_menu::open_on_click(&button, url, |_| {});
     button
 }
@@ -399,16 +403,19 @@ fn folder_button(title: &str, children: &Rc<[Item]>) -> gtk::Button {
     button
 }
 
+/// `icon` and then `text`, if there is any.
 fn labelled(icon: gtk::Image, text: String) -> gtk::Box {
-    let label = gtk::Label::builder()
-        .label(&text)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .max_width_chars(MAX_LABEL_CHARS)
-        .single_line_mode(true)
-        .build();
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     content.append(&icon);
-    content.append(&label);
+    if !text.trim().is_empty() {
+        let label = gtk::Label::builder()
+            .label(&text)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(MAX_LABEL_CHARS)
+            .single_line_mode(true)
+            .build();
+        content.append(&label);
+    }
     content
 }
 
@@ -426,6 +433,22 @@ mod tests {
         assert_eq!(fitting(&[50, 50, 50], 100, 20), 1);
         assert_eq!(fitting(&[50, 50, 50], 60, 20), 0);
         assert_eq!(fitting(&[], 0, 20), 0);
+    }
+
+    /// As in Chrome, an untitled link on the bar shows only its favicon. It goes by its URL.
+    #[gtk::test]
+    fn untitled_links_show_only_their_icon() {
+        let url = Url::parse("https://untitled.example/page").unwrap();
+        let button = url_button("", &url, None);
+        let content = button.child().unwrap();
+        let texts: Vec<glib::GString> = std::iter::successors(content.first_child(), |w| w.next_sibling())
+            .filter_map(|w| w.downcast::<gtk::Label>().ok())
+            .filter(|label| label.is_visible())
+            .map(|label| label.label())
+            .filter(|text| !text.is_empty())
+            .collect();
+        assert_eq!(texts, Vec::<glib::GString>::new());
+        assert_eq!(button.tooltip_text().as_deref(), Some(url.as_str()));
     }
 
     #[gtk::test]
