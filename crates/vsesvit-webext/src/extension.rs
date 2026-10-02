@@ -290,6 +290,10 @@ impl Extension {
         patterns::web_accessible(&self.manifest.web_accessible_resources, path, page_url)
     }
 
+    pub fn web_reachable(&self, path: &str) -> bool {
+        patterns::web_reachable(&self.manifest.web_accessible_resources, path)
+    }
+
     pub fn clear_alarms(&self) {
         for (_, alarm) in std::mem::take(&mut *self.alarms.borrow_mut()) {
             if let Some(source) = alarm.source {

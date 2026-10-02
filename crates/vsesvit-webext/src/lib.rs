@@ -26,11 +26,13 @@
 //!     .user_content_manager(&runtime.user_content_manager(tab_id))
 //!     .build();
 //!
-//! // Its navigation policy refuses a NavigationAction or NewWindowAction to a target that
-//! // `may_navigate` refuses from the page that asks (see there), and `create` returns no
-//! // view for such a target, so a web page cannot open an extension page that is not
-//! // web-accessible.
-//! if !runtime.may_navigate(&source, &target) { decision.ignore(); }
+//! // Its navigation policy is a `gate::Gate` per view, which the runtime answers for (see
+//! // there): it refuses a NavigationAction or NewWindowAction the gate refuses, `create`
+//! // returns no view for such a target, and a window.open view starts from
+//! // `Gate::opened_by` its opener's. The shell reports the loads it starts and every commit.
+//! gate.browser_load(&url); view.load_uri(&url);
+//! if !gate.decide(&runtime, &target, action.is_redirect(), new_window) { decision.ignore(); }
+//! gate.committed(&runtime, &view.uri().unwrap());     // on LoadEvent::Committed
 //!
 //! // Lifecycle: load/unload installed extensions (content scripts apply to loads that
 //! // start afterwards, as in Chrome). `load` returns after the synchronous part; DNR
@@ -66,7 +68,8 @@
 //!
 //! - Files served from `chrome-extension://<id>/<path>` (secure, CORS-enabled scheme).
 //!   Documents outside the extension origin may load only `web_accessible_resources`,
-//!   and navigate only to those (with the shell's navigation policy, see above).
+//!   and navigate only to those (with the shell's navigation policy, see above and
+//!   [`gate`], which also says what it cannot tell).
 //!   Extension pages keep the manifest's CSP wherever they are shown; an MV3 policy that
 //!   Chrome would refuse (remote or `eval`'d script) gets Chrome's default instead.
 //! - A background context: `background.scripts`, `background.page`, and MV3
@@ -113,6 +116,7 @@
 //! `<profile>/webext/`.
 
 pub mod dnr;
+pub mod gate;
 pub mod i18n;
 pub mod lifecycle;
 pub mod mime;
@@ -144,6 +148,7 @@ mod views;
 pub use runtime::{ActionInfo, LoadError, Runtime};
 #[cfg(target_os = "linux")]
 pub use tabs::TabHost;
+pub use gate::{Gate, Policy};
 
 /// The JavaScript shim every context receives: one function expression that
 /// [`protocol::bootstrap`] applies to the context's configuration.

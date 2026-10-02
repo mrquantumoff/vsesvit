@@ -40,18 +40,18 @@ pub(super) fn install(window: &BrowserWindow) {
             .build(),
         on_tab("reload", |tab| {
             tab.set_pending_transition(Transition::Reload);
-            tab.web_view().reload();
+            tab.reload();
         }),
         on_tab("reload-bypass-cache", |tab| {
             tab.set_pending_transition(Transition::Reload);
-            tab.web_view().reload_bypass_cache();
+            tab.reload_bypass_cache();
         }),
         on_tab("stop", Tab::stop),
         ActionEntry::builder("home")
             .activate(|w: &BrowserWindow, _, _| w.go_home())
             .build(),
-        on_tab("back", |tab| tab.web_view().go_back()),
-        on_tab("forward", |tab| tab.web_view().go_forward()),
+        on_tab("back", Tab::go_back),
+        on_tab("forward", Tab::go_forward),
         ActionEntry::builder("bookmark-page")
             .state(false.to_variant())
             .activate(|w: &BrowserWindow, _, _| w.browser().star_clicked(w))

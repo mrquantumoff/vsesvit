@@ -13,8 +13,7 @@ use gtk::{gdk, glib};
 use vsesvit_core::history::Transition;
 use vsesvit_core::permissions::{Capturing, Origin};
 use vsesvit_core::session::TabId as SessionTabId;
-use vsesvit_core::Url;
-use vsesvit_webext::{Runtime, TabId};
+use vsesvit_webext::{Gate, Runtime, TabId};
 use webkit::prelude::*;
 
 use crate::address_bar::Security;
@@ -79,9 +78,8 @@ mod imp {
         pub(super) web_view: OnceCell<webkit::WebView>,
         pub(super) id: OnceCell<TabId>,
         pub(super) runtime: OnceCell<Runtime>,
-        /// For a `window.open` view that has shown nothing yet, the URI of the document that
-        /// opened it, which its navigations are judged by.
-        pub(super) opener_uri: RefCell<Option<String>>,
+        /// Which navigations the view may make (see `vsesvit_webext::gate`).
+        pub(super) gate: RefCell<Gate>,
         pub(super) session_id: Cell<SessionTabId>,
         pub(super) last_active_ms: Cell<i64>,
         /// How the next committed navigation reached this tab, when the shell knows
@@ -98,6 +96,9 @@ mod imp {
         pub(super) typed: RefCell<Option<String>>,
         /// The text last selected in the page, for its context menu.
         pub(super) selection: RefCell<String>,
+        /// Every target whose navigation this view refused, for tests to wait on.
+        #[cfg(test)]
+        pub(super) refused: RefCell<Vec<String>>,
     }
 
     #[glib::object_subclass]
@@ -134,7 +135,8 @@ impl Tab {
             id,
             browser.runtime(),
         );
-        popup.imp().opener_uri.replace(Some(opener.page_uri().unwrap_or_default()));
+        let gate = Gate::opened_by(&opener.imp().gate.borrow());
+        popup.imp().gate.replace(gate);
         popup
     }
 
@@ -235,15 +237,53 @@ impl Tab {
         self.notify(TabChange::Capture);
     }
 
+    /// Loads `uri` for the browser (the address bar, a bookmark, `tabs.update`, ...), which
+    /// may open any page.
     pub(crate) fn load(&self, uri: &str) {
-        self.imp().opener_uri.take();
+        self.imp().gate.borrow_mut().browser_load(uri);
         self.web_view().load_uri(uri);
+    }
+
+    /// The browser's reload: the button, the key or the menu.
+    pub(crate) fn reload(&self) {
+        self.browser_load(self.reloaded_uri());
+        self.web_view().reload();
+    }
+
+    pub(crate) fn reload_bypass_cache(&self) {
+        self.browser_load(self.reloaded_uri());
+        self.web_view().reload_bypass_cache();
+    }
+
+    /// What a reload loads: the document on screen, else the one still loading. WebKit may show
+    /// the target of a navigation it refused as the view's URI meanwhile.
+    fn reloaded_uri(&self) -> Option<String> {
+        self.committed_uri().or_else(|| self.web_view().uri().map(String::from))
+    }
+
+    pub(crate) fn go_back(&self) {
+        let list = self.web_view().back_forward_list();
+        self.browser_load(list.and_then(|l| l.back_item()).and_then(|i| i.uri()));
+        self.web_view().go_back();
+    }
+
+    pub(crate) fn go_forward(&self) {
+        let list = self.web_view().back_forward_list();
+        self.browser_load(list.and_then(|l| l.forward_item()).and_then(|i| i.uri()));
+        self.web_view().go_forward();
+    }
+
+    fn browser_load(&self, target: Option<impl AsRef<str>>) {
+        if let Some(target) = target {
+            self.imp().gate.borrow_mut().browser_load(target.as_ref());
+        }
     }
 
     /// Stops the load in flight. A stopped load commits nothing, so the transition set for
     /// it must not go to a later visit.
     pub(crate) fn stop(&self) {
         self.imp().pending_transition.take();
+        self.imp().gate.borrow_mut().stop();
         self.web_view().stop_loading();
     }
 
@@ -338,11 +378,12 @@ impl Tab {
                 .back_forward_list()
                 .and_then(|list| list.current_item())
             {
+                self.browser_load(item.uri());
                 web_view.go_to_back_forward_list_item(&item);
                 return;
             }
         }
-        web_view.load_uri(uri);
+        self.load(uri);
     }
 
     fn notify(&self, change: TabChange) {
@@ -452,7 +493,8 @@ impl Tab {
             None,
             move |_, action| {
                 let target = action.request().and_then(|r| r.uri());
-                if target.is_some_and(|target| !tab.may_navigate(action, &target, true)) {
+                if let Some(target) = target.filter(|target| !tab.may_navigate(action, target, true)) {
+                    tab.refused(target.into());
                     return None;
                 }
                 tab.create_related()
@@ -561,7 +603,8 @@ impl Tab {
             }
             webkit::LoadEvent::Committed => {
                 imp.load.set(LoadPhase::Committed);
-                imp.opener_uri.take();
+                let uri = self.web_view().uri().map(String::from);
+                imp.gate.borrow_mut().committed(self.runtime(), uri.as_deref().unwrap_or_default());
                 let error_page = imp.error_page_pending.take();
                 imp.error_page_shown.set(error_page);
                 let commit = if error_page.is_some() {
@@ -569,8 +612,7 @@ impl Tab {
                 } else {
                     Commit::Document
                 };
-                imp.committed_uri
-                    .replace(self.web_view().uri().map(String::from));
+                imp.committed_uri.replace(uri);
                 permissions::committed(self);
                 self.notify(TabChange::Committed(commit));
             }
@@ -650,7 +692,8 @@ impl Tab {
                 };
                 let target = action.request().and_then(|r| r.uri());
                 let new_window = kind == webkit::PolicyDecisionType::NewWindowAction;
-                if target.as_deref().is_some_and(|target| !self.may_navigate(&action, target, new_window)) {
+                if let Some(target) = target.as_deref().filter(|target| !self.may_navigate(&action, target, new_window)) {
+                    self.refused(target.to_owned());
                     decision.ignore();
                     return true;
                 }
@@ -684,32 +727,29 @@ impl Tab {
         }
     }
 
-    /// The page whose script can navigate this view: the one on screen, which still runs while
-    /// the next one loads, or for a `window.open` view that has shown nothing yet, its opener.
-    fn page_uri(&self) -> Option<String> {
-        let opener = self.imp().opener_uri.borrow().clone();
-        opener.or_else(|| self.committed_uri())
-    }
-
     /// Whether a navigation of this view (`new_window`: a window it opens) may go to `target`:
     /// a web page reaches an extension's pages only where they are web-accessible to it, as in
-    /// Chrome. The scheme handler cannot tell who asked for a load without a `Referer`.
+    /// Chrome. The scheme handler cannot tell who asked for a load without a `Referer`, and
+    /// WebKit does not say who started a navigation, so the view's gate keeps track of what
+    /// it can (see `vsesvit_webext::gate`).
     fn may_navigate(&self, action: &webkit::NavigationAction, target: &str, new_window: bool) -> bool {
         let redirect = action.is_redirect();
-        // A load the browser starts (the address bar, a reload, history, tabs.create) has
-        // already made the view's URI its target when WebKit asks; a page's own cannot.
-        let started_by_browser = !new_window
-            && !redirect
-            && self.imp().opener_uri.borrow().is_none()
-            && self.web_view().uri().is_some_and(|uri| same_url(&uri, target));
-        if started_by_browser {
-            return true;
-        }
-        // WebKit shows a server redirect's target as the view's URI too. Only a web server
-        // redirects, so the web page on screen asked, or no page did.
-        let page = self.page_uri().filter(|uri| !(redirect && uri.starts_with("chrome-extension:")));
-        let runtime = self.imp().runtime.get().expect("set in Tab::wrap");
-        runtime.may_navigate(&page.unwrap_or_default(), target)
+        self.imp().gate.borrow_mut().decide(self.runtime(), target, redirect, new_window)
+    }
+
+    fn runtime(&self) -> &Runtime {
+        self.imp().runtime.get().expect("set in Tab::wrap")
+    }
+
+    fn refused(&self, target: String) {
+        log::debug!("refused a navigation to {target}");
+        #[cfg(test)]
+        self.imp().refused.borrow_mut().push(target);
+    }
+
+    #[cfg(test)]
+    fn refused_targets(&self) -> Vec<String> {
+        self.imp().refused.borrow().clone()
     }
 
     /// `window.open` and `target=_blank`: WebKit wants the new view now and shows it after
@@ -751,11 +791,6 @@ fn new_tab_for_click(
             Focus::Background
         }
     })
-}
-
-/// The same URL, however each is spelled (`chrome-extension://id` and `chrome-extension://id/`).
-fn same_url(a: &str, b: &str) -> bool {
-    a == b || matches!((Url::parse(a), Url::parse(b)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// How a URI reads in the address bar and in titles: `about:blank` is empty, and punycode and
@@ -932,12 +967,12 @@ mod tests {
         assert_eq!(found.first().map(|e| e.typed_count), Some(1));
     }
 
-    #[gtk::test]
-    fn a_web_page_cannot_open_an_extension_page_that_is_not_web_accessible() {
+    /// Installs an extension whose options page is not web-accessible and whose `public.html`
+    /// is, to every site. Returns it with the URLs of both pages.
+    fn install_private_options(browser: &Browser, name: &str) -> (vsesvit_core::extensions::InstalledExtension, String, String) {
         use vsesvit_core::extensions::InstallSource;
 
-        let browser = browser();
-        let dir = scratch_dir("private-options");
+        let dir = scratch_dir(name);
         let manifest = r#"{ "manifest_version": 3, "name": "Private options", "version": "1.0",
             "options_page": "options.html",
             "web_accessible_resources": [{ "resources": ["public.html"], "matches": ["<all_urls>"] }] }"#;
@@ -948,6 +983,13 @@ mod tests {
         let installed = glib::MainContext::default().block_on(browser.install(source, |_| {})).unwrap().expect("installed");
         let base = format!("chrome-extension://{}/", installed.id.as_str());
         let (options, public) = (format!("{base}options.html"), format!("{base}public.html"));
+        (installed, options, public)
+    }
+
+    #[gtk::test]
+    fn a_web_page_cannot_open_an_extension_page_that_is_not_web_accessible() {
+        let browser = browser();
+        let (installed, options, public) = install_private_options(&browser, "private-options");
 
         // Every way a page can reach the options page without sending a Referer: window.open
         // and a target=_blank link with noreferrer, and a no-referrer navigation of its own
@@ -992,7 +1034,7 @@ mod tests {
         let lure = window.open_tab(Some(&server.url("/lure")), None, Focus::Foreground);
         wait_until("the lure", || lure.web_view().title().as_deref() == Some("Lure"));
         crate::test_support::settle(std::time::Duration::from_millis(1500));
-        lure.web_view().reload();
+        lure.reload();
         crate::test_support::settle(std::time::Duration::from_millis(1500));
         let lured = lure.web_view().title().map(String::from);
 
@@ -1020,7 +1062,7 @@ mod tests {
         let bounced = window.open_tab(None, None, Focus::Foreground);
         window.navigate_with(&bounce_url, Transition::Typed);
         crate::test_support::settle(std::time::Duration::from_millis(1500));
-        bounced.web_view().reload();
+        bounced.reload();
         crate::test_support::settle(std::time::Duration::from_millis(1500));
         let bounced = bounced.web_view().title().map(String::from);
 
@@ -1046,5 +1088,108 @@ mod tests {
         assert!(!opened.iter().any(|t| t == "Private options"), "{opened:?}");
         assert_eq!(typed_uri.as_deref(), Some(options.as_str()));
         assert_eq!(bounced_back, typed_uri, "the options page stays");
+    }
+
+    #[gtk::test]
+    fn a_page_cannot_send_a_window_it_holds_to_an_extension_page_that_is_not_web_accessible() {
+        use std::rc::Rc;
+
+        let browser = browser();
+        let (installed, options, public) = install_private_options(&browser, "held-window");
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/opener" => Reply::Page("Opener"),
+            "/parent" => Reply::Page("Parent"),
+            "/child" => Reply::Page("Child"),
+            "/elsewhere" => Reply::Page("Elsewhere"),
+            _ => Reply::NotFound,
+        });
+        let settings = browser.engine().settings().clone();
+        let popups_allowed = settings.is_javascript_can_open_windows_automatically();
+        settings.set_javascript_can_open_windows_automatically(true);
+        let window = BrowserWindow::new(&browser);
+        let title = |tab: &Tab| tab.web_view().title().map(String::from).unwrap_or_default();
+        let showing = |shown: &str| window.tabs().into_iter().find(|tab| title(tab) == shown);
+        let run = |tab: &Tab, script: &str| {
+            let ran = glib::MainContext::default().block_on(tab.web_view().evaluate_javascript_future(script, None, None));
+            ran.unwrap_or_else(|e| panic!("{script}: {e}"));
+        };
+        // Waits until a tab refused `target`, or a tab went there or to the options page, and
+        // says whether it was refused.
+        let refused = |target: &str| {
+            let went = |t: &Tab| title(t) == "Private options" || t.committed_uri().as_deref() == Some(target);
+            let refused = |t: &Tab| t.refused_targets().iter().any(|r| r == target);
+            wait_until(target, || window.tabs().iter().any(|t| refused(t) || went(t)));
+            window.tabs().iter().any(refused) && !window.tabs().iter().any(went)
+        };
+
+        // A page opens the web-accessible page in a window it keeps a reference to, then sends
+        // that window on to the options page by the reference, and by the window's name.
+        let opener = window.open_tab(Some(&server.url("/opener")), None, Focus::Foreground);
+        wait_until("the opener", || title(&opener) == "Opener");
+        run(&opener, &format!("window.held = window.open('{public}', 'held'); 0"));
+        wait_until("the held window", || showing("Public page").is_some());
+        let held = showing("Public page").expect("the held window");
+        let by_reference = format!("{options}?by-reference");
+        run(&opener, &format!("held.location = '{by_reference}'; 0"));
+        let refused_by_reference = refused(&by_reference);
+        let by_name = format!("{options}?by-name");
+        run(&opener, &format!("window.open('{by_name}', 'held'); 0"));
+        let refused_by_name = refused(&by_name);
+
+        // A page sends its own tab to the web-accessible page, and a window it opened, which
+        // keeps the tab as its opener, sends the tab on.
+        let parent = window.open_tab(Some(&server.url("/parent")), None, Focus::Foreground);
+        wait_until("the parent", || title(&parent) == "Parent");
+        run(&parent, "window.child = window.open('/child', 'child'); 0");
+        wait_until("the child", || showing("Child").is_some());
+        let child = showing("Child").expect("the child");
+        run(&parent, &format!("location = '{public}'; 0"));
+        wait_until("the parent at the public page", || parent.committed_uri().as_deref() == Some(public.as_str()));
+        let via_opener = format!("{options}?via-opener");
+        run(&child, &format!("opener.location = '{via_opener}'; 0"));
+        let refused_via_opener = refused(&via_opener);
+
+        // The browser's own loads still reach the options page in the held window, typed; the
+        // page that holds the window still cannot send it on from there...
+        let commits = Rc::new(Cell::new(0));
+        held.web_view().connect_load_changed({
+            let commits = commits.clone();
+            move |_, event| {
+                if event == webkit::LoadEvent::Committed {
+                    commits.set(commits.get() + 1);
+                }
+            }
+        });
+        held.load(&options);
+        wait_until("the typed options page", || title(&held) == "Private options");
+        let typed_over = format!("{options}?typed-over");
+        run(&opener, &format!("held.location = '{typed_over}'; 0"));
+        let at = |tab: &Tab, uri: &str| tab.committed_uri().as_deref() == Some(uri);
+        wait_until(&typed_over, || held.refused_targets().contains(&typed_over) || at(&held, &typed_over));
+        let refused_typed_over = !at(&held, &typed_over);
+        // ...and a reload, back and forward, and a restore of its history reach it.
+        let before = commits.get();
+        held.reload();
+        wait_until("the reloaded options page", || commits.get() > before && at(&held, &options));
+        held.load(&server.url("/elsewhere"));
+        wait_until("a site", || title(&held) == "Elsewhere");
+        held.go_back();
+        wait_until("the options page again", || at(&held, &options));
+        held.go_forward();
+        wait_until("the site again", || title(&held) == "Elsewhere");
+        held.go_back();
+        wait_until("the options page once more", || at(&held, &options));
+        let restored = window.open_tab(None, None, Focus::Background);
+        restored.restore(held.web_view().session_state().as_ref(), &options);
+        wait_until("the restored options page", || at(&restored, &options));
+
+        window.destroy();
+        drop(child);
+        settings.set_javascript_can_open_windows_automatically(popups_allowed);
+        browser.uninstall_extension(&installed.id).ok();
+        assert!(refused_by_reference, "the held window went to the options page by its reference");
+        assert!(refused_by_name, "the held window went to the options page by its name");
+        assert!(refused_via_opener, "the opener went to the options page from a window it opened");
+        assert!(refused_typed_over, "the held window went on from the typed options page");
     }
 }

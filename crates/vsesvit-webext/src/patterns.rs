@@ -147,11 +147,8 @@ pub fn requesting_document<'a>(base_url: &str, view_url: &'a str, referer: Optio
 
 /// May the document at `source` navigate a tab, frame or new window to `target`, without
 /// `target` being web-accessible to it? Only when `target` is no extension page, is a page of
-/// the extension `source` belongs to, or is `source` itself: a load the browser starts
-/// (the address bar, `tabs.create`, a restored session, a reload) has already made the
-/// view's URL its target when WebKit asks for the navigation policy. Chrome refuses the
-/// rest, so a web page cannot drive an extension page through its URL, whatever Referer it
-/// sends.
+/// the extension `source` belongs to, or is `source` itself. Chrome refuses the rest, so a web
+/// page cannot drive an extension page through its URL, whatever Referer it sends.
 pub fn may_enter(source: &str, target: &str) -> bool {
     let Ok(target) = url::Url::parse(target) else { return true };
     if target.scheme() != "chrome-extension" {
@@ -167,6 +164,12 @@ pub fn may_enter(source: &str, target: &str) -> bool {
 pub fn web_accessible(entries: &[WebAccessible], path: &str, page_url: &str) -> bool {
     let Ok(page) = url::Url::parse(page_url) else { return false };
     entries.iter().any(|w| w.resources.iter().any(|r| glob(r.trim_start_matches('/'), path)) && w.matches.iter().any(|m| m.matches(&page)))
+}
+
+/// May some document outside the extension load `path` (no leading slash) from an extension with
+/// these `web_accessible_resources` entries?
+pub fn web_reachable(entries: &[WebAccessible], path: &str) -> bool {
+    entries.iter().any(|w| !w.matches.is_empty() && w.resources.iter().any(|r| glob(r.trim_start_matches('/'), path)))
 }
 
 #[cfg(test)]
@@ -220,6 +223,10 @@ mod tests {
         assert!(web_accessible(&legacy, "public.js", "http://127.0.0.1:8080/"));
         assert!(!web_accessible(&legacy, "public.js", "chrome-extension://abc/"));
         assert!(!web_accessible(&[], "public.js", "https://anything.test/"));
+        assert!(web_reachable(&sites, "images/a.png"));
+        assert!(!web_reachable(&sites, "secret.js"));
+        assert!(!web_reachable(&[entry(&[])], "public.js"));
+        assert!(web_reachable(&legacy, "public.js"));
     }
 
     #[test]
@@ -245,8 +252,7 @@ mod tests {
         // A new window whose opener the shell does not know.
         assert!(!may_enter("", options));
         assert!(!may_enter("about:blank", options));
-        // The extension's own documents, and loads the browser starts (the view already
-        // shows the target).
+        // The extension's own documents.
         assert!(may_enter("chrome-extension://abc/popup.html", options));
         assert!(may_enter("chrome-extension://abc", options));
         assert!(may_enter(options, options));

@@ -172,21 +172,22 @@ impl Runtime {
         ucm
     }
 
-    /// The shell's navigation policy for every tab: refuse a `NavigationAction` or
-    /// `NewWindowAction` to `target` unless this is true. `source` is the page that asks: the
-    /// view's URL for a load the browser started (WebKit has already made it the target);
-    /// else the page the view shows, whose script still runs while the next one loads, or
-    /// for a new window that has shown nothing yet its opener. For a server redirect, whose
-    /// target WebKit also shows already, that page counts only when it is a web page, since
-    /// only a web server redirects. As in Chrome, a web page reaches an extension's pages
-    /// only where `web_accessible_resources` lets it; the extension itself and the browser
-    /// reach them all, and an unloaded extension's URL is left to fail on its own.
+    /// Whether the page at `source` may navigate a view to `target`, which a shell asks
+    /// through each tab's [`Gate`](crate::Gate). As in Chrome, a web page reaches an
+    /// extension's pages only where `web_accessible_resources` lets it; the extension itself
+    /// reaches them all, and an unloaded extension's URL is left to fail on its own.
     pub fn may_navigate(&self, source: &str, target: &str) -> bool {
         if patterns::may_enter(source, target) {
             return true;
         }
         let Some((host, path)) = scheme::split_uri(target) else { return true };
         self.0.extension_by_host(&host).is_none_or(|ext| ext.web_accessible(&path, source))
+    }
+
+    /// Whether `url` is a page of a loaded extension that some page outside it may load.
+    pub fn web_reachable(&self, url: &str) -> bool {
+        let Some((host, path)) = scheme::split_uri(url) else { return false };
+        self.0.extension_by_host(&host).is_some_and(|ext| ext.web_reachable(&path))
     }
 
     /// The shell reports a navigation or title change; extensions see `tabs.onUpdated`
@@ -356,6 +357,16 @@ fn detach(ext: &Extension, state: &mut TabState) {
         state.ucm.disconnect(page);
         state.ucm.unregister_script_message_handler(&ext.handler, Some(&ext.world));
         state.ucm.unregister_script_message_handler(&ext.page_handler, None);
+    }
+}
+
+impl crate::gate::Policy for Runtime {
+    fn may_navigate(&self, source: &str, target: &str) -> bool {
+        Runtime::may_navigate(self, source, target)
+    }
+
+    fn web_reachable(&self, url: &str) -> bool {
+        Runtime::web_reachable(self, url)
     }
 }
 

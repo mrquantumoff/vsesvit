@@ -28,8 +28,8 @@
 //!    resolve; `tabs.create` resolves relative URLs and `tabs.update` refuses
 //!    `javascript:` and `file:` and without a tab id updates the active tab; a web page cannot
 //!    navigate a tab to the options page, with or without a Referer, nor get it by a reload,
-//!    nor a site by redirecting a load the browser started there, while going back to it still
-//!    works;
+//!    nor a site by redirecting a load the browser started there, nor a page through a window
+//!    it opened at the twin's web-accessible page, while going back to it still works;
 //! 8. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!    `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!    uninstall followed by a reinstall fires `onInstalled(install)` again.
@@ -64,7 +64,7 @@ mod linux {
     use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension};
     use vsesvit_core::testkit::FixtureServer;
     use vsesvit_core::{OpenOptions, Profile};
-    use vsesvit_webext::{LoadReason, Runtime, TabHost, TabId, TabInfo};
+    use vsesvit_webext::{Gate, LoadReason, Runtime, TabHost, TabId, TabInfo};
     use webkit::glib;
     use webkit::prelude::*;
 
@@ -101,6 +101,7 @@ mod linux {
         }
 
         let host = Rc::new(Host::new(session.clone(), container));
+        *host.me.borrow_mut() = Rc::downgrade(&host);
         let runtime = Runtime::new(profile.clone(), &session, host.clone());
         *host.runtime.borrow_mut() = Some(runtime.clone());
 
@@ -457,7 +458,7 @@ mod linux {
             let lure_script = format!("document.head.insertAdjacentHTML('beforeend', '<meta name=\"referrer\" content=\"no-referrer\">'); location.href = {}; 'navigating'", Value::String(target.clone()));
             self.eval(&quiet_view, &lure_script, None).await;
             glib::timeout_future(Duration::from_millis(1500)).await;
-            quiet_view.reload();
+            self.host.reload(quiet);
             glib::timeout_future(Duration::from_millis(1500)).await;
             let ran = self.eval(&quiet_view, "String(window.__twinOptions && window.__twinOptions.id)", None).await;
             self.note("web_page_without_referrer_cannot_open_extension_page", ran.is_some() && ran.as_deref() != Some(TWIN_ID), format!("options.js in tab {} after a no-referrer page navigated it to {target} and it reloaded = {ran:?}", quiet.0));
@@ -476,9 +477,25 @@ mod linux {
             wait_until(|| back_view.title().as_deref() == Some(options_title.as_str()), TIMEOUT).await;
             self.eval(&back_view, &format!("location.href = {}; 'leaving'", Value::String(self.url("/page2.html"))), None).await;
             wait_until(|| back_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
-            back_view.go_back();
+            self.host.go_back(back);
             let returned = wait_until(|| back_view.title().as_deref() == Some(options_title.as_str()), TIMEOUT).await;
             self.note("browser_navigates_back_to_extension_page", returned, format!("tab {} title after going back = {:?}", back.0, back_view.title()));
+            // Nor through a window a web page opened at the twin's web-accessible page and keeps.
+            let opener = self.host.create_tab(&self.url("/page2.html"), false).expect("opener tab");
+            let opener_view = self.host.web_view(opener).expect("opener tab view");
+            if let Some(settings) = WebViewExt::settings(&opener_view) {
+                settings.set_javascript_can_open_windows_automatically(true);
+            }
+            wait_until(|| opener_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
+            let public = format!("chrome-extension://{url_host}/public.html");
+            self.eval(&opener_view, &format!("window.held = window.open({}, 'held'); 0", Value::String(public.clone())), None).await;
+            let held = wait_for_value(|| self.host.tabs().into_iter().find(|t| t.url == public), TIMEOUT).await;
+            let target = format!("chrome-extension://{url_host}/options.html?held");
+            self.eval(&opener_view, &format!("held.location = {}; 0", Value::String(target.clone())), None).await;
+            let held_url = || held.as_ref().and_then(|h| self.host.tabs().into_iter().find(|t| t.id == h.id)).map(|t| t.url);
+            let judged = wait_until(|| self.host.refused.borrow().contains(&target) || held_url().is_some_and(|u| u != public), TIMEOUT).await;
+            let refused = judged && held_url().as_deref() == Some(public.as_str());
+            self.note("held_window_cannot_open_extension_page", refused, format!("the window a web page opened at {public} = {held:?}; at {:?} after the page sent it to {target}", held_url()));
         }
 
         async fn lifecycle(&self) {
@@ -645,6 +662,8 @@ mod linux {
         /// The document on screen, as the GTK shell reports it: set on commit, never the
         /// URL still loading.
         committed: Rc<RefCell<String>>,
+        /// The navigation gate every shell keeps per view (lib.rs), as the GTK tab keeps it.
+        gate: Rc<RefCell<Gate>>,
     }
 
     /// Builds every tab the way the GTK shell does: a WebView on the runtime's
@@ -656,12 +675,108 @@ mod linux {
         runtime: RefCell<Option<Runtime>>,
         /// Every URL `create_tab` was asked to open, for checks that expect none.
         created: RefCell<Vec<String>>,
+        /// Every target a gate refused, for checks that wait on one.
+        refused: Rc<RefCell<Vec<String>>>,
         next_id: Cell<u32>,
+        me: RefCell<std::rc::Weak<Host>>,
     }
 
     impl Host {
         fn new(session: webkit::NetworkSession, container: gtk::Box) -> Host {
-            Host { session, container, tabs: RefCell::new(Vec::new()), runtime: RefCell::new(None), created: RefCell::new(Vec::new()), next_id: Cell::new(1) }
+            Host {
+                session,
+                container,
+                tabs: RefCell::new(Vec::new()),
+                runtime: RefCell::new(None),
+                created: RefCell::new(Vec::new()),
+                refused: Rc::new(RefCell::new(Vec::new())),
+                next_id: Cell::new(1),
+                me: RefCell::new(std::rc::Weak::new()),
+            }
+        }
+
+        fn next_id(&self) -> TabId {
+            let id = TabId(self.next_id.get());
+            self.next_id.set(id.0 + 1);
+            id
+        }
+
+        /// Adds `view` as tab `id`, wired as the GTK shell wires a tab's view: its navigations
+        /// and the windows it opens go through `gate`, as `Tab::may_navigate` sends them, and a
+        /// window it opens is a tab too.
+        fn add(&self, runtime: &Runtime, id: TabId, view: &webkit::WebView, gate: Gate) -> Rc<RefCell<Gate>> {
+            self.container.append(view);
+            let gate = Rc::new(RefCell::new(gate));
+            let committed = Rc::new(RefCell::new(String::new()));
+            view.connect_decide_policy({
+                let (gate, runtime, refused) = (gate.clone(), runtime.clone(), self.refused.clone());
+                move |_, decision, kind| {
+                    let new_window = match kind {
+                        webkit::PolicyDecisionType::NavigationAction => false,
+                        webkit::PolicyDecisionType::NewWindowAction => true,
+                        _ => return false,
+                    };
+                    let Some(action) = decision.downcast_ref::<webkit::NavigationPolicyDecision>().and_then(|d| d.navigation_action()) else { return false };
+                    let Some(target) = action.request().and_then(|r| r.uri()) else { return false };
+                    if gate.borrow_mut().decide(&runtime, &target, action.is_redirect(), new_window) {
+                        return false;
+                    }
+                    println!("[harness] host: refused a navigation of tab {} to {target}", id.0);
+                    refused.borrow_mut().push(target.into());
+                    decision.ignore();
+                    true
+                }
+            });
+            view.connect_load_changed({
+                let (gate, runtime, committed) = (gate.clone(), runtime.clone(), committed.clone());
+                move |view, event| {
+                    if event == webkit::LoadEvent::Committed {
+                        let uri = view.uri().map(String::from).unwrap_or_default();
+                        gate.borrow_mut().committed(&runtime, &uri);
+                        *committed.borrow_mut() = uri;
+                    }
+                }
+            });
+            view.connect_create({
+                let (gate, runtime, me) = (gate.clone(), runtime.clone(), self.me.borrow().clone());
+                move |view, action| {
+                    let host = me.upgrade()?;
+                    let target = action.request().and_then(|r| r.uri()).map(String::from).unwrap_or_default();
+                    if !gate.borrow_mut().decide(&runtime, &target, false, true) {
+                        println!("[harness] host: refused a window of tab {} at {target}", id.0);
+                        host.refused.borrow_mut().push(target);
+                        return None;
+                    }
+                    let popup_id = host.next_id();
+                    let popup = webkit::WebView::builder().related_view(view).user_content_manager(&runtime.user_content_manager(popup_id)).build();
+                    let opened = Gate::opened_by(&gate.borrow());
+                    host.add(&runtime, popup_id, &popup, opened);
+                    println!("[harness] host: tab {} opened tab {} at {target}", id.0, popup_id.0);
+                    Some(popup.upcast())
+                }
+            });
+            self.tabs.borrow_mut().push(Tab { id, view: view.clone(), committed, gate: gate.clone() });
+            gate
+        }
+
+        /// The browser's reload, of the document on screen, which the tab's gate lets through
+        /// as the GTK tab's does.
+        fn reload(&self, tab: TabId) {
+            let tabs = self.tabs.borrow();
+            let Some(t) = tabs.iter().find(|t| t.id == tab) else { return };
+            let committed = t.committed.borrow().clone();
+            t.gate.borrow_mut().browser_load(&committed);
+            t.view.reload();
+        }
+
+        /// The browser's back button, likewise.
+        fn go_back(&self, tab: TabId) {
+            let tabs = self.tabs.borrow();
+            let Some(t) = tabs.iter().find(|t| t.id == tab) else { return };
+            if let Some(uri) = t.view.back_forward_list().and_then(|l| l.back_item()).and_then(|i| i.uri()) {
+                t.gate.borrow_mut().browser_load(&uri);
+            }
+            t.view.go_back();
         }
     }
 
@@ -684,52 +799,12 @@ mod linux {
 
         fn create_tab(&self, url: &str, _active: bool) -> Option<TabId> {
             let runtime = self.runtime.borrow().clone()?;
-            let id = TabId(self.next_id.get());
-            self.next_id.set(id.0 + 1);
+            let id = self.next_id();
             let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id)).build();
-            self.container.append(&view);
-            let committed = Rc::new(RefCell::new(String::new()));
-            // The navigation gate every shell installs (lib.rs), judged as the GTK tab judges
-            // it (`Tab::may_navigate`).
-            view.connect_decide_policy({
-                let committed = committed.clone();
-                move |view, decision, kind| {
-                    let new_window = match kind {
-                        webkit::PolicyDecisionType::NavigationAction => false,
-                        webkit::PolicyDecisionType::NewWindowAction => true,
-                        _ => return false,
-                    };
-                    let Some(action) = decision.downcast_ref::<webkit::NavigationPolicyDecision>().and_then(|d| d.navigation_action()) else { return false };
-                    let Some(target) = action.request().and_then(|r| r.uri()) else { return false };
-                    let redirect = action.is_redirect();
-                    // A load the browser starts has already made the view's URI its target
-                    // when WebKit asks; a page's own cannot.
-                    if !new_window && !redirect && view.uri().is_some_and(|uri| uri == target) {
-                        return false;
-                    }
-                    // WebKit shows a server redirect's target as the view's URI too. Only a web
-                    // server redirects, so the web page on screen asked, or no page did.
-                    let page = committed.borrow().clone();
-                    let page = if redirect && page.starts_with("chrome-extension:") { String::new() } else { page };
-                    if runtime.may_navigate(&page, &target) {
-                        return false;
-                    }
-                    println!("[harness] host: refused a navigation from {page:?} to {target}");
-                    decision.ignore();
-                    true
-                }
-            });
-            view.connect_load_changed({
-                let committed = committed.clone();
-                move |view, event| {
-                    if event == webkit::LoadEvent::Committed {
-                        *committed.borrow_mut() = view.uri().map(String::from).unwrap_or_default();
-                    }
-                }
-            });
-            self.tabs.borrow_mut().push(Tab { id, view: view.clone(), committed });
+            let gate = self.add(&runtime, id, &view, Gate::default());
             self.created.borrow_mut().push(url.to_owned());
             println!("[harness] host: create_tab({url}) -> tab {}", id.0);
+            gate.borrow_mut().browser_load(url);
             view.load_uri(url);
             Some(id)
         }
@@ -738,6 +813,7 @@ mod linux {
             let tabs = self.tabs.borrow();
             let Some(t) = tabs.iter().find(|t| t.id == tab) else { return false };
             if let Some(u) = url {
+                t.gate.borrow_mut().browser_load(u);
                 t.view.load_uri(u);
             }
             true
@@ -819,6 +895,7 @@ mod linux {
                         { "matches": ["http://127.0.0.1/index.html"], "js": ["main.js"], "run_at": "document_start", "world": "MAIN" }
                     ],
                     "options_page": "options.html",
+                    "web_accessible_resources": [{ "resources": ["public.html"], "matches": ["<all_urls>"] }],
                     "action": { "default_title": "Vsesvit Twin", "default_popup": "popup.html" }
                 })
                 .to_string(),
@@ -873,6 +950,7 @@ log("alive");
                 .to_owned(),
             ),
             ("data.json", "{\"twin\":true}".to_owned()),
+            ("public.html", "<!doctype html><html><head><meta charset=\"utf-8\"><title>Twin public</title></head></html>".to_owned()),
             ("_locales/en/messages.json", r#"{"cost":{"message":"Total: $AMOUNT$ $1","placeholders":{"amount":{"content":"$1"}}}}"#.to_owned()),
             (
                 "inject.js",
