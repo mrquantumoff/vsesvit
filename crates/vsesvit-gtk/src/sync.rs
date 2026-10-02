@@ -421,7 +421,12 @@ fn settle(state: &mut State, result: Result<(), Error>, synced_at: Option<u64>) 
     match result {
         Ok(()) => *error = None,
         Err(Error::SignedOut) => {}
-        Err(e) if e.needs_sign_in() => *needs_sign_in = true,
+        // With `needs_sign_in` set, Settings shows `error` as why signing in again failed, so
+        // the last sync's error goes.
+        Err(e) if e.needs_sign_in() => {
+            *needs_sign_in = true;
+            *error = None;
+        }
         Err(e) => *error = Some(e.to_string()),
     }
 }
@@ -532,7 +537,7 @@ mod tests {
     fn an_expired_sign_in_asks_for_another() {
         let mut state = signed_in_state(true, false);
         settle(&mut state, Err(Error::SignInExpired), None);
-        assert_eq!(state, signed_in_state(false, true));
+        assert_eq!(state, with(100, false, None, true), "the last sync's error is not why a sign-in failed");
     }
 
     #[test]
