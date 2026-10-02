@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use vsesvit_core::crdt::Seq;
+use vsesvit_core::permissions::Permission;
 use vsesvit_core::sync::{ApplyReport, DataType, Kind, SyncStore, WireRecord};
 use vsesvit_sync_proto::{Limits, MAX_ID_BYTES, Page, Record, Upload};
 
@@ -44,6 +45,11 @@ pub struct Account {
     /// know were skipped as it passed them, so a build that knows more starts the download over.
     #[serde(default = "kinds_before_tracking")]
     known_kinds: BTreeSet<u8>,
+    /// The site permissions, by wire name, of the build that last moved `download_cursor`.
+    /// Records of a permission it did not know were rejected as it passed them, so a build that
+    /// knows more starts the download over, as for a kind.
+    #[serde(default = "permissions_before_tracking")]
+    known_permissions: BTreeSet<String>,
     /// The [`Page::epoch`] the cursors belong to. `None` while they are at the start, until a page
     /// comes.
     #[serde(default = "epoch_before_tracking")]
@@ -65,6 +71,18 @@ fn kinds_before_tracking() -> BTreeSet<u8> {
     BTreeSet::from([1, 2, 3, 4, 5, 6, 7, 8, 12])
 }
 
+fn every_permission() -> BTreeSet<String> {
+    Permission::ALL.iter().map(|p| p.key().to_owned()).collect()
+}
+
+/// The site permissions there were when the account began keeping `known_permissions`.
+fn permissions_before_tracking() -> BTreeSet<String> {
+    ["camera", "microphone", "location", "notifications", "screen_share", "clipboard_read", "midi"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The epoch of every page before servers had them, so an account saved then still sees a new one.
 fn epoch_before_tracking() -> Option<u64> {
     Some(0)
@@ -82,6 +100,7 @@ impl Account {
             upload_cursors: BTreeMap::new(),
             downloading: every_type(),
             known_kinds: every_kind(),
+            known_permissions: every_permission(),
             epoch: None,
             last_synced: None,
         }
@@ -183,11 +202,16 @@ impl Round {
     pub fn gather(store: &mut SyncStore<'_>, mut account: Account, types: &[DataType]) -> Result<Round, Error> {
         let types: BTreeSet<DataType> = types.iter().copied().collect();
         let kinds = every_kind();
-        if !types.is_subset(&account.downloading) || !kinds.is_subset(&account.known_kinds) {
+        let permissions = every_permission();
+        if !types.is_subset(&account.downloading)
+            || !kinds.is_subset(&account.known_kinds)
+            || !permissions.is_subset(&account.known_permissions)
+        {
             account.download_cursor = 0;
         }
         account.downloading = types.clone();
         account.known_kinds = kinds;
+        account.known_permissions = permissions;
         let budget = account.limits.max_batch as usize;
         let mut records = Vec::new();
         let mut upto = BTreeMap::new();
@@ -374,8 +398,9 @@ impl Exchanged {
 }
 
 /// Applies the page's records of the `types` this device syncs. The cursor passes the others, and
-/// records of kinds this build does not know; turning one of those types on later, or updating to a
-/// build that knows the kind, starts the download over (see [`Round::gather`]).
+/// records of kinds this build does not know, and core rejects records of site permissions it does
+/// not know; turning one of those types on later, or updating to a build that knows the kind or
+/// the permission, starts the download over (see [`Round::gather`]).
 fn apply(store: &mut SyncStore<'_>, account: &mut Account, page: Page, types: &BTreeSet<DataType>) -> Result<ApplyReport, Error> {
     let records = page
         .records
@@ -504,6 +529,39 @@ mod tests {
         assert_eq!(gather(saved_account(Some(&every_code))), (100, Some(every_code.clone())), "no new kind, no new start");
         // Saved before the account kept the list, by a build that knew the kinds there were then.
         assert_eq!(gather(saved_account(None)), (100, Some(every_code.clone())));
+        drop(profile);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_build_that_knows_a_new_site_permission_downloads_everything_again() {
+        use vsesvit_core::vault::KeyStore;
+        use vsesvit_core::{OpenOptions, Profile};
+
+        let dir = std::env::temp_dir().join(format!("vsesvit-sync-new-permission-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut profile = Profile::open(&dir, OpenOptions { key_store: KeyStore::Basic, ..OpenOptions::default() }).unwrap();
+        let mut store = profile.sync();
+        let every_name: Vec<&str> = Permission::ALL.iter().map(|p| p.key()).collect();
+        let mut gather = |known: Option<&[&str]>| {
+            let mut account = serde_json::to_value(saved_account(None)).unwrap();
+            account["known_kinds"] = serde_json::to_value(every_kind()).unwrap();
+            match known {
+                Some(names) => account["known_permissions"] = names.into(),
+                None => drop(account.as_object_mut().unwrap().remove("known_permissions")),
+            }
+            let round = Round::gather(&mut store, serde_json::from_value(account).unwrap(), &DataType::ALL).unwrap();
+            let known = serde_json::to_value(&round.account).unwrap()["known_permissions"].clone();
+            (round.account.download_cursor, serde_json::from_value::<Option<Vec<String>>>(known).unwrap())
+        };
+        let every = Some(every_permission().into_iter().collect::<Vec<_>>());
+
+        // Saved before the account kept the list, by a build without picture-in-picture: the
+        // device rejected the records of it that the cursor passed then.
+        assert_eq!(gather(None), (0, every.clone()));
+        let without_pip: Vec<&str> = every_name.iter().copied().filter(|n| *n != "picture_in_picture").collect();
+        assert_eq!(gather(Some(&without_pip)), (0, every.clone()));
+        assert_eq!(gather(Some(&every_name)), (100, every.clone()), "no new permission, no new start");
         drop(profile);
         let _ = std::fs::remove_dir_all(&dir);
     }
