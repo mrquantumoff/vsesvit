@@ -152,6 +152,8 @@ pub(crate) struct Tab {
     /// The shortcut world in each DevTools session: the page's own (`""`) and each attached
     /// frame's.
     shortcut_worlds: RefCell<HashMap<String, shortcuts::World>>,
+    /// The zoom remembered for the page's site, while the page is not at it.
+    zoom_memory: RefCell<zoom::Memory>,
     closed: Cell<bool>,
 }
 
@@ -183,6 +185,7 @@ impl Tab {
             permissions: TabPermissions::default(),
             capture_polled: Cell::new(false),
             shortcut_worlds: RefCell::default(),
+            zoom_memory: RefCell::default(),
             closed: Cell::new(false),
         }))
     }
@@ -667,14 +670,59 @@ impl Tab {
         }
     }
 
-    /// Zooms the page as its keyboard shortcut does. Only for a window in the foreground.
-    pub fn zoom(&self, step: zoom::Step) {
+    /// Zooms the page as its keyboard shortcuts do, one after another. Only for a window in the
+    /// foreground.
+    pub fn zoom(&self, steps: Vec<zoom::Step>) {
         self.focus_page();
         // The page takes the focus a moment after the web view does.
         exec::spawn(async move {
             exec::sleep(Duration::from_millis(50)).await;
-            zoom::press(step);
+            zoom::press(&steps);
         });
+    }
+
+    /// The zoom remembered for the page's site, while the page is not at it.
+    pub fn wanted_zoom(&self) -> Option<zoom::Level> {
+        self.zoom_memory.borrow().wanted()
+    }
+
+    /// Takes the level [`Tab::wanted_zoom`] says, for the shell to press its way there; it is
+    /// not wanted again, so presses that went astray are never repeated.
+    pub fn take_wanted_zoom(&self) -> Option<zoom::Level> {
+        self.zoom_memory.borrow_mut().take_wanted()
+    }
+
+    /// A zoom the page reported: a change is remembered for the page's site, and a new
+    /// document that starts at another level than its site's is taken there when it can be.
+    fn zoom_reported(&self, window: &BrowserWindow, report: zoom::Report) {
+        let Some(browser) = window.browser() else {
+            return;
+        };
+        // The document's own address: its first report can arrive before its commit does.
+        let url = self
+            .core
+            .get()
+            .and_then(|core| core.Source().ok())
+            .and_then(|source| vsesvit_core::Url::parse(&source).ok());
+        let remembered = match &url {
+            Some(url) => browser.core(|p| p.site_zoom().get(url)).unwrap_or_else(|e| {
+                log::warn!("site zoom: {e}");
+                vsesvit_core::zoom::DEFAULT
+            }),
+            None => vsesvit_core::zoom::DEFAULT,
+        };
+        let remember = self
+            .zoom_memory
+            .borrow_mut()
+            .reported(report, zoom::Level::of_factor(remembered));
+        if let (Some(level), Some(url)) = (remember, &url)
+            && let Err(e) = browser.core(|p| p.site_zoom().set(url, level.factor()))
+        {
+            log::warn!("site zoom: {e}");
+        }
+        if matches!(report, zoom::Report::Start(_)) {
+            window.take_to_site_zoom(self);
+        }
     }
 
     pub fn focus_page(&self) {
@@ -1170,13 +1218,19 @@ impl Tab {
             Some(PageMessage::Store(request)) => {
                 exec::spawn(store::answer(window, self.id, request));
             }
-            Some(PageMessage::Zoom(ratio)) => {
+            Some(PageMessage::Zoom { ratio, start }) => {
                 let level = zoom::Level(zoom::percent(ratio, window.scale()));
                 if self.state.borrow().zoom != level {
                     log::debug!("tab {}: zoom {}", self.id, level.label());
                     self.state.borrow_mut().zoom = level;
                     self.notify();
                 }
+                let report = if start {
+                    zoom::Report::Start(level)
+                } else {
+                    zoom::Report::Change(level)
+                };
+                self.zoom_reported(&window, report);
             }
             None => {}
         }

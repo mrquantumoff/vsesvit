@@ -221,6 +221,10 @@ impl BrowserWindow {
             let _ = self.strip().select(id);
             self.sync_selection();
         }
+        // A page that came while the window was in the background gets its site's zoom now.
+        if let Some(tab) = self.tab(id) {
+            self.take_to_site_zoom(&tab);
+        }
     }
 
     /// A tab left the window: a split view it was part of ends.

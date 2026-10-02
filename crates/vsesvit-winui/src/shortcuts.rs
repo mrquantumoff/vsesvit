@@ -416,8 +416,9 @@ pub(crate) enum PageMessage {
     BackgroundLink(String),
     /// An extension store page asked to install, remove or list extensions (see `store`).
     Store(StoreRequest),
-    /// The page's `devicePixelRatio`, when it loads and whenever it changes (see `zoom`).
-    Zoom(f64),
+    /// The page's `devicePixelRatio`, when the document starts (`start`) and whenever it
+    /// changes (see `zoom`).
+    Zoom { ratio: f64, start: bool },
 }
 
 /// The binding the script reports through (`Runtime.bindingCalled` events carry its name).
@@ -546,7 +547,10 @@ fn parse_page_message(message: &str, bindings: &Bindings) -> Option<PageMessage>
         "link" => Some(PageMessage::BackgroundLink(
             value.get("url")?.as_str()?.to_owned(),
         )),
-        "zoom" => Some(PageMessage::Zoom(value.get("dpr")?.as_f64()?)),
+        "zoom" => Some(PageMessage::Zoom {
+            ratio: value.get("dpr")?.as_f64()?,
+            start: value.get("start")?.as_bool()?,
+        }),
         "store" => {
             store::parse_request(value.get("origin")?.as_str()?, value.get("detail")?.as_str()?)
                 .map(PageMessage::Store)
@@ -588,10 +592,12 @@ fn page_script() -> String {
   addEventListener("click", (e) => {{ if (e.isTrusted && (e.ctrlKey || e.metaKey) && !e.shiftKey) link(e); }}, true);
   addEventListener("auxclick", (e) => {{ if (e.isTrusted && e.button === 1 && !e.shiftKey) link(e); }}, true);
   let ratio = 0;
+  let start = true;
   const zoom = () => {{
     if (devicePixelRatio === ratio) return;
     ratio = devicePixelRatio;
-    report(JSON.stringify({{ t: "zoom", dpr: ratio }}));
+    report(JSON.stringify({{ t: "zoom", dpr: ratio, start }}));
+    start = false;
     matchMedia("(resolution: " + ratio + "dppx)").addEventListener("change", zoom, {{ once: true }});
   }};
   zoom();
@@ -1014,12 +1020,24 @@ mod tests {
     }
 
     #[test]
-    fn zoom_reports_carry_the_pixel_ratio() {
-        let zoom = r#"{"t":"zoom","dpr":1.925}"#;
+    fn zoom_reports_carry_the_pixel_ratio_and_whether_the_document_just_started() {
+        let start = r#"{"t":"zoom","dpr":1.75,"start":true}"#;
+        assert_eq!(
+            parse(&called(BINDING, start)),
+            Some(PageMessage::Zoom {
+                ratio: 1.75,
+                start: true
+            })
+        );
+        let zoom = r#"{"t":"zoom","dpr":1.925,"start":false}"#;
         assert_eq!(
             parse(&called(BINDING, zoom)),
-            Some(PageMessage::Zoom(1.925))
+            Some(PageMessage::Zoom {
+                ratio: 1.925,
+                start: false
+            })
         );
+        assert!(page_script().contains("start = false"));
         let bad = r#"{"t":"zoom","dpr":"big"}"#;
         assert_eq!(parse(&called(BINDING, bad)), None);
     }

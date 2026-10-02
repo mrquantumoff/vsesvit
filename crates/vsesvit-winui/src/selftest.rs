@@ -33,7 +33,7 @@ use crate::report::expected;
 use crate::shortcuts::Command;
 use crate::tab::{Tab, TabId};
 use crate::window::BrowserWindow;
-use crate::{app, engine, exec, xaml};
+use crate::{app, engine, exec, xaml, zoom};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// WebView2 validates and registers an extension on first load.
@@ -43,6 +43,8 @@ const NETWORK_TIMEOUT: Duration = Duration::from_secs(240);
 const POLL: Duration = Duration::from_millis(100);
 const FIXTURE_TITLE: &str = "Vsesvit fixture";
 const PAGE2_TITLE: &str = "Vsesvit fixture 2";
+/// A page on no site, whose zoom is remembered for none.
+const OFF_THE_WEB: &str = "data:text/html,<title>Off the web</title>";
 /// What the fixture server sends for `/download.bin`.
 const DOWNLOAD_FIXTURE: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/site/download.bin"));
@@ -432,6 +434,69 @@ async fn checks(
     })
     .await;
 
+    check(report, "zoom_is_remembered_per_site", DEFAULT_TIMEOUT, async |p| {
+        let page2 = server.url("/page2.html");
+        let remembered = |url: &Url| browser.core(|c| c.site_zoom().get(url)).unwrap_or(-1.0);
+        let scale = window.scale();
+        let mut seen = Vec::new();
+
+        load(&tab, index.as_str(), p).await;
+        emulate_zoom(&tab, scale, Some(1.25)).await?;
+        until(p, |p| {
+            let (shown, stored) = (tab.state().zoom, remembered(&index));
+            p.observe(format!("zoomed to {} on {index}, remembered {stored}", shown.label()));
+            (shown == zoom::Level(125) && stored == 1.25).then_some(())
+        })
+        .await;
+        seen.push("125% on index.html remembered for the site".to_owned());
+
+        load(&tab, page2.as_str(), p).await;
+        let same_site = (remembered(&page2), tab.wanted_zoom());
+        seen.push(format!("page2.html: remembered {}, wants {:?}", same_site.0, same_site.1));
+
+        // A page off the web: back at 100% there, which is remembered for no site.
+        load(&tab, OFF_THE_WEB, p).await;
+        emulate_zoom(&tab, scale, None).await?;
+        until(p, |p| {
+            p.observe(format!("off the web at {}", tab.state().zoom.label()));
+            tab.state().zoom.is_default().then_some(())
+        })
+        .await;
+        let kept = remembered(&index);
+        seen.push(format!("100% off the web left the site at {kept}"));
+
+        // The site's page starts at 100% and asks for its site's level; a scripted run sends
+        // no key presses, so it stays asking.
+        load(&tab, index.as_str(), p).await;
+        let wanted = until(p, |p| {
+            p.observe(format!("index.html at {}, wants {:?}", tab.state().zoom.label(), tab.wanted_zoom()));
+            tab.wanted_zoom()
+        })
+        .await;
+        seen.push(format!("index.html opened at {}, wants {}", tab.state().zoom.label(), wanted.label()));
+
+        // Back to 100% forgets the site.
+        emulate_zoom(&tab, scale, Some(1.25)).await?;
+        until(p, |_| (tab.state().zoom == zoom::Level(125)).then_some(())).await;
+        emulate_zoom(&tab, scale, None).await?;
+        until(p, |p| {
+            let stored = remembered(&index);
+            p.observe(format!("at {}, remembered {stored}", tab.state().zoom.label()));
+            (tab.state().zoom.is_default() && stored == 1.0).then_some(())
+        })
+        .await;
+        load(&tab, page2.as_str(), p).await;
+        let after_reset = (remembered(&page2), tab.wanted_zoom());
+        seen.push(format!("reset forgot it: page2.html remembered {}, wants {:?}", after_reset.0, after_reset.1));
+        load(&tab, index.as_str(), p).await;
+
+        let detail = seen.join("; ");
+        (same_site == (1.25, None) && kept == 1.25 && wanted == zoom::Level(125) && after_reset == (1.0, None))
+            .then_some(detail.clone())
+            .ok_or(detail)
+    })
+    .await;
+
     check(report, "popup", DEFAULT_TIMEOUT, async |p| {
         let action = until(p, |p| {
             let actions = browser.extension_actions();
@@ -731,6 +796,37 @@ fn restore_shortcuts(window: &BrowserWindow, browser: &Browser) {
     if browser.core(|c| c.prefs().keymap()) != vsesvit_core::shortcuts::Keymap::default() {
         browser.edit_keymap(vsesvit_core::shortcuts::Keymap::reset_all);
     }
+}
+
+/// Navigates `tab` to `url`, unless it is there, and waits until it settles there.
+async fn load(tab: &Rc<Tab>, url: &str, probe: &Probe) {
+    if tab.state().url != url {
+        tab.navigate(url);
+    }
+    until(probe, |p| {
+        let s = tab.state();
+        p.observe(format!("loading {url}: at {} loading={}", s.url, s.loading()));
+        (s.url == url && !s.loading()).then_some(())
+    })
+    .await;
+}
+
+/// Emulates the page's pixel ratio at `factor` times the window's scale, which is what zoom
+/// changes, or ends that with `None`, and fires the resize a real zoom brings. A scripted run
+/// sends no OS input, so it cannot zoom as a person would.
+async fn emulate_zoom(tab: &Tab, scale: f64, factor: Option<f64>) -> Result<(), String> {
+    let (method, params) = match factor {
+        Some(factor) => (
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({ "width": 0, "height": 0, "deviceScaleFactor": scale * factor, "mobile": false }),
+        ),
+        None => ("Emulation.clearDeviceMetricsOverride", serde_json::json!({})),
+    };
+    tab.devtools(method, &params.to_string())
+        .await
+        .map_err(|e| format!("{method}: {e}"))?;
+    eval(tab, "dispatchEvent(new Event('resize')), 0").await?;
+    Ok(())
 }
 
 /// A tab's engine view exists and its first navigation has settled.

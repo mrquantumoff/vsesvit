@@ -600,6 +600,7 @@ impl BrowserWindow {
             self.address.replace(Address::Page(String::new()));
             if let Some(tab) = &active {
                 tab.mark_active();
+                self.take_to_site_zoom(tab);
             }
             if let Some(browser) = self.browser() {
                 browser.session_changed();
@@ -777,8 +778,35 @@ impl BrowserWindow {
     /// A button of the zoom bubble.
     pub(super) fn zoom_clicked(&self, step: zoom::Step) {
         match self.active_tab() {
-            Some(tab) if self.is_foreground() => tab.zoom(step),
+            Some(tab) if self.is_foreground() => tab.zoom(vec![step]),
             _ => log::info!("zoom {step:?}: the window is not in the foreground"),
+        }
+    }
+
+    /// Takes the selected tab's page to the zoom remembered for its site
+    /// ([`Tab::wanted_zoom`]) with the key presses a person would use: only in the foreground
+    /// window, never in scripted runs, which send no OS input, and never while the user types
+    /// in the address box, which the presses would take the focus from.
+    pub(crate) fn take_to_site_zoom(&self, tab: &Tab) {
+        let interactive = self
+            .browser()
+            .is_some_and(|b| b.config().mode.is_interactive());
+        let selected = self.active_tab().is_some_and(|a| a.id == tab.id);
+        if !interactive
+            || !selected
+            || tab.wanted_zoom().is_none()
+            || self.in_pip(tab.id)
+            || self.address_focused.get()
+            || !self.is_foreground()
+        {
+            return;
+        }
+        if let Some(level) = tab.take_wanted_zoom() {
+            let steps = zoom::steps(tab.state().zoom, level);
+            log::debug!("tab {}: to its site's zoom {}", tab.id, level.label());
+            if !steps.is_empty() {
+                tab.zoom(steps);
+            }
         }
     }
 
