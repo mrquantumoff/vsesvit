@@ -448,6 +448,12 @@ fn wrapped(text: &str, classes: &[&str]) -> gtk::Label {
 
 // The site-info section.
 
+/// Whether Linux lists `permission`'s setting. It has no picture-in-picture, so that setting,
+/// synced from Windows, is neither shown nor offered here.
+pub(crate) fn listed(permission: Permission) -> bool {
+    permission != Permission::PictureInPicture
+}
+
 /// The Permissions section for `tab`'s page: a row for every permission stored for its
 /// site, granted this time or in use. `None` when there is none.
 pub(crate) fn site_info_section(browser: &Browser, tab: &Tab) -> Option<gtk::Box> {
@@ -461,7 +467,8 @@ fn fill_section(section: &gtk::Box, browser: &Browser, tab: &Tab) {
         section.remove(&child);
     }
     let origin = origin_of(tab.committed_uri().as_deref());
-    let stored = origin.as_ref().map(|o| browser.core().borrow_mut().site_permissions().for_site(o)).unwrap_or_default();
+    let mut stored = origin.as_ref().map(|o| browser.core().borrow_mut().site_permissions().for_site(o)).unwrap_or_default();
+    stored.retain(|&(permission, _)| listed(permission));
     let granted: Vec<Permission> = {
         let state = tab.permissions().borrow();
         state.grants.granted().filter(|&p| state.grants.allows(origin.as_ref(), p)).collect()
@@ -498,8 +505,9 @@ fn fill_section(section: &gtk::Box, browser: &Browser, tab: &Tab) {
     }
 }
 
-/// "Reset permissions": every setting of the site back to Ask, and this tab's grants ended, a
-/// screen share allowed this time with them.
+/// "Reset permissions": every setting of the site back to Ask (and picture-in-picture, which is
+/// not listed here, back to blocked), and this tab's grants ended, a screen share allowed this
+/// time with them.
 fn reset_site(browser: &Browser, tab: &Tab, origin: &Origin) {
     tab.permissions().borrow_mut().grants = TabGrants::default();
     if capturing(tab.web_view()).screen {
@@ -985,5 +993,37 @@ mod tests {
         let origin = origin_of(requesting_document(&tab).as_deref());
         window.destroy();
         assert_eq!(origin, Origin::parse(&shown.url("/")));
+    }
+
+    #[gtk::test]
+    fn site_info_leaves_out_picture_in_picture() {
+        use crate::test_support::{Reply, Server, browser, wait_until};
+        use crate::window::{BrowserWindow, Focus};
+
+        fn labels(widget: &gtk::Widget) -> Vec<String> {
+            let mut found: Vec<String> = widget.downcast_ref::<gtk::Label>().map(|l| l.text().to_string()).into_iter().collect();
+            for child in std::iter::successors(widget.first_child(), |child| child.next_sibling()) {
+                found.extend(labels(&child));
+            }
+            found
+        }
+
+        let server = Server::start("127.0.0.1", |_| Reply::Page("Video"));
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let url = server.url("/");
+        let tab = window.open_tab(Some(&url), None, Focus::Foreground);
+        wait_until("the page to commit", || tab.committed_uri().as_deref() == Some(url.as_str()));
+        let origin = Origin::parse(&url).unwrap();
+        let set = |permission, setting| browser.core().borrow_mut().site_permissions().set(&origin, permission, setting).unwrap();
+        set(Permission::PictureInPicture, Some(Setting::Allow));
+        let only_pip = site_info_section(&browser, &tab).is_none();
+        set(Permission::Location, Some(Setting::Block));
+        let shown = site_info_section(&browser, &tab).map(|section| labels(section.upcast_ref())).unwrap_or_default();
+        window.destroy();
+
+        assert!(only_pip, "a section with nothing Linux lists is left out");
+        assert!(shown.iter().any(|t| t == "Location"), "site info shows {shown:?}");
+        assert!(!shown.iter().any(|t| t == "Picture-in-picture"), "site info shows {shown:?}");
     }
 }

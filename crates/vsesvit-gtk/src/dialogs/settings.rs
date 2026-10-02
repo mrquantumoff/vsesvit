@@ -595,7 +595,8 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
     page("privacy", "Privacy", "security-high-symbolic", &[popups, permissions, data])
 }
 
-/// Every stored site setting, by site, each with its choice and a way back to asking.
+/// Every stored site setting Linux lists ([`permissions::listed`]), by site, each with its
+/// choice and a way back to asking.
 fn site_permissions_page(browser: &Browser) -> adw::NavigationPage {
     let content = adw::Bin::new();
     fill_site_permissions(&content, browser);
@@ -606,7 +607,11 @@ fn site_permissions_page(browser: &Browser) -> adw::NavigationPage {
 }
 
 fn fill_site_permissions(content: &adw::Bin, browser: &Browser) {
-    let sites = browser.core().borrow_mut().site_permissions().by_site();
+    let mut sites = browser.core().borrow_mut().site_permissions().by_site();
+    for site in &mut sites {
+        site.settings.retain(|&(permission, _)| permissions::listed(permission));
+    }
+    sites.retain(|site| !site.settings.is_empty());
     if sites.is_empty() {
         let empty = adw::StatusPage::builder()
             .icon_name("security-high-symbolic")
@@ -661,8 +666,8 @@ fn site_setting_row(content: &adw::Bin, browser: &Browser, origin: &Origin, perm
     row
 }
 
-/// `None` goes back to asking. The list is rebuilt once the row that changed has finished
-/// emitting.
+/// `None` removes the setting, so the site asks again: every permission listed here is one
+/// sites ask for. The list is rebuilt once the row that changed has finished emitting.
 fn change_site_setting(content: &adw::Bin, browser: &Browser, origin: &Origin, permission: Permission, setting: Option<Setting>) {
     if let Err(e) = browser.core().borrow_mut().site_permissions().set(origin, permission, setting) {
         log::warn!("site permissions: {e}");
@@ -971,5 +976,25 @@ mod tests {
         let shown = shown_text(row.upcast_ref());
         assert!(shown.iter().any(|text| text == folder), "the row shows {shown:?}");
         window.destroy();
+    }
+
+    #[gtk::test]
+    fn picture_in_picture_synced_from_windows_is_not_listed() {
+        let browser = crate::test_support::browser();
+        let video = Origin::parse("https://video.example").unwrap();
+        let set = |permission, setting| browser.core().borrow_mut().site_permissions().set(&video, permission, setting).unwrap();
+        set(Permission::PictureInPicture, Some(Setting::Allow));
+        set(Permission::Location, Some(Setting::Block));
+        let content = adw::Bin::new();
+        fill_site_permissions(&content, &browser);
+        let with_location = shown_text(content.upcast_ref());
+        set(Permission::Location, None);
+        fill_site_permissions(&content, &browser);
+        let only_pip = shown_text(content.upcast_ref());
+        set(Permission::PictureInPicture, None);
+
+        assert!(with_location.iter().any(|t| t == "Location"), "the list shows {with_location:?}");
+        assert!(!with_location.iter().any(|t| t == "Picture-in-picture"), "the list shows {with_location:?}");
+        assert!(only_pip.iter().any(|t| t == "No Site Permissions"), "the list shows {only_pip:?}");
     }
 }
