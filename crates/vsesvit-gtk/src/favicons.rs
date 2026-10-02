@@ -24,6 +24,10 @@ pub(crate) fn stored(profile: &mut Profile, url: &Url) -> Option<gdk::Texture> {
 /// Keeps `icon` as the icon of the page at `uri`. Returns whether the stored icon changed.
 pub(crate) fn record(profile: &mut Profile, uri: &str, icon: &gdk::Texture) -> bool {
     let Ok(url) = Url::parse(uri) else { return false };
+    // Most pages are not bookmarked: they cost no scale or encode.
+    if !profile.favicons().wanted(&url) {
+        return false;
+    }
     match profile.favicons().record(&url, &fitted(icon).save_to_png_bytes()) {
         Ok(changed) => changed,
         Err(e) => {

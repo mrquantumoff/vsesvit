@@ -77,6 +77,12 @@ impl Favicons<'_> {
         store(&self.p.conn, &self.p.bookmarks.tree, now, page, png)
     }
 
+    /// Whether [`Favicons::record`] would keep an icon of `page`: the page or its site is
+    /// bookmarked. A shell asks first, so it encodes no icon that would be dropped.
+    pub fn wanted(&self, page: &Url) -> bool {
+        bookmarked(&self.p.bookmarks.tree, page).is_some()
+    }
+
     /// Bookmarked pages with no stored icon for the page or its site, one per origin, skipping
     /// origins that failed within [`RETRY_AFTER_MS`]. At most `limit`. Bookmarks bar items come
     /// first, then the other roots, then each level of folders below them.
@@ -198,14 +204,19 @@ impl Favicons<'_> {
     }
 }
 
+/// `None` when neither `page` nor its site is bookmarked, else whether the page itself is.
+fn bookmarked(tree: &Tree, page: &Url) -> Option<bool> {
+    let page_bookmarked = !tree.ids_for_url(page).is_empty();
+    (page_bookmarked || origin(page).is_some_and(|o| tree.has_origin(&o))).then_some(page_bookmarked)
+}
+
 /// [`Favicons::record`] on a connection or an open transaction.
 fn store(conn: &Connection, tree: &Tree, now_ms: i64, page: &Url, png: &[u8]) -> Result<bool, Error> {
-    let site = origin(page);
-    let page_bookmarked = !tree.ids_for_url(page).is_empty();
-    let site_bookmarked = site.as_deref().is_some_and(|o| tree.has_origin(o));
-    if !(page_bookmarked || site_bookmarked) || png.is_empty() || png.len() > MAX_BYTES {
+    let Some(page_bookmarked) = bookmarked(tree, page) else { return Ok(false) };
+    if png.is_empty() || png.len() > MAX_BYTES {
         return Ok(false);
     }
+    let site = origin(page);
     // A page that is not bookmarked itself only stands in for its site: one row per site, keyed
     // by the bare origin (`https://example.com`), which no page's URL equals.
     let key = match &site {
@@ -223,4 +234,26 @@ fn store(conn: &Connection, tree: &Tree, now_ms: i64, page: &Url, png: &[u8]) ->
         params![key, site, png, now_ms],
     )?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::bookmarks::{BookmarkId, InsertAt};
+    use crate::{OpenOptions, Profile, Url};
+
+    #[test]
+    fn only_icons_of_bookmarked_pages_and_sites_are_wanted() {
+        let dir = std::env::temp_dir().join(format!("vsesvit-favicons-wanted-{}", uuid::Uuid::new_v4().simple()));
+        let mut p = Profile::open(&dir, OpenOptions::default()).unwrap();
+        let url = |s: &str| Url::parse(s).unwrap();
+        let page = url("https://docs.example/a");
+        let wanted_before = p.favicons().wanted(&page);
+        p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Docs", &page).unwrap();
+        let wanted = [&page, &url("https://docs.example/other?q"), &url("https://elsewhere.example/a"), &url("http://docs.example/a")]
+            .map(|u| p.favicons().wanted(u));
+        drop(p);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!wanted_before, "nothing is bookmarked yet");
+        assert_eq!(wanted, [true, true, false, false], "the page, its site, another site, another scheme");
+    }
 }
