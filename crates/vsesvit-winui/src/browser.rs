@@ -798,12 +798,7 @@ impl Browser {
         for window in self.windows() {
             window.set_bookmarks_bar(&items);
         }
-        let live: Vec<Rc<dyn Fn()>> = {
-            let mut listeners = self.favicon_listeners.borrow_mut();
-            listeners.retain(|l| l.strong_count() > 0);
-            listeners.iter().filter_map(Weak::upgrade).collect()
-        };
-        for listener in live {
+        for listener in crate::sync::live(&self.favicon_listeners) {
             listener();
         }
     }
