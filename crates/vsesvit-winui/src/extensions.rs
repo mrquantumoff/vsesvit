@@ -203,7 +203,9 @@ impl Browser {
                 });
             }
         };
-        let staged = staged.map_err(|e| e.to_string())?;
+        let staged = staged
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
         self.core(|p| p.extensions().commit(staged))
             .map_err(|e| e.to_string())
     }

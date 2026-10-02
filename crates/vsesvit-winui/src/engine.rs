@@ -211,7 +211,9 @@ pub(crate) async fn add_extension(
     dir: &Path,
 ) -> Result<EngineExtension> {
     let walked = dir.to_owned();
-    let longest = crate::exec::background(move || longest_relative_path(&walked)).await;
+    let longest = crate::exec::background(move || longest_relative_path(&walked))
+        .await
+        .map_err(std::io::Error::from)?;
     let path = engine_path(dir, longest);
     if path != dir.to_string_lossy() {
         log::info!("{} is long; the engine loads it as {path}", dir.display());

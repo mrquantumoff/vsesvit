@@ -767,6 +767,11 @@ impl Browser {
                 drop(browser);
                 let fetched = exec::background(move || FaviconFetch::new(pages).run()).await;
                 let Some(browser) = me.upgrade() else { break };
+                // The same pages would come back and fail the same way, so the preload stops.
+                let Ok(fetched) = fetched.inspect_err(|e| log::warn!("fetching icons: {e}")) else {
+                    browser.favicon_preload.set(Preload::Idle);
+                    break;
+                };
                 match browser.core(|p| p.favicons().commit_fetched(fetched)) {
                     Ok(true) => browser.favicons_arrived(),
                     Ok(false) => {}

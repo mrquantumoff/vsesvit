@@ -236,6 +236,12 @@ fn outcome(result: Result<Option<u64>, Error>) -> Option<Event> {
     }
 }
 
+impl From<exec::WorkerLost> for Error {
+    fn from(lost: exec::WorkerLost) -> Self {
+        Error::Profile(std::io::Error::from(lost).into())
+    }
+}
+
 fn sign_in_failed(e: &Error) -> Event {
     Event::SignInFailed(match e {
         Error::Cancelled => None,
@@ -320,7 +326,7 @@ async fn rounds(browser: &Weak<Browser>) -> Result<Option<u64>, Error> {
             })?;
             (round, b.sync().http.clone())
         };
-        let exchanged = exec::background(move || round.run(&http)).await;
+        let exchanged = exec::background(move || round.run(&http)).await?;
         let b = browser.upgrade().ok_or(Error::SignedOut)?;
         let finished = b.core(|p| exchanged.finish(&mut p.sync()));
         account = finished.account;
@@ -358,7 +364,9 @@ pub(crate) fn sign_in(
     let browser = Rc::downgrade(browser);
     exec::spawn(async move {
         let h = http.clone();
-        let started = exec::background(move || SignIn::start(&h, &server)).await;
+        let started = exec::background(move || SignIn::start(&h, &server))
+            .await
+            .unwrap_or_else(|lost| Err(lost.into()));
         let Some(b) = latest(&browser, attempt) else {
             return;
         };
@@ -381,7 +389,9 @@ pub(crate) fn sign_in(
         }
         opened();
         drop(b);
-        let finished = exec::background(move || pending.finish(&http)).await;
+        let finished = exec::background(move || pending.finish(&http))
+            .await
+            .unwrap_or_else(|lost| Err(lost.into()));
         let Some(b) = latest(&browser, attempt) else {
             return;
         };
@@ -440,7 +450,9 @@ pub(crate) fn sign_out(browser: &Browser) {
     if let Some(account) = account {
         let http = browser.sync().http.clone();
         exec::spawn(async move {
-            exec::background(move || account.revoke(&http)).await;
+            if let Err(e) = exec::background(move || account.revoke(&http)).await {
+                log::warn!("revoking the sync session: {e}");
+            }
         });
     }
 }
@@ -516,7 +528,9 @@ pub(crate) fn delete_server_data(
         let http = b.sync().http.clone();
         drop(b);
         let deleted = match account {
-            Ok(Some(account)) => exec::background(move || account.delete_server_data(&http)).await,
+            Ok(Some(account)) => exec::background(move || account.delete_server_data(&http))
+                .await
+                .unwrap_or_else(|lost| Err(lost.into())),
             Ok(None) => Err(Error::SignedOut),
             Err(e) => Err(e),
         };

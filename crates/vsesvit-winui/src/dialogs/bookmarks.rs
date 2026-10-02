@@ -654,7 +654,8 @@ pub(crate) async fn import_bookmarks(
     from: &str,
     source: Source,
 ) -> String {
-    let text = match exec::background(move || source.read().map_err(|e| e.to_string())).await {
+    let read = exec::background(move || source.read().map_err(|e| e.to_string())).await;
+    let text = match read.unwrap_or_else(|lost| Err(lost.to_string())) {
         Err(e) => format!("Could not read {from}: {e}"),
         Ok(items) => match browser.core(|p| p.bookmarks().import_folder(folder, items)) {
             Ok(0) => format!("No bookmarks found in {from}."),

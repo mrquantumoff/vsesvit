@@ -183,27 +183,27 @@ pub(crate) async fn timeout<T>(limit: Duration, future: impl Future<Output = T>)
 }
 
 /// Runs `work` on a new worker thread; the returned future completes on the UI thread with its
-/// result. Nothing but the closure and its result crosses threads.
+/// result, or with [`WorkerLost`] if the thread could not start or `work` panicked. Nothing but
+/// the closure and its result crosses threads.
 pub(crate) fn background<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Background<T> {
     let shared = Arc::new(Mutex::new(Handoff {
         result: None,
+        lost: false,
         waker: None,
     }));
-    let worker = shared.clone();
+    // Moved into the worker, so a closure dropped unrun (spawn failed) or unwinding (panic)
+    // still completes the future.
+    let deliver = Deliver {
+        shared: shared.clone(),
+        result: None,
+    };
     let spawned = std::thread::Builder::new()
         .name("vsesvit-worker".into())
         .spawn(move || {
-            let result = work();
-            let waker = {
-                let mut handoff = worker.lock().unwrap_or_else(PoisonError::into_inner);
-                handoff.result = Some(result);
-                handoff.waker.take()
-            };
-            if let Some(waker) = waker {
-                waker.wake();
-            }
+            let mut deliver = deliver;
+            deliver.result = Some(work());
         });
     if let Err(e) = spawned {
         log::error!("worker thread: {e}");
@@ -211,9 +211,49 @@ pub(crate) fn background<T: Send + 'static>(
     Background { shared }
 }
 
+/// A [`background`] worker ended without a result: its thread could not start or it panicked.
+#[derive(Debug)]
+pub(crate) struct WorkerLost;
+
+impl std::fmt::Display for WorkerLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the worker thread stopped without finishing")
+    }
+}
+
+impl std::error::Error for WorkerLost {}
+
+impl From<WorkerLost> for std::io::Error {
+    fn from(lost: WorkerLost) -> Self {
+        std::io::Error::other(lost)
+    }
+}
+
 struct Handoff<T> {
     result: Option<T>,
+    lost: bool,
     waker: Option<Waker>,
+}
+
+/// The worker's end of a [`Handoff`]: dropping it hands over `result`, or marks the work lost
+/// when there is none.
+struct Deliver<T> {
+    shared: Arc<Mutex<Handoff<T>>>,
+    result: Option<T>,
+}
+
+impl<T> Drop for Deliver<T> {
+    fn drop(&mut self) {
+        let waker = {
+            let mut handoff = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+            handoff.lost = self.result.is_none();
+            handoff.result = self.result.take();
+            handoff.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
 }
 
 pub(crate) struct Background<T> {
@@ -221,17 +261,18 @@ pub(crate) struct Background<T> {
 }
 
 impl<T> Future for Background<T> {
-    type Output = T;
+    type Output = Result<T, WorkerLost>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut handoff = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
-        match handoff.result.take() {
-            Some(result) => Poll::Ready(result),
-            None => {
-                handoff.waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
+        if let Some(result) = handoff.result.take() {
+            return Poll::Ready(Ok(result));
         }
+        if handoff.lost {
+            return Poll::Ready(Err(WorkerLost));
+        }
+        handoff.waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 
@@ -260,5 +301,33 @@ pub(crate) async fn wait_for<T>(
             return None;
         }
         sleep(step).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wait<T>(mut future: Background<T>) -> Option<Result<T, WorkerLost>> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut cx = Context::from_waker(Waker::noop());
+        while Instant::now() < deadline {
+            if let Poll::Ready(output) = Pin::new(&mut future).poll(&mut cx) {
+                return Some(output);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+
+    #[test]
+    fn a_panicking_worker_completes_its_future_as_lost() {
+        let output = wait(background(|| -> u32 { panic!("worker failed") }));
+        assert!(matches!(output, Some(Err(WorkerLost))), "{output:?}");
+    }
+
+    #[test]
+    fn a_finished_worker_completes_its_future_with_the_result() {
+        assert!(matches!(wait(background(|| 7_u32)), Some(Ok(7))));
     }
 }

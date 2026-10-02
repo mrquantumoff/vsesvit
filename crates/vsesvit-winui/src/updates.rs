@@ -495,7 +495,9 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
         return;
     };
 
-    let checked = exec::background(move || updater.check(channel.name())).await;
+    let checked = exec::background(move || updater.check(channel.name()))
+        .await
+        .unwrap_or_else(|lost| Err(std::io::Error::from(lost).into()));
     // The new channel's check shares the updates folder, so a check for a channel the user has
     // left neither cleans it nor downloads into it.
     if !browser
@@ -517,7 +519,9 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
         }
         Ok(None) => {
             log::info!("updates: Vsesvit {} is current", env!("CARGO_PKG_VERSION"));
-            exec::background(move || remove_stale(&dir, None)).await;
+            if let Err(e) = exec::background(move || remove_stale(&dir, None)).await {
+                log::debug!("updates: cleaning: {e}");
+            }
             with(&browser, switches, |b| apply(b, Event::UpToDate));
             return;
         }
@@ -552,7 +556,8 @@ pub(crate) async fn check(browser: Weak<Browser>, trigger: Trigger) {
             }
         })
     })
-    .await;
+    .await
+    .unwrap_or_else(|lost| Err(std::io::Error::from(lost).into()));
     match downloaded {
         Ok(update) => {
             log::info!("updates: {} is ready", update.path().display());
