@@ -26,11 +26,6 @@ pub struct TabInfo {
 }
 
 impl TabInfo {
-    /// `chrome.tabs.Tab` as an extension with access to the tab's contents sees it.
-    pub fn to_json(&self) -> Value {
-        self.to_json_for(true)
-    }
-
     /// `chrome.tabs.Tab`. Without `sees_content` (no `tabs` permission and no host
     /// access to the tab's URL) `url` and `title` are left out, as Chrome does.
     pub fn to_json_for(&self, sees_content: bool) -> Value {
@@ -136,10 +131,11 @@ mod tests {
 
     #[test]
     fn tab_json_and_ids() {
-        let v = tab().to_json();
+        let v = tab().to_json_for(true);
         assert_eq!(v["id"], 7);
         assert_eq!(v["active"], true);
         assert_eq!(v["url"], "http://127.0.0.1:8080/index.html");
+        assert_eq!(v["title"], "Vsesvit fixture");
         assert_eq!(TabId::from_json(&json!(7)), Some(TabId(7)));
         assert_eq!(TabId::from_json(&json!("7")), None);
         assert_eq!(TabId::from_json(&json!(-1)), None);
@@ -157,6 +153,5 @@ mod tests {
         assert!(t.matches_query(&json!({"active": true}), false));
         assert!(!t.matches_query(&json!({"url": "http://127.0.0.1/*"}), false));
         assert!(!t.matches_query(&json!({"title": "Vsesvit*"}), false));
-        assert_eq!(t.to_json(), t.to_json_for(true));
     }
 }
