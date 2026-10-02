@@ -2,7 +2,6 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -426,18 +425,10 @@ fn fnv1a(bytes: &[u8], seed: u64) -> u64 {
     bytes.iter().fold(seed, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
-/// 128 bits from the kernel; a per-process hash of the clock if `/dev/urandom` is
-/// somehow unavailable.
+/// 128 bits from the OS random source, in hex.
 fn random_token() -> String {
     let mut bytes = [0u8; 16];
-    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).is_err() {
-        use std::hash::{BuildHasher, Hasher};
-        let mut hasher = std::hash::RandomState::new().build_hasher();
-        hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
-        bytes[..8].copy_from_slice(&hasher.finish().to_le_bytes());
-        hasher.write_u32(std::process::id());
-        bytes[8..].copy_from_slice(&hasher.finish().to_le_bytes());
-    }
+    getrandom::fill(&mut bytes).expect("the OS random source works");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -488,6 +479,13 @@ mod tests {
 
     fn manifest(json: &str) -> Manifest {
         Manifest::parse(json, &|_| None).expect("test manifest parses")
+    }
+
+    #[test]
+    fn a_page_token_is_32_hex_digits_and_fresh() {
+        let token = random_token();
+        assert!(token.len() == 32 && token.bytes().all(|b| b.is_ascii_hexdigit()), "{token}");
+        assert_ne!(token, random_token());
     }
 
     #[test]

@@ -17,6 +17,7 @@ url = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+getrandom = "0.4"
 gtk = { workspace = true }
 webkit = { workspace = true }
 javascriptcore = { workspace = true }

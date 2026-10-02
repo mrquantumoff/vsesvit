@@ -3428,6 +3428,7 @@ dependencies = [
 name = "vsesvit-webext"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "gtk4",
  "javascriptcore6",
  "log",
