@@ -6,8 +6,13 @@
 //! WebKitGTK finds `WebKitWebProcess` and friends through a directory compiled into
 //! `libwebkitgtk-6.0.so` (`PKGLIBEXECDIR` in `ProcessExecutablePathGLib.cpp`; the
 //! `WEBKIT_EXEC_PATH` override exists only in developer-mode builds). Like Tauri's bundler, we
-//! rewrite every `/usr/...` string in the library to `././...` and `AppRun` runs the browser
-//! from `$APPDIR/usr`, so the paths resolve inside the image.
+//! rewrite that directory in the library to a relative one and `AppRun` runs the browser from
+//! `$APPDIR/usr`, so the helpers resolve inside the image. The relative directory starts with
+//! `./wk`, a link to `usr` itself, rather than `././`, because the web process sandbox binds it
+//! at the same path under its own root: `/wk/...` can be made there, `/lib/...` cannot. Inside
+//! the sandbox bubblewrap keeps the working directory, which the browser adds to it with
+//! `$APPDIR`. Every other path stays, among them `/usr/bin/bwrap` and the host directories the
+//! sandbox is built from.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
@@ -105,6 +110,7 @@ pub fn build(ctx: &Ctx, stage: &Stage, artifact: &Path) -> Result {
     util::copy(&sysroot.join("usr/share/icons/hicolor/index.theme"), &appdir.join("usr/share/icons/hicolor/index.theme"))?;
     util::run(Command::new("gio-querymodules").arg(appdir.join(LIBDIR).join("gio/modules")))?;
     patch_webkit_paths(&appdir.join(LIBDIR).join("libwebkitgtk-6.0.so.4"))?;
+    util::symlink(Path::new("."), &appdir.join("usr").join(HELPERS_LINK))?;
 
     let apprun = appdir.join("AppRun");
     util::copy(&super::packaging_linux(ctx).join("appimage/AppRun"), &apprun)?;
@@ -265,26 +271,41 @@ impl<'a> Bundle<'a> {
     }
 }
 
-/// Rewrites every C string starting with `/usr/` to start with `././`, keeping the length.
 fn patch_webkit_paths(library: &Path) -> Result {
     let mut data = util::read(library)?;
-    let mut patched = Vec::new();
-    let mut at = 0;
-    while let Some(found) = find(&data[at..], b"/usr/") {
-        let start = at + found;
-        at = start + 1;
-        if start > 0 && data[start - 1] != 0 {
-            continue;
-        }
-        let end = start + data[start..].iter().position(|b| *b == 0).unwrap_or(0);
-        patched.push(String::from_utf8_lossy(&data[start..end]).into_owned());
-        data[start..start + 4].copy_from_slice(b"././");
-    }
+    let patched = relocate(&mut data);
     if patched.is_empty() {
-        return Err(format!("{}: no /usr paths to relocate; WebKitGTK's layout changed", library.display()));
+        return Err(format!("{}: no helper directory to relocate; WebKitGTK's layout changed", library.display()));
     }
     println!("relocated in {}: {}", library.display(), patched.join(" "));
     util::write(library, data)
+}
+
+/// `usr/wk` in the image links to `usr`, so `./wk/lib/...` from `usr` is `usr/lib/...`.
+const HELPERS_LINK: &str = "wk";
+
+/// Rewrites the C strings naming WebKit's helper directory (`PKGLIBEXECDIR`) or a path in it
+/// to start with `./wk` instead of `/usr`, keeping the length, so they resolve inside the
+/// image. Every other path stays: the sandbox needs the host's `/usr/bin/bwrap` and
+/// `/usr/bin/xdg-dbus-proxy` and binds the host's `/usr/lib`, `/usr/share`, ... into itself, and
+/// the data directories name files the image does not ship. Returns the strings it rewrote, as
+/// they were.
+fn relocate(data: &mut [u8]) -> Vec<String> {
+    let helpers = format!("/{LIBDIR}/webkitgtk-6.0");
+    let mut patched = Vec::new();
+    let mut at = 0;
+    while let Some(found) = find(&data[at..], helpers.as_bytes()) {
+        let start = at + found;
+        let end = start + data[start..].iter().position(|b| *b == 0).unwrap_or(data.len() - start);
+        at = start + 1;
+        let path = &data[start..end];
+        if (start > 0 && data[start - 1] != 0) || !matches!(path.get(helpers.len()), None | Some(b'/')) {
+            continue;
+        }
+        patched.push(String::from_utf8_lossy(path).into_owned());
+        data[start..start + 4].copy_from_slice(format!("./{HELPERS_LINK}").as_bytes());
+    }
+    patched
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -294,6 +315,34 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_helper_directory_is_relocated_and_the_sandbox_paths_stay() {
+        let kept = [
+            "/usr/bin/bwrap",
+            "/usr/bin/xdg-dbus-proxy",
+            "/usr/bin",
+            "/usr/lib",
+            "/usr/lib64",
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/local/lib",
+            "/usr/local/lib64",
+            "/usr/local/share",
+            "/usr/share",
+            "/usr/share/locale",
+            "/usr/libexec/gstreamer-1.0/gst-plugin-scanner",
+            "/usr/lib/x86_64-linux-gnu/webkitgtk-6.0x",
+            "not/usr/lib/x86_64-linux-gnu/webkitgtk-6.0",
+        ];
+        let moved = ["/usr/lib/x86_64-linux-gnu/webkitgtk-6.0", "/usr/lib/x86_64-linux-gnu/webkitgtk-6.0/injected-bundle/"];
+        let strings: Vec<&str> = kept.iter().chain(&moved).copied().collect();
+        let mut data = format!("\0{}\0", strings.join("\0")).into_bytes();
+        assert_eq!(relocate(&mut data), moved);
+        let after = String::from_utf8(data).unwrap();
+        let after: Vec<&str> = after.trim_matches('\0').split('\0').collect();
+        assert_eq!(after[..kept.len()], kept);
+        assert_eq!(after[kept.len()..], ["./wk/lib/x86_64-linux-gnu/webkitgtk-6.0", "./wk/lib/x86_64-linux-gnu/webkitgtk-6.0/injected-bundle/"]);
+    }
 
     #[test]
     fn app_run_has_unix_line_endings() {

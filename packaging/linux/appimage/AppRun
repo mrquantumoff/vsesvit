@@ -1,8 +1,11 @@
 #!/bin/sh
-# Entry point of the Vsesvit AppImage. libwebkitgtk-6.0 was patched so its compiled-in
-# directories start with ././ instead of /usr, which resolve only from $APPDIR/usr; the
-# browser therefore runs from there, with path arguments made absolute first.
+# Entry point of the Vsesvit AppImage. libwebkitgtk-6.0 was patched so its helper directory
+# starts with ./wk instead of /usr (usr/wk links to usr), which resolves only from $APPDIR/usr;
+# the browser therefore runs from there, with path arguments made absolute first. The web
+# process sandbox keeps that working directory, and the browser adds $APPDIR to the sandbox, so
+# it must be this directory as resolved here, also in an extracted image started by hand.
 here="$(dirname "$(readlink -f "$0")")"
+export APPDIR="$here"
 lib="$here/usr/lib/x86_64-linux-gnu"
 
 export LD_LIBRARY_PATH="$lib:$here/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -11,10 +14,14 @@ export GSETTINGS_SCHEMA_DIR="$here/usr/share/glib-2.0/schemas"
 export GIO_MODULE_DIR="$lib/gio/modules"
 export GST_PLUGIN_SYSTEM_PATH_1_0="$lib/gstreamer-1.0"
 export GST_PLUGIN_SCANNER_1_0="$lib/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner"
-# The web process sandbox needs the host's bubblewrap at /usr/bin/bwrap, unprivileged user
-# namespaces and the WebKit libexec directory visible inside it; none of that holds for a
-# relocated image, so the sandbox is off, as it is in every webkit2gtk AppImage.
-export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+# The web process sandbox needs the host's bubblewrap at /usr/bin/bwrap and the namespaces it
+# creates, which some containers and hardened kernels refuse. WebKit cannot start a web process
+# there with the sandbox on, so it is turned off, with a warning; this is the check WebKit
+# itself makes inside podman.
+if ! /usr/bin/bwrap --ro-bind / / --proc /proc --dev /dev --unshare-all true 2>/dev/null; then
+  echo 'vsesvit: bubblewrap cannot sandbox here, so web pages run without the sandbox' >&2
+  export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+fi
 
 # Caches that must not be shared with a system GStreamer or gdk-pixbuf of another version. The
 # pixbuf loader cache holds absolute paths, so it is rewritten for the current mount point.

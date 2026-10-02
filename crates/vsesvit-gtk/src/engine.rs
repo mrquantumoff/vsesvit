@@ -3,6 +3,10 @@
 //! The settings object carries the preferences for pop-ups, scrolling and the GPU, so
 //! changing one reaches every open view at once.
 
+use std::path::PathBuf;
+use std::sync::Once;
+
+use gtk::glib;
 use vsesvit_core::Profile;
 use vsesvit_core::prefs::keys;
 
@@ -12,8 +16,25 @@ pub(crate) struct Engine {
     settings: webkit::Settings,
 }
 
+/// Lets the web process sandbox see the AppImage (`AppRun` sets `APPDIR`): its libraries,
+/// schemas and helpers, and the working directory the patched helper paths resolve against
+/// (`xtask/src/linux/appimage.rs`), plus the GStreamer registry and pixbuf loader cache `AppRun`
+/// writes. WebKit takes sandbox paths only before its first web process, and they hold for the
+/// whole process, so the first engine adds them.
+fn add_appimage_to_sandbox() {
+    static ADDED: Once = Once::new();
+    ADDED.call_once(|| {
+        let Some(appdir) = std::env::var_os("APPDIR") else { return };
+        let context = webkit::WebContext::default().expect("WebKit default web context");
+        for path in [PathBuf::from(appdir), glib::user_cache_dir().join("vsesvit/appimage")] {
+            context.add_path_to_sandbox(path, true);
+        }
+    });
+}
+
 impl Engine {
     pub(crate) fn new(profile: &mut Profile) -> Self {
+        add_appimage_to_sandbox();
         let paths = profile.paths();
         // WebKit takes C strings and silently falls back to its shared default
         // directories when given none, so a non-UTF-8 profile path is refused loudly.
