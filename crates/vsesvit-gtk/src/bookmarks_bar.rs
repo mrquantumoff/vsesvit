@@ -299,6 +299,7 @@ impl BookmarksBar {
     }
 
     /// The bar's button for `url`, if it has one.
+    #[cfg(any(test, feature = "self-test"))]
     pub(crate) fn button_for(&self, url: &str) -> Option<gtk::Button> {
         self.row
             .imp()
