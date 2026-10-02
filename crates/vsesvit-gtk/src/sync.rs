@@ -16,7 +16,7 @@ use vsesvit_core::Profile;
 use vsesvit_core::crdt::Seq;
 use vsesvit_core::prefs::keys;
 use vsesvit_sync::status::{Action, State};
-use vsesvit_sync::{Account, Error, Http, Round, SignIn};
+use vsesvit_sync::{Account, Error, Http, MAX_ROUNDS, Round, SignIn};
 
 use crate::browser::{self, Browser};
 use crate::window::Focus;
@@ -29,8 +29,6 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(60);
 const SYNC_SOON: Duration = Duration::from_secs(10);
 /// How long quitting waits for the final sync.
 const FINAL_SYNC_WAIT: Duration = Duration::from_secs(3);
-/// Rounds one sync runs at most; the next tick takes what is left.
-const MAX_ROUNDS: usize = 50;
 /// How long deleting the data on the server waits for a sync that is running.
 const DELETE_WAIT: Duration = Duration::from_secs(120);
 
@@ -185,7 +183,7 @@ impl Syncer {
     /// Rounds until neither side has more, each one's changes shown as it lands. `synced_at` is
     /// when the last round completed.
     async fn rounds(&self, synced_at: &mut Option<u64>) -> Result<(), Error> {
-        for _ in 0..MAX_ROUNDS {
+        for n in 1..=MAX_ROUNDS {
             let Some(browser) = self.browser() else { return Err(Error::SignedOut) };
             let Some(round) = gather(&mut browser.core().borrow_mut())? else { return Err(Error::SignedOut) };
             drop(browser);
@@ -198,8 +196,8 @@ impl Syncer {
                     *synced_at = finished.account.last_synced();
                     browser.sync_applied(&synced.report.changed);
                     // A refused upload waits for a later sync; it is what this one comes to.
-                    if !synced.again {
-                        return synced.refused.map_or(Ok(()), Err);
+                    if let Some(outcome) = synced.outcome(n) {
+                        return outcome;
                     }
                 }
                 // Signed out while the round ran, and maybe in again: the next round is the new

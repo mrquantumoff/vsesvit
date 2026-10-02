@@ -16,7 +16,7 @@
 //!
 //! // One sync, a few rounds.
 //! let mut account = Account::load(&mut profile.sync())?.unwrap();
-//! loop {
+//! for n in 1.. {
 //!     let types = profile.prefs().get(&keys::SYNC_TYPES);
 //!     let round = Round::gather(&mut profile.sync(), account, &types)?;  // UI
 //!     let exchanged = round.run(&http);                          // worker
@@ -24,7 +24,8 @@
 //!     account = finished.account;
 //!     let synced = finished.result?;
 //!     refresh_ui(&synced.report.changed);
-//!     if !synced.again { synced.refused.map_or(Ok(()), Err)?; break }
+//!     // At most MAX_ROUNDS; a refused upload waits for a later sync, and is what this one comes to.
+//!     if let Some(outcome) = synced.outcome(n) { outcome?; break }
 //! }
 //! ```
 //!
@@ -42,7 +43,7 @@ pub mod status;
 
 use std::time::Duration;
 
-pub use engine::{Account, Exchanged, Finished, Round, Synced};
+pub use engine::{Account, Exchanged, Finished, MAX_ROUNDS, Round, Synced};
 pub use auth::SignIn;
 
 pub fn now_secs() -> u64 {

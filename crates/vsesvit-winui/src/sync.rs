@@ -31,8 +31,6 @@ const CHANGE_GAP: Duration = Duration::from_secs(10);
 const SYNC_INTERVAL: Duration = Duration::from_secs(60);
 /// Quitting waits at most this long for the final sync.
 const FINAL_SYNC_WAIT: Duration = Duration::from_secs(3);
-/// One sync runs at most this many rounds while either side has more; the next sync goes on.
-const MAX_ROUNDS: usize = 50;
 
 /// What an open dialog runs after a sync applied records.
 pub(crate) type Applied = dyn Fn(&Changed);
@@ -352,14 +350,15 @@ async fn run(browser: Weak<Browser>, seq: Seq) {
     }
 }
 
-/// Rounds until neither side has more. `Ok` with when the last one completed.
+/// Rounds until neither side has more, at most `vsesvit_sync::MAX_ROUNDS`. `Ok` with when the
+/// last one completed.
 async fn rounds(browser: &Weak<Browser>) -> Result<Option<u64>, Error> {
     let b = browser.upgrade().ok_or(Error::SignedOut)?;
     let mut account = b
         .core(|p| Account::load(&mut p.sync()))?
         .ok_or(Error::SignedOut)?;
     drop(b);
-    for _ in 0..MAX_ROUNDS {
+    for n in 1.. {
         let (round, http) = {
             let b = browser.upgrade().ok_or(Error::SignedOut)?;
             let round = b.core(|p| {
@@ -378,12 +377,11 @@ async fn rounds(browser: &Weak<Browser>) -> Result<Option<u64>, Error> {
         let synced = finished.result?;
         b.sync_applied(&synced.report.changed, &site_settings);
         // A refused upload waits for a later sync; it is what this one comes to.
-        if !synced.again {
-            return synced.refused.map_or(Ok(account.last_synced()), Err);
+        if let Some(outcome) = synced.outcome(n) {
+            return outcome.map(|()| account.last_synced());
         }
     }
-    log::info!("sync: {MAX_ROUNDS} rounds; the next sync goes on");
-    Ok(account.last_synced())
+    unreachable!("the sync ends by its last round")
 }
 
 /// Signs in with the server the `sync.server` preference names: the provider's page opens in a

@@ -18,6 +18,8 @@ const STATE_KEY: &str = "account";
 const SESSION_KEY: &str = "account.session";
 /// Where protocol 1 kept the provider's tokens; cleared on sign-out.
 const OLD_TOKENS_KEY: &str = "account.tokens";
+/// Rounds one sync runs at most; the next sync takes what is left.
+pub const MAX_ROUNDS: usize = 50;
 
 /// A profile's sign-in to one sync server, with how far it has synced. Saved into the profile after
 /// every round: the session sealed by the profile's vault, the rest as plain JSON.
@@ -303,6 +305,21 @@ pub struct Synced {
     pub refused: Option<Error>,
 }
 
+impl Synced {
+    /// What the sync comes to after this round, its `round`th (counting from 1): `None` while it
+    /// goes on, as more waits on either side and fewer than [`MAX_ROUNDS`] ran; else the upload
+    /// the server refused, which waits for a later sync, or `Ok`.
+    pub fn outcome(self, round: usize) -> Option<Result<(), Error>> {
+        if self.again {
+            if round < MAX_ROUNDS {
+                return None;
+            }
+            log::info!("sync: {MAX_ROUNDS} rounds; the next sync goes on");
+        }
+        Some(self.refused.map_or(Ok(()), Err))
+    }
+}
+
 impl Exchanged {
     /// Applies the downloaded page, moves the cursors and saves the account. When the profile
     /// signed out (or in again) while the round ran, it changes nothing and says
@@ -373,6 +390,18 @@ mod tests {
 
     fn record(bytes: usize) -> Record {
         Record { kind: 1, id: "x".to_owned(), body: vec![0; bytes] }
+    }
+
+    #[test]
+    fn a_sync_that_runs_out_of_rounds_comes_to_the_refusal_still_waiting() {
+        let refused = || Some(Error::Server { status: 507, message: "full".to_owned() });
+        let round = |again, refused| Synced { report: ApplyReport::default(), again, refused };
+        assert!(round(true, refused()).outcome(1).is_none(), "more waits");
+        assert!(matches!(round(false, None).outcome(1), Some(Ok(()))));
+        assert!(matches!(round(false, refused()).outcome(1), Some(Err(Error::Server { status: 507, .. }))));
+        assert!(matches!(round(true, None).outcome(MAX_ROUNDS), Some(Ok(()))));
+        let last = round(true, refused()).outcome(MAX_ROUNDS);
+        assert!(matches!(last, Some(Err(Error::Server { status: 507, .. }))), "{last:?}");
     }
 
     #[test]
