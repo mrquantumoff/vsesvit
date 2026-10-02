@@ -3,11 +3,11 @@
 //! Both stores install through `chrome.webstorePrivate`, which WebView2 gives only the Chrome Web
 //! Store and cannot complete there (it has no install prompt, so the store waits forever).
 //! `js/store.js` replaces it in the stores' main world and sends each request as a DOM event. The
-//! shortcut script's isolated world forwards the event through its binding together with the host
-//! it runs on, which the page cannot fake. The host alone would let a plain-HTTP page that a
-//! network attacker serves under a store's name speak for the store, so the shell also requires
-//! the tab to show the store over HTTPS. It asks the user, installs or removes through core, and
-//! answers the page.
+//! shortcut script's isolated world forwards the event through its binding together with the
+//! origin it runs on, which the page cannot fake. Only a store's HTTPS origin counts, so a
+//! plain-HTTP page that a network attacker serves under a store's name cannot speak for the
+//! store, and the shell also requires the tab to still show that store when it answers. It asks
+//! the user, installs or removes through core, and answers the page.
 
 use std::rc::Rc;
 
@@ -28,14 +28,6 @@ pub(crate) enum Store {
 }
 
 impl Store {
-    fn from_host(host: &str) -> Option<Self> {
-        match host {
-            "chromewebstore.google.com" => Some(Self::Chrome),
-            "microsoftedge.microsoft.com" => Some(Self::Edge),
-            _ => None,
-        }
-    }
-
     /// The store a page on `origin` (as `Origin` serializes it) is: only ever an HTTPS one.
     fn from_origin(origin: &str) -> Option<Self> {
         match origin {
@@ -75,9 +67,9 @@ pub(crate) enum StoreOp {
     Uninstall { id: ExtensionId },
 }
 
-/// A request from `js/store.js`, as `detail` of its event, sent by a document on `host`.
-pub(crate) fn parse_request(host: &str, detail: &str) -> Option<StoreRequest> {
-    let store = Store::from_host(host)?;
+/// A request from `js/store.js`, as `detail` of its event, sent by a document on `origin`.
+pub(crate) fn parse_request(origin: &str, detail: &str) -> Option<StoreRequest> {
+    let store = Store::from_origin(origin)?;
     let value: Value = serde_json::from_str(detail).ok()?;
     let id = || {
         ExtensionId::parse(value.get("id")?.as_str()?)
@@ -205,7 +197,7 @@ mod tests {
     fn requests_parse_only_on_the_stores() {
         let install = format!(r#"{{"seq":3,"op":"install","store":"chrome","id":"{ID}","name":"P"}}"#);
         assert_eq!(
-            parse_request("microsoftedge.microsoft.com", &install),
+            parse_request("https://microsoftedge.microsoft.com", &install),
             Some(StoreRequest {
                 store: Store::Edge,
                 seq: 3,
@@ -214,11 +206,11 @@ mod tests {
                     name: "P".into()
                 }
             }),
-            "the store is the sender's host, not what the page claims"
+            "the store is the sender's origin, not what the page claims"
         );
-        assert_eq!(parse_request("example.com", &install), None);
+        assert_eq!(parse_request("https://example.com", &install), None);
         assert_eq!(
-            parse_request("chromewebstore.google.com", r#"{"seq":1,"op":"list"}"#),
+            parse_request("https://chromewebstore.google.com", r#"{"seq":1,"op":"list"}"#),
             Some(StoreRequest {
                 store: Store::Chrome,
                 seq: 1,
@@ -249,17 +241,17 @@ mod tests {
 
     #[test]
     fn requests_need_a_chrome_style_id_and_a_known_op() {
-        let host = "chromewebstore.google.com";
+        let origin = "https://chromewebstore.google.com";
         assert_eq!(
-            parse_request(host, r#"{"seq":1,"op":"uninstall","id":"x@y"}"#),
+            parse_request(origin, r#"{"seq":1,"op":"uninstall","id":"x@y"}"#),
             None
         );
         assert_eq!(
-            parse_request(host, &format!(r#"{{"seq":1,"op":"enable","id":"{ID}"}}"#)),
+            parse_request(origin, &format!(r#"{{"seq":1,"op":"enable","id":"{ID}"}}"#)),
             None
         );
-        assert_eq!(parse_request(host, r#"{"op":"list"}"#), None);
-        assert_eq!(parse_request(host, "not json"), None);
+        assert_eq!(parse_request(origin, r#"{"op":"list"}"#), None);
+        assert_eq!(parse_request(origin, "not json"), None);
     }
 
     #[test]

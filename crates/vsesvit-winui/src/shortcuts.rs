@@ -507,7 +507,7 @@ fn parse_page_message(message: &str, bindings: &Bindings) -> Option<PageMessage>
         )),
         "zoom" => Some(PageMessage::Zoom(value.get("dpr")?.as_f64()?)),
         "store" => {
-            store::parse_request(value.get("host")?.as_str()?, value.get("detail")?.as_str()?)
+            store::parse_request(value.get("origin")?.as_str()?, value.get("detail")?.as_str()?)
                 .map(PageMessage::Store)
         }
         _ => None,
@@ -556,7 +556,7 @@ fn page_script() -> String {
   zoom();
   addEventListener("resize", zoom);
   document.addEventListener("vsesvit-store", (e) => {{
-    if (typeof e.detail === "string") report(JSON.stringify({{ t: "store", host: location.hostname, detail: e.detail }}));
+    if (typeof e.detail === "string") report(JSON.stringify({{ t: "store", origin: location.origin, detail: e.detail }}));
   }});
 }})();"#
     )
@@ -932,14 +932,21 @@ mod tests {
     }
 
     #[test]
-    fn store_requests_carry_the_senders_host() {
-        let request = r#"{"t":"store","host":"chromewebstore.google.com","detail":"{\"seq\":1,\"op\":\"list\"}"}"#;
+    fn store_requests_carry_the_senders_origin() {
+        assert!(page_script().contains("origin: location.origin"));
+        let request = r#"{"t":"store","origin":"https://chromewebstore.google.com","detail":"{\"seq\":1,\"op\":\"list\"}"}"#;
         assert!(matches!(
             parse(&called(BINDING, request)),
             Some(PageMessage::Store(_))
         ));
-        let elsewhere = request.replace("chromewebstore.google.com", "example.com");
-        assert_eq!(parse(&called(BINDING, &elsewhere)), None);
+        for elsewhere in [
+            "https://example.com",
+            "http://chromewebstore.google.com",
+            "https://chromewebstore.google.com.evil.test",
+        ] {
+            let request = request.replace("https://chromewebstore.google.com", elsewhere);
+            assert_eq!(parse(&called(BINDING, &request)), None, "{elsewhere}");
+        }
     }
 
     #[test]
