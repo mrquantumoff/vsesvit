@@ -736,7 +736,7 @@ impl BrowserWindow {
 
     /// The toolbar shows the pinned actions in the synced order; the Extensions menu all.
     pub(crate) fn refresh_extension_actions(&self) {
-        let actions = self.browser().runtime().actions();
+        let actions = self.browser().extension_actions();
         let available: Vec<String> = actions.iter().map(|a| a.extension.as_str().to_owned()).collect();
         let pinned: Vec<ExtensionId> = self
             .browser()

@@ -25,7 +25,7 @@ use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, key
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
 use vsesvit_core::{Profile, Url};
-use vsesvit_webext::{Runtime, TabHost, TabId, TabInfo};
+use vsesvit_webext::{ActionInfo, Runtime, TabHost, TabId, TabInfo};
 use webkit::prelude::*;
 
 use crate::closed_tabs::ClosedTabs;
@@ -572,6 +572,15 @@ impl Browser {
         });
     }
 
+    /// The loaded extensions' toolbar actions, in install order. The runtime lists them by
+    /// id, which the stable sort keeps for any the profile does not list.
+    pub(crate) fn extension_actions(&self) -> Vec<ActionInfo> {
+        let installed = self.installed_extensions();
+        let mut actions = self.runtime().actions();
+        actions.sort_by_key(|a| installed.iter().position(|e| e.id == a.extension).unwrap_or(usize::MAX));
+        actions
+    }
+
     /// Which of the extension actions `available` (ids in install order) the toolbar shows,
     /// and in what order, per the synced preference.
     pub(crate) fn extension_toolbar(&self, available: &[String]) -> toolbar::Layout {
@@ -589,7 +598,7 @@ impl Browser {
     }
 
     fn change_toolbar(&self, change: impl FnOnce(&[String], &[toolbar::Entry]) -> Vec<toolbar::Entry>) {
-        let available: Vec<String> = self.runtime().actions().iter().map(|a| a.extension.as_str().to_owned()).collect();
+        let available: Vec<String> = self.extension_actions().iter().map(|a| a.extension.as_str().to_owned()).collect();
         let saved = {
             let mut profile = self.core().borrow_mut();
             let mut prefs = profile.prefs();
@@ -1124,6 +1133,45 @@ mod tests {
             .find(|info| info.id == tab.id());
         window.destroy();
         assert_eq!(info.map(|info| info.url), Some(url));
+    }
+
+    #[gtk::test]
+    fn extension_actions_follow_install_order_not_id_order() {
+        use vsesvit_core::extensions::InstallSource;
+
+        let browser = browser();
+        let mut dirs: Vec<PathBuf> = ["toolbar-order-a", "toolbar-order-b"]
+            .into_iter()
+            .map(crate::test_support::scratch_dir)
+            .collect();
+        // The one installed second gets the smaller id.
+        dirs.sort_by_key(|dir| std::cmp::Reverse(ExtensionId::for_unpacked_dir(dir)));
+        let (mut ids, mut installed) = (Vec::new(), Vec::new());
+        for (i, dir) in dirs.iter().enumerate() {
+            let manifest = format!(r#"{{ "manifest_version": 3, "name": "Order {i}", "version": "1.0", "action": {{}} }}"#);
+            std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+            let source = InstallSource::from_path(dir).unwrap();
+            let ext = glib::MainContext::default().block_on(browser.install(source, |_| {})).unwrap().expect("installed");
+            installed.push(ext.id.as_str().to_owned());
+            ids.push(ext.id);
+            // Core lists installs by the millisecond they were made in.
+            crate::test_support::settle(Duration::from_millis(5));
+        }
+        assert!(installed[1] < installed[0], "{installed:?}");
+        let ours = |ids: Vec<String>| -> Vec<String> { ids.into_iter().filter(|id| installed.contains(id)).collect() };
+
+        let listed = ours(browser.extension_actions().into_iter().map(|a| a.extension.as_str().to_owned()).collect());
+        // A pin change writes every action without an entry yet, in the order it is given.
+        browser.pin_extension(&installed[0], true);
+        let available: Vec<String> = browser.extension_actions().iter().map(|a| a.extension.as_str().to_owned()).collect();
+        let pinned = ours(browser.extension_toolbar(&available).pinned);
+        let saved = ours(browser.pref(&toolbar::TOOLBAR).into_iter().map(|e| e.id).collect());
+        for id in &ids {
+            browser.uninstall_extension(id).ok();
+        }
+        assert_eq!(listed, installed);
+        assert_eq!(pinned, installed);
+        assert_eq!(saved, installed);
     }
 
     #[gtk::test]
