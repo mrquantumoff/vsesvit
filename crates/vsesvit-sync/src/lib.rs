@@ -24,7 +24,7 @@
 //!     account = finished.account;
 //!     let synced = finished.result?;
 //!     refresh_ui(&synced.report.changed);
-//!     if !synced.again { break }
+//!     if !synced.again { synced.refused.map_or(Ok(()), Err)?; break }
 //! }
 //! ```
 //!
