@@ -136,14 +136,23 @@ pub(crate) fn live<T: ?Sized>(listeners: &RefCell<Vec<Weak<T>>>) -> Vec<Rc<T>> {
 enum Event {
     Sync(Progress),
     SigningIn,
-    SignedIn {
-        name: Option<String>,
-        server: String,
-        last_synced: Option<u64>,
+    SignedIn(Signed),
+    SignInFailed {
+        /// Why; `None` when the user cancelled it.
+        error: Option<String>,
+        /// The account still stored, which was signing in again because its sign-in expired,
+        /// as it still is.
+        stored: Option<Signed>,
     },
-    /// Why the sign-in failed; `None` when the user cancelled it.
-    SignInFailed(Option<String>),
     SignedOut,
+}
+
+/// What Settings shows of the account a profile is signed in with.
+#[derive(Debug)]
+struct Signed {
+    name: Option<String>,
+    server: String,
+    last_synced: Option<u64>,
 }
 
 /// Where a sync of the signed-in account is.
@@ -159,11 +168,11 @@ enum Progress {
 fn next(state: State, event: Event) -> State {
     match event {
         Event::SigningIn => State::SigningIn,
-        Event::SignedIn {
+        Event::SignedIn(Signed {
             name,
             server,
             last_synced,
-        } => State::SignedIn {
+        }) => State::SignedIn {
             name,
             server,
             last_synced,
@@ -172,9 +181,24 @@ fn next(state: State, event: Event) -> State {
             needs_sign_in: false,
         },
         Event::SignedOut => State::SignedOut { error: None },
-        Event::SignInFailed(error) => match state {
-            State::SigningIn => State::SignedOut { error },
-            state => state,
+        Event::SignInFailed { error, stored } => match (state, stored) {
+            (
+                State::SigningIn,
+                Some(Signed {
+                    name,
+                    server,
+                    last_synced,
+                }),
+            ) => State::SignedIn {
+                name,
+                server,
+                last_synced,
+                syncing: false,
+                error,
+                needs_sign_in: true,
+            },
+            (State::SigningIn, None) => State::SignedOut { error },
+            (state, _) => state,
         },
         Event::Sync(progress) => {
             let State::SignedIn {
@@ -206,12 +230,16 @@ fn next(state: State, event: Event) -> State {
     }
 }
 
-fn signed_in(account: &Account) -> Event {
-    Event::SignedIn {
+fn signed(account: &Account) -> Signed {
+    Signed {
         name: account.name().map(str::to_owned),
         server: account.server().to_owned(),
         last_synced: account.last_synced(),
     }
+}
+
+fn signed_in(account: &Account) -> Event {
+    Event::SignedIn(signed(account))
 }
 
 /// Whether a scheduled sync or Sync Now runs: signed in with a sign-in the provider accepts.
@@ -242,11 +270,25 @@ impl From<exec::WorkerLost> for Error {
     }
 }
 
-fn sign_in_failed(e: &Error) -> Event {
-    Event::SignInFailed(match e {
-        Error::Cancelled => None,
-        e => Some(e.to_string()),
-    })
+/// A sign-in that failed with `e`, while the profile still stores `stored`.
+fn sign_in_failed(e: &Error, stored: Option<&Account>) -> Event {
+    Event::SignInFailed {
+        error: match e {
+            Error::Cancelled => None,
+            e => Some(e.to_string()),
+        },
+        stored: stored.map(signed),
+    }
+}
+
+/// The account the profile stores; `None` when it stores none, or one it cannot read.
+fn stored_account(browser: &Browser) -> Option<Account> {
+    browser
+        .core(|p| Account::load(&mut p.sync()))
+        .unwrap_or_else(|e| {
+            log::warn!("sync account: {e}");
+            None
+        })
 }
 
 /// Whether a scheduled tick syncs: while signed in and not syncing, `SYNC_INTERVAL` after the
@@ -343,8 +385,9 @@ async fn rounds(browser: &Weak<Browser>) -> Result<Option<u64>, Error> {
 
 /// Signs in with the server the `sync.server` preference names: the provider's page opens in a
 /// new tab of `window` (or of the newest window), `opened` runs, and once the user finishes
-/// there the profile is signed in and syncs. A saved account is replaced: Sign In meets one only
-/// when the provider no longer accepts it.
+/// there the profile is signed in and syncs. A saved account is replaced once the sign-in
+/// finishes: Sign In meets one only when the provider no longer accepts it, and a sign-in that
+/// fails leaves it asking for another.
 pub(crate) fn sign_in(
     browser: &Rc<Browser>,
     window: Weak<BrowserWindow>,
@@ -353,9 +396,6 @@ pub(crate) fn sign_in(
     let sync = browser.sync();
     if *sync.state.borrow() == State::SigningIn {
         return;
-    }
-    if let Err(e) = browser.core(|p| Account::forget(&mut p.sync())) {
-        log::warn!("forgetting the old sync account: {e}");
     }
     let attempt = sync.attempts.get() + 1;
     sync.attempts.set(attempt);
@@ -375,7 +415,8 @@ pub(crate) fn sign_in(
             Ok(pending) => pending,
             Err(e) => {
                 log::warn!("sync sign-in: {e}");
-                b.sync().apply(sign_in_failed(&e));
+                b.sync()
+                    .apply(sign_in_failed(&e, stored_account(&b).as_ref()));
                 return;
             }
         };
@@ -409,7 +450,8 @@ pub(crate) fn sign_in(
             }
             Err(e) => {
                 log::warn!("sync sign-in: {e}");
-                b.sync().apply(sign_in_failed(&e));
+                b.sync()
+                    .apply(sign_in_failed(&e, stored_account(&b).as_ref()));
             }
         }
     });
@@ -429,7 +471,10 @@ pub(crate) fn cancel_sign_in(browser: &Browser) {
     if let Some(canceller) = sync.canceller.take() {
         canceller.store(true, Ordering::Relaxed);
     }
-    sync.apply(Event::SignInFailed(None));
+    sync.apply(sign_in_failed(
+        &Error::Cancelled,
+        stored_account(browser).as_ref(),
+    ));
 }
 
 /// Signs the profile out; its records stay here and on the server. A sync running meanwhile
@@ -596,11 +641,11 @@ mod tests {
     fn signed_in_state() -> State {
         next(
             State::SignedOut { error: None },
-            Event::SignedIn {
+            Event::SignedIn(Signed {
                 name: Some("Demir".into()),
                 server: "https://sync.example.com".into(),
                 last_synced: Some(100),
-            },
+            }),
         )
     }
 
@@ -618,11 +663,11 @@ mod tests {
     }
 
     fn signed_in_event() -> Event {
-        Event::SignedIn {
+        Event::SignedIn(Signed {
             name: None,
             server: "https://sync.example.com".into(),
             last_synced: None,
-        }
+        })
     }
 
     #[test]
@@ -660,14 +705,49 @@ mod tests {
 
     #[test]
     fn a_failed_or_cancelled_sign_in_is_signed_out() {
-        let failed = next(State::SigningIn, sign_in_failed(&Error::TimedOut));
+        let failed = next(State::SigningIn, sign_in_failed(&Error::TimedOut, None));
         let error = Some("the sign-in took too long".to_owned());
         assert_eq!(failed, State::SignedOut { error });
-        let cancelled = next(State::SigningIn, sign_in_failed(&Error::Cancelled));
+        let cancelled = next(State::SigningIn, sign_in_failed(&Error::Cancelled, None));
         assert_eq!(cancelled, State::SignedOut { error: None });
         let signed_in = next(State::SigningIn, signed_in_event());
-        let late = next(signed_in.clone(), sign_in_failed(&Error::Cancelled));
+        let late = next(signed_in.clone(), sign_in_failed(&Error::Cancelled, None));
         assert_eq!(late, signed_in);
+    }
+
+    #[test]
+    fn a_failed_or_cancelled_sign_in_again_keeps_the_stored_account_asking_for_another() {
+        let account: Account = serde_json::from_value(serde_json::json!({
+            "sign_in": "s", "server": "https://sync.example.com", "name": "Demir",
+            "limits": { "max_batch": 1, "max_record_bytes": 1, "max_request_bytes": 1 },
+            "download_cursor": 0, "upload_cursors": {}, "last_synced": 100,
+        }))
+        .expect("an account");
+        let failed = next(
+            State::SigningIn,
+            sign_in_failed(&Error::TimedOut, Some(&account)),
+        );
+        assert_eq!(
+            fields(&failed),
+            (Some(100), false, Some("the sign-in took too long"), true)
+        );
+        assert_eq!(
+            failed.status(100).subtitle,
+            "Sign-in failed: the sign-in took too long"
+        );
+        assert!(
+            !due(&failed),
+            "the expired sign-in still waits for the user"
+        );
+        let cancelled = next(
+            State::SigningIn,
+            sign_in_failed(&Error::Cancelled, Some(&account)),
+        );
+        assert_eq!(fields(&cancelled), (Some(100), false, None, true));
+        assert_eq!(
+            cancelled.status(100).subtitle,
+            "Sign in again to keep syncing."
+        );
     }
 
     #[test]
