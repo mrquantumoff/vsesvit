@@ -130,6 +130,15 @@ pub(crate) fn origin_url(url: &str) -> &str {
         .map_or(url, |prefix| &url[prefix.len()..])
 }
 
+/// The host the popup names for a page at `url`: its origin's, so a blob: page names the site
+/// that made it. Empty when the origin has none.
+pub(crate) fn host_of(url: &str) -> String {
+    vsesvit_core::Url::parse(origin_url(url))
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
 impl Headline {
     /// By the scheme of the page's origin, so a blob: page an http site made is not secure.
     pub fn of(url: &str, report: Option<&Report>) -> Self {
@@ -373,6 +382,14 @@ pub(crate) fn flyout(content: &FrameworkElement) -> Result<Flyout> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_host_is_the_origins() {
+        assert_eq!(host_of("blob:https://evil.example/1b2c"), "evil.example");
+        assert_eq!(host_of("filesystem:http://a.test/temporary/x"), "a.test");
+        assert_eq!(host_of("blob:null/abc"), "");
+        assert_eq!(host_of("https://a.test/"), "a.test");
+    }
 
     #[test]
     fn a_report_gives_the_tls_parameters_and_the_chain() {

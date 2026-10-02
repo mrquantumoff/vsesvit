@@ -801,10 +801,7 @@ impl BrowserWindow {
         let report = tab
             .security_report()
             .and_then(|json| connection::parse_report(&json));
-        let host = vsesvit_core::Url::parse(&url)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_owned))
-            .unwrap_or_default();
+        let host = connection::host_of(&url);
         let content = connection::content(&url, &host, report.as_ref())?;
         if let (Ok(button), Some(report)) =
             (xaml::find::<Button>(&content, "ShowCertificate"), report)
