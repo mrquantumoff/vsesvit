@@ -1733,7 +1733,7 @@ mod tests {
             site_look("https://a.test/", Some(&secure)).1,
             "Connection is secure"
         );
-        assert_eq!(site_look("https://a.test/", None).1, "Connection is secure");
+        assert_eq!(site_look("https://a.test/", None).1, "Not secure");
         assert_eq!(site_look("http://a.test/", None).1, "Not secure");
         assert_eq!(site_look("", None).1, "Search or enter web address");
         assert_eq!(
