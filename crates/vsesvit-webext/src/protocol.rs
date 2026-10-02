@@ -532,6 +532,13 @@ mod tests {
         assert!(shim.contains("t: config.token"), "calls must carry the page token");
     }
 
+    /// The trailing-callback rule and the window the shim reports are each written once.
+    #[test]
+    fn shim_pops_the_trailing_callback_in_one_place() {
+        assert_eq!(crate::API_JS.matches("args.pop()").count(), 1);
+        assert_eq!(crate::API_JS.matches("alwaysOnTop").count(), 1);
+    }
+
     #[test]
     fn document_guards_name_the_origins() {
         let urls = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();

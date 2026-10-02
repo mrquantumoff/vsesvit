@@ -56,17 +56,21 @@
       (e) => { lastError = { message: e && e.message ? e.message : String(e) }; try { callback(); } finally { lastError = null; } });
     return undefined;
   }
-  function bridged(method, fixedArgs) {
+  // Chrome's callback form: a function as the last argument.
+  function takeCallback(args) {
+    return args.length && typeof args[args.length - 1] === "function" ? args.pop() : undefined;
+  }
+  // `mapArgs` turns the caller's arguments (callback removed) into the ones posted.
+  function bridged(method, fixedArgs, mapArgs) {
     return function (...args) {
-      let callback;
-      if (args.length && typeof args[args.length - 1] === "function") callback = args.pop();
+      const callback = takeCallback(args);
+      if (mapArgs) args = mapArgs(args);
       return settle(post(method, fixedArgs ? fixedArgs.concat(args) : args), callback);
     };
   }
   function local(fn) {
     return function (...args) {
-      let callback;
-      if (args.length && typeof args[args.length - 1] === "function") callback = args.pop();
+      const callback = takeCallback(args);
       let promise;
       try { promise = Promise.resolve(fn(...args)); } catch (e) { promise = Promise.reject(e); }
       return settle(promise, callback);
@@ -86,8 +90,7 @@
     onSuspend: new ExtensionEvent("runtime.onSuspend"),
     connect() { throw new Error("runtime.connect is not supported by Vsesvit"); },
     sendMessage(...args) {
-      let callback;
-      if (args.length && typeof args[args.length - 1] === "function") callback = args.pop();
+      const callback = takeCallback(args);
       // sendMessage(message), (message, options), (extensionId, message), (extensionId, message, options)
       let message = args[0], options = args[1];
       const looksLikeOptions = (o) => o && typeof o === "object" && Object.keys(o).every((k) => k === "includeTlsChannelId");
@@ -257,18 +260,12 @@
       get: bridged("tabs.get"),
       getCurrent: bridged("tabs.getCurrent"),
       create: bridged("tabs.create"),
-      update(...args) {
-        let callback;
-        if (args.length && typeof args[args.length - 1] === "function") callback = args.pop();
+      update: bridged("tabs.update", null, (args) => {
         const [tabId, props] = args.length >= 2 ? args : [null, args[0]];
-        return settle(post("tabs.update", [tabId, props || {}]), callback);
-      },
+        return [tabId, props || {}];
+      }),
       remove: bridged("tabs.remove"),
-      reload(...args) {
-        let callback;
-        if (args.length && typeof args[args.length - 1] === "function") callback = args.pop();
-        return settle(post("tabs.reload", [typeof args[0] === "number" ? args[0] : null]), callback);
-      },
+      reload: bridged("tabs.reload", null, (args) => [typeof args[0] === "number" ? args[0] : null]),
       sendMessage(tabId, message, options, callback) {
         if (typeof options === "function") { callback = options; options = null; }
         return settle(post("tabs.sendMessage", [tabId, message === undefined ? null : message, options || null]), callback);
@@ -305,33 +302,25 @@
       isEnabled: local(() => true),
       onClicked: new ExtensionEvent("action.onClicked"),
     };
+    const alarmName = (args) => [String(args[0] == null ? "" : args[0])];
     const alarms = {
-      create(...args) {
-        let callback;
-        if (args.length && typeof args[args.length - 1] === "function") callback = args.pop();
+      create: bridged("alarms.create", null, (args) => {
         const [name, info] = args.length >= 2 ? [args[0], args[1]] : ["", args[0]];
-        return settle(post("alarms.create", [String(name == null ? "" : name), info || {}]), callback);
-      },
-      get(...args) {
-        let callback;
-        if (args.length && typeof args[args.length - 1] === "function") callback = args.pop();
-        return settle(post("alarms.get", [String(args[0] == null ? "" : args[0])]), callback);
-      },
+        return [String(name == null ? "" : name), info || {}];
+      }),
+      get: bridged("alarms.get", null, alarmName),
       getAll: bridged("alarms.getAll"),
-      clear(...args) {
-        let callback;
-        if (args.length && typeof args[args.length - 1] === "function") callback = args.pop();
-        return settle(post("alarms.clear", [String(args[0] == null ? "" : args[0])]), callback);
-      },
+      clear: bridged("alarms.clear", null, alarmName),
       clearAll: bridged("alarms.clearAll"),
       onAlarm: new ExtensionEvent("alarms.onAlarm"),
     };
+    const currentWindow = () => ({ id: 1, focused: true, incognito: false, type: "normal", state: "normal", alwaysOnTop: false });
     const windows = {
       WINDOW_ID_NONE: -1,
       WINDOW_ID_CURRENT: -2,
-      getCurrent: local(() => ({ id: 1, focused: true, incognito: false, type: "normal", state: "normal", alwaysOnTop: false })),
-      getLastFocused: local(() => ({ id: 1, focused: true, incognito: false, type: "normal", state: "normal", alwaysOnTop: false })),
-      getAll: local(() => [{ id: 1, focused: true, incognito: false, type: "normal", state: "normal", alwaysOnTop: false }]),
+      getCurrent: local(currentWindow),
+      getLastFocused: local(currentWindow),
+      getAll: local(() => [currentWindow()]),
       onFocusChanged: new ExtensionEvent("windows.onFocusChanged"),
       onCreated: new ExtensionEvent("windows.onCreated"),
       onRemoved: new ExtensionEvent("windows.onRemoved"),
