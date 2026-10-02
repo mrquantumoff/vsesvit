@@ -163,13 +163,7 @@ fn set(
         permissions::stop_captures(browser, origin, &[permission]);
     }
     permissions::settings_changed(browser);
-    if setting != Some(Setting::Allow) {
-        // A removal leaves the tabs' grants as they are; a block overrides them.
-        permissions::reload_allowed_captures(browser, origin, &[permission], |tab, p| {
-            before == Some(Setting::Allow)
-                || (setting == Some(Setting::Block) && tab.permissions().grants().contains(&p))
-        });
-    }
+    permissions::reload_taken_back(browser, origin, permission, before, setting);
     true
 }
 

@@ -332,10 +332,11 @@ fn remote_shortcuts(
 
 /// Applies `record` the way a sync engine does: `sync().apply`, then `Browser::sync_applied`.
 async fn apply_remote(browser: &Browser, record: WireRecord) -> Result<Vec<String>, String> {
+    let site_settings = browser.core(|c| c.site_permissions().all());
     let report = browser
         .core(|c| c.sync().apply(vec![record]))
         .map_err(err)?;
-    browser.sync_applied(&report.changed);
+    browser.sync_applied(&report.changed, &site_settings);
     exec::sleep(SETTLE).await;
     Ok(report.changed.prefs)
 }

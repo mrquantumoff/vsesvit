@@ -10,8 +10,8 @@
 //!
 //! A stored Allow lets the engine grant a capture without asking, so a tab on a site that may
 //! capture is watched for as long as it stays there (see `capturing`). What the page reports
-//! is only its word, so a block or a reset that takes back a capture the shell let it make
-//! reloads the page ([`reload_allowed_captures`]).
+//! is only its word, so a block or a reset, made here or arriving through sync, that takes back
+//! a capture the shell let it make reloads the page ([`reload_allowed_captures`]).
 //!
 //! Camera and microphone from one `getUserMedia` arrive as two requests, in two turns of the UI
 //! thread. A request joins the last prompt of its tab when that is for the same origin, even one
@@ -569,9 +569,98 @@ pub(crate) fn reload_allowed_captures(
     }
 }
 
+/// One stored setting a change moved: the site, the permission, and its setting before and
+/// after (`None`: Ask).
+type Moved = (Origin, Permission, Option<Setting>, Option<Setting>);
+
+/// Each setting that differs between `before` and `after`, both lists of every stored setting
+/// (`SitePermissions::all`).
+fn moved_settings(before: &[SiteSetting], after: &[SiteSetting]) -> Vec<Moved> {
+    let setting_in = |list: &[SiteSetting], s: &SiteSetting| {
+        list.iter()
+            .find(|o| o.origin == s.origin && o.permission == s.permission)
+            .map(|o| o.setting)
+    };
+    let changed = before.iter().filter_map(|s| {
+        let now = setting_in(after, s);
+        (now != Some(s.setting)).then(|| (s.origin.clone(), s.permission, Some(s.setting), now))
+    });
+    let added = after
+        .iter()
+        .filter(|s| setting_in(before, s).is_none())
+        .map(|s| (s.origin.clone(), s.permission, None, Some(s.setting)));
+    changed.chain(added).collect()
+}
+
+/// After a sync changed the stored settings from `before`: reloads the tabs whose capture a
+/// block or a removal it brought takes back, as the same change on the Settings page does.
+pub(crate) fn sync_changed(browser: &Browser, before: &[SiteSetting]) {
+    let after = browser.core(|p| p.site_permissions().all());
+    for (origin, permission, was, now) in moved_settings(before, &after) {
+        reload_taken_back(browser, &origin, permission, was, now);
+    }
+}
+
+/// After `permission` of `origin` went from `before` to `after`: reloads the tabs of the site
+/// the shell let capture under it, when a block or a removal takes that back (see
+/// [`must_reload`]). A removal leaves the tabs' grants as they are; a block overrides them.
+pub(crate) fn reload_taken_back(
+    browser: &Browser,
+    origin: &Origin,
+    permission: Permission,
+    before: Option<Setting>,
+    after: Option<Setting>,
+) {
+    if after == Some(Setting::Allow) {
+        return;
+    }
+    reload_allowed_captures(browser, origin, &[permission], |tab, p| {
+        before == Some(Setting::Allow)
+            || (after == Some(Setting::Block) && tab.permissions().grants().contains(&p))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sync_moves_the_settings_it_added_removed_or_changed_and_no_others() {
+        let a = Origin::parse("https://a.test").unwrap();
+        let b = Origin::parse("https://b.test").unwrap();
+        let stored = |origin: &Origin, permission, setting| SiteSetting {
+            origin: origin.clone(),
+            permission,
+            setting,
+        };
+        let moved = moved_settings(
+            &[
+                stored(&a, Permission::Camera, Setting::Allow),
+                stored(&a, Permission::Microphone, Setting::Allow),
+                stored(&b, Permission::Camera, Setting::Block),
+                stored(&b, Permission::Notifications, Setting::Allow),
+            ],
+            &[
+                stored(&a, Permission::Camera, Setting::Block),
+                stored(&b, Permission::Camera, Setting::Block),
+                stored(&b, Permission::Microphone, Setting::Block),
+                stored(&b, Permission::Notifications, Setting::Allow),
+            ],
+        );
+        assert_eq!(
+            moved,
+            [
+                (
+                    a.clone(),
+                    Permission::Camera,
+                    Some(Setting::Allow),
+                    Some(Setting::Block)
+                ),
+                (a, Permission::Microphone, Some(Setting::Allow), None),
+                (b, Permission::Microphone, None, Some(Setting::Block)),
+            ]
+        );
+    }
 
     #[test]
     fn the_engine_gets_exactly_the_stored_settings() {

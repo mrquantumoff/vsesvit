@@ -370,10 +370,13 @@ async fn rounds(browser: &Weak<Browser>) -> Result<Option<u64>, Error> {
         };
         let exchanged = exec::background(move || round.run(&http)).await?;
         let b = browser.upgrade().ok_or(Error::SignedOut)?;
-        let finished = b.core(|p| exchanged.finish(&mut p.sync()));
+        let (site_settings, finished) = b.core(|p| {
+            let site_settings = p.site_permissions().all();
+            (site_settings, exchanged.finish(&mut p.sync()))
+        });
         account = finished.account;
         let synced = finished.result?;
-        b.sync_applied(&synced.report.changed);
+        b.sync_applied(&synced.report.changed, &site_settings);
         // A refused upload waits for a later sync; it is what this one comes to.
         if !synced.again {
             return synced.refused.map_or(Ok(account.last_synced()), Err);

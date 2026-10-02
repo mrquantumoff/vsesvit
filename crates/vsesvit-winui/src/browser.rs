@@ -15,6 +15,7 @@ use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
 use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
+use vsesvit_core::permissions::SiteSetting;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, homepage_url, keys};
 use vsesvit_core::search::{SelectionAction, Suggestions};
 use vsesvit_core::session::SessionSnapshot;
@@ -1031,10 +1032,11 @@ impl Browser {
         }
     }
 
-    /// What a sync engine calls after `sync().apply`, with the report's `changed`: what shows
-    /// the changed data follows, as after the same edit made here. Open tabs from other devices
-    /// show nowhere yet, and `storage.sync` belongs to WebView2 here.
-    pub fn sync_applied(&self, changed: &Changed) {
+    /// What a sync engine calls after `sync().apply`, with the report's `changed` and the site
+    /// settings stored before it (`site_permissions().all()`): what shows the changed data
+    /// follows, as after the same edit made here. Open tabs from other devices show nowhere
+    /// yet, and `storage.sync` belongs to WebView2 here.
+    pub fn sync_applied(&self, changed: &Changed, site_settings_before: &[SiteSetting]) {
         if changed.bookmarks {
             self.bookmarks_changed();
         }
@@ -1052,6 +1054,7 @@ impl Browser {
             }
             if changed.site_permissions {
                 crate::permissions::settings_changed(&me);
+                crate::permissions::sync_changed(&me, site_settings_before);
             }
         }
         self.sync.applied(changed);
