@@ -41,7 +41,9 @@ impl Level {
     }
 }
 
-/// A zoom the page script reported.
+/// A zoom the page script reported. Only the top document reports zoom: the script stops
+/// before it in frames, and a frame's own DevTools session reports nothing but keys
+/// (`shortcuts::parse_binding_call`), so a frame starting cannot take the page anywhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Report {
     /// The level a new document started at.

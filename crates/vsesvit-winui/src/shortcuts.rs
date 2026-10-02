@@ -957,7 +957,10 @@ mod tests {
             Some(PageMessage::Key(Command::NewTab))
         );
         assert_eq!(in_frame(r#"{"t":"link","url":"https://a.test/x"}"#), None);
-        assert_eq!(in_frame(r#"{"t":"zoom","dpr":2.0}"#), None);
+        // A frame's document starting would otherwise re-arm the top page's zoom restore.
+        let zoom = r#"{"t":"zoom","dpr":2.0,"start":true}"#;
+        assert!(parse(&called(BINDING, zoom)).is_some());
+        assert_eq!(in_frame(zoom), None);
         let store = r#"{"t":"store","origin":"https://chromewebstore.google.com","detail":"{\"seq\":1,\"op\":\"list\"}"}"#;
         assert!(parse(&called(BINDING, store)).is_some());
         assert_eq!(in_frame(store), None);
