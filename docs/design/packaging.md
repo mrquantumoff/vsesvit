@@ -34,7 +34,7 @@ Each package puts a one-line file named `package-format` next to the real execut
 ```rust
 pub enum Installation {
     Unpackaged,
-    Nsis { install_dir: PathBuf },
+    Nsis,
     Deb,
     Rpm,
     Pacman,
