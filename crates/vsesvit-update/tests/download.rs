@@ -129,7 +129,7 @@ fn a_signed_artifact_of_the_wrong_format_is_rejected() {
         (Format::Deb, Installation::Rpm),
         (Format::Nsis, Installation::Pacman),
         (Format::Deb, Installation::AppImage { image: "/opt/Vsesvit.AppImage".into() }),
-        (Format::AppImage, Installation::Nsis { install_dir: "C:/Vsesvit".into() }),
+        (Format::AppImage, Installation::Nsis),
     ] {
         let expected = installation.format().unwrap();
         let err = rejected(signed(served, "0.2.0"), installation);

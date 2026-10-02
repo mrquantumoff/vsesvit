@@ -9,7 +9,7 @@ const MARKER: &str = "package-format";
 pub enum Installation {
     /// No marker, or one this build does not know: a `cargo run`. Never updates itself.
     Unpackaged,
-    Nsis { install_dir: PathBuf },
+    Nsis,
     Deb,
     Rpm,
     Pacman,
@@ -41,12 +41,12 @@ impl Installation {
             return Installation::Unpackaged;
         };
         let marker = std::fs::read_to_string(exe_dir.join(MARKER)).ok();
-        Installation::from_parts(marker.as_deref(), &exe_dir, std::env::var_os("APPIMAGE").map(PathBuf::from))
+        Installation::from_parts(marker.as_deref(), std::env::var_os("APPIMAGE").map(PathBuf::from))
     }
 
-    pub fn from_parts(marker: Option<&str>, exe_dir: &Path, appimage_env: Option<PathBuf>) -> Installation {
+    pub fn from_parts(marker: Option<&str>, appimage_env: Option<PathBuf>) -> Installation {
         match marker.map(str::trim) {
-            Some("nsis") => Installation::Nsis { install_dir: exe_dir.to_path_buf() },
+            Some("nsis") => Installation::Nsis,
             Some("deb") => Installation::Deb,
             Some("rpm") => Installation::Rpm,
             Some("pacman") => Installation::Pacman,
@@ -81,7 +81,7 @@ impl Installation {
     pub fn format(&self) -> Option<Format> {
         match self {
             Installation::Unpackaged | Installation::Flatpak => None,
-            Installation::Nsis { .. } => Some(Format::Nsis),
+            Installation::Nsis => Some(Format::Nsis),
             Installation::Deb => Some(Format::Deb),
             Installation::Rpm => Some(Format::Rpm),
             Installation::Pacman => Some(Format::Pacman),

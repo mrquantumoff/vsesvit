@@ -1,16 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use url::Url;
 use vsesvit_update::{Config, DisabledReason, Error, Format, Installation, WindowsInstallMode};
 
 #[test]
 fn the_marker_decides_the_installation() {
-    let dir = Path::new("/opt/vsesvit/lib/vsesvit");
     let image = || Some(PathBuf::from("/home/u/Apps/Vsesvit.AppImage"));
     let cases: [(Option<&str>, Option<PathBuf>, Installation); 12] = [
         (None, None, Installation::Unpackaged),
         (None, image(), Installation::Unpackaged),
-        (Some("nsis"), None, Installation::Nsis { install_dir: dir.to_path_buf() }),
+        (Some("nsis"), None, Installation::Nsis),
         (Some("deb\n"), None, Installation::Deb),
         (Some(" rpm "), None, Installation::Rpm),
         (Some("pacman"), None, Installation::Pacman),
@@ -22,15 +21,21 @@ fn the_marker_decides_the_installation() {
         (Some(""), None, Installation::Unpackaged),
     ];
     for (marker, appimage, expected) in cases {
-        assert_eq!(Installation::from_parts(marker, dir, appimage.clone()), expected, "marker {marker:?}, $APPIMAGE {appimage:?}");
+        assert_eq!(Installation::from_parts(marker, appimage.clone()), expected, "marker {marker:?}, $APPIMAGE {appimage:?}");
     }
+}
+
+#[test]
+fn nsis_marker_needs_no_directory() {
+    assert_eq!(Installation::from_parts(Some("nsis
+"), None), Installation::Nsis);
 }
 
 #[test]
 fn variant_and_self_updating_follow_the_installation() {
     let cases = [
         (Installation::Unpackaged, None, false, None),
-        (Installation::Nsis { install_dir: "C:/V".into() }, Some("nsis"), true, Some(Format::Nsis)),
+        (Installation::Nsis, Some("nsis"), true, Some(Format::Nsis)),
         (Installation::Deb, Some("deb"), true, Some(Format::Deb)),
         (Installation::Rpm, Some("rpm"), true, Some(Format::Rpm)),
         (Installation::Pacman, Some("pacman"), true, Some(Format::Pacman)),

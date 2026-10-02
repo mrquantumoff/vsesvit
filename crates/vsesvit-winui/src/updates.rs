@@ -401,7 +401,7 @@ impl Updates {
 
 fn setup() -> Result<Setup, String> {
     let installation = Installation::detect();
-    if !matches!(installation, Installation::Nsis { .. }) {
+    if !matches!(installation, Installation::Nsis) {
         return Err(format!(
             "this copy is {}, not an NSIS installation",
             installation.variant().unwrap_or("unpackaged")

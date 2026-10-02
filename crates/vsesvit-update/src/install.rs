@@ -49,7 +49,7 @@ impl Downloaded {
     #[expect(clippy::result_large_err, reason = "once per update, and the error carries the download back")]
     pub fn install_on_exit(self, installation: &Installation) -> Result<Installed, InstallFailed> {
         let result = match (installation, self.format) {
-            (Installation::Nsis { .. }, Format::Nsis) => self
+            (Installation::Nsis, Format::Nsis) => self
                 .verified_bytes()
                 .and_then(|_| nsis::launch(&self.path, std::ffi::OsStr::new("/S /UPDATE"))),
             _ => Err(mismatch(installation)),
@@ -60,7 +60,7 @@ impl Downloaded {
     fn apply(&self, installation: &Installation, relaunch_args: &[OsString]) -> Result<Installed, Error> {
         let data = self.verified_bytes()?;
         match (installation, self.format) {
-            (Installation::Nsis { .. }, Format::Nsis) => {
+            (Installation::Nsis, Format::Nsis) => {
                 #[cfg(windows)]
                 return nsis::launch(&self.path, &nsis::parameters(self.install_mode, relaunch_args));
                 #[cfg(not(windows))]

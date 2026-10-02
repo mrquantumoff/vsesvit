@@ -58,9 +58,8 @@ fn linux_packages_do_not_install_on_windows() {
 #[test]
 fn the_windows_installer_does_not_run_on_linux() {
     let dir = tempfile::tempdir().unwrap();
-    let nsis = Installation::Nsis { install_dir: dir.path().to_path_buf() };
-    let (downloaded, _server) = downloaded(Format::Nsis, nsis.clone(), dir.path());
-    let err = downloaded.install(&nsis, &[]).unwrap_err().error;
+    let (downloaded, _server) = downloaded(Format::Nsis, Installation::Nsis, dir.path());
+    let err = downloaded.install(&Installation::Nsis, &[]).unwrap_err().error;
     assert!(matches!(err, Error::Install(_)), "{err:?}");
 }
 

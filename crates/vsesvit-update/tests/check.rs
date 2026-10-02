@@ -1,7 +1,5 @@
 mod support;
 
-use std::path::PathBuf;
-
 use semver::Version;
 use support::{Server, config, dead_url};
 use url::Url;
@@ -231,7 +229,7 @@ fn installations_that_do_not_update_themselves_see_the_release_without_an_artifa
 
 #[test]
 fn a_config_without_key_or_endpoints_disables_the_updater() {
-    let installation = Installation::Nsis { install_dir: PathBuf::from("C:/Vsesvit") };
+    let installation = Installation::Nsis;
     let new = |pubkey: &str, endpoints: Vec<Url>| {
         Updater::new(config(pubkey.to_owned(), endpoints), Version::new(1, 0, 0), installation.clone()).unwrap_err()
     };
