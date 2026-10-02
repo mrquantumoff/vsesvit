@@ -108,6 +108,47 @@ async fn clipboard_text() -> String {
     .unwrap_or_default()
 }
 
+/// Ctrl+Tab and Ctrl+Shift+Tab step through the tabs and wrap around at the ends, and Ctrl+9
+/// selects the last tab, in the strip on top and in the pane.
+async fn cycle_steps(window: &Rc<BrowserWindow>, steps: &mut Vec<Value>) -> Result<(), String> {
+    let browser = window.browser().ok_or("no browser")?;
+    let mut opened = Vec::new();
+    while window.tab_count() < 3 {
+        opened.push(window.open_url_tab("about:blank", false).map_err(|e| e.to_string())?);
+    }
+    for (position, name) in [
+        (TabsPosition::Top, "29-next-and-previous-tab-on-top"),
+        (TabsPosition::Left, "29b-next-and-previous-tab-in-the-pane"),
+    ] {
+        browser.set_tabs_position(position);
+        wait_layout(window, position).await;
+        let tabs = order(window);
+        let last = tabs.len() - 1;
+        let mut seen = Vec::new();
+        for command in [
+            Command::SelectTab(u8::try_from(last).unwrap_or(u8::MAX)),
+            Command::NextTab,
+            Command::PreviousTab,
+            Command::PreviousTab,
+            Command::SelectLastTab,
+        ] {
+            window.run(command);
+            seen.push(window.active_tab().map(|t| t.id));
+        }
+        let want = [tabs[last], tabs[0], tabs[last], tabs[last - 1], tabs[last]].map(Some);
+        steps.push(json!({
+            "name": name,
+            "order": tabs,
+            "selected": seen,
+            "ok": seen == want,
+        }));
+    }
+    for tab in opened {
+        window.close_tab(tab.id);
+    }
+    Ok(())
+}
+
 pub(super) async fn run(
     window: &Rc<BrowserWindow>,
     server: &FixtureServer,
@@ -115,6 +156,8 @@ pub(super) async fn run(
     steps: &mut Vec<Value>,
 ) -> Result<(), String> {
     let first = window.active_tab().ok_or("no tab")?;
+    cycle_steps(window, steps).await?;
+    select(window, &first);
     let media = open_playing(window, MEDIA_PAGE).await?;
     exec::sleep(Duration::from_millis(300)).await;
     shoot(window, out_dir, "30-tab-plays-sound", steps, |_| {
