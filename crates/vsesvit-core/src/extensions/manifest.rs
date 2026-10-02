@@ -169,6 +169,8 @@ pub struct MatchPattern {
     source: String,
     scheme: SchemeMatch,
     host: HostMatch,
+    /// `None` matches any port.
+    port: Option<u16>,
     path: String,
 }
 
@@ -195,7 +197,7 @@ impl MatchPattern {
     pub fn parse(s: &str) -> Result<Self, ManifestError> {
         let bad = || ManifestError::BadPattern(s.to_owned());
         if s == "<all_urls>" {
-            return Ok(MatchPattern { source: s.to_owned(), scheme: SchemeMatch::AllUrls, host: HostMatch::Any, path: "*".into() });
+            return Ok(MatchPattern { source: s.to_owned(), scheme: SchemeMatch::AllUrls, host: HostMatch::Any, port: None, path: "*".into() });
         }
         let (scheme, rest) = s.split_once("://").ok_or_else(bad)?;
         let scheme = match scheme {
@@ -206,8 +208,16 @@ impl MatchPattern {
         let slash = rest.find('/').ok_or_else(bad)?;
         let (host, path) = rest.split_at(slash);
         let is_file = scheme == SchemeMatch::Exact("file".into());
-        // Ports are accepted and ignored, as Chrome does.
-        let host = host.rsplit_once(':').map_or(host, |(h, port)| if port == "*" || port.parse::<u16>().is_ok() { h } else { host });
+        // As in Chrome, a pattern without a port (or with `*`) matches any port, and an explicit
+        // port must be the URL's.
+        let (host, port) = match host.rsplit_once(':') {
+            Some((h, "*")) => (h, None),
+            Some((h, p)) => match p.parse::<u16>() {
+                Ok(p) => (h, Some(p)),
+                Err(_) => (host, None),
+            },
+            None => (host, None),
+        };
         let host = match host.to_ascii_lowercase() {
             h if h.is_empty() && is_file => HostMatch::Any,
             h if h.is_empty() => return Err(bad()),
@@ -219,7 +229,7 @@ impl MatchPattern {
                 None => HostMatch::Exact(h),
             },
         };
-        Ok(MatchPattern { source: s.to_owned(), scheme, host, path: path.to_owned() })
+        Ok(MatchPattern { source: s.to_owned(), scheme, host, port, path: path.to_owned() })
     }
 
     pub fn as_str(&self) -> &str {
@@ -244,7 +254,7 @@ impl MatchPattern {
             HostMatch::DomainAndSubdomains(d) => host == *d || host.strip_suffix(d.as_str()).is_some_and(|p| p.ends_with('.')),
             HostMatch::Exact(h) => host == *h,
         };
-        if !host_ok {
+        if !host_ok || self.port.is_some_and(|p| url.port_or_known_default() != Some(p)) {
             return false;
         }
         let path = match url.query() {
@@ -882,6 +892,17 @@ mod tests {
         assert!(m("file:///*", "file:///home/x.html"));
         for bad in ["", "example.com", "https://", "https://*foo.com/", "gopher://x/", "https://a.*.com/"] {
             assert!(MatchPattern::parse(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn an_explicit_port_must_match_and_none_or_a_star_matches_any() {
+        assert!(m("http://localhost:3000/*", "http://localhost:3000/"));
+        assert!(!m("http://localhost:3000/*", "http://localhost:8080/"));
+        assert!(m("https://example.com:443/*", "https://example.com/"));
+        for any in ["http://localhost/*", "http://localhost:*/*"] {
+            assert!(m(any, "http://localhost:3000/"), "{any}");
+            assert!(m(any, "http://localhost:8080/"), "{any}");
         }
     }
 
