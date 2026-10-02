@@ -220,7 +220,8 @@ impl Browser {
         self.sync_extensions().await
     }
 
-    /// Unloads the extension from the engine first, so core can delete its files.
+    /// Unloads the extension from the engine first, so core can delete its files. When core
+    /// refuses, the extension goes back into the engine and keeps running.
     pub(crate) async fn uninstall_extension(
         self: &Rc<Self>,
         id: &ExtensionId,
@@ -235,8 +236,10 @@ impl Browser {
                 engine_call(ENGINE_CALL_TIMEOUT, loaded.remove()).await?;
             }
         }
-        self.core(|p| p.extensions().uninstall(id))
-            .map_err(|e| e.to_string())?;
+        if let Err(e) = self.core(|p| p.extensions().uninstall(id)) {
+            let _ = self.sync_extensions().await;
+            return Err(e.to_string());
+        }
         self.extensions.notify();
         self.sync_extensions().await
     }

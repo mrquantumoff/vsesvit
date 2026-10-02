@@ -3367,6 +3367,7 @@ dependencies = [
  "javascriptcore6",
  "libadwaita",
  "log",
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",

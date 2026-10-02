@@ -40,3 +40,5 @@ gio = { version = "0.22", features = ["v2_80"] }
 # The tests' fixture servers let core fetch icons from loopback hosts, with or without the
 # self-test feature.
 vsesvit-core = { workspace = true, features = ["testkit"] }
+# To hold the test profile's database while an uninstall tries to write it.
+rusqlite = { version = "0.40", features = ["bundled"] }

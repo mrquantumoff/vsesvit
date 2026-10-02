@@ -269,4 +269,26 @@ mod tests {
         browser.set_extension_enabled(&id, false).unwrap();
         assert_eq!(browser.extension_error(&id), None);
     }
+
+    #[gtk::test]
+    async fn an_uninstall_the_profile_refuses_keeps_the_extension_running() {
+        use crate::test_support::{browser, scratch_dir};
+
+        let browser = browser();
+        let dir = scratch_dir("uninstall-refused");
+        std::fs::write(dir.join("manifest.json"), r#"{ "manifest_version": 3, "name": "Kept", "version": "1.0" }"#).unwrap();
+        let installed = browser.install(InstallSource::from_path(&dir).unwrap(), |_| {}).await;
+        let id = installed.expect("the extension installs").expect("and is committed").id;
+        assert!(browser.runtime().loaded().contains(&id));
+
+        let db = browser.core().borrow().paths().db.clone();
+        let blocker = rusqlite::Connection::open(db).unwrap();
+        blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        assert!(browser.uninstall_extension(&id).is_err(), "the profile is locked");
+        assert!(browser.runtime().loaded().contains(&id), "the extension stopped");
+
+        blocker.execute_batch("COMMIT").unwrap();
+        browser.uninstall_extension(&id).unwrap();
+        assert!(!browser.runtime().loaded().contains(&id));
+    }
 }
