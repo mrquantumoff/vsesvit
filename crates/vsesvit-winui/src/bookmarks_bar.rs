@@ -640,7 +640,7 @@ impl Bar {
                     let entry = MenuFlyoutItem::new()?;
                     entry.SetText(&menu_label(title))?;
                     entry.SetIcon(&link_icon(icon.clone())?)?;
-                    ToolTipService::SetToolTip(&entry, &xaml::boxed(&format!("{title}\n{url}"))?)?;
+                    xaml::set_tip(&entry, &format!("{title}\n{url}"))?;
                     let (url, host) = (url.clone(), self.host.clone());
                     entry
                         .Click(move |_, _| host(BarCommand::Open(url.clone(), disposition())))?
