@@ -400,12 +400,7 @@ fn context_model(widget: &gtk::Widget, target: &Target) -> (gio::Menu, gio::Simp
             menu.append_section(None, &opens);
             menu.append_section(None, &edits);
             let editable = !folder.node.id.is_root();
-            add("open-all", !links.is_empty(), Box::new(move |window| {
-                for (i, url) in links.iter().enumerate() {
-                    let focus = if i == 0 { Focus::Foreground } else { Focus::Background };
-                    window.open_tab(Some(url.as_str()), None, focus);
-                }
-            }));
+            add("open-all", !links.is_empty(), Box::new(move |window| window.open_tabs(&links)));
             add("rename", editable, Box::new({
                 let node = folder.node.clone();
                 move |window| edit(window, Subject::Existing(node.clone()))
