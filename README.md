@@ -1,10 +1,31 @@
-# Vsesvit
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="packaging/icons/DarkBG.svg">
+    <img src="packaging/icons/WhiteBG.svg" alt="Vsesvit logo" width="160">
+  </picture>
+</p>
 
-A web browser for Windows 11 and Linux, written in Rust. On Windows it is a WinUI 3 app around WebView2. On Linux it is a GTK4/libadwaita app around WebKitGTK. Both install Chrome Web Store and Microsoft Edge Add-ons extensions, and both store bookmarks, history, open tabs, extensions and settings in a sync-ready format.
+<h1 align="center">Vsesvit</h1>
+
+<p align="center">A native web browser for Windows 11 and Linux, written in Rust, that installs Chrome Web Store extensions and syncs through a server you can host yourself.</p>
+
+Vsesvit gives each platform a shell built with its own toolkit around the platform's own web engine, on top of one shared Rust core. On Windows it is a WinUI 3 app around WebView2. On Linux it is a GTK4/libadwaita app around WebKitGTK.
+
+## Features
+
+- **Chrome Web Store extensions on both platforms.** Install from the Chrome Web Store, Microsoft Edge Add-ons or Firefox's AMO, or from a local `.crx`/`.xpi` file or an unpacked directory. Every CRX3 signature is verified before anything is unpacked. WebView2 runs the extensions on Windows, and Vsesvit's own WebExtensions runtime (`vsesvit-webext`) runs them on Linux.
+- **Vertical tabs.** A sidebar on the left by default. You can move it to the right or go back to a strip along the top.
+- **Sync you can host.** Bookmarks, history, open tabs, extensions, settings, search engines and site permissions sync through [a small server](server/README.md) (Docker image, SQLite or Postgres) that signs people in with the OpenID Connect provider you choose. The server stores records and never reads or merges them.
+- **Sync-ready from the start.** All data lives in one SQLite file per profile, in a format that merges the same way whatever order changes arrive in. Secrets are sealed with DPAPI on Windows and the Secret Service on Linux.
+- **Packaged for each system.** An NSIS installer on Windows. deb, rpm, pacman, AppImage and Flatpak on Linux. Everything except Flatpak updates itself ([docs/design/packaging.md](docs/design/packaging.md)).
+
+## Install
+
+Builds are published on [GitHub Releases](https://github.com/mrquantumoff/vsesvit/releases), on four channels: stable, beta, weekly and nightly. Linux needs Ubuntu 26.04 or newer, or an equivalent with GTK 4.22, libadwaita 1.9 and WebKitGTK 2.52. To build from source, see below.
 
 The plan, the decisions and their evidence are in [docs/PLAN.md](docs/PLAN.md).
 
-## Build and run
+## Build from source
 
 ### Linux
 
