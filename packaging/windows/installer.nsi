@@ -24,7 +24,9 @@ SetCompressor /SOLID lzma
 
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
 !define CLIENTKEY "Software\Clients\StartMenuInternet\${PRODUCTNAME}"
-!define PROGID "${PRODUCTNAME}HTML"
+; https UserChoice stores this name; platform.rs reads it to tell whether Vsesvit is the default.
+!define HTML_PROGID "${PRODUCTNAME}HTML"
+!define PDF_PROGID "${PRODUCTNAME}PDF"
 !define EXE "$INSTDIR\${BINARY}.exe"
 !define ICON "$INSTDIR\${BINARY}.ico"
 !define /ifndef SHCNE_ASSOCCHANGED 0x08000000
@@ -89,27 +91,40 @@ VIAddVersionKey "LegalCopyright" "Copyright ${PUBLISHER}"
 !macroend
 
 ; File types and URL schemes offered in Default Apps. Registering never makes Vsesvit the default.
+; The documents are the ones Chromium offers, PDF included, plus the MHTML archives Save Page As
+; writes. The Linux desktop entry lists these and the images and feeds a browser is expected to open.
 !macro ForEachAssociation MACRO
-  !insertmacro ${MACRO} FileAssociations ".htm"
-  !insertmacro ${MACRO} FileAssociations ".html"
-  !insertmacro ${MACRO} FileAssociations ".shtml"
-  !insertmacro ${MACRO} FileAssociations ".xht"
-  !insertmacro ${MACRO} FileAssociations ".xhtml"
-  !insertmacro ${MACRO} URLAssociations "http"
-  !insertmacro ${MACRO} URLAssociations "https"
+  !insertmacro ${MACRO} FileAssociations ".htm" "${HTML_PROGID}"
+  !insertmacro ${MACRO} FileAssociations ".html" "${HTML_PROGID}"
+  !insertmacro ${MACRO} FileAssociations ".shtml" "${HTML_PROGID}"
+  !insertmacro ${MACRO} FileAssociations ".xht" "${HTML_PROGID}"
+  !insertmacro ${MACRO} FileAssociations ".xhtml" "${HTML_PROGID}"
+  !insertmacro ${MACRO} FileAssociations ".svg" "${HTML_PROGID}"
+  !insertmacro ${MACRO} FileAssociations ".webp" "${HTML_PROGID}"
+  !insertmacro ${MACRO} FileAssociations ".mht" "${HTML_PROGID}"
+  !insertmacro ${MACRO} FileAssociations ".mhtml" "${HTML_PROGID}"
+  !insertmacro ${MACRO} FileAssociations ".pdf" "${PDF_PROGID}"
+  !insertmacro ${MACRO} URLAssociations "http" "${HTML_PROGID}"
+  !insertmacro ${MACRO} URLAssociations "https" "${HTML_PROGID}"
 !macroend
-!macro RegisterAssociation KIND NAME
+!macro RegisterAssociation KIND NAME PROGID
   WriteRegStr HKCU "${CLIENTKEY}\Capabilities\${KIND}" "${NAME}" "${PROGID}"
   !if "${KIND}" == "FileAssociations"
     WriteRegStr HKCU "Software\Classes\${NAME}\OpenWithProgids" "${PROGID}" ""
   !endif
 !macroend
-!macro UnregisterAssociation KIND NAME
+!macro UnregisterAssociation KIND NAME PROGID
   !if "${KIND}" == "FileAssociations"
     DeleteRegValue HKCU "Software\Classes\${NAME}\OpenWithProgids" "${PROGID}"
     DeleteRegKey /ifempty HKCU "Software\Classes\${NAME}\OpenWithProgids"
     DeleteRegKey /ifempty HKCU "Software\Classes\${NAME}"
   !endif
+!macroend
+!macro RegisterProgId PROGID DESCRIPTION
+  WriteRegStr HKCU "Software\Classes\${PROGID}" "" "${DESCRIPTION}"
+  WriteRegStr HKCU "Software\Classes\${PROGID}\DefaultIcon" "" "${ICON}"
+  ; `--` so a link can never be read as a command line option.
+  WriteRegStr HKCU "Software\Classes\${PROGID}\shell\open\command" "" '"${EXE}" -- "%1"'
 !macroend
 
 ; Waits a few seconds for a running Vsesvit from $INSTDIR to exit (the updater quits right
@@ -220,10 +235,8 @@ Section "-Install"
   WriteRegStr HKCU "${CLIENTKEY}\Capabilities\StartMenu" "StartMenuInternet" "${PRODUCTNAME}"
   !insertmacro ForEachAssociation RegisterAssociation
   WriteRegStr HKCU "Software\RegisteredApplications" "${PRODUCTNAME}" "${CLIENTKEY}\Capabilities"
-  WriteRegStr HKCU "Software\Classes\${PROGID}" "" "${PRODUCTNAME} HTML Document"
-  WriteRegStr HKCU "Software\Classes\${PROGID}\DefaultIcon" "" "${ICON}"
-  ; `--` so a link can never be read as a command line option.
-  WriteRegStr HKCU "Software\Classes\${PROGID}\shell\open\command" "" '"${EXE}" -- "%1"'
+  !insertmacro RegisterProgId "${HTML_PROGID}" "${PRODUCTNAME} HTML Document"
+  !insertmacro RegisterProgId "${PDF_PROGID}" "${PRODUCTNAME} PDF Document"
   System::Call 'shell32::SHChangeNotify(i ${SHCNE_ASSOCCHANGED}, i 0, p 0, p 0)'
 
   ; An update keeps whatever shortcuts the user has, including none.
@@ -322,7 +335,8 @@ Section "Uninstall"
   Delete "$DESKTOP\${PRODUCTNAME}.lnk"
 
   !insertmacro ForEachAssociation UnregisterAssociation
-  DeleteRegKey HKCU "Software\Classes\${PROGID}"
+  DeleteRegKey HKCU "Software\Classes\${HTML_PROGID}"
+  DeleteRegKey HKCU "Software\Classes\${PDF_PROGID}"
   DeleteRegValue HKCU "Software\RegisteredApplications" "${PRODUCTNAME}"
   DeleteRegKey HKCU "${CLIENTKEY}"
   DeleteRegKey HKCU "${UNINSTKEY}"
