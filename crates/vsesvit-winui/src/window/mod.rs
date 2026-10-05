@@ -10,6 +10,7 @@
 
 mod address;
 mod chrome;
+mod cookies;
 mod media;
 mod permissions;
 mod progress;
@@ -850,9 +851,15 @@ impl BrowserWindow {
             .security_report()
             .and_then(|json| connection::parse_report(&json));
         let host = connection::host_of(&url);
-        let content =
-            connection::content(&url, &host, report.as_ref(), self.tracking_status(&tab))?;
+        let content = connection::content(
+            &url,
+            &host,
+            report.as_ref(),
+            self.tracking_status(&tab),
+            self.cookies_status(&tab),
+        )?;
         self.wire_tracking_switch(&content, &tab)?;
+        self.wire_cookies_choice(&content, &tab)?;
         if let (Ok(button), Some(report)) =
             (xaml::find::<Button>(&content, "ShowCertificate"), report)
         {

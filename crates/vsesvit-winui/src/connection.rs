@@ -1,7 +1,7 @@
 //! The popup of the security icon at the start of the address bar: whether the connection is
-//! secure, the host, tracking protection's switch for the site, the site's permissions (filled
-//! by the window), the TLS parameters and the site's certificate chain, and Chrome's "Show
-//! certificate" button, which opens the Windows certificate viewer.
+//! secure, the host, tracking protection's switch for the site, the site's cookie rule, the
+//! site's permissions (filled by the window), the TLS parameters and the site's certificate
+//! chain, and Chrome's "Show certificate" button, which opens the Windows certificate viewer.
 //!
 //! Each tab keeps the engine's last `Security.visibleSecurityStateChanged` report (the DevTools
 //! protocol's view of the page's connection: the TLS parameters and the chain as base64 DER),
@@ -13,6 +13,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::Value;
 use vsesvit_core::certificate::{self, Certificate};
+use vsesvit_core::cookies;
+use vsesvit_core::permissions::Setting;
 use vsesvit_core::trackers;
 use windows_core::{Interface, Result};
 
@@ -199,11 +201,14 @@ fn local_date(unix: i64) -> String {
 
 /// The popup's content for the page at `url` on `host`. `tracking`: tracking protection's switch
 /// for the site, on or off, and how many trackers it blocked on the page; `None` for no switch.
+/// `cookies`: the site's cookie rule, and whether third-party cookies are blocked on the page;
+/// `None` for no choice.
 pub(crate) fn content(
     url: &str,
     host: &str,
     report: Option<&Report>,
     tracking: Option<(bool, usize)>,
+    cookies: Option<(Option<Setting>, bool)>,
 ) -> Result<FrameworkElement> {
     let headline = Headline::of(url, report);
     let (glyph, title, explanation) = headline.text();
@@ -229,6 +234,9 @@ pub(crate) fn content(
             xaml::escape(trackers::TITLE),
             xaml::escape(&trackers::site_status(on, Some(blocked)))
         ));
+    }
+    if let Some((setting, blocked)) = cookies {
+        body.push_str(&cookies_markup(setting, blocked));
     }
     body.push_str(r#"<StackPanel x:Name="SitePermissions" Visibility="Collapsed"/>"#);
     let report = report.filter(|_| headline != Headline::Local);
@@ -256,6 +264,26 @@ pub(crate) fn content(
              </StackPanel>
            </ScrollViewer>"#
     ))
+}
+
+/// The site's cookie rule, offered as `cookies::site_choices`, and what it means on the page.
+fn cookies_markup(setting: Option<Setting>, blocked: bool) -> String {
+    let choices = cookies::site_choices(setting, true);
+    let selected = choices.iter().position(|c| *c == setting).unwrap_or(0);
+    let items: String = choices
+        .iter()
+        .map(|c| format!(r#"<ComboBoxItem Content="{}"/>"#, cookies::choice_label(*c)))
+        .collect();
+    format!(
+        r#"<StackPanel Spacing="4">
+             <Border Height="1" Margin="0,4" Background="{{ThemeResource DividerStrokeColorDefaultBrush}}"/>
+             <ComboBox x:Name="CookiesChoice" Header="{title}" SelectedIndex="{selected}" MinWidth="200">{items}</ComboBox>
+             <TextBlock x:Name="CookiesStatus" Text="{status}" TextWrapping="Wrap"
+                        Style="{{StaticResource CaptionTextBlockStyle}}" Foreground="{{ThemeResource TextFillColorSecondaryBrush}}"/>
+           </StackPanel>"#,
+        title = xaml::escape(cookies::SITE_TITLE),
+        status = xaml::escape(cookies::site_status(blocked, setting)),
+    )
 }
 
 fn certificate_markup(leaf: &Parsed, chain: &[Parsed]) -> String {
