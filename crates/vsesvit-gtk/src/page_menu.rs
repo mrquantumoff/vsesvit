@@ -1,7 +1,8 @@
 //! The page's context menu. With text selected, Chrome's item for it follows Copy: it
 //! searches the default engine for the text, or goes to it when it is an address, in a new tab
-//! next to the page. On the page itself, Print and View Page Source come before Inspect Element.
-//! Extensions' items (`chrome.contextMenus`) come last, before Inspect Element.
+//! next to the page. On a link, Copy Link Without Tracking follows Copy Link Address. On the
+//! page itself, Print and View Page Source come before Inspect Element. Extensions' items
+//! (`chrome.contextMenus`) come last, before Inspect Element.
 //!
 //! WebKit hands over no selected text with the menu and does not say which frame it is for, so
 //! a script in a world of its own tells the tab whenever the selection changes, in any frame,
@@ -66,6 +67,9 @@ pub(crate) fn attach(tab: &Tab) {
         move |_, menu, hit| {
             // A report left over from a menu the page cancelled must not stand for this one.
             let clicked = clicked.take();
+            if let Some(link) = hit.link_uri().filter(|_| hit.context_is_link()) {
+                add_link_item(&tab, menu, &link);
+            }
             if hit.context_is_selection() {
                 add_selection_item(&tab, menu);
             } else if is_page(hit) {
@@ -132,6 +136,25 @@ pub(crate) fn add_selection_item(tab: &Tab, menu: &webkit::ContextMenu) -> Optio
         None => menu.append(&item),
     }
     Some(item)
+}
+
+/// Adds the item that copies `link` without its tracking parameters, right after Copy Link
+/// Address, or last when the menu has no such item.
+pub(crate) fn add_link_item(tab: &Tab, menu: &webkit::ContextMenu, link: &str) -> webkit::ContextMenuItem {
+    let copy = gio::SimpleAction::new("copy-clean-link", None);
+    let clean = vsesvit_core::clean_url::clean(link);
+    copy.connect_activate(glib::clone!(
+        #[weak]
+        tab,
+        move |_, _| tab.clipboard().set_text(&clean)
+    ));
+    let item = webkit::ContextMenuItem::from_gaction(&copy, "Copy Link _Without Tracking", None);
+    let after = menu.items().iter().position(|item| item.stock_action() == webkit::ContextMenuAction::CopyLinkToClipboard);
+    match after.and_then(|at| i32::try_from(at + 1).ok()) {
+        Some(at) => menu.insert(&item, at),
+        None => menu.append(&item),
+    }
+    item
 }
 
 /// A click on the page itself, not on a link, an image, media, a field or a scrollbar.

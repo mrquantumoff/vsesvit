@@ -27,6 +27,10 @@ impl<T> ClosedTabs<T> {
         self.items.push_back(item);
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     /// The most recently closed tab.
     pub(crate) fn pop(&mut self) -> Option<T> {
         self.items.pop_back()

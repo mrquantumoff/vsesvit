@@ -47,7 +47,7 @@ fn window_snapshot(window: &BrowserWindow) -> Option<WindowSnapshot> {
             id: tab.session_id(),
             url,
             title: tab.display_title(),
-            pinned: false,
+            pinned: window.is_pinned(&tab),
             last_active_ms: tab.last_active_ms(),
             restore_state: tab.session_state_bytes(),
         });
@@ -101,6 +101,7 @@ pub(crate) fn restore(browser: &Browser, snapshot: SessionSnapshot) -> usize {
         let mut selected = None;
         for (index, tab_state) in saved.tabs.into_iter().enumerate() {
             let tab = window.open_tab(None, None, Focus::Background);
+            window.set_pinned(&tab, tab_state.pinned);
             tab.set_session_id(tab_state.id);
             tab.mark_active(tab_state.last_active_ms);
             tab.restore_saved(tab_state.restore_state.as_deref(), tab_state.url.as_str());
@@ -178,6 +179,40 @@ mod tests {
             .expect("the restored tab is saved");
         assert_eq!(tab.url.as_str(), b);
         assert!(tab.restore_state.is_some(), "its back/forward state was dropped");
+    }
+
+    #[gtk::test]
+    fn pinned_tabs_are_restored_pinned_and_saved_again() {
+        let server = Server::start("127.0.0.1", |_| Reply::Page("Pinned"));
+        let browser = browser();
+        let saved = |path: &str, pinned| TabSnapshot {
+            id: vsesvit_core::session::TabId::new(),
+            url: Url::parse(&server.url(path)).unwrap(),
+            title: String::new(),
+            pinned,
+            last_active_ms: 0,
+            restore_state: None,
+        };
+        restore(
+            &browser,
+            SessionSnapshot {
+                device_name: String::new(),
+                windows: vec![WindowSnapshot {
+                    tabs: vec![saved("/a", true), saved("/b", false)],
+                    active_tab: 1,
+                    bounds: None,
+                    maximized: false,
+                }],
+                active_window: 0,
+            },
+        );
+        let window = browser.windows()[0].clone();
+        let shown: Vec<bool> = window.tabs().iter().map(|tab| window.is_pinned(tab)).collect();
+        let resaved = window_snapshot(&window).expect("the window is saved");
+        window.destroy();
+        assert_eq!(shown, [true, false]);
+        let pins: Vec<(String, bool)> = resaved.tabs.iter().map(|t| (t.url.path().to_owned(), t.pinned)).collect();
+        assert_eq!(pins, [("/a".to_owned(), true), ("/b".to_owned(), false)]);
     }
 
     #[gtk::test]

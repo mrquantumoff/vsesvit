@@ -82,6 +82,7 @@ const CHECKS: [&str; 42] = [
     "tabs",
     "tab_animation",
     "tab_layout",
+    "tab_menu",
     "popup",
     "extension_toolbar",
     "context_menus",
@@ -593,6 +594,144 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         if stored != TabsPosition::Left {
             return Err(format!("tabs.position ended as {stored:?}"));
         }
+        Ok(details.join("; "))
+    })
+    .await;
+
+    ctx.check("tab_menu", CHECK_TIMEOUT, |last| async move {
+        let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let tracked = format!("{page2_url}?utm_source=self-test&a=1");
+        let clean = format!("{page2_url}?a=1");
+        let second = window.open_tab(Some(&tracked), None, Focus::Background);
+        wait_for(&last, || match second.committed_uri() {
+            Some(uri) if uri == tracked => Ok(()),
+            uri => Err(format!("the second tab is at {uri:?}")),
+        })
+        .await;
+        let choose = |tab: &Tab, action: &str| -> Result<(), String> {
+            let menu = window.open_tab_menu(tab).ok_or_else(|| "the row opened no menu".to_owned())?;
+            menu.popdown();
+            WidgetExt::activate_action(window, &format!("tab.{action}"), None).map_err(|e| format!("tab.{action}: {e}"))
+        };
+        let copied = || async { window.clipboard().read_text_future().await.ok().flatten().map(String::from).unwrap_or_default() };
+        let mut details = Vec::new();
+
+        let menu = window.open_tab_menu(&first).ok_or_else(|| "the first tab's row opened no menu".to_owned())?;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[menu.clone().upcast()], &ctx.out_dir.join("tab-menu.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        menu.popdown();
+        let lines = window.tab_menu_lines();
+        let reopen = browser.can_reopen_closed_tab();
+        let wanted = [
+            vec![("_New Tab Below", true), ("Move Tab to New _Window", true)],
+            vec![("_Reload", true), ("_Duplicate", true), ("P_in Tab", true), ("_Mute Tab", true), ("Copy _Link", true)],
+            vec![("_Close Tab", true), ("Close _Other Tabs", true), ("Close Tabs _Below", true), ("R_eopen Closed Tab", reopen)],
+        ];
+        let wanted: Vec<Vec<(String, bool)>> = wanted.iter().map(|s| s.iter().map(|&(l, e)| (l.to_owned(), e)).collect()).collect();
+        if lines != wanted {
+            return Err(format!("the menu reads {lines:?}"));
+        }
+        details.push("the menu has Chrome's items, with Below in the sidebar (tab-menu.png)".to_owned());
+
+        choose(&second, "copy-link")?;
+        let from_menu = copied().await;
+        let accels = browser.app().accels_for_action("win.copy-clean-link");
+        window.select_tab(&second);
+        gio::prelude::ActionGroupExt::activate_action(window, "copy-link", None);
+        let whole = copied().await;
+        gio::prelude::ActionGroupExt::activate_action(window, "copy-clean-link", None);
+        let from_key = copied().await;
+        let page_menu = webkit::ContextMenu::new();
+        page_menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::CopyLinkToClipboard));
+        page_menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::InspectElement));
+        let item = crate::page_menu::add_link_item(&second, &page_menu, &tracked);
+        let at = page_menu.items().iter().position(|i| i == &item);
+        item.gaction().ok_or_else(|| "the link item has no action".to_owned())?.activate(None);
+        let from_page = copied().await;
+        window.select_tab(&first);
+        if from_menu != clean || whole != tracked || from_key != clean || from_page != clean || at != Some(1) || accels.iter().all(|a| a != "<Control><Shift>c") {
+            return Err(format!(
+                "Copy Link gave {from_menu:?}, win.copy-link {whole:?}, win.copy-clean-link ({accels:?}) {from_key:?}, the link's item at {at:?} {from_page:?}"
+            ));
+        }
+        details.push(format!("Copy Link, Ctrl+Shift+C and the link's Copy Link Without Tracking copy {clean}"));
+
+        choose(&first, "duplicate")?;
+        let copy = window.selected_tab().filter(|t| *t != first).ok_or_else(|| "duplicating selected no new tab".to_owned())?;
+        wait_for(&last, || match (window.tabs(), copy.committed_uri()) {
+            (tabs, Some(uri)) if tabs == [first.clone(), copy.clone(), second.clone()] && uri == index_url.as_str() => Ok(()),
+            (tabs, uri) => Err(format!("{} tabs; the duplicate is at {uri:?}", tabs.len())),
+        })
+        .await;
+        details.push("Duplicate opened the page again next to it".to_owned());
+
+        choose(&second, "pin")?;
+        let row = window.tab_row_buttons(&second);
+        let saved = crate::session::snapshot(browser).windows.iter().flat_map(|w| w.tabs.clone()).find(|t| t.id == second.session_id()).map(|t| t.pinned);
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("tab-pinned.png")).await.map_err(|e| e.to_string())?;
+        window.open_tab_menu(&second).ok_or_else(|| "the pinned row opened no menu".to_owned())?.popdown();
+        let unpin = window.tab_menu_lines().concat().iter().any(|(label, _)| label == "Unp_in Tab");
+        let leads = window.tabs().first() == Some(&second);
+        if !leads || !window.is_pinned(&second) || row != Some((false, true)) || saved != Some(true) || !unpin {
+            return Err(format!("after Pin Tab: first={leads} row (close, pin)={row:?} saved pinned={saved:?} menu offers Unpin={unpin}"));
+        }
+        details.push("Pin Tab moved it first, swapped its close button for a pin, and the session saves it pinned (tab-pinned.png)".to_owned());
+
+        choose(&second, "mute")?;
+        let muted = (second.web_view().is_muted(), window.tab_indicator(&second));
+        let clicked = window.click_tab_indicator(&second);
+        let unmuted = (second.web_view().is_muted(), window.tab_indicator(&second));
+        if muted != (true, Some(("audio-volume-muted-symbolic".to_owned(), "Unmute Tab".to_owned()))) || !clicked || unmuted != (false, None) {
+            return Err(format!("muted {muted:?}; clicking the speaker ({clicked}) left {unmuted:?}"));
+        }
+        details.push("Mute Tab muted it and showed the muted speaker, which unmutes it".to_owned());
+
+        choose(&first, "close-others")?;
+        let after_others = window.tabs();
+        choose(&first, "reopen-closed")?;
+        let reopened = window.selected_tab().filter(|t| *t != first).ok_or_else(|| "reopening selected no tab".to_owned())?;
+        let after_reopen = window.tabs();
+        wait_for(&last, || match reopened.committed_uri() {
+            Some(uri) if uri == index_url.as_str() => Ok(()),
+            uri => Err(format!("the reopened tab is at {uri:?}")),
+        })
+        .await;
+        choose(&first, "close-after")?;
+        let after_below = window.tabs();
+        choose(&first, "new-tab-next")?;
+        let new = window.selected_tab().filter(|t| *t != first).ok_or_else(|| "New Tab Below selected no new tab".to_owned())?;
+        let new_at = window.tabs().iter().position(|t| *t == new);
+        let blank = new.is_blank();
+        window.close_tab(&new);
+        let pair = [second.clone(), first.clone()];
+        if after_others != pair || after_reopen != [second.clone(), first.clone(), reopened.clone()] || after_below != pair || new_at != Some(2) || !blank {
+            return Err(format!(
+                "tabs after Close Other Tabs {}, Reopen Closed Tab {}, Close Tabs Below {}; New Tab Below at {new_at:?}, blank={blank}",
+                after_others.len(),
+                after_reopen.len(),
+                after_below.len()
+            ));
+        }
+        details.push("Close Other Tabs kept the pinned tab, Reopen Closed Tab brought the closed one back, Close Tabs Below closed it, New Tab Below opened under the tab".to_owned());
+
+        let windows_before = browser.windows().len();
+        choose(&second, "move-to-new-window")?;
+        let moved = browser.windows().into_iter().find(|w| w != window).ok_or_else(|| "no new window".to_owned())?;
+        let moved_tabs = (moved.tabs() == [second.clone()], moved.is_pinned(&second), window.tabs() == [first.clone()]);
+        moved.close();
+        wait_for(&last, || {
+            let open = browser.windows().len();
+            if open == windows_before { Ok(()) } else { Err(format!("{open} windows after closing the moved tab's")) }
+        })
+        .await;
+        window.select_tab(&first);
+        if moved_tabs != (true, true, true) {
+            return Err(format!("after Move Tab to New Window (alone there, pinned, left alone here): {moved_tabs:?}"));
+        }
+        details.push("Move Tab to New Window moved it, still pinned".to_owned());
         Ok(details.join("; "))
     })
     .await;

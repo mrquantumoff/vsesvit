@@ -8,6 +8,7 @@ mod ext_actions;
 mod layout;
 mod menu;
 mod tab_list;
+mod tab_menu;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
@@ -17,6 +18,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::bookmarks::BookmarkNode;
+use vsesvit_core::clean_url;
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::extensions::manifest::ACTION_COMMANDS;
 use vsesvit_core::history::Transition;
@@ -115,6 +117,7 @@ mod imp {
         pub(super) closing: Cell<bool>,
         pub(super) prompt: RefCell<Option<ShownPrompt>>,
         pub(super) fullscreen_notice_timeout: RefCell<Option<glib::SourceId>>,
+        pub(super) tab_menu: tab_menu::TabMenu,
     }
 
     #[glib::object_subclass]
@@ -161,6 +164,7 @@ impl BrowserWindow {
         let ui = window.build_ui();
         assert!(imp.ui.set(ui).is_ok(), "new runs once per window");
         actions::install(&window);
+        tab_menu::install(&window);
         window.connect_signals();
         window.apply_prefs();
         window.refresh_bookmarks_bar();
@@ -361,7 +365,7 @@ impl BrowserWindow {
             glib::Propagation::Proceed,
             move |view, page| {
                 if let Ok(tab) = page.child().downcast::<Tab>() {
-                    window.browser().tab_closed(&tab, view.page_position(page));
+                    window.browser().tab_closed(&tab, view.page_position(page), page.is_pinned());
                 }
                 // The last tab of the last window is saved while it still exists, so that,
                 // as in Chrome, the next start restores it.
@@ -385,6 +389,12 @@ impl BrowserWindow {
             self,
             move |_| window.close_if_empty()
         ));
+        view.connect_indicator_activated(|_, page| {
+            if let Ok(tab) = page.child().downcast::<Tab>() {
+                let web_view = tab.web_view();
+                web_view.set_is_muted(!web_view.is_muted());
+            }
+        });
         view.connect_create_window(glib::clone!(
             #[weak(rename_to = window)]
             self,
@@ -735,6 +745,23 @@ impl BrowserWindow {
         Some((name, page.indicator_tooltip().to_string()))
     }
 
+    /// Clicks the icon on `tab`'s tab, as on the tab bar or in the list. False when the icon
+    /// does nothing.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn click_tab_indicator(&self, tab: &Tab) -> bool {
+        let Some(page) = self.page_of(tab).filter(adw::TabPage::is_indicator_activatable) else {
+            return false;
+        };
+        self.ui().tab_view.emit_by_name::<()>("indicator-activated", &[&page]);
+        true
+    }
+
+    /// Whether `tab`'s row in the tab list shows its close button, and its pin.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn tab_row_buttons(&self, tab: &Tab) -> Option<(bool, bool)> {
+        self.ui().tab_list.row_buttons(&self.page_of(tab)?)
+    }
+
     // Extension actions.
 
     /// The toolbar shows the pinned actions in the synced order; the Extensions menu all.
@@ -898,6 +925,17 @@ impl BrowserWindow {
         }
     }
 
+    pub(crate) fn is_pinned(&self, tab: &Tab) -> bool {
+        self.page_of(tab).is_some_and(|page| page.is_pinned())
+    }
+
+    /// Pinned tabs lead the window's tabs.
+    pub(crate) fn set_pinned(&self, tab: &Tab, pinned: bool) {
+        if let Some(page) = self.page_of(tab) {
+            self.ui().tab_view.set_page_pinned(&page, pinned);
+        }
+    }
+
     pub(crate) fn close_tab(&self, tab: &Tab) {
         if let Some(page) = self.page_of(tab) {
             self.ui().tab_view.close_page(&page);
@@ -913,7 +951,12 @@ impl BrowserWindow {
     pub(crate) fn restore_closed(&self, closed: &ClosedTab) {
         let tab = Tab::new(self.browser());
         let view = &self.ui().tab_view;
-        let page = view.insert(&tab, closed.position.clamp(0, view.n_pages()));
+        let pinned = view.n_pinned_pages();
+        let page = if closed.pinned {
+            view.insert_pinned(&tab, closed.position.clamp(0, pinned))
+        } else {
+            view.insert(&tab, closed.position.clamp(pinned, view.n_pages()))
+        };
         view.set_selected_page(&page);
         tab.restore(closed.state.as_ref(), &closed.uri);
     }
@@ -988,6 +1031,14 @@ impl BrowserWindow {
         }
     }
 
+    /// Copies the tab's address, without its tracking parameters if `clean`, and says so.
+    pub(crate) fn copy_link(&self, tab: &Tab, clean: bool) {
+        let Some(link) = tab.link() else { return };
+        let text = if clean { clean_url::clean(&link) } else { link };
+        self.clipboard().set_text(&text);
+        self.toast(adw::Toast::new("Link copied"));
+    }
+
     pub(crate) fn focus_page(&self) {
         if let Some(tab) = self.selected_tab() {
             tab.web_view().grab_focus();
@@ -1041,6 +1092,7 @@ impl BrowserWindow {
                     self.sync_permission_prompt();
                 }
             }
+            TabChange::Audio => sync_indicator(&page, tab),
             TabChange::Capture => {
                 sync_indicator(&page, tab);
                 if selected {
@@ -1149,18 +1201,19 @@ impl BrowserWindow {
     }
 }
 
-/// The tab's in-use icon, while it captures.
+/// The tab's in-use icon while it captures, else its speaker while it is muted or plays
+/// sound, which mutes or unmutes it when clicked.
 fn sync_indicator(page: &adw::TabPage, tab: &Tab) {
-    match permissions::indicator(tab.capturing()) {
-        Some((icon, tooltip)) => {
-            page.set_indicator_icon(Some(&gio::ThemedIcon::new(icon)));
-            page.set_indicator_tooltip(&tooltip);
-        }
-        None => {
-            page.set_indicator_icon(None::<&gio::Icon>);
-            page.set_indicator_tooltip("");
-        }
-    }
+    let web_view = tab.web_view();
+    let (icon, tooltip, activatable) = match permissions::indicator(tab.capturing()) {
+        Some((icon, tooltip)) => (Some(icon), tooltip, false),
+        None if web_view.is_muted() => (Some("audio-volume-muted-symbolic"), "Unmute Tab".to_owned(), true),
+        None if web_view.is_playing_audio() => (Some("audio-volume-high-symbolic"), "Mute Tab".to_owned(), true),
+        None => (None, String::new(), false),
+    };
+    page.set_indicator_icon(icon.map(gio::ThemedIcon::new).as_ref());
+    page.set_indicator_tooltip(&tooltip);
+    page.set_indicator_activatable(activatable);
 }
 
 fn icon_button(icon: &str, action: &str, tooltip: &str) -> gtk::Button {

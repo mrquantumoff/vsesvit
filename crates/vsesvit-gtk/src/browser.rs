@@ -103,6 +103,7 @@ pub(crate) struct ClosedTab {
     pub(crate) uri: String,
     pub(crate) state: Option<webkit::WebViewSessionState>,
     pub(crate) position: i32,
+    pub(crate) pinned: bool,
 }
 
 impl Browser {
@@ -366,7 +367,7 @@ impl Browser {
 
     // Tabs.
 
-    pub(crate) fn tab_closed(&self, tab: &Tab, position: i32) {
+    pub(crate) fn tab_closed(&self, tab: &Tab, position: i32, pinned: bool) {
         permissions::closed(tab);
         self.runtime().tab_closed(tab.id());
         self.schedule_session_save();
@@ -378,6 +379,7 @@ impl Browser {
             uri,
             state,
             position,
+            pinned,
         });
     }
 
@@ -390,6 +392,10 @@ impl Browser {
     pub(crate) fn tab_activated(&self, tab: &Tab) {
         self.runtime().tab_activated(tab.id());
         self.schedule_session_save();
+    }
+
+    pub(crate) fn can_reopen_closed_tab(&self) -> bool {
+        !self.0.closed_tabs.borrow().is_empty()
     }
 
     pub(crate) fn reopen_closed_tab(&self, window: &BrowserWindow) {

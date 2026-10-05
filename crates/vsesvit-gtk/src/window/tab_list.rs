@@ -1,8 +1,9 @@
 //! The vertical tab list shown in the split view's sidebar: a row per page of the
 //! `AdwTabView`, kept in step with its page model, and selecting a row selects the page.
 //! Each row shows the favicon (or a spinner while loading), the title, the in-use icon
-//! while the page captures, and a close button; rows can be dragged to reorder, and a
-//! middle click closes a tab.
+//! while the page captures or its speaker while it plays sound, and a close button, or a
+//! pin for a pinned tab; rows can be dragged to reorder, a middle click closes a tab, and a
+//! right click, a long press or the Menu key opens the tab view's menu for it.
 //!
 //! A `GtkListBox` rather than a `GtkListView`, because the list owns its rows: a new tab's
 //! row grows in, and a closed tab's row shrinks out after its page is gone. The tab view
@@ -143,6 +144,21 @@ impl TabList {
             child = row.next_sibling();
         }
         pages
+    }
+
+    /// Opens the tab menu of the row showing `page`, as a right click on it does.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn open_menu(&self, page: &adw::TabPage) -> Option<gtk::PopoverMenu> {
+        let slot = self.rows.live.borrow().iter().find(|slot| slot.page().as_ref() == Some(page)).cloned()?;
+        slot.0.tab.open_menu(None)
+    }
+
+    /// Whether the row showing `page` has its close button, and its pin.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn row_buttons(&self, page: &adw::TabPage) -> Option<(bool, bool)> {
+        let live = self.rows.live.borrow();
+        let tab = &live.iter().find(|slot| slot.page().as_ref() == Some(page))?.0.tab;
+        Some((tab.imp().close.is_visible(), tab.imp().pin.is_visible()))
     }
 
     /// The opacity of the row showing `page`, while it grows in or is shown.
@@ -287,6 +303,22 @@ impl Slot {
             revealer.set_opacity(0.0);
         }
         let row = gtk::ListBoxRow::builder().child(&revealer).build();
+        let menu_key = gtk::Shortcut::new(
+            gtk::ShortcutTrigger::parse_string("<Shift>F10|Menu"),
+            Some(gtk::CallbackAction::new(glib::clone!(
+                #[weak]
+                tab,
+                #[upgrade_or]
+                glib::Propagation::Proceed,
+                move |_, _| {
+                    tab.open_menu(None);
+                    glib::Propagation::Stop
+                }
+            ))),
+        );
+        let keys = gtk::ShortcutController::new();
+        keys.add_shortcut(menu_key);
+        row.add_controller(keys);
         Slot(Rc::new(SlotInner {
             row,
             revealer,
@@ -334,6 +366,7 @@ mod imp {
         pub(super) title: gtk::Label,
         pub(super) indicator: gtk::Image,
         pub(super) close: gtk::Button,
+        pub(super) pin: gtk::Image,
         pub(super) bindings: RefCell<Vec<glib::Binding>>,
     }
 
@@ -392,6 +425,23 @@ impl TabRow {
         imp.close.add_css_class("flat");
         imp.close.add_css_class("circular");
         imp.close.add_css_class("tab-close");
+        imp.pin.set_icon_name(Some("view-pin-symbolic"));
+        imp.pin.set_tooltip_text(Some("Pinned Tab"));
+        imp.pin.add_css_class("dim-label");
+        let indicator_click = gtk::GestureClick::builder().button(gdk::BUTTON_PRIMARY).build();
+        indicator_click.connect_pressed(glib::clone!(
+            #[weak(rename_to = row)]
+            self,
+            move |gesture, _, _, _| {
+                if let (Some(view), Some(page)) = (row.imp().view.upgrade(), row.page())
+                    && page.is_indicator_activatable()
+                {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    view.emit_by_name::<()>("indicator-activated", &[&page]);
+                }
+            }
+        ));
+        imp.indicator.add_controller(indicator_click);
         imp.close.connect_clicked(glib::clone!(
             #[weak(rename_to = row)]
             self,
@@ -402,6 +452,7 @@ impl TabRow {
         self.append(&imp.title);
         self.append(&imp.indicator);
         self.append(&imp.close);
+        self.append(&imp.pin);
 
         let middle_click = gtk::GestureClick::builder()
             .button(gdk::BUTTON_MIDDLE)
@@ -412,6 +463,29 @@ impl TabRow {
             move |_, _, _, _| row.close()
         ));
         self.add_controller(middle_click);
+
+        let right_click = gtk::GestureClick::builder()
+            .button(gdk::BUTTON_SECONDARY)
+            .build();
+        right_click.connect_pressed(glib::clone!(
+            #[weak(rename_to = row)]
+            self,
+            move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                row.open_menu(Some((x, y)));
+            }
+        ));
+        self.add_controller(right_click);
+        let long_press = gtk::GestureLongPress::builder().touch_only(true).build();
+        long_press.connect_pressed(glib::clone!(
+            #[weak(rename_to = row)]
+            self,
+            move |gesture, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                row.open_menu(Some((x, y)));
+            }
+        ));
+        self.add_controller(long_press);
 
         let drag = gtk::DragSource::new();
         drag.set_actions(gdk::DragAction::MOVE);
@@ -476,6 +550,13 @@ impl TabRow {
             page.bind_property("indicator-tooltip", &imp.indicator, "tooltip-text")
                 .sync_create()
                 .build(),
+            page.bind_property("pinned", &imp.close, "visible")
+                .invert_boolean()
+                .sync_create()
+                .build(),
+            page.bind_property("pinned", &imp.pin, "visible")
+                .sync_create()
+                .build(),
         ];
         imp.bindings.replace(bindings);
         imp.page.replace(Some(page.clone()));
@@ -487,6 +568,19 @@ impl TabRow {
             binding.unbind();
         }
         imp.page.take();
+    }
+
+    /// Opens the tab view's menu, set up for this row's page, at `at` in the row or under
+    /// its middle.
+    fn open_menu(&self, at: Option<(f64, f64)>) -> Option<gtk::PopoverMenu> {
+        let (view, page) = (self.imp().view.upgrade()?, self.page()?);
+        view.emit_by_name::<()>("setup-menu", &[&page]);
+        let popover = gtk::PopoverMenu::from_model(view.menu_model().as_ref());
+        popover.set_has_arrow(false);
+        let (x, y) = at.unwrap_or((f64::from(self.width()) / 2.0, f64::from(self.height())));
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        crate::popup(&popover, self);
+        Some(popover)
     }
 
     fn close(&self) {

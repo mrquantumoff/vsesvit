@@ -53,6 +53,20 @@ pub(super) fn install(window: &BrowserWindow) {
             .build(),
         on_tab("back", Tab::go_back),
         on_tab("forward", Tab::go_forward),
+        ActionEntry::builder("copy-clean-link")
+            .activate(|w: &BrowserWindow, _, _| {
+                if let Some(tab) = w.selected_tab() {
+                    w.copy_link(&tab, true);
+                }
+            })
+            .build(),
+        ActionEntry::builder("copy-link")
+            .activate(|w: &BrowserWindow, _, _| {
+                if let Some(tab) = w.selected_tab() {
+                    w.copy_link(&tab, false);
+                }
+            })
+            .build(),
         ActionEntry::builder("bookmark-page")
             .state(false.to_variant())
             .activate(|w: &BrowserWindow, _, _| w.browser().star_clicked(w))

@@ -39,6 +39,8 @@ pub(crate) enum TabChange {
     Find(FindResult),
     /// Camera, microphone or screen capture started or stopped.
     Capture,
+    /// The page started or stopped playing sound, or was muted or unmuted.
+    Audio,
 }
 
 /// What a committed main-frame navigation was.
@@ -382,6 +384,12 @@ impl Tab {
         }
     }
 
+    /// The address of the page on screen, for copying; `None` for a blank tab or the new tab
+    /// page.
+    pub(crate) fn link(&self) -> Option<String> {
+        self.committed_uri().filter(|uri| uri != "about:blank")
+    }
+
     /// Nothing requested or shown yet: a new tab waiting for an address.
     pub(crate) fn is_blank(&self) -> bool {
         self.web_view()
@@ -461,6 +469,8 @@ impl Tab {
         web_view.connect_is_loading_notify(notify_on(TabChange::Loading));
         web_view.connect_estimated_load_progress_notify(notify_on(TabChange::Progress));
         web_view.connect_zoom_level_notify(notify_on(TabChange::Zoom));
+        web_view.connect_is_playing_audio_notify(notify_on(TabChange::Audio));
+        web_view.connect_is_muted_notify(notify_on(TabChange::Audio));
         let capture_changed = || {
             glib::clone!(
                 #[weak(rename_to = tab)]

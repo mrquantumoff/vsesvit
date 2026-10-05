@@ -42,7 +42,8 @@ pub(crate) fn binding(cmd: Command) -> Option<Binding> {
         FindNext => Action("win.find-next"),
         FindPrevious => Action("win.find-previous"),
         BookmarkPage => Action("win.bookmark-page"),
-        CopyCleanLink | CopyLink => return None,
+        CopyCleanLink => Action("win.copy-clean-link"),
+        CopyLink => Action("win.copy-link"),
         Print => Action("win.print"),
         ViewSource => Action("win.view-source"),
         DeveloperTools => Action("win.developer-tools"),
@@ -299,7 +300,8 @@ mod tests {
         assert_eq!(binding(Command::ViewSource), Some(Binding::Action("win.view-source")));
         assert_eq!(binding(Command::DeveloperTools), Some(Binding::Action("win.developer-tools")));
         assert_eq!(binding(Command::NextTab), Some(Binding::BuiltIn("<Control>Tab")));
-        assert_eq!(binding(Command::CopyLink), None);
+        assert_eq!(binding(Command::CopyCleanLink), Some(Binding::Action("win.copy-clean-link")));
+        assert_eq!(binding(Command::SelectTab1), None);
     }
 
     #[gtk::test]
