@@ -5,7 +5,8 @@
 //! from a custom URI scheme, and declarativeNetRequest translated to content blockers.
 //!
 //! Platform-neutral pieces compile and test everywhere: [`dnr`] (the translator),
-//! [`protocol`] (the JS/Rust wire format), [`patterns`], [`mime`], [`i18n`], the tab
+//! [`protocol`] (the JS/Rust wire format), [`messaging`] (port channels), [`patterns`],
+//! [`mime`], [`i18n`], the tab
 //! types in [`tabs`] and [`support`] (which of a manifest's requests this runtime lacks).
 //! The WebKit glue ([`Runtime`]) is Linux only.
 //!
@@ -52,13 +53,14 @@
 //! // forgets closed tabs.
 //! runtime.tab_updated(tab_id);      // after a committed navigation or a title change
 //! runtime.tab_activated(tab_id);    // on tab switch
-//! runtime.tab_closed(tab_id);
+//! runtime.tab_closed(tab_id);      // also closes the ports of its documents
 //!
-//! // Toolbar actions. `activate_action` returns the popup WebView to put in a popover
-//! // (the shell owns it; drop it to close), or None after firing action.onClicked.
+//! // Toolbar actions. `activate_action` hands the popup WebView to put in a popover to its
+//! // callback, possibly later (the shell owns it; drop it to close, which closes its
+//! // ports), or fires action.onClicked when the action has no popup.
 //! let actions: Vec<ActionInfo> = runtime.actions();
 //! runtime.connect_actions_changed(move || rebuild_toolbar());
-//! if let Some(popup) = runtime.activate_action(&id, Some(tab_id)) { popover.set_child(Some(&popup)); }
+//! runtime.activate_action(&id, Some(tab_id), move |popup| popover.set_child(Some(&popup)));
 //!
 //! // Remote storage.sync changes (from a future sync engine's ApplyReport):
 //! runtime.storage_sync_changed(&ext_id, &changes);
@@ -79,7 +81,7 @@
 //!   each extension in its own isolated world (named by its id); `"world": "MAIN"` ones in
 //!   the page's world, without the extension API, as in Chrome.
 //! - `chrome.*` and `browser.*` (promise and callback styles, `chrome.runtime.lastError`)
-//!   in content scripts: `runtime.sendMessage/onMessage/getURL/id/getManifest`,
+//!   in content scripts: `runtime.sendMessage/onMessage/connect/onConnect/getURL/id/getManifest`,
 //!   `storage.local/sync` with `storage.onChanged`, `i18n`. Extension pages (background,
 //!   popup, and any of the extension's documents shown in a tab: the options page,
 //!   `tabs.create(getURL(..))`, links) additionally get
@@ -90,7 +92,16 @@
 //!   `permissions.contains/getAll`, `extension.getURL`,
 //!   `runtime.openOptionsPage`, `runtime.reload` (the whole extension starts over, its
 //!   pages in tabs reload), and `runtime.onInstalled` on the first load of an install
-//!   or version (`runtime.onStartup` on later startups).
+//!   or version (`runtime.onStartup` on later startups), `tabs.connect`, and
+//!   `runtime.getBackgroundPage` in the background page and in the popups it opens (a page
+//!   background opens each popup with `window.open`, WebKit's only way for one view to
+//!   reach another's window).
+//! - Ports as in Chrome ([`messaging`]): `runtime.connect` reaches the extension's pages,
+//!   `tabs.connect` the content scripts in a tab, a port posts to every context that took
+//!   the connection, and it closes when its document goes away, its tab or popup closes,
+//!   or the extension unloads. Another extension's pages can `runtime.sendMessage` and
+//!   `runtime.connect` to it (`onMessageExternal`, `onConnectExternal`) unless its
+//!   `externally_connectable.ids` leave that extension out.
 //! - Chrome's permission model for those APIs: `scripting.*` needs the `scripting`
 //!   permission and host access to the target tab (a host permission, or `activeTab`
 //!   after the user invoked the action on that tab); tab URLs and titles are visible
@@ -104,8 +115,12 @@
 //!   modifyHeaders rules (every rule, with `declarativeNetRequestWithHostAccess`) act only
 //!   on requests to hosts the extension has host permissions for.
 //!
-//! Known limits: events reach a tab's top frame only (`tabs.sendMessage`, `storage.onChanged`
-//! in subframes); no `runtime.connect` ports; no `webRequest`; one runtime per process;
+//! Known limits: events reach a tab's top frame only (`tabs.sendMessage`, `tabs.connect`,
+//! `storage.onChanged` in subframes; a subframe's own ports work); web pages cannot
+//! message an extension (`externally_connectable.matches`: WebKitGTK does not say which
+//! document posted a message, so the sender could not be told apart from a frame
+//! claiming its URL); `getBackgroundPage` cannot reach the background from an extension
+//! page in a tab; no `webRequest`; one runtime per process;
 //! `about:blank` frames inside extension pages get no API; in a background or popup view,
 //! an `http(s)` iframe loads only for an extension without host permissions (WebKitGTK
 //! applies the view's CORS allowlist to every frame); WebKitGTK does not say which frame

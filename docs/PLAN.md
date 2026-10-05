@@ -104,14 +104,14 @@ Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (
 - A `chrome-extension://` URI scheme serves extension files. Only `web_accessible_resources` are visible to web pages.
 - The background runs as a hidden web view. MV3 service workers are emulated as a page.
 - Content scripts run in a per-extension isolated world.
-- `chrome.*` and `browser.*` are available with both promises and callbacks. The covered APIs are runtime messaging, storage (local, sync, onChanged), i18n, tabs, scripting, action/browserAction, alarms, permissions.contains and extension.getURL.
+- `chrome.*` and `browser.*` are available with both promises and callbacks. The covered APIs are runtime messaging and ports (`runtime.connect`, `tabs.connect`, messages and connections from other extensions as `externally_connectable` allows), storage (local, sync, onChanged), i18n, tabs, scripting, action/browserAction, alarms, permissions.contains, extension.getURL and `runtime.getBackgroundPage` (in the background page and its popups).
 - declarativeNetRequest static rules are translated to WebKit content-blocker rules. Rules WebKit cannot express are skipped and logged.
-- Not supported: `webRequest` blocking, native messaging, devtools pages and some other surfaces. Heavily API-dependent extensions may therefore work partially. The extensions page shows which APIs an extension requests that the runtime lacks.
+- Not supported: `webRequest` blocking, native messaging, devtools pages, messages from web pages (`externally_connectable.matches`) and some other surfaces. Heavily API-dependent extensions may therefore work partially. The extensions page shows which APIs an extension requests that the runtime lacks.
 
 ## Verification
 
 - **Core.** Lattice-law and tree-validity property tests, the three-device convergence test, CRX3 round-trip and tamper tests, and manifest normalization tests.
-- **Each shell.** `vsesvit --self-test <dir>` runs the same scripted end-to-end check on each platform (`design/self-test.md`). It covers installing a signed test CRX, a content script round trip to the background, a declarativeNetRequest block observed at the fixture server, the action popup, bookmarks, tabs, the omnibox, session save and restore, and an in-app screenshot. It writes `report.json` and exits non-zero on any failure.
+- **Each shell.** `vsesvit --self-test <dir>` runs the same scripted end-to-end check on each platform (`design/self-test.md`). It covers installing a signed test CRX, a content script round trip to the background over a message and a port, a declarativeNetRequest block observed at the fixture server, the action popup, bookmarks, tabs, the omnibox, session save and restore, and an in-app screenshot. It writes `report.json` and exits non-zero on any failure.
 
 ## Milestones
 

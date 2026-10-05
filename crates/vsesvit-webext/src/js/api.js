@@ -414,8 +414,7 @@
 
   // --- runtime -> page entry points ---------------------------------------------------
   function dispatchMessage(message, sender, external) {
-    const event = external ? runtime.onMessageExternal : runtime.onMessage;
-    const listeners = event ? Array.from(event.listeners) : [];
+    const listeners = Array.from((external ? runtime.onMessageExternal : runtime.onMessage).listeners);
     if (listeners.length === 0) return { none: true };
     return new Promise((resolve) => {
       let settled = false;
@@ -435,7 +434,7 @@
   // `id` is this context's end of a new channel, unused without a listener.
   function dispatchConnect(id, name, sender, external) {
     const event = external ? runtime.onConnectExternal : runtime.onConnect;
-    if (!event || !event.hasListeners()) return { none: true };
+    if (!event.hasListeners()) return { none: true };
     event.dispatch(makePort(id, name, sender));
     return {};
   }
