@@ -303,6 +303,22 @@ async fn checks(
     })
     .await;
 
+    check(report, "extension_port", DEFAULT_TIMEOUT, async |p| {
+        loop {
+            let value = eval(
+                &tab,
+                "document.documentElement.dataset.vsesvitProbePort || null",
+            )
+            .await;
+            p.observe(format!("dataset.vsesvitProbePort = {value:?}"));
+            if value.as_deref() == Ok("\"pong:probe\"") {
+                return Ok("dataset.vsesvitProbePort = pong:probe".to_owned());
+            }
+            exec::sleep(POLL).await;
+        }
+    })
+    .await;
+
     check(report, "dnr_blocked", DEFAULT_TIMEOUT, async |_| {
         let settle = Duration::from_secs(1).saturating_sub(loaded_at.elapsed());
         exec::sleep(settle).await;

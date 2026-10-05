@@ -384,6 +384,19 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("extension_port", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        loop {
+            let value = eval_js(tab.web_view(), "String(document.documentElement.dataset.vsesvitProbePort)").await.unwrap_or_else(|e| format!("error: {e}"));
+            if value == "pong:probe" {
+                return Ok(format!("vsesvitProbePort={value}"));
+            }
+            last.set(format!("vsesvitProbePort={value:?}"));
+            glib::timeout_future(POLL * 2).await;
+        }
+    })
+    .await;
+
     ctx.check("dnr_blocked", CHECK_TIMEOUT, |_| async move {
         glib::timeout_future(Duration::from_secs(1)).await;
         let hits = ctx.server.hits();

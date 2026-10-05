@@ -25,7 +25,6 @@ pub const UNSUPPORTED_MANIFEST_KEYS: &[&str] = &[
     "chrome_url_overrides",
     "commands",
     "devtools_page",
-    "externally_connectable",
     "nacl_modules",
     "omnibox",
     "sandbox",
@@ -62,6 +61,10 @@ impl fmt::Display for Unsupported {
     }
 }
 
+/// What `externally_connectable` asks for that the runtime does not do: messages from
+/// other extensions (`ids`) arrive, but no web page (`matches`) gets an API to send any.
+pub const EXTERNAL_WEB_PAGES: &str = "externally_connectable.matches";
+
 /// Every permission and manifest surface the extension requests that the Linux runtime
 /// lacks, sorted and deduplicated. Host patterns are never reported: the manifest model
 /// moves MV2 host entries out of `permissions`, and any pattern left over is a host
@@ -84,6 +87,12 @@ pub fn unsupported_features(manifest: &Manifest) -> Vec<Unsupported> {
                 .iter()
                 .filter(|key| manifest.raw.get(**key).is_some_and(|v| !v.is_null()))
                 .map(|key| Unsupported::ManifestKey((*key).to_owned())),
+        )
+        .chain(
+            manifest.raw["externally_connectable"]["matches"]
+                .as_array()
+                .is_some_and(|m| !m.is_empty())
+                .then(|| Unsupported::ManifestKey(EXTERNAL_WEB_PAGES.to_owned())),
         )
         .collect();
     out.sort();
@@ -159,5 +168,15 @@ mod tests {
                  "permissions": ["http://*/*", "storage", "activeTab", "unlimitedStorage"] }"#,
         );
         assert!(unsupported_features(&m).is_empty());
+    }
+
+    #[test]
+    fn externally_connectable_is_reported_only_for_web_pages() {
+        let ids = manifest(r#"{ "manifest_version": 3, "name": "x", "version": "1", "externally_connectable": { "ids": ["*"] } }"#);
+        assert!(unsupported_features(&ids).is_empty());
+        let pages = manifest(r#"{ "manifest_version": 3, "name": "x", "version": "1", "externally_connectable": { "ids": ["*"], "matches": ["https://x.test/*"] } }"#);
+        assert_eq!(unsupported_features(&pages), vec![Unsupported::ManifestKey(EXTERNAL_WEB_PAGES.into())]);
+        let ports = include_str!("../../../tests/fixtures/extensions/ports/manifest.json");
+        assert!(unsupported_features(&manifest(ports)).is_empty());
     }
 }

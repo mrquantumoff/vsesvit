@@ -8,4 +8,10 @@
   } catch (e) {
     root.dataset.vsesvitProbe = "error: " + e;
   }
+  const port = chrome.runtime.connect({ name: "probe" });
+  port.onMessage.addListener((message) => {
+    root.dataset.vsesvitProbePort = message;
+    port.disconnect();
+  });
+  port.postMessage("ping");
 })();

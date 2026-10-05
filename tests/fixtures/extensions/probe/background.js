@@ -8,3 +8,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   });
   return true;
 });
+
+chrome.runtime.onConnect.addListener((port) => {
+  port.onMessage.addListener((message) => {
+    if (message === "ping") port.postMessage("pong:" + port.name);
+  });
+});

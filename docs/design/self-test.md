@@ -25,6 +25,7 @@ Both shells also accept `--profile-dir <path>` in normal runs, so development ne
 | `navigate` | tab + engine + fixture server | a tab loads `http://127.0.0.1:<port>/index.html` and its title becomes `Vsesvit fixture` |
 | `history_recorded` | committed navigations reach core | core history has a visit for that URL |
 | `content_script` | content script, `runtime.sendMessage`, background, `storage.local` | `document.documentElement.dataset.vsesvitProbe == "background-replied"` |
+| `extension_port` | `runtime.connect` and `Port` between a content script and the background | the probe's content script connects to its background, posts `ping` and gets `pong:probe` back over the port: `document.documentElement.dataset.vsesvitProbePort == "pong:probe"` |
 | `dnr_blocked` | declarativeNetRequest static rules | the server saw `/allowed.png` and never saw `/vsesvit-blocked/pixel.png` (checked 1 s after load) |
 | `bookmark` | bookmark write + star state + bar | after bookmarking the current page into the bookmarks bar, `is_bookmarked` is true and the bar shows the item |
 | `bookmarks_bar_icons` (Windows so far) | a page changing its favicon updates the bar in place | the bookmarked fixture page sets a new favicon four times, 300 ms apart; the bar item shows at least three distinct icons, and the bar's list holds the same entry objects as before |
