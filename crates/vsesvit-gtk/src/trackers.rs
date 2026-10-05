@@ -6,23 +6,21 @@
 //! WebKit reports nothing about what a content blocker stopped, so the popover gives no count.
 
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::glib;
 use vsesvit_core::Url;
 use vsesvit_core::permissions::Origin;
 use vsesvit_core::prefs::keys;
 use vsesvit_core::trackers::{self, TrackerList, TrackingProtection};
 use vsesvit_webext::dnr;
 
+use crate::blocker::Blocker;
 use crate::browser::Browser;
 use crate::profile::Core;
 use crate::tab::Tab;
-
-/// The blocker's name in its store and in each manager, apart from every extension's.
-const IDENTIFIER: &str = "vsesvit-tracking-protection";
 
 /// Cheap to clone; every clone is the same state.
 #[derive(Clone)]
@@ -30,16 +28,8 @@ pub(crate) struct Trackers(Rc<Inner>);
 
 struct Inner {
     core: Core,
-    store: webkit::UserContentFilterStore,
     list: RefCell<Cow<'static, TrackerList>>,
-    /// Every tab's manager. A closed tab's goes away with its view.
-    managers: RefCell<Vec<glib::WeakRef<webkit::UserContentManager>>>,
-    attached: RefCell<Option<webkit::UserContentFilter>>,
-    /// Counts [`Trackers::apply`] calls; a compile that a later call overtook is dropped.
-    generation: Cell<u64>,
-    /// The apply whose compile is still running, if any.
-    compiling: Cell<Option<u64>>,
-    waiters: RefCell<Vec<Box<dyn FnOnce()>>>,
+    blocker: Blocker,
 }
 
 impl Trackers {
@@ -47,27 +37,16 @@ impl Trackers {
     /// in `webext`.
     pub(crate) fn new(core: Core) -> Trackers {
         let dir = core.borrow().paths().root.join("trackers");
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            log::warn!("{}: {e}", dir.display());
-        }
         Trackers(Rc::new(Inner {
             core,
-            store: webkit::UserContentFilterStore::new(&dir.to_string_lossy()),
             list: RefCell::new(Cow::Borrowed(TrackerList::bundled())),
-            managers: RefCell::new(Vec::new()),
-            attached: RefCell::new(None),
-            generation: Cell::new(0),
-            compiling: Cell::new(None),
-            waiters: RefCell::new(Vec::new()),
+            blocker: Blocker::new(&dir, "vsesvit-tracking-protection"),
         }))
     }
 
     /// A new tab's manager: it gets the blocker now and every one after it.
     pub(crate) fn attach(&self, manager: &webkit::UserContentManager) {
-        if let Some(filter) = self.0.attached.borrow().as_ref() {
-            manager.add_filter(filter);
-        }
-        self.0.managers.borrow_mut().push(manager.downgrade());
+        self.0.blocker.attach(manager);
     }
 
     /// Brings every tab's blocker in line with the profile's level and exceptions. Compiling is
@@ -79,41 +58,12 @@ impl Trackers {
             let allowed = trackers::allowed_sites(&mut profile);
             content_blocker(&self.0.list.borrow(), level, &allowed)
         };
-        let generation = self.0.generation.get() + 1;
-        self.0.generation.set(generation);
-        let Some(json) = blocker else {
-            self.0.compiling.set(None);
-            self.0.swap(None);
-            self.0.settle();
-            return;
-        };
-        self.0.compiling.set(Some(generation));
-        let weak = Rc::downgrade(&self.0);
-        let bytes = glib::Bytes::from_owned(json.into_bytes());
-        self.0.store.save(IDENTIFIER, &bytes, None::<&gio::Cancellable>, move |result| {
-            let Some(inner) = weak.upgrade() else { return };
-            if inner.compiling.get() != Some(generation) {
-                return;
-            }
-            inner.compiling.set(None);
-            match result {
-                Ok(filter) => {
-                    inner.swap(Some(filter));
-                    log::info!("tracking protection: content blocker attached");
-                }
-                Err(e) => log::warn!("tracking protection: the content blocker did not compile: {e}"),
-            }
-            inner.settle();
-        });
+        self.0.blocker.apply(blocker);
     }
 
     /// Runs `f` once the latest [`Trackers::apply`] is on every tab (at once when it is).
     pub(crate) fn when_applied(&self, f: impl FnOnce() + 'static) {
-        if self.0.compiling.get().is_none() {
-            f();
-        } else {
-            self.0.waiters.borrow_mut().push(Box::new(f));
-        }
+        self.0.blocker.when_applied(f);
     }
 
     /// Blocks with `list` instead of the bundled one, as the self-test does to make a host it
@@ -122,28 +72,6 @@ impl Trackers {
     pub(crate) fn use_list(&self, list: Cow<'static, TrackerList>) {
         *self.0.list.borrow_mut() = list;
         self.apply();
-    }
-}
-
-impl Inner {
-    fn swap(&self, filter: Option<webkit::UserContentFilter>) {
-        let old = self.attached.replace(filter.clone());
-        let mut managers = self.managers.borrow_mut();
-        managers.retain(|m| m.upgrade().is_some());
-        for manager in managers.iter().filter_map(glib::WeakRef::upgrade) {
-            if let Some(old) = &old {
-                manager.remove_filter(old);
-            }
-            if let Some(filter) = &filter {
-                manager.add_filter(filter);
-            }
-        }
-    }
-
-    fn settle(&self) {
-        for waiter in std::mem::take(&mut *self.waiters.borrow_mut()) {
-            waiter();
-        }
     }
 }
 

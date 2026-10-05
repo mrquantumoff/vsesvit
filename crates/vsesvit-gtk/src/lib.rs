@@ -8,6 +8,7 @@ mod app;
 mod bookmark_drag;
 mod bookmark_editor;
 mod bookmark_menu;
+mod blocker;
 mod bookmarks_bar;
 mod browser;
 mod cli;
