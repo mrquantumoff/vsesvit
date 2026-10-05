@@ -1,11 +1,13 @@
 //! Settings, bound to vsesvit-core preferences, in categories down the side as in Windows
 //! Settings. Every choice applies at once, in every window, except the engine's startup
-//! switches (at the next start), tracking protection and HTTPS-only (from each page's next load),
+//! switches (at the next start), tracking protection, third-party cookies and HTTPS-only (from
+//! each page's next load),
 //! the home page (written when the dialog closes) and the sync server (written when its box loses
 //! focus). Secure DNS is only described: WebView2 takes no setting for it.
 
 use std::rc::Rc;
 
+use vsesvit_core::cookies::ThirdPartyCookies;
 use vsesvit_core::prefs::{
     HomepageValue, Pref, Startup, TabsPosition, Theme, UpdateChannel, homepage_input, keys,
 };
@@ -19,7 +21,7 @@ use crate::browser::Browser;
 use crate::sync::Applied;
 use crate::updates::StatusButton;
 use crate::window::{Backdrop, BrowserWindow};
-use crate::{exec, pickers, xaml};
+use crate::{cookies, exec, pickers, xaml};
 
 /// Fills the window, which keeps its size from one category to the next; each category scrolls
 /// on its own.
@@ -173,6 +175,25 @@ pub(super) const MARKUP: &str = r#"
             <ComboBox x:Name="TrackingProtection" Header="Tracking protection" MinWidth="320"/>
             <TextBlock x:Name="TrackingProtectionDescription" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+          </StackPanel>
+          <StackPanel Spacing="4">
+            <ComboBox x:Name="ThirdPartyCookies" Header="Third-party cookies" MinWidth="320"/>
+            <TextBlock x:Name="ThirdPartyCookiesDescription" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <Button x:Name="SiteData" Content="See all site data" Margin="0,4,0,0">
+              <Button.Flyout>
+                <Flyout x:Name="SiteDataFlyout" Placement="BottomEdgeAlignedLeft">
+                  <StackPanel Width="360" Spacing="12">
+                    <TextBlock Text="Cookies and site data" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                    <TextBlock x:Name="SiteDataEmpty" Text="No site has stored cookies." TextWrapping="Wrap" Visibility="Collapsed"/>
+                    <ScrollViewer MaxHeight="320" VerticalScrollBarVisibility="Auto">
+                      <StackPanel x:Name="SiteDataList" Spacing="4" Padding="0,0,12,0"/>
+                    </ScrollViewer>
+                    <Button x:Name="SiteDataDeleteAll" Content="Delete all"/>
+                  </StackPanel>
+                </Flyout>
+              </Button.Flyout>
+            </Button>
           </StackPanel>
           <StackPanel Spacing="4">
             <ToggleSwitch x:Name="HttpsOnly" Header="Always use secure connections"/>
@@ -373,6 +394,7 @@ pub(super) fn wire(
     wire_downloads(root, browser, super::window_id(host)?)?;
     wire_clear_browsing_data(root, browser)?;
     super::site_permissions::wire(root, browser)?;
+    super::site_data::wire(root, browser)?;
     let shortcuts = super::shortcut_settings::wire(root, browser, window, host)?;
     let sync = super::sync_settings::wire(root, browser, window)?;
     let mut follow: Follow = Vec::new();
@@ -429,6 +451,25 @@ pub(super) fn wire(
         let level = b.core(|p| p.prefs().get(&keys::TRACKING_PROTECTION));
         let _ = description.SetText(level.description());
         show(level);
+    }));
+
+    let third_party: ComboBox = xaml::find(root, "ThirdPartyCookies")?;
+    let description: TextBlock = xaml::find(root, "ThirdPartyCookiesDescription")?;
+    let options = ThirdPartyCookies::ALL.map(|choice| (choice, choice.label()));
+    let current = browser.core(|p| p.prefs().get(&keys::THIRD_PARTY_COOKIES));
+    description.SetText(current.description())?;
+    let (w, described) = (weak.clone(), description.clone());
+    let show = choices(&third_party, &options, current, move |choice| {
+        let _ = described.SetText(choice.description());
+        if let Some(b) = w.upgrade() {
+            b.write_pref(&keys::THIRD_PARTY_COOKIES, &choice);
+            cookies::changed(&b);
+        }
+    })?;
+    follow.push(Box::new(move |b| {
+        let choice = b.core(|p| p.prefs().get(&keys::THIRD_PARTY_COOKIES));
+        let _ = description.SetText(choice.description());
+        show(choice);
     }));
 
     let theme: ComboBox = xaml::find(root, "Theme")?;

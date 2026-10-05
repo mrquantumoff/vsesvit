@@ -17,6 +17,7 @@ mod other_devices;
 pub(crate) mod search_engines;
 mod settings;
 mod shortcut_settings;
+mod site_data;
 mod site_permissions;
 mod sync_settings;
 mod welcome;
