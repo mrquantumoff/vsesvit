@@ -276,9 +276,9 @@ impl Engines {
         }
     }
 
-    /// The editor while it is open.
+    /// The editor once its flyout has opened.
     pub(crate) fn editor(&self) -> Option<Rc<Editor>> {
-        self.editor.borrow().clone()
+        self.editor.borrow().clone().filter(|e| e.opened.get())
     }
 
     /// Each row's name as it shows, and its More actions button, for the scripted runs.
@@ -298,6 +298,8 @@ impl Engines {
 /// The flyout that adds or edits an engine.
 pub(crate) struct Editor {
     flyout: FlyoutBase,
+    /// Shown, with its boxes loaded: text put in them before then raises no `TextChanged`.
+    opened: Cell<bool>,
     boxes: [(FormField, TextBox, TextBlock); 3],
     save: Control,
     /// `None` for a new engine.
@@ -319,6 +321,7 @@ impl Editor {
         let [name, keyword, url] = FIELDS;
         let editor = Rc::new(Editor {
             flyout: flyout.cast()?,
+            opened: Cell::new(false),
             boxes: [field(name)?, field(keyword)?, field(url)?],
             save: xaml::find(&content, "EngineSave")?,
             editing: engine.map(|e| e.id.clone()),
@@ -363,6 +366,15 @@ impl Editor {
                 if args.Key().is_ok_and(|k| k.0 == VK_RETURN) {
                     let _ = args.SetHandled(true);
                     me.save();
+                }
+            })?
+            .forget();
+        let me = Rc::downgrade(&editor);
+        editor
+            .flyout
+            .Opened(move |_, _| {
+                if let Some(me) = me.upgrade() {
+                    me.opened.set(true);
                 }
             })?
             .forget();

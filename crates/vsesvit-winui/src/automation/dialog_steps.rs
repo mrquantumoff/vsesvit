@@ -238,9 +238,8 @@ async fn search_engines(
         .ok_or_else(|| windows_core::Error::new(E_FAIL, "the Settings dialog has no search engines"))?;
     let names: Vec<String> = engines.rows()?.into_iter().map(|(name, _)| name).collect();
     click(preview, "SearchEngineAdd")?;
-    settle().await;
-    let editor = engines
-        .editor()
+    let editor = until(|| engines.editor())
+        .await
         .ok_or_else(|| windows_core::Error::new(E_FAIL, "Add opened no editor"))?;
     editor.fill(FormField::Name, "Example")?;
     editor.fill(FormField::Keyword, "w")?;

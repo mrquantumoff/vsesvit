@@ -119,6 +119,7 @@ async fn run(
     std::fs::write(out_dir.join("search-engine-editor.png"), &shot.png).map_err(err)?;
     detail.push(format!("shortcut w: {taken:?}; filled in: {ready:?}"));
     if taken != (Some("Another search engine has this shortcut".to_owned()), false) || ready != (None, true) {
+        editor.close();
         return Err(detail.join("; "));
     }
     editor.save();
