@@ -8,19 +8,21 @@
 //! - MV2 host patterns inside `permissions` -> `host_permissions`
 //! - `background.scripts` / `.page` / `.service_worker` -> [`Background`]
 //! - `applications.gecko.id` -> `browser_specific_settings.gecko.id` -> `gecko_id`
-//! - `__MSG_name__` in name/description/action title resolved from
+//! - `__MSG_name__` in name/description/action title/command descriptions resolved from
 //!   `_locales/<ui>/messages.json`, falling back to `_locales/<default_locale>/`
+//! - `commands[*].suggested_key` -> this platform's [`Chord`], if Chrome would accept it
 //! - every file reference becomes a [`RelPath`] (validated: relative, no `..`, no
 //!   backslash), so joining it to the extension dir cannot escape the dir
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use super::ExtensionId;
 use crate::Url;
+use crate::shortcuts::{Chord, Key, Mods};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -46,7 +48,39 @@ pub struct Manifest {
     /// base64 SPKI DER. Present for every CRX install (injected).
     pub key: Option<String>,
     pub gecko_id: Option<String>,
+    /// In name order. Defaulted because manifests stored before this field have none; reading
+    /// such a row derives them from `raw` (see `LoadedRow::into_installed`).
+    #[serde(default)]
+    pub commands: Vec<ManifestCommand>,
     pub raw: serde_json::Value,
+}
+
+/// The commands `chrome.commands.onCommand` reports, and the action commands that open the
+/// popup or click the toolbar button instead.
+pub const ACTION_COMMANDS: [&str; 3] = ["_execute_action", "_execute_browser_action", "_execute_page_action"];
+
+/// One entry of the manifest's `commands`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestCommand {
+    /// The key under `commands`: what `commands.onCommand` passes, or one of [`ACTION_COMMANDS`].
+    pub name: String,
+    /// Localized; empty when the manifest gives none (allowed for the action commands).
+    pub description: String,
+    /// The `suggested_key` for this platform, when it is one Chrome accepts and Vsesvit can bind.
+    #[serde(default, deserialize_with = "stored_chord")]
+    pub suggested_key: Option<Chord>,
+}
+
+/// A stored key this build cannot name (a newer build stored it) reads as none, so the rest of
+/// the manifest still loads.
+fn stored_chord<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Chord>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().and_then(|s| s.parse().ok()))
+}
+
+impl ManifestCommand {
+    pub fn activates_action(&self) -> bool {
+        ACTION_COMMANDS.contains(&self.name.as_str())
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,6 +369,14 @@ impl Manifest {
         self.key_der().map(|der| ExtensionId::from_public_key(&der))
     }
 
+    /// The commands of a manifest stored before [`Manifest::commands`] existed, read from
+    /// `raw` and localized from `dir` as [`Manifest::load`] localizes.
+    pub(crate) fn commands_from_raw(&self, dir: &Path, ui_locale: &str) -> Vec<ManifestCommand> {
+        let Some(obj) = self.raw.as_object().filter(|obj| obj.contains_key("commands")) else { return Vec::new() };
+        let catalog = MessageCatalog::load(dir, ui_locale, self.default_locale.as_deref());
+        parse_commands(obj, self.action.is_some(), &|s| localize(s, &|key| catalog.get(key)))
+    }
+
     fn from_value(raw: Value, max_version_part: u32, messages: &dyn Fn(&str) -> Option<String>) -> Result<Manifest, ManifestError> {
         let obj = raw.as_object().ok_or_else(|| ManifestError::Json("the top level is not an object".into()))?;
         let l10n = |s: &str| localize(s, messages);
@@ -354,6 +396,8 @@ impl Manifest {
             return Err(ManifestError::Field("key"));
         }
 
+        let action = parse_action(obj, &l10n)?;
+        let commands = parse_commands(obj, action.is_some(), &l10n);
         let (permissions, mut host_permissions) = split_permissions(obj.get("permissions"));
         host_permissions.extend(strings(obj.get("host_permissions")).filter_map(|s| MatchPattern::parse(s).ok()));
         let mut seen = std::collections::HashSet::new();
@@ -365,7 +409,7 @@ impl Manifest {
             description: str_field(obj, "description", "description")?.map(l10n),
             default_locale: str_field(obj, "default_locale", "default_locale")?.map(str::to_owned),
             icons: icon_map(obj.get("icons"), "icons")?,
-            action: parse_action(obj, &l10n)?,
+            action,
             background: parse_background(obj.get("background"), manifest_version)?,
             content_scripts: parse_content_scripts(obj.get("content_scripts"))?,
             permissions,
@@ -379,6 +423,7 @@ impl Manifest {
             options_page: parse_options_page(obj)?,
             key: key.map(str::to_owned),
             gecko_id: gecko_id(obj),
+            commands,
             name,
             raw,
         })
@@ -481,6 +526,73 @@ fn parse_action(obj: &Object, l10n: &dyn Fn(&str) -> String) -> Result<Option<Ac
         other => icon_map(other, "action.default_icon")?,
     };
     Ok(Some(Action { default_popup, default_title: str_field(a, "default_title", "action.default_title")?.map(l10n), default_icon }))
+}
+
+/// Chrome allows an extension this many suggested keys.
+const MAX_SUGGESTED_KEYS: usize = 4;
+
+/// `commands`, leniently: an entry that is not an object is skipped, and a `suggested_key`
+/// Chrome would refuse is dropped, so `commands` never fails an install. Action commands need
+/// an action to activate. Past [`MAX_SUGGESTED_KEYS`], later commands (in name order) keep no
+/// suggested key.
+fn parse_commands(obj: &Object, has_action: bool, l10n: &dyn Fn(&str) -> String) -> Vec<ManifestCommand> {
+    const PLATFORM: &str = if cfg!(windows) { "windows" } else { "linux" };
+    let mut commands: Vec<ManifestCommand> = obj
+        .get("commands")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, command)| {
+            let command = command.as_object()?;
+            // A platform key that is present but invalid gives no key, as in Chrome.
+            let suggested = match command.get("suggested_key") {
+                Some(Value::String(s)) => Some(s.as_str()),
+                Some(Value::Object(keys)) => keys.get(PLATFORM).or_else(|| keys.get("default")).and_then(Value::as_str),
+                _ => None,
+            };
+            Some(ManifestCommand {
+                name: name.clone(),
+                description: command.get("description").and_then(Value::as_str).map(l10n).unwrap_or_default(),
+                suggested_key: suggested.and_then(chrome_shortcut),
+            })
+        })
+        .filter(|command| has_action || !command.activates_action())
+        .collect();
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+    for command in commands.iter_mut().filter(|c| c.suggested_key.is_some()).skip(MAX_SUGGESTED_KEYS) {
+        command.suggested_key = None;
+    }
+    commands
+}
+
+/// A `suggested_key` in Chrome's grammar: `+`-separated modifiers and exactly one key, with
+/// Ctrl or Alt but not both (Chrome refuses Ctrl+Alt, which is AltGr on many layouts). The keys
+/// are letters, digits, Comma, Period, Home, End, PageUp, PageDown, Space, Insert, Delete and the
+/// arrows. `Command`, `MacCtrl`, `Search` and the media keys have no meaning here.
+pub fn chrome_shortcut(s: &str) -> Option<Chord> {
+    use Key::*;
+    let mut mods = Mods::NONE;
+    let mut key = None;
+    for token in s.split('+').map(str::trim) {
+        match token.to_ascii_lowercase().as_str() {
+            "ctrl" => mods.ctrl = true,
+            "alt" => mods.alt = true,
+            "shift" => mods.shift = true,
+            _ => {
+                // Letters and digits are the keys with one-character names.
+                let named = Key::from_name(token).filter(|k| {
+                    k.name().len() == 1 || matches!(k, Comma | Period | Home | End | PageUp | PageDown | Space | Insert | Delete | Up | Down | Left | Right)
+                })?;
+                if key.replace(named).is_some() {
+                    return None;
+                }
+            }
+        }
+    }
+    if mods.ctrl == mods.alt {
+        return None;
+    }
+    Chord::new(mods, key?)
 }
 
 /// MV3 prefers `service_worker`; cross-browser manifests also list `scripts` for Firefox,
@@ -980,6 +1092,102 @@ mod tests {
         assert!(matches!(js("1"), Err(ManifestError::Field("content_scripts.js"))));
         assert!(matches!(js("\"../a.js\""), Err(ManifestError::BadPath(p)) if p == "../a.js"));
         assert!(matches!(js("\"nope\"").map(|m| m.content_scripts[0].js[0].as_str().to_owned()), Ok(p) if p == "nope"));
+    }
+
+    #[test]
+    fn suggested_keys_follow_chromes_grammar() {
+        let key = |s: &str| chrome_shortcut(s).map(|c| c.to_string());
+        for (written, chord) in [
+            ("Ctrl+Shift+Y", "Ctrl+Shift+Y"),
+            ("Alt+Shift+P", "Alt+Shift+P"),
+            ("Shift+Alt+P", "Alt+Shift+P"),
+            ("ctrl+comma", "Ctrl+Comma"),
+            ("Alt+0", "Alt+0"),
+            ("Ctrl + Period", "Ctrl+Period"),
+            ("Ctrl+PageDown", "Ctrl+PageDown"),
+            ("Alt+Space", "Alt+Space"),
+            ("Ctrl+Insert", "Ctrl+Insert"),
+            ("Alt+Left", "Alt+Left"),
+            ("Y+Ctrl", "Ctrl+Y"),
+        ] {
+            assert_eq!(key(written).as_deref(), Some(chord), "{written}");
+        }
+        for refused in [
+            "", "Y", "Shift+Y", "Ctrl+Alt+Y", "Ctrl+Alt+Shift+Y", "Ctrl+Y+Z", "Ctrl+", "Ctrl+F5", "Ctrl+Tab", "Ctrl+Plus",
+            "Ctrl+Escape", "Command+Shift+Y", "MacCtrl+Y", "Search+Y", "MediaNextTrack", "Ctrl+MediaPlayPause", "Ctrl+Keypad1",
+        ] {
+            assert_eq!(key(refused), None, "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn commands_pick_this_platforms_key_in_name_order() {
+        let (platform, other) = if cfg!(windows) { ("windows", "linux") } else { ("linux", "windows") };
+        let text = format!(
+            r#"{{"manifest_version": 3, "name": "A", "version": "1", "action": {{}}, "commands": {{
+                "z-string": {{"suggested_key": "Alt+Shift+Z", "description": "Z"}},
+                "b-platform": {{"suggested_key": {{"default": "Alt+Shift+D", "{platform}": "Alt+Shift+B", "{other}": "Alt+Shift+O"}}}},
+                "c-default": {{"suggested_key": {{"default": "Alt+Shift+C", "{other}": "Alt+Shift+O", "mac": "Command+C"}}}},
+                "d-invalid": {{"suggested_key": {{"default": "Alt+Shift+D", "{platform}": "Command+D"}}}},
+                "e-none": {{"description": "__MSG_e__"}},
+                "f-not-a-string": {{"suggested_key": 5, "description": 5}},
+                "g-not-an-object": "Alt+Shift+G",
+                "_execute_action": {{"suggested_key": {{"default": "Ctrl+Shift+Y"}}}}
+            }}}}"#
+        );
+        let m = Manifest::parse(&text, &|k| (k == "e").then(|| "Localized".to_owned())).unwrap();
+        let commands: Vec<(&str, &str, Option<String>)> =
+            m.commands.iter().map(|c| (c.name.as_str(), c.description.as_str(), c.suggested_key.map(|k| k.to_string()))).collect();
+        assert_eq!(
+            commands,
+            [
+                ("_execute_action", "", Some("Ctrl+Shift+Y".into())),
+                ("b-platform", "", Some("Alt+Shift+B".into())),
+                ("c-default", "", Some("Alt+Shift+C".into())),
+                ("d-invalid", "", None),
+                ("e-none", "Localized", None),
+                ("f-not-a-string", "", None),
+                ("z-string", "Z", Some("Alt+Shift+Z".into())),
+            ]
+        );
+        assert!(m.commands[0].activates_action() && !m.commands[1].activates_action());
+    }
+
+    #[test]
+    fn at_most_four_commands_keep_a_suggested_key() {
+        let names = ["a", "b", "c", "d", "e", "f"];
+        let entries: Vec<String> = names.iter().map(|n| format!(r#""{n}": {{"suggested_key": "Alt+Shift+{}"}}"#, n.to_uppercase())).collect();
+        let text = format!(r#"{{"manifest_version": 3, "name": "A", "version": "1", "commands": {{"x": {{}}, {}}}}}"#, entries.join(", "));
+        let m = Manifest::parse(&text, &|_| None).unwrap();
+        let keyed: Vec<&str> = m.commands.iter().filter(|c| c.suggested_key.is_some()).map(|c| c.name.as_str()).collect();
+        assert_eq!(keyed, ["a", "b", "c", "d"]);
+        assert_eq!(m.commands.len(), 7, "the commands themselves stay");
+    }
+
+    #[test]
+    fn action_commands_need_an_action_and_commands_never_fail_the_install() {
+        let parse = |extra: &str| {
+            Manifest::parse(&format!(r#"{{"manifest_version": 2, "name": "A", "version": "1"{extra}}}"#), &|_| None).unwrap().commands
+        };
+        let commands = r#", "commands": {"_execute_browser_action": {}, "_execute_page_action": {}, "_execute_action": {}, "run": {}}"#;
+        let names = |c: Vec<ManifestCommand>| c.into_iter().map(|c| c.name).collect::<Vec<_>>();
+        assert_eq!(names(parse(commands)), ["run"]);
+        assert_eq!(names(parse(&format!(r#"{commands}, "browser_action": {{}}"#))), ["_execute_action", "_execute_browser_action", "_execute_page_action", "run"]);
+        for odd in [r#", "commands": []"#, r#", "commands": "x""#, r#", "commands": null"#, ""] {
+            assert!(parse(odd).is_empty(), "{odd}");
+        }
+    }
+
+    #[test]
+    fn manifests_stored_without_commands_still_read() {
+        let mut stored = serde_json::to_value(Manifest::parse(r#"{"manifest_version": 3, "name": "A", "version": "1"}"#, &|_| None).unwrap()).unwrap();
+        stored.as_object_mut().unwrap().remove("commands");
+        assert!(serde_json::from_value::<Manifest>(stored).unwrap().commands.is_empty());
+
+        let stored = r#"[{"name": "a", "description": "", "suggested_key": "Ctrl+MediaPlay"}, {"name": "b", "description": "", "suggested_key": "Alt+Shift+B"}]"#;
+        let keys: Vec<Option<String>> =
+            serde_json::from_str::<Vec<ManifestCommand>>(stored).unwrap().iter().map(|c| c.suggested_key.map(|k| k.to_string())).collect();
+        assert_eq!(keys, [None, Some("Alt+Shift+B".to_owned())], "a key a newer build stored reads as none");
     }
 
     #[test]

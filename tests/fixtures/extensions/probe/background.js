@@ -19,6 +19,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   chrome.storage.local.set({ menuClick: click });
 });
 
+chrome.commands.onCommand.addListener((command, tab) => {
+  chrome.storage.local.set({ command: { name: command, tab: tab?.id ?? null, url: tab?.url ?? null, at: Date.now() } });
+});
+
 chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((message) => {
     if (message === "ping") port.postMessage("pong:" + port.name);

@@ -26,6 +26,7 @@
 
 mod sync_table;
 pub(crate) use sync_table::ExtensionsTable;
+pub mod commands;
 pub mod crx;
 mod install;
 pub mod manifest;
@@ -718,6 +719,8 @@ struct InstallRow {
 struct LoadedRow {
     row: InstallRow,
     enabled: bool,
+    /// The stored manifest predates [`Manifest::commands`].
+    without_commands: bool,
 }
 
 impl LoadedRow {
@@ -725,27 +728,34 @@ impl LoadedRow {
         fn json<T: serde::de::DeserializeOwned>(r: &rusqlite::Row<'_>, col: usize) -> rusqlite::Result<T> {
             serde_json::from_str(&r.get::<_, String>(col)?).map_err(|e| conversion_error(col, e))
         }
+        let manifest: serde_json::Value = json(r, 5)?;
+        let without_commands = manifest.get("commands").is_none();
         let row = InstallRow {
             id: ExtensionId::parse(&r.get::<_, String>(0)?).map_err(|e| conversion_error(0, e))?,
             version: r.get(1)?,
             dir: r.get(2)?,
             source: json(r, 3)?,
             verification: json(r, 4)?,
-            manifest: json(r, 5)?,
+            manifest: serde_json::from_value(manifest).map_err(|e| conversion_error(5, e))?,
             local_enabled: r.get(6)?,
             engine_id: r.get(7)?,
             installed_ms: r.get(8)?,
         };
-        Ok(LoadedRow { row, enabled: r.get(9)? })
+        Ok(LoadedRow { row, enabled: r.get(9)?, without_commands })
     }
 
     fn into_installed(self, extensions_root: &Path) -> InstalledExtension {
-        let LoadedRow { row, enabled } = self;
+        let LoadedRow { row, enabled, without_commands } = self;
+        let dir = resolve_dir(&row.dir, row.is_managed(), extensions_root);
+        let mut manifest = row.manifest;
+        if without_commands {
+            manifest.commands = manifest.commands_from_raw(&dir, &install::ui_locale());
+        }
         InstalledExtension {
-            dir: resolve_dir(&row.dir, row.is_managed(), extensions_root),
+            dir,
             id: row.id,
             version: row.version,
-            manifest: row.manifest,
+            manifest,
             enabled,
             source: row.source,
             verification: row.verification,
@@ -1216,6 +1226,29 @@ mod store_tests {
         let staged = from_amo(&mut t, &id, "2.0");
         let ext = t.p().extensions().commit(staged).unwrap().unwrap();
         assert_eq!((ext.version.as_str(), &ext.verification), ("2.0", &Verification::AmoHash));
+    }
+
+    #[test]
+    fn a_manifest_stored_before_commands_lists_them_localized() {
+        let mut t = TempProfile::new();
+        let dev = t.dir.join("dev");
+        fs::create_dir_all(dev.join("_locales").join("en")).unwrap();
+        fs::write(
+            dev.join("manifest.json"),
+            r#"{"manifest_version": 3, "name": "A", "version": "1", "default_locale": "en",
+                "commands": {"run": {"suggested_key": "Alt+Shift+R", "description": "__MSG_run__"}}}"#,
+        )
+        .unwrap();
+        fs::write(dev.join("_locales").join("en").join("messages.json"), r#"{"run": {"message": "Run it"}}"#).unwrap();
+        let staged = t.p().extensions().prepare_install(InstallSource::Unpacked { dir: dev }).unwrap().run(&mut |_| {}).unwrap();
+        let commands = t.p().extensions().commit(staged).unwrap().unwrap().manifest.commands;
+        assert_eq!((commands[0].description.as_str(), commands[0].suggested_key.map(|k| k.to_string())), ("Run it", Some("Alt+Shift+R".into())));
+
+        t.p().conn.execute("UPDATE extension_installs SET manifest = json_remove(manifest, '$.commands')", []).unwrap();
+        let stored: String = t.p().conn.query_row("SELECT manifest FROM extension_installs", [], |r| r.get(0)).unwrap();
+        assert!(!stored.contains("\"commands\":[") && stored.contains("__MSG_run__"), "as an older build stored it");
+        let [listed] = <[InstalledExtension; 1]>::try_from(t.p().extensions().list().unwrap()).ok().unwrap();
+        assert_eq!(listed.manifest.commands, commands);
     }
 
     fn schema(conn: &rusqlite::Connection) -> Vec<(String, String, Option<String>)> {

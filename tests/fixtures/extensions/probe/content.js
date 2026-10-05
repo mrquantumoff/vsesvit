@@ -10,6 +10,7 @@
   }
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.menuClick) root.dataset.vsesvitProbeMenu = JSON.stringify(changes.menuClick.newValue);
+    if (changes.command) root.dataset.vsesvitProbeCommand = JSON.stringify(changes.command.newValue);
   });
   const port = chrome.runtime.connect({ name: "probe" });
   port.onMessage.addListener((message) => {

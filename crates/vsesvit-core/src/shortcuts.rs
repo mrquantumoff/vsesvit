@@ -353,8 +353,9 @@ pub struct Taken {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keymap {
     overrides: BTreeMap<Command, Override>,
-    /// Overrides of commands this build does not know.
-    unknown: Overrides,
+    /// Overrides of commands this build does not know, and extensions' commands, which
+    /// [`crate::extensions::commands`] resolves.
+    pub(crate) unknown: Overrides,
     chords: Vec<Vec<Chord>>,
     owners: BTreeMap<Chord, Command>,
 }

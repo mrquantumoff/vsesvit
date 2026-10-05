@@ -26,7 +26,6 @@ pub const SUPPORTED_PERMISSIONS: &[&str] = &[
 pub const UNSUPPORTED_MANIFEST_KEYS: &[&str] = &[
     "chrome_settings_overrides",
     "chrome_url_overrides",
-    "commands",
     "devtools_page",
     "nacl_modules",
     "omnibox",
@@ -159,7 +158,7 @@ mod tests {
         );
         let found = unsupported_features(&m);
         let names: Vec<&str> = found.iter().map(Unsupported::name).collect();
-        assert_eq!(names, ["commands", "devtools_page", "omnibox"]);
+        assert_eq!(names, ["devtools_page", "omnibox"]);
         assert_eq!(Unsupported::ManifestKey("omnibox".into()).to_string(), "omnibox (manifest key)");
         assert_eq!(Unsupported::OptionalPermission("bookmarks".into()).to_string(), "bookmarks (optional)");
     }

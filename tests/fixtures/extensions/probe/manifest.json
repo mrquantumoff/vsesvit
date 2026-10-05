@@ -12,5 +12,9 @@
   "action": { "default_title": "Vsesvit Probe", "default_popup": "popup.html" },
   "declarative_net_request": {
     "rule_resources": [{ "id": "block", "enabled": true, "path": "rules.json" }]
+  },
+  "commands": {
+    "_execute_action": { "suggested_key": { "default": "Alt+Shift+P" } },
+    "probe-command": { "suggested_key": { "default": "Alt+Shift+K" }, "description": "Vsesvit Probe command" }
   }
 }
