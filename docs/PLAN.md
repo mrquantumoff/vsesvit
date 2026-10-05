@@ -102,6 +102,14 @@ Print, Developer tools, the JavaScript console and View page source are rows in 
 - **Windows.** While the page has focus, WebView2 handles Ctrl+P, F12, Ctrl+Shift+I and Ctrl+Shift+J itself. The menus and the window's accelerators call `ShowPrintUI` and `OpenDevToolsWindow`. WebView2 has no API that picks the console panel. WebView2 renders `view-source:` pages natively but reports the address of the page inside, so the tab keeps the `view-source:` address the shell loaded.
 - **Linux.** Print uses WebKit's print dialog, and Developer tools toggles WebKit's inspector. WebKitGTK has no view-source, so the shell serves the `view-source` scheme itself. It renders the page's main resource with core's `view_source::source_page`. That resource comes from a tab already showing the page, or else from a hidden view with scripts off. The scheme is registered as local, so web pages can neither open nor embed it.
 
+
+## Search engines
+
+Settings > Search lists every engine with its name, shortcut and URL, as Chrome's "Manage search engines" does. You can add an engine, edit one, make one the default or remove one. Built-in engines can be removed too, but the default can't. The editor asks for a name, a shortcut and a URL with `%s` where the search terms go. Core checks the form (`SearchEngines::check`): every field is filled in, the shortcut is one word that no other engine has, and the URL is an http or https address. A URL typed without a scheme gets `https://`. Engines sync as part of Settings. The address bar reads the engine list each time it classifies what was typed, so a new shortcut works at once (`fx rust` searches the engine whose shortcut is `fx`).
+
+- **Linux.** The Search page has the default engine's row and a Manage Search Engines row, which opens a subpage listing the engines. Each engine row has a menu with Make Default, Edit… and Remove. The editor is an `AdwAlertDialog` with three entry rows.
+- **Windows.** The Search page lists the engines under the default engine's box. Each row has a More actions menu with Make default, Edit and Delete. The editor is a flyout, because a second dialog can't open over Settings.
+
 ## Extensions in detail
 
 Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (a bare slug is not accepted, because it cannot be told apart from a relative path), local `.crx`/`.xpi` files, and unpacked developer directories. Each install records how it was verified.
