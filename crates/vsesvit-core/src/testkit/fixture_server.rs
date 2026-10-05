@@ -1,8 +1,9 @@
 //! A tiny HTTP/1.1 server for `tests/fixtures/site/`, bound to 127.0.0.1 on a random
-//! port. It records the path of every request, so a test can prove that a request was
-//! made (`/allowed.png`) or was blocked before it left the engine
-//! (`/vsesvit-blocked/pixel.png`).
+//! port, plus `/suggest?q=<terms>`, a search engine's suggestions for the terms. It records
+//! the path of every request, so a test can prove that a request was made (`/allowed.png`)
+//! or was blocked before it left the engine (`/vsesvit-blocked/pixel.png`).
 
+use std::borrow::Cow;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -123,9 +124,11 @@ fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>) -> io::Result<()> {
     hits.lock().unwrap_or_else(PoisonError::into_inner).push(path.to_owned());
 
     let lookup = if path == "/" { "/index.html" } else { path };
+    let get = method == "GET" || method == "HEAD";
     let (status, content_type, body) = match SITE.iter().find(|(p, _, _)| *p == lookup) {
-        Some((_, content_type, body)) if method == "GET" || method == "HEAD" => ("200 OK", *content_type, *body),
-        _ => ("404 Not Found", "text/plain; charset=utf-8", b"not found".as_slice()),
+        Some((_, content_type, body)) if get => ("200 OK", *content_type, Cow::Borrowed(*body)),
+        None if get && path == "/suggest" => ("200 OK", "application/x-suggestions+json; charset=utf-8", Cow::Owned(suggestions(target))),
+        _ => ("404 Not Found", "text/plain; charset=utf-8", Cow::Borrowed(b"not found".as_slice())),
     };
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
@@ -133,9 +136,16 @@ fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>) -> io::Result<()> {
     );
     stream.write_all(head.as_bytes())?;
     if method != "HEAD" {
-        stream.write_all(body)?;
+        stream.write_all(&body)?;
     }
     stream.flush()
+}
+
+/// OpenSearch suggestions for the `q` of `target`: `["<q>",["<q> one","<q> two"]]`.
+fn suggestions(target: &str) -> Vec<u8> {
+    let query = target.split_once('?').map_or("", |(_, query)| query);
+    let terms = url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == "q").map(|(_, v)| v.into_owned()).unwrap_or_default();
+    serde_json::to_vec(&serde_json::json!([terms, [format!("{terms} one"), format!("{terms} two")]])).expect("JSON of strings")
 }
 
 /// Reads up to the blank line that ends the request head. `None` if the peer closed or

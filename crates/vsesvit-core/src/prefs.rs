@@ -132,6 +132,9 @@ pub mod keys {
     pub const SUGGEST_HISTORY: Pref<bool> = Pref { key: "address_bar.suggest.history", scope: Scope::Synced, default: || true };
     /// Whether the address bar suggests bookmarks.
     pub const SUGGEST_BOOKMARKS: Pref<bool> = Pref { key: "address_bar.suggest.bookmarks", scope: Scope::Synced, default: || true };
+    /// Whether the address bar sends what the user types to the default search engine for its
+    /// suggestions ([`crate::search::Omnibox::suggest_request`]).
+    pub const SEARCH_SUGGESTIONS: Pref<bool> = Pref { key: "address_bar.suggest.search", scope: Scope::Synced, default: || true };
     /// Refuse windows a page opens without a user gesture.
     pub const BLOCK_POPUPS: Pref<bool> = Pref { key: "content.block_popups", scope: Scope::Synced, default: || true };
     /// Save and fill form entries such as addresses, where the engine supports it.

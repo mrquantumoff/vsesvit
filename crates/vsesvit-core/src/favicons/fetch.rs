@@ -34,7 +34,7 @@ const MAX_ATTEMPTS: usize = 3;
 /// The edge of the stored icon: what a 16px icon needs at 200% scale.
 const SIZE: u32 = 32;
 /// Some servers refuse clients that do not look like a browser.
-const USER_AGENT: &str =
+pub(crate) const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 
 /// The icons of `pages`, fetched on a worker thread. `Send`, and holds no profile: the

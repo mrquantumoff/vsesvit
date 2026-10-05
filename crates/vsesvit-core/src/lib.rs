@@ -35,6 +35,7 @@
 //! | [`prefs`]        | typed preferences                                                    |
 //! | [`search`]       | search engines, omnibox resolve + suggest                             |
 //! | [`shortcuts`]    | commands, default chords, the user's keymap                           |
+//! | [`suggest`]      | the default engine's search suggestions: request, fetch, parsing      |
 //! | [`trackers`]     | tracking protection: the bundled tracker list, level, site exceptions |
 //! | [`extensions`]   | desired set (synced) vs installed set (local), CRX3/XPI/unpacked      |
 //! | [`ext_storage`]  | `chrome.storage.local` / `.sync` backing for the Linux runtime        |
@@ -67,6 +68,7 @@ pub mod prefs;
 pub mod search;
 pub mod session;
 pub mod shortcuts;
+pub mod suggest;
 pub mod sync;
 #[cfg(feature = "testkit")]
 pub mod testkit;

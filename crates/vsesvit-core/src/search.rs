@@ -18,6 +18,7 @@ use crate::crdt::{Extra, Lattice, Lww, Record, Seq, Stamp, extra_max_stamp, join
 use crate::db::{extra_col, extra_text, opt_stamp_col, seq_col};
 use crate::history::url_key;
 use crate::prefs::keys;
+use crate::suggest::{Queries, SearchSuggestions, SuggestRequest};
 use crate::sync::{Kind, SyncTable, changed_rows};
 use crate::{Error, Profile, Url};
 
@@ -376,6 +377,33 @@ impl SearchEngines<'_> {
             let at = tx.stamp();
             let changed = [f.name.set(edit.name, at), f.keyword.set(Some(edit.keyword), at), f.search_url.set(edit.search_url, at)];
             if changed.contains(&true) {
+                let seq = tx.seq();
+                store_record(&tx.sql, &rec, seq)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Sets the URL an engine's suggestions are fetched from, a `{searchTerms}` template, for
+    /// the self-test: the editor has no box for it, as in Chrome.
+    #[cfg(feature = "testkit")]
+    pub fn set_suggest_url(&mut self, id: &SearchEngineId, template: Option<&str>) -> Result<(), Error> {
+        let id = id.clone();
+        let template = template.map(|t| UrlTemplate(t.to_owned()));
+        self.p.write(move |tx| {
+            let mut rec = match (load_record(&tx.sql, &id)?, Builtin::find(&id)) {
+                (Some(r), _) => r,
+                (None, Some(b)) => EngineRecord { id: id.clone(), state: Record::Live(b.fields()) },
+                (None, None) => return Err(Error::NotFound),
+            };
+            let Record::Live(f) = &mut rec.state else { return Err(Error::NotFound) };
+            if let Some(b) = Builtin::find(&id)
+                && f.suggest_url.at == Stamp::ZERO
+            {
+                f.suggest_url = b.fields().suggest_url;
+            }
+            let at = tx.stamp();
+            if f.suggest_url.set(template, at) {
                 let seq = tx.seq();
                 store_record(&tx.sql, &rec, seq)?;
             }
@@ -759,6 +787,9 @@ pub enum SuggestionSource {
     Typed,
     Bookmark,
     History,
+    /// A search the default engine suggested for the typed text, listed with the typed search,
+    /// above bookmarks and history.
+    SuggestedSearch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -778,6 +809,23 @@ pub struct Suggestions {
     /// Text to show after what the user typed, selected, so the box reads `items[0].fill`.
     /// `Some` only when it is non-empty and `allow_inline` was true.
     pub inline: Option<String>,
+}
+
+impl Suggestions {
+    /// Adds the engine's suggestions after the search rows and above the bookmark and history
+    /// rows, as current Chrome groups searches above URLs, leaving out any whose search is
+    /// already a row (the typed text's own search, say). The default match stays first whatever
+    /// it is, and the inline completion is untouched.
+    pub fn add_search_suggestions(&mut self, found: &SearchSuggestions) {
+        let is_search = |row: &Suggestion| matches!(row.source, SuggestionSource::Search | SuggestionSource::SuggestedSearch);
+        let mut at = self.items.iter().skip(1).position(|row| !is_search(row)).map_or(self.items.len(), |i| i + 1);
+        for row in &found.rows {
+            if !self.items.iter().any(|item| item.target == row.target) {
+                self.items.insert(at, row.clone());
+                at += 1;
+            }
+        }
+    }
 }
 
 /// The item Chrome adds to a page's context menu for selected text.
@@ -926,9 +974,9 @@ impl Omnibox<'_> {
     /// Access pattern 2: every keystroke. Bookmarks come from memory, history from one
     /// indexed query (`History::search`). Deduplicated by url and ranked: url prefix
     /// match, then bookmark, then frecency. Bookmarks and history are left out when the
-    /// user turned them off ([`keys::SUGGEST_BOOKMARKS`], [`keys::SUGGEST_HISTORY`]). Remote
-    /// search-engine suggestions are a network call and belong to the shell (it has the
-    /// `suggest_url`).
+    /// user turned them off ([`keys::SUGGEST_BOOKMARKS`], [`keys::SUGGEST_HISTORY`]). The
+    /// default engine's suggestions are a network call: [`suggest_request`](Self::suggest_request)
+    /// asks for them, and [`Suggestions::add_search_suggestions`] adds what it found.
     ///
     /// With `allow_inline`, a host prefix of a visited or bookmarked url completes inline to
     /// that site's root (`git` -> `github.com`), and text with a `/` to the url itself; the
@@ -978,6 +1026,31 @@ impl Omnibox<'_> {
         // stable, so bookmarks stay ahead of history within each group, each in its own order
         candidates.sort_by_key(|c| !c.prefix);
         Ok(arrange(text, typed_row, candidates, allow_inline, limit))
+    }
+
+    /// The query for the default engine's suggestions for `text`, made the newest of `queries`
+    /// (every earlier one goes stale, whatever this returns). None, and nothing is sent, when
+    /// the user turned search suggestions off ([`keys::SEARCH_SUGGESTIONS`]), in a private
+    /// window (`private`), when the default engine has no suggest URL or it does not expand to
+    /// an `http(s)` URL, and unless `text` is a plain search of the default engine: never a URL
+    /// being typed, a file path or `file:` URL, or a keyword search of another engine.
+    pub fn suggest_request(&mut self, text: &str, queries: &Queries, private: bool) -> Result<Option<SuggestRequest>, Error> {
+        let id = queries.next();
+        if private || !self.p.prefs().get(&keys::SEARCH_SUGGESTIONS) {
+            return Ok(None);
+        }
+        let engines = self.p.search_engines().list()?;
+        let wanted = self.p.prefs().get(&keys::DEFAULT_SEARCH_ENGINE);
+        let Some(default) = pick_default(&engines, &wanted) else { return Ok(None) };
+        let plain_search = matches!(classify(text, &engines, &default), Some(NavTarget::Search { engine, .. }) if engine == default.id)
+            && keyword_terms(text, &default).is_none();
+        let url = default.suggest_url.as_ref().and_then(|t| t.expand(text.trim())).filter(|u| matches!(u.scheme(), "http" | "https"));
+        Ok(match url {
+            Some(url) if plain_search => {
+                Some(SuggestRequest { engine: default.id, search_url: default.search_url, url, queries: queries.clone(), id })
+            }
+            _ => None,
+        })
     }
 
     /// The page context menu's item for selected text, or None for blank text.

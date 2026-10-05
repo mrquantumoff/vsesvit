@@ -25,7 +25,7 @@ pub(crate) fn engine_url(text: &str) -> Option<String> {
 pub(crate) fn label(suggestion: &Suggestion) -> String {
     let url = suggestion.target.url().as_str();
     match suggestion.source {
-        SuggestionSource::Search => suggestion.title.clone(),
+        SuggestionSource::Search | SuggestionSource::SuggestedSearch => suggestion.title.clone(),
         SuggestionSource::Typed => url.to_owned(),
         SuggestionSource::Bookmark => format!("\u{2605} {}  \u{2014}  {url}", suggestion.title),
         SuggestionSource::History if suggestion.title == url => url.to_owned(),

@@ -33,7 +33,7 @@ pub(crate) fn suggestions(browser: &Browser, window: &BrowserWindow, text: &str,
 fn row(window: &BrowserWindow, suggestion: vsesvit_core::search::Suggestion) -> Suggestion {
     let url = suggestion.target.url().clone();
     let (icon_name, subtitle, transition) = match (&suggestion.source, &suggestion.target) {
-        (SuggestionSource::Search, NavTarget::Search { .. }) => {
+        (SuggestionSource::Search, NavTarget::Search { .. }) | (SuggestionSource::SuggestedSearch, _) => {
             ("system-search-symbolic", "Search".to_owned(), Transition::Typed)
         }
         (SuggestionSource::Search, NavTarget::Url(_)) | (SuggestionSource::Typed, _) => {
