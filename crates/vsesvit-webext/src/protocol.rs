@@ -17,8 +17,10 @@
 //! was given. Content scripts talk to a handler in their isolated world and send no token.
 //!
 //! Rust → JS goes the other way through `evaluate_javascript` (fire-and-forget events,
-//! see [`emit_source`]) and `call_async_javascript_function` (message dispatch, which
-//! awaits the page's answer as [`Dispatched`]).
+//! see [`emit_source`]) and `call_async_javascript_function` (message and connection
+//! dispatch, which awaits the page's answer as [`Dispatched`]). A `Port` gets its events
+//! by keeping a `port.receive` call open, which the runtime answers with a list of
+//! [`crate::messaging::PortEvent`]s once there are some.
 
 use std::fmt;
 use std::str::FromStr;
@@ -115,6 +117,7 @@ macro_rules! methods {
 
 methods! {
     RuntimeSendMessage = "runtime.sendMessage",
+    RuntimeConnect = "runtime.connect",
     RuntimeOpenOptionsPage = "runtime.openOptionsPage",
     RuntimeReload = "runtime.reload",
     StorageGet = "storage.get",
@@ -130,6 +133,7 @@ methods! {
     TabsRemove = "tabs.remove",
     TabsReload = "tabs.reload",
     TabsSendMessage = "tabs.sendMessage",
+    TabsConnect = "tabs.connect",
     ScriptingExecuteScript = "scripting.executeScript",
     ScriptingInsertCss = "scripting.insertCSS",
     ActionSetBadgeText = "action.setBadgeText",
@@ -145,6 +149,9 @@ methods! {
     AlarmsGetAll = "alarms.getAll",
     AlarmsClear = "alarms.clear",
     AlarmsClearAll = "alarms.clearAll",
+    PortPostMessage = "port.postMessage",
+    PortDisconnect = "port.disconnect",
+    PortReceive = "port.receive",
 }
 
 impl Method {
@@ -154,6 +161,10 @@ impl Method {
         matches!(
             self,
             Method::RuntimeSendMessage
+                | Method::RuntimeConnect
+                | Method::PortPostMessage
+                | Method::PortDisconnect
+                | Method::PortReceive
                 | Method::StorageGet
                 | Method::StorageSet
                 | Method::StorageRemove
@@ -322,20 +333,31 @@ pub fn emit_source_in_page(host: &str, event: &str, args: &[Value]) -> String {
     format!("{} && {}", page_guard(host), emit_source(event, args))
 }
 
-/// Body for `call_async_javascript_function`: delivers `message` to the context's
-/// `runtime.onMessage` listeners and resolves with a [`Dispatched`].
-pub fn dispatch_source(message: &Value, sender: &Sender) -> String {
-    let sender = serde_json::to_value(sender).unwrap_or(Value::Null);
-    format!(
-        "if (!globalThis.__vsesvit) return {{ none: true }}; return globalThis.__vsesvit.dispatchMessage({}, {});",
-        js_literal(message),
-        js_literal(&sender)
-    )
+/// What the runtime hands one context through `call_async_javascript_function`, which
+/// resolves with a [`Dispatched`].
+#[derive(Clone, Copy, Debug)]
+pub enum Dispatch<'a> {
+    /// To the `runtime.onMessage` listeners (`onMessageExternal` from another extension).
+    Message { message: &'a Value, sender: &'a Sender, external: bool },
+    /// To the `runtime.onConnect` listeners (`onConnectExternal`), with `port`, the
+    /// context's end of the channel: `{ none: true }` when there are none.
+    Connect { port: &'a str, name: &'a str, sender: &'a Sender, external: bool },
+}
+
+/// The body that hands `dispatch` to the context.
+pub fn dispatch_source(dispatch: Dispatch) -> String {
+    let sender = |s: &Sender| serde_json::to_value(s).unwrap_or(Value::Null);
+    let (entry, args) = match dispatch {
+        Dispatch::Message { message, sender: s, external } => ("dispatchMessage", vec![message.clone(), sender(s), Value::Bool(external)]),
+        Dispatch::Connect { port, name, sender: s, external } => ("dispatchConnect", vec![Value::from(port), Value::from(name), sender(s), Value::Bool(external)]),
+    };
+    let args: Vec<String> = args.iter().map(js_literal).collect();
+    format!("if (!globalThis.__vsesvit) return {{ none: true }}; return globalThis.__vsesvit.{entry}({});", args.join(", "))
 }
 
 /// [`dispatch_source`] guarded like [`emit_source_in_page`].
-pub fn dispatch_source_in_page(host: &str, message: &Value, sender: &Sender) -> String {
-    format!("if (!{}) return {{ none: true }}; {}", page_guard(host), dispatch_source(message, sender))
+pub fn dispatch_source_in_page(host: &str, dispatch: Dispatch) -> String {
+    format!("if (!{}) return {{ none: true }}; {}", page_guard(host), dispatch_source(dispatch))
 }
 
 /// A JSON value as a JavaScript expression. JSON is a JavaScript subset since ES2019
@@ -400,6 +422,7 @@ mod tests {
     fn every_wire_name_parses() {
         let names = [
             "runtime.sendMessage",
+            "runtime.connect",
             "runtime.openOptionsPage",
             "runtime.reload",
             "storage.get",
@@ -415,6 +438,7 @@ mod tests {
             "tabs.remove",
             "tabs.reload",
             "tabs.sendMessage",
+            "tabs.connect",
             "scripting.executeScript",
             "scripting.insertCSS",
             "action.setBadgeText",
@@ -430,6 +454,9 @@ mod tests {
             "alarms.getAll",
             "alarms.clear",
             "alarms.clearAll",
+            "port.postMessage",
+            "port.disconnect",
+            "port.receive",
         ];
         for name in names {
             assert_eq!(name.parse::<Method>().unwrap().name(), name);
@@ -491,9 +518,11 @@ mod tests {
         let src = emit_source("tabs.onUpdated", &[json!(3), json!({"url": "http://x/"})]);
         assert_eq!(src, r#"globalThis.__vsesvit && globalThis.__vsesvit.emit("tabs.onUpdated", 3, {"url":"http://x/"});"#);
         let s = Sender { id: "ext".into(), url: Some("http://x/".into()), ..Sender::default() };
-        let d = dispatch_source(&json!({"type": "hello"}), &s);
+        let d = dispatch_source(Dispatch::Message { message: &json!({"type": "hello"}), sender: &s, external: false });
         assert!(d.starts_with("if (!globalThis.__vsesvit) return { none: true };"));
-        assert!(d.contains(r#"dispatchMessage({"type":"hello"}, {"id":"ext","url":"http://x/"})"#), "{d}");
+        assert!(d.contains(r#"dispatchMessage({"type":"hello"}, {"id":"ext","url":"http://x/"}, false)"#), "{d}");
+        let c = dispatch_source(Dispatch::Connect { port: "r1", name: "chan", sender: &s, external: true });
+        assert!(c.ends_with(r#"return globalThis.__vsesvit.dispatchConnect("r1", "chan", {"id":"ext","url":"http://x/"}, true);"#), "{c}");
         assert_eq!(js_string("a\"b</script>"), r#""a\"b</script>""#);
     }
 
@@ -557,7 +586,7 @@ mod tests {
         assert_eq!(guard, r#"(location.protocol === "chrome-extension:" && location.host === "abc")"#);
         let e = emit_source_in_page("abc", "alarms.onAlarm", &[json!({"name": "n"})]);
         assert_eq!(e, format!("{guard} && {}", emit_source("alarms.onAlarm", &[json!({"name": "n"})])));
-        let d = dispatch_source_in_page("abc", &json!(1), &Sender::default());
+        let d = dispatch_source_in_page("abc", Dispatch::Message { message: &json!(1), sender: &Sender::default(), external: false });
         assert!(d.starts_with(&format!("if (!{guard}) return {{ none: true }}; if (!globalThis.__vsesvit)")), "{d}");
     }
 }
