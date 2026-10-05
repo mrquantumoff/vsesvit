@@ -6,6 +6,7 @@
 //! toolbar button. The window is never activated and gets no OS input. Every check is bounded;
 //! a timeout reports the last value the check saw.
 
+mod cookie_checks;
 mod omnibox_checks;
 mod page_checks;
 mod search_engine_checks;
@@ -749,6 +750,16 @@ async fn checks(
     }
     browser.write_pref(&keys::HTTPS_ONLY, &false);
     browser.set_https_reach(Reach::Public);
+    for id in tab_ids(&window).into_iter().filter(|id| !open.contains(id)) {
+        window.close_tab(id);
+    }
+
+    let open = tab_ids(&window);
+    check(report, "cookies", Duration::from_secs(60), async |p| {
+        cookie_checks::cookies(browser, &window, &server, p).await
+    })
+    .await;
+    cookie_checks::restore(browser, &server);
     for id in tab_ids(&window).into_iter().filter(|id| !open.contains(id)) {
         window.close_tab(id);
     }

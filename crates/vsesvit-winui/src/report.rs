@@ -26,6 +26,7 @@ pub(crate) const CHECKS: [&str; 32] = [
     "new_tab_page",
     "tracking_protection",
     "https_only",
+    "cookies",
     "passwords_purged",
     "shortcuts",
     "shortcuts_sync",
