@@ -305,7 +305,7 @@ type Follow = Vec<Shown>;
 /// others change reads its preference when it needs it: the address bar's suggestions as the
 /// user types, a page's pop-up as it opens, an http navigation as it starts, and the engine's
 /// startup switches at the next start.
-const PREF_SWITCHES: [(&str, &Pref<bool>, Written); 8] = [
+const PREF_SWITCHES: [(&str, &Pref<bool>, Written); 9] = [
     ("DownloadsAsk", &keys::DOWNLOADS_ASK, |_| {}),
     ("SmoothScrolling", &keys::SMOOTH_SCROLLING, |_| {}),
     ("HardwareAcceleration", &keys::HARDWARE_ACCELERATION, |_| {}),
