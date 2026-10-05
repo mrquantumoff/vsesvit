@@ -246,7 +246,7 @@ async fn search_engines(
     editor.fill(FormField::Keyword, "w")?;
     settle().await;
     let taken = editor.shown(FormField::Keyword);
-    shoot(window, out_dir, "14h-settings-search-engine-editor", steps, |_| {
+    shoot(window, out_dir, "14i-settings-search-engine-editor", steps, |_| {
         json!({
             "engines": names,
             "shortcut_w": taken,
