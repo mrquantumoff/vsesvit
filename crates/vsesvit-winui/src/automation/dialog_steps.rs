@@ -222,6 +222,22 @@ pub(super) async fn settings(
             && strict.1 == TrackingProtection::Strict
             && restored.1 == TrackingProtection::Standard,
     }));
+
+    let https: ToggleSwitch = preview.find("HttpsOnly")?;
+    let stored = || browser.core(|p| p.prefs().get(&keys::HTTPS_ONLY));
+    let default = (https.IsOn()?, stored());
+    https.SetIsOn(true)?;
+    let on = stored();
+    https.SetIsOn(false)?;
+    let dns: TextBlock = preview.find("SecureDns")?;
+    let dns = dns.Text()?.to_string();
+    steps.push(json!({
+        "name": "14j-settings-https-only",
+        "default": default,
+        "stored_on": on,
+        "secure_dns": dns,
+        "ok": default == (false, false) && on && !stored() && !dns.is_empty(),
+    }));
     Ok(())
 }
 

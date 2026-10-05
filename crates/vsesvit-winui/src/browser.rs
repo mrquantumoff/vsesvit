@@ -15,6 +15,7 @@ use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
 use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
+use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::permissions::SiteSetting;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, homepage_url, keys};
 use vsesvit_core::search::{SelectionAction, Suggestions};
@@ -116,6 +117,8 @@ pub(crate) struct Browser {
     page_script: Rc<shortcuts::PageScript>,
     /// The tracker list tracking protection blocks from (see `trackers`).
     trackers: RefCell<Rc<TrackerList>>,
+    /// Which http URLs HTTPS-only upgrades (the self-tests add their local server).
+    https_reach: Cell<Reach>,
     windows: RefCell<Vec<Rc<BrowserWindow>>>,
     /// Bookmarks, History, Downloads and Settings, each in a window of its own while open.
     dialog_windows: RefCell<Vec<Rc<DialogWindow>>>,
@@ -205,6 +208,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         engine,
         page_script,
         trackers: RefCell::new(Rc::new(TrackerList::bundled().clone())),
+        https_reach: Cell::new(Reach::Public),
         windows: RefCell::new(Vec::new()),
         dialog_windows: RefCell::new(Vec::new()),
         closed_tabs: RefCell::new(Vec::new()),
@@ -351,6 +355,17 @@ impl Browser {
             tab.filter_trackers(&list);
         }
         *self.trackers.borrow_mut() = list;
+    }
+
+    /// The https URL a navigation to `url` loads instead, under HTTPS-only.
+    pub fn https_upgrade(&self, url: &Url) -> Option<Url> {
+        let reach = self.https_reach.get();
+        self.core(|p| https_only::upgrade(p, url, reach))
+    }
+
+    #[cfg(feature = "self-test")]
+    pub fn set_https_reach(&self, reach: Reach) {
+        self.https_reach.set(reach);
     }
 
     pub fn profile_open_ms(&self) -> u128 {

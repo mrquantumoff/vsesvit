@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 use vsesvit_core::Url;
 use vsesvit_core::downloads::State;
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
-use vsesvit_core::permissions::Origin;
+use vsesvit_core::https_only::{self, Reach};
+use vsesvit_core::permissions::{Origin, Permission};
 use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::NavTarget;
 use vsesvit_core::testkit::report::{Check, Report};
@@ -710,6 +711,40 @@ async fn checks(
         window.close_tab(id);
     }
     browser.set_trackers(TrackerList::bundled().clone());
+
+    let open = tab_ids(&window);
+    let site = Origin::of(&index).ok_or("no fixture origin")?;
+    browser.write_pref(&keys::HTTPS_ONLY, &true);
+    browser.set_https_reach(Reach::Everywhere);
+    check(report, "https_only", DEFAULT_TIMEOUT, async |p| {
+        let tab = window
+            .open_url_tab(index.as_str(), true)
+            .map_err(|e| e.to_string())?;
+        let at = |title: &str, p: &Probe| {
+            let s = tab.state();
+            p.observe(format!("at {:?}, titled {:?}", s.url, s.title));
+            (s.url == index.as_str() && s.title == title && !s.loading()).then_some(())
+        };
+        until(p, |p| at(https_only::WARNING_TITLE, p)).await;
+        let link = eval(&tab, "document.getElementById('continue').href").await?;
+        eval(&tab, "document.getElementById('continue').click()").await?;
+        until(p, |p| at(FIXTURE_TITLE, p)).await;
+        let allowed = browser.core(|c| https_only::allowed(c, &site));
+        let detail = format!(
+            "{index} failed over https and showed {:?} at its own address; its Continue link {link} loaded the page over http and stored the exception ({allowed})",
+            https_only::WARNING_TITLE
+        );
+        allowed.then_some(detail.clone()).ok_or(detail)
+    })
+    .await;
+    if let Err(e) = browser.core(|c| c.site_permissions().set(&site, Permission::Http, None)) {
+        log::warn!("HTTPS-only exception for {}: {e}", site.as_str());
+    }
+    browser.write_pref(&keys::HTTPS_ONLY, &false);
+    browser.set_https_reach(Reach::Public);
+    for id in tab_ids(&window).into_iter().filter(|id| !open.contains(id)) {
+        window.close_tab(id);
+    }
 
     check(report, "passwords_purged", DEFAULT_TIMEOUT, async |p| {
         until(p, |p| {

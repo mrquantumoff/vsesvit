@@ -1,7 +1,8 @@
 //! Settings, bound to vsesvit-core preferences, in categories down the side as in Windows
 //! Settings. Every choice applies at once, in every window, except the engine's startup
-//! switches (at the next start), tracking protection (from each page's next load), the home page
-//! (written when the dialog closes) and the sync server (written when its box loses focus).
+//! switches (at the next start), tracking protection and HTTPS-only (from each page's next load),
+//! the home page (written when the dialog closes) and the sync server (written when its box loses
+//! focus). Secure DNS is only described: WebView2 takes no setting for it.
 
 use std::rc::Rc;
 
@@ -168,6 +169,18 @@ pub(super) const MARKUP: &str = r#"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
           </StackPanel>
           <StackPanel Spacing="4">
+            <ToggleSwitch x:Name="HttpsOnly" Header="Always use secure connections"/>
+            <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="Upgrade navigations to HTTPS and warn you before loading sites that don't support it"/>
+          </StackPanel>
+          <StackPanel Spacing="4">
+            <TextBlock Text="Secure DNS"/>
+            <TextBlock x:Name="SecureDns" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="Vsesvit looks sites up with secure DNS when your DNS provider supports it. Windows network settings choose the provider."/>
+          </StackPanel>
+          <StackPanel Spacing="4">
             <ToggleSwitch x:Name="BlockPopups" Header="Block pop-ups"/>
             <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -284,14 +297,16 @@ type Follow = Vec<Shown>;
 
 /// Switches bound straight to a preference, and what follows once it is written. What the
 /// others change reads its preference when it needs it: the address bar's suggestions as the
-/// user types, a page's pop-up as it opens, and the engine's startup switches at the next start.
-const PREF_SWITCHES: [(&str, &Pref<bool>, Written); 7] = [
+/// user types, a page's pop-up as it opens, an http navigation as it starts, and the engine's
+/// startup switches at the next start.
+const PREF_SWITCHES: [(&str, &Pref<bool>, Written); 8] = [
     ("DownloadsAsk", &keys::DOWNLOADS_ASK, |_| {}),
     ("SmoothScrolling", &keys::SMOOTH_SCROLLING, |_| {}),
     ("HardwareAcceleration", &keys::HARDWARE_ACCELERATION, |_| {}),
     ("SuggestHistory", &keys::SUGGEST_HISTORY, |_| {}),
     ("SuggestBookmarks", &keys::SUGGEST_BOOKMARKS, |_| {}),
     ("BlockPopups", &keys::BLOCK_POPUPS, |_| {}),
+    ("HttpsOnly", &keys::HTTPS_ONLY, |_| {}),
     (
         "AutofillForms",
         &keys::AUTOFILL_FORMS,

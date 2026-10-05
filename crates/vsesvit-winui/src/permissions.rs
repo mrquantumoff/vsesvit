@@ -103,6 +103,7 @@ pub(crate) fn glyph(permission: Permission) -> &'static str {
         Permission::Midi => "\u{EC4F}",
         Permission::PictureInPicture => PIP_GLYPH,
         Permission::Trackers => "\u{EA18}",
+        Permission::Http => "\u{E785}",
     }
 }
 

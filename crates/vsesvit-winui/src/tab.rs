@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use vsesvit_core::history::Transition;
+use vsesvit_core::https_only::{self, Cause, Next, Upgrades};
 use vsesvit_core::permissions::{Origin, Permission};
 use vsesvit_core::trackers::{self, TrackerList, TrackingProtection};
-use vsesvit_core::{new_tab, session, view_source};
+use vsesvit_core::{Url, new_tab, session, view_source};
 use windows_core::{IInspectable, Interface, Ref, Result};
 
 use crate::bindings::*;
@@ -149,6 +150,10 @@ pub(crate) struct Tab {
     zoom_memory: RefCell<zoom::Memory>,
     /// Tracking protection on the page (see `trackers`).
     trackers: RefCell<Protection>,
+    /// HTTPS-only's upgrades and warning page in the tab.
+    https: RefCell<Upgrades>,
+    /// The navigation the tab last stopped to load its https URL or the warning instead.
+    stopped: Cell<Option<u64>>,
     closed: Cell<bool>,
 }
 
@@ -183,6 +188,8 @@ impl Tab {
             shortcut_worlds: RefCell::default(),
             zoom_memory: RefCell::default(),
             trackers: RefCell::default(),
+            https: RefCell::default(),
+            stopped: Cell::new(None),
             closed: Cell::new(false),
         }))
     }
@@ -567,6 +574,7 @@ impl Tab {
             return;
         };
         *self.view_source.borrow_mut() = view_source::viewed_url(url).map(|_| url.to_owned());
+        self.https.borrow_mut().leave();
         if let Err(e) = core.Navigate(url) {
             log::warn!("tab {}: navigate to {url}: {e}", self.id);
         }
@@ -604,12 +612,14 @@ impl Tab {
 
     pub fn go_back(&self) {
         if let Some(core) = self.core.get() {
+            self.https.borrow_mut().leave();
             let _ = core.GoBack();
         }
     }
 
     pub fn go_forward(&self) {
         if let Some(core) = self.core.get() {
+            self.https.borrow_mut().leave();
             let _ = core.GoForward();
         }
     }
@@ -624,13 +634,20 @@ impl Tab {
         }
     }
 
+    /// Reloads the page; on HTTPS-only's warning, tries its https URL again, as Chrome does.
     pub fn reload(&self) {
         if let Some(core) = self.core.get() {
             let loading = self.state.borrow().loading();
             self.transition
                 .borrow_mut()
                 .requested(Transition::Reload, loading);
-            let _ = core.Reload();
+            let warning = self.https.borrow().warning().cloned();
+            match warning {
+                Some(url) => self.navigate(url.as_str()),
+                None => {
+                    let _ = core.Reload();
+                }
+            }
         }
     }
 
@@ -891,6 +908,69 @@ impl Tab {
         }
     }
 
+    /// Feeds HTTPS-only the main-frame navigation that starts, and stops it when the tab loads
+    /// its https URL or the warning page instead. The shell's own navigations leave the warning
+    /// first, so a navigation here that is no redirect is the page's.
+    fn stopped_for_https(
+        self: &Rc<Self>,
+        args: &CoreWebView2NavigationStartingEventArgs,
+        uri: &str,
+    ) -> bool {
+        let (Some(browser), Ok(url)) = (self.browser(), Url::parse(uri)) else {
+            return false;
+        };
+        let cause = if args.IsRedirected().unwrap_or(false) {
+            Cause::Redirect
+        } else {
+            Cause::Link
+        };
+        let upgrade = browser.https_upgrade(&url);
+        let next = self.https.borrow_mut().starting(&url, cause, upgrade);
+        // The replacement loads once the stopped navigation is done with.
+        let stop = |then: Box<dyn FnOnce(&Tab)>| {
+            self.stopped.set(args.NavigationId().ok());
+            if let Err(e) = args.SetCancel(true) {
+                log::warn!("tab {}: stopping {uri}: {e}", self.id);
+            }
+            let tab = self.clone();
+            exec::spawn(async move { then(&tab) });
+        };
+        match next {
+            Next::Load => false,
+            Next::Allow(url) => {
+                log::info!("tab {}: continuing to {url} without a secure connection", self.id);
+                if let Err(e) = browser.core(|p| https_only::allow(p, &url)) {
+                    log::warn!("tab {}: HTTPS-only exception for {url}: {e}", self.id);
+                }
+                false
+            }
+            Next::Upgrade(https) => {
+                log::debug!("tab {}: upgrading {uri} to {https}", self.id);
+                stop(Box::new(move |tab| {
+                    if let Some(core) = tab.core.get()
+                        && let Err(e) = core.Navigate(https.as_str())
+                    {
+                        log::warn!("tab {}: navigate to {https}: {e}", tab.id);
+                    }
+                }));
+                true
+            }
+            Next::Warn(http) => {
+                stop(Box::new(move |tab| tab.show_https_warning(&http)));
+                true
+            }
+        }
+    }
+
+    /// HTTPS-only's warning that `url` has no secure connection, shown at `url`.
+    fn show_https_warning(&self, url: &Url) {
+        log::info!("tab {}: {url} has no secure connection", self.id);
+        let Some(core) = self.core.get() else { return };
+        if let Err(e) = core.NavigateToString(&https_only::warning_page(url)) {
+            log::warn!("tab {}: HTTPS-only warning: {e}", self.id);
+        }
+    }
+
     /// Releases the engine view. The window removes the XAML parts.
     pub fn close(&self) {
         if !self.closed.replace(true) {
@@ -918,6 +998,9 @@ impl Tab {
             self,
             |tab, args: &CoreWebView2NavigationStartingEventArgs| {
                 let uri = args.Uri().unwrap_or_default();
+                if tab.stopped_for_https(args, &uri) {
+                    return;
+                }
                 let level = tab.browser().map_or(TrackingProtection::Off, |b| {
                     b.core(|p| trackers::level_for(p, Origin::parse(&uri).as_ref()))
                 });
@@ -931,6 +1014,7 @@ impl Tab {
         ))?
         .forget();
         core.ContentLoading(on(self, |tab, _: &CoreWebView2ContentLoadingEventArgs| {
+            tab.https.borrow_mut().committed();
             tab.state.borrow_mut().load = Load::Committed;
             tab.security.borrow_mut().new_document();
             tab.trackers.borrow_mut().new_document();
@@ -957,17 +1041,28 @@ impl Tab {
         core.NavigationCompleted(on(
             self,
             |tab, args: &CoreWebView2NavigationCompletedEventArgs| {
-                if !args.IsSuccess().unwrap_or(true) {
-                    log::info!(
-                        "tab {}: navigation failed, web error {}",
-                        tab.id,
-                        args.WebErrorStatus().map(|s| s.0).unwrap_or(-1)
-                    );
+                let id = args.NavigationId().ok();
+                if id.is_some() && tab.stopped.get() == id {
+                    tab.stopped.set(None);
+                    return;
+                }
+                let success = args.IsSuccess().unwrap_or(true);
+                let status = args
+                    .WebErrorStatus()
+                    .unwrap_or(CoreWebView2WebErrorStatus::Unknown);
+                if !success {
+                    log::info!("tab {}: navigation failed, web error {}", tab.id, status.0);
                 }
                 tab.transition.borrow_mut().completed();
                 navigation_ended(&mut tab.state.borrow_mut(), &mut tab.requested.borrow_mut());
                 tab.refresh_history();
                 tab.notify();
+                // A stopped load is no failed upgrade.
+                let ended = success || status == CoreWebView2WebErrorStatus::OperationCanceled;
+                let warning = tab.https.borrow_mut().finished(ended);
+                if let Some(url) = warning {
+                    tab.show_https_warning(&url);
+                }
             },
         ))?
         .forget();
@@ -1105,8 +1200,12 @@ impl Tab {
             self.permissions
                 .refresh_site(&browser, Origin::parse(&url).as_ref());
             self.watch_capture();
-            let starred = browser.navigation_committed(&url, kind, transition);
-            self.state.borrow_mut().starred = starred;
+            if self.https.borrow().warning().is_some() {
+                browser.session_changed();
+            } else {
+                let starred = browser.navigation_committed(&url, kind, transition);
+                self.state.borrow_mut().starred = starred;
+            }
         }
         self.notify();
     }
@@ -1115,7 +1214,10 @@ impl Tab {
         let Some(core) = self.core.get() else { return };
         match core.Source() {
             Ok(url) => {
-                let url = if url.is_empty() {
+                let warning = self.https.borrow().warning().map(Url::to_string);
+                let url = if let Some(warning) = warning {
+                    warning
+                } else if url.is_empty() {
                     self.requested.borrow().clone()
                 } else {
                     shown_url(url, self.view_source.borrow().as_deref())
@@ -1145,7 +1247,9 @@ impl Tab {
         let url = self.state.borrow().url.clone();
         let title = display_title(core.DocumentTitle().unwrap_or_default(), &url);
         self.state.borrow_mut().title = title.clone();
-        if let Some(browser) = self.browser() {
+        if let Some(browser) = self.browser()
+            && self.https.borrow().warning().is_none()
+        {
             browser.title_changed(&url, &title);
         }
         self.notify();

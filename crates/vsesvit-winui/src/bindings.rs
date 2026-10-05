@@ -7796,6 +7796,16 @@ impl ICoreWebView2NavigationCompletedEventArgs {
             .map(|| result__)
         }
     }
+    pub fn NavigationId(&self) -> windows_core::Result<u64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).NavigationId)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
 }
 #[repr(C)]
 pub struct ICoreWebView2NavigationCompletedEventArgs_Vtbl {
@@ -7806,6 +7816,8 @@ pub struct ICoreWebView2NavigationCompletedEventArgs_Vtbl {
         *mut core::ffi::c_void,
         *mut CoreWebView2WebErrorStatus,
     ) -> windows_core::HRESULT,
+    pub NavigationId:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2NavigationStartingEventArgs,
@@ -7830,6 +7842,35 @@ impl ICoreWebView2NavigationStartingEventArgs {
             })
         }
     }
+    pub fn IsRedirected(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsRedirected)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetCancel(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetCancel)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn NavigationId(&self) -> windows_core::Result<u64> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).NavigationId)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
 }
 #[repr(C)]
 pub struct ICoreWebView2NavigationStartingEventArgs_Vtbl {
@@ -7838,6 +7879,14 @@ pub struct ICoreWebView2NavigationStartingEventArgs_Vtbl {
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+    IsUserInitiated: usize,
+    pub IsRedirected:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    RequestHeaders: usize,
+    Cancel: usize,
+    pub SetCancel: unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+    pub NavigationId:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut u64) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2NewWindowRequestedEventArgs,
