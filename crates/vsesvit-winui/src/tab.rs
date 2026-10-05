@@ -1176,7 +1176,7 @@ impl Tab {
             return Ok(());
         };
         let item = self.new_tab_item(&browser, "View page source", url)?;
-        match item_named(&items, "inspect")? {
+        match item_named(&items, "inspectElement")? {
             Some(index) => items.InsertAt(index, &item),
             None => items.Append(&item),
         }

@@ -113,7 +113,7 @@ pub(super) async fn page_commands(
                     let items: Vec<_> = items.into_iter().collect();
                     menu.names = items.iter().map(|i| i.Name().unwrap_or_default()).collect();
                     menu.ours = items.iter().position(|i| {
-                        i.Name().is_ok_and(|n| n == "custom")
+                        i.Name().is_ok_and(|n| n != VIEW_SOURCE_ITEM)
                             && i.Label().is_ok_and(|l| l == "View page source")
                     });
                     if let Some(id) = menu.ours.and_then(|i| items[i].CommandId().ok()) {
@@ -141,12 +141,12 @@ pub(super) async fn page_commands(
     .await;
     let at = |name: &str| menu.names.iter().position(|n| n == name);
     let built_in = at(VIEW_SOURCE_ITEM).is_some();
-    let before_inspect = menu.ours.is_some_and(|i| at("inspect") == Some(i + 1));
+    let before_inspect = menu.ours.is_some_and(|i| at("inspectElement") == Some(i + 1));
     detail.push(format!(
         "right-click at {spot}: menu {:?}, ours at {:?}",
         menu.names, menu.ours
     ));
-    if at("print").is_none() || at("inspect").is_none() || !(built_in || before_inspect) {
+    if at("print").is_none() || at("inspectElement").is_none() || !(built_in || before_inspect) {
         return Err(detail.join("; "));
     }
     if menu.ours.is_some() {
