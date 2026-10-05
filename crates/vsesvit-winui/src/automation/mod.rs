@@ -30,6 +30,7 @@ mod sync_live;
 mod progress_steps;
 mod tab_steps;
 mod toolbar_steps;
+mod tracker_steps;
 mod welcome_steps;
 
 pub(crate) use dialog_steps::{confirm_flyout, invoke, settings_on};
@@ -691,6 +692,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     tab_steps::run(&window, &server, out_dir, steps).await?;
     motion_steps::run(&window, out_dir, steps).await?;
     permission_steps::run(browser, &window, &server, out_dir, steps).await?;
+    tracker_steps::run(browser, &window, &server, out_dir, steps).await?;
 
     window.type_address("fixture");
     let labels = window.suggestion_labels();

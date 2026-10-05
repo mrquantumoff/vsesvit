@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use vsesvit_core::history::Transition;
 use vsesvit_core::permissions::{Origin, Permission};
+use vsesvit_core::trackers::{self, TrackerList, TrackingProtection};
 use vsesvit_core::{new_tab, session, view_source};
 use windows_core::{IInspectable, Interface, Ref, Result};
 
@@ -23,6 +24,7 @@ use crate::store;
 use crate::tab_header::{Audio, TabLook};
 use crate::window::BrowserWindow;
 use crate::media::{self, MediaAction, Playback};
+use crate::trackers::Protection;
 use crate::{capturing, connection, exec, platform, xaml, zoom};
 
 /// Identifies a tab within this process.
@@ -145,6 +147,8 @@ pub(crate) struct Tab {
     shortcut_worlds: RefCell<HashMap<String, shortcuts::World>>,
     /// The zoom remembered for the page's site, while the page is not at it.
     zoom_memory: RefCell<zoom::Memory>,
+    /// Tracking protection on the page (see `trackers`).
+    trackers: RefCell<Protection>,
     closed: Cell<bool>,
 }
 
@@ -178,6 +182,7 @@ impl Tab {
             capture_polled: Cell::new(false),
             shortcut_worlds: RefCell::default(),
             zoom_memory: RefCell::default(),
+            trackers: RefCell::default(),
             closed: Cell::new(false),
         }))
     }
@@ -325,10 +330,16 @@ impl Tab {
         settings.SetIsWebMessageEnabled(false)?;
         if let Some(browser) = self.browser() {
             self.apply_autofill(&settings, browser.autofill_forms());
+            if let Err(e) = browser.engine().set_up_profile(&core) {
+                log::warn!("tab {}: engine profile: {e}", self.id);
+            }
         }
         self.wire(&core)?;
         self.inject(&core, page_script).await?;
         let _ = self.core.set(core.clone());
+        if let Some(browser) = self.browser() {
+            self.filter_trackers(&browser.trackers());
+        }
         Ok(core)
     }
 
@@ -817,6 +828,69 @@ impl Tab {
         }
     }
 
+    /// Makes the engine view raise the requests `list` may block (see `trackers`).
+    pub fn filter_trackers(&self, list: &TrackerList) {
+        let Some(core) = self.core.get() else { return };
+        if let Err(e) = self.trackers.borrow_mut().add_filters(core, list) {
+            log::warn!("tab {}: tracker request filters: {e}", self.id);
+        }
+    }
+
+    /// The tracker domains tracking protection blocked on the page.
+    pub fn blocked_trackers(&self) -> Vec<String> {
+        self.trackers.borrow().blocked().iter().cloned().collect()
+    }
+
+    /// Turns tracking protection on or off for the page's site, and loads the page again under
+    /// it, as Firefox does.
+    pub fn set_tracking_protection(&self, on: bool) {
+        let (Some(browser), Some(origin)) = (self.browser(), self.origin()) else {
+            return;
+        };
+        if let Err(e) = browser.core(|p| trackers::set_allowed(p, &origin, !on)) {
+            log::warn!(
+                "tab {}: tracking protection for {}: {e}",
+                self.id,
+                origin.as_str()
+            );
+            return;
+        }
+        log::info!(
+            "tab {}: tracking protection {} for {}",
+            self.id,
+            if on { "on" } else { "off" },
+            origin.as_str()
+        );
+        self.reload();
+    }
+
+    /// A request that may be a tracker's: answered with an empty 403 when the page's protection
+    /// blocks it.
+    fn resource_requested(&self, args: &CoreWebView2WebResourceRequestedEventArgs) {
+        let Some(browser) = self.browser() else {
+            return;
+        };
+        let Ok(uri) = args.Request().and_then(|r| r.Uri()) else {
+            return;
+        };
+        let before = self.trackers.borrow().blocked().len();
+        if !self.trackers.borrow_mut().blocks(&browser.trackers(), &uri) {
+            return;
+        }
+        log::debug!("tab {}: blocked tracker {uri}", self.id);
+        let answered = browser
+            .engine()
+            .environment()
+            .CreateWebResourceResponse(None::<&IRandomAccessStream>, 403, "Forbidden", "")
+            .and_then(|response| args.SetResponse(&response));
+        if let Err(e) = answered {
+            log::warn!("tab {}: blocking {uri}: {e}", self.id);
+        }
+        if self.trackers.borrow().blocked().len() > before {
+            self.notify();
+        }
+    }
+
     /// Releases the engine view. The window removes the XAML parts.
     pub fn close(&self) {
         if !self.closed.replace(true) {
@@ -843,7 +917,12 @@ impl Tab {
         core.NavigationStarting(on(
             self,
             |tab, args: &CoreWebView2NavigationStartingEventArgs| {
-                *tab.requested.borrow_mut() = args.Uri().unwrap_or_default();
+                let uri = args.Uri().unwrap_or_default();
+                let level = tab.browser().map_or(TrackingProtection::Off, |b| {
+                    b.core(|p| trackers::level_for(p, Origin::parse(&uri).as_ref()))
+                });
+                tab.trackers.borrow_mut().navigation_starting(&uri, level);
+                *tab.requested.borrow_mut() = uri;
                 tab.transition.borrow_mut().starting();
                 tab.state.borrow_mut().load = Load::Started;
                 tab.security.borrow_mut().navigation_starting();
@@ -854,6 +933,7 @@ impl Tab {
         core.ContentLoading(on(self, |tab, _: &CoreWebView2ContentLoadingEventArgs| {
             tab.state.borrow_mut().load = Load::Committed;
             tab.security.borrow_mut().new_document();
+            tab.trackers.borrow_mut().new_document();
             tab.committed(CommitKind::NewDocument);
         }))?
         .forget();
@@ -982,6 +1062,13 @@ impl Tab {
                 },
             ))?
             .forget();
+        core.WebResourceRequested(on(
+            self,
+            |tab, args: &CoreWebView2WebResourceRequestedEventArgs| {
+                tab.resource_requested(args);
+            },
+        ))?
+        .forget();
         core.ProcessFailed(on(
             self,
             |tab, args: &CoreWebView2ProcessFailedEventArgs| {

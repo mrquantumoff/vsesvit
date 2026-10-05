@@ -89,6 +89,7 @@ mod strip;
 mod sync;
 mod tab;
 mod tab_header;
+mod trackers;
 mod updates;
 mod window;
 mod xaml;

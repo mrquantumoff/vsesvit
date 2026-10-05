@@ -263,6 +263,17 @@ Microsoft.Web.WebView2.Core.ICoreWebView2Profile4::SetPermissionStateAsync
 Microsoft.Web.WebView2.Core.CoreWebView2Profile_Manual2::GetNonDefaultPermissionSettingsAsync
 Microsoft.Web.WebView2.Core.ICoreWebView2PermissionSetting::{get_PermissionKind, get_PermissionOrigin, get_PermissionState}
 
+// ---- tracking protection ----
+Microsoft.Web.WebView2.Core.ICoreWebView2Profile3::put_PreferredTrackingPreventionLevel
+Microsoft.Web.WebView2.Core.CoreWebView2TrackingPreventionLevel
+Microsoft.Web.WebView2.Core.ICoreWebView2::WebResourceRequested
+Microsoft.Web.WebView2.Core.ICoreWebView2_Manual::AddWebResourceRequestedFilter
+Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext
+Microsoft.Web.WebView2.Core.CoreWebView2WebResourceRequestSourceKinds
+Microsoft.Web.WebView2.Core.ICoreWebView2WebResourceRequestedEventArgs::{get_Request, put_Response}
+Microsoft.Web.WebView2.Core.ICoreWebView2WebResourceRequest::get_Uri
+Microsoft.Web.WebView2.Core.ICoreWebView2Environment::CreateWebResourceResponse
+
 // ---- page context menu ----
 Microsoft.Web.WebView2.Core.ICoreWebView2_11::ContextMenuRequested
 Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuRequestedEventArgs::{get_MenuItems, get_ContextMenuTarget, put_SelectedCommandId, put_Handled}

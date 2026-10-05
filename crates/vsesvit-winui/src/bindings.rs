@@ -2405,6 +2405,23 @@ unsafe impl Send for CoreWebView2SourceChangedEventArgs {}
 unsafe impl Sync for CoreWebView2SourceChangedEventArgs {}
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2TrackingPreventionLevel(pub i32);
+impl CoreWebView2TrackingPreventionLevel {
+    pub const None: Self = Self(0);
+    pub const Basic: Self = Self(1);
+    pub const Balanced: Self = Self(2);
+    pub const Strict: Self = Self(3);
+}
+impl windows_core::imp::TypeKind for CoreWebView2TrackingPreventionLevel {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2TrackingPreventionLevel {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2TrackingPreventionLevel;i4)",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CoreWebView2WebErrorStatus(pub i32);
 impl CoreWebView2WebErrorStatus {
     pub const Unknown: Self = Self(0);
@@ -2466,6 +2483,174 @@ impl windows_core::RuntimeName for CoreWebView2WebMessageReceivedEventArgs {
 }
 unsafe impl Send for CoreWebView2WebMessageReceivedEventArgs {}
 unsafe impl Sync for CoreWebView2WebMessageReceivedEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2WebResourceContext(pub i32);
+impl CoreWebView2WebResourceContext {
+    pub const All: Self = Self(0);
+    pub const Document: Self = Self(1);
+    pub const Stylesheet: Self = Self(2);
+    pub const Image: Self = Self(3);
+    pub const Media: Self = Self(4);
+    pub const Font: Self = Self(5);
+    pub const Script: Self = Self(6);
+    pub const XmlHttpRequest: Self = Self(7);
+    pub const Fetch: Self = Self(8);
+    pub const TextTrack: Self = Self(9);
+    pub const EventSource: Self = Self(10);
+    pub const Websocket: Self = Self(11);
+    pub const Manifest: Self = Self(12);
+    pub const SignedExchange: Self = Self(13);
+    pub const Ping: Self = Self(14);
+    pub const CspViolationReport: Self = Self(15);
+    pub const Other: Self = Self(16);
+}
+impl windows_core::imp::TypeKind for CoreWebView2WebResourceContext {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2WebResourceContext {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext;i4)",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2WebResourceRequest(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2WebResourceRequest,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2WebResourceRequest {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2WebResourceRequest>();
+}
+unsafe impl windows_core::Interface for CoreWebView2WebResourceRequest {
+    type Vtable = <ICoreWebView2WebResourceRequest as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2WebResourceRequest as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2WebResourceRequest {
+    type Target = ICoreWebView2WebResourceRequest;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2WebResourceRequest {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2WebResourceRequest";
+}
+unsafe impl Send for CoreWebView2WebResourceRequest {}
+unsafe impl Sync for CoreWebView2WebResourceRequest {}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2WebResourceRequestSourceKinds(pub u32);
+impl CoreWebView2WebResourceRequestSourceKinds {
+    pub const None: Self = Self(0);
+    pub const Document: Self = Self(1);
+    pub const SharedWorker: Self = Self(2);
+    pub const ServiceWorker: Self = Self(4);
+    pub const All: Self = Self(4294967295);
+}
+impl windows_core::imp::TypeKind for CoreWebView2WebResourceRequestSourceKinds {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2WebResourceRequestSourceKinds {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2WebResourceRequestSourceKinds;u4)",
+    );
+}
+impl CoreWebView2WebResourceRequestSourceKinds {
+    pub const fn contains(&self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+impl core::ops::BitOr for CoreWebView2WebResourceRequestSourceKinds {
+    type Output = Self;
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+impl core::ops::BitAnd for CoreWebView2WebResourceRequestSourceKinds {
+    type Output = Self;
+    fn bitand(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+}
+impl core::ops::BitOrAssign for CoreWebView2WebResourceRequestSourceKinds {
+    fn bitor_assign(&mut self, other: Self) {
+        self.0.bitor_assign(other.0);
+    }
+}
+impl core::ops::BitAndAssign for CoreWebView2WebResourceRequestSourceKinds {
+    fn bitand_assign(&mut self, other: Self) {
+        self.0.bitand_assign(other.0);
+    }
+}
+impl core::ops::Not for CoreWebView2WebResourceRequestSourceKinds {
+    type Output = Self;
+    fn not(self) -> Self {
+        Self(self.0.not())
+    }
+}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2WebResourceRequestedEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2WebResourceRequestedEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2WebResourceRequestedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::for_class::<
+        Self,
+        ICoreWebView2WebResourceRequestedEventArgs,
+    >();
+}
+unsafe impl windows_core::Interface for CoreWebView2WebResourceRequestedEventArgs {
+    type Vtable = <ICoreWebView2WebResourceRequestedEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2WebResourceRequestedEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2WebResourceRequestedEventArgs {
+    type Target = ICoreWebView2WebResourceRequestedEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2WebResourceRequestedEventArgs {
+    const NAME: &'static str =
+        "Microsoft.Web.WebView2.Core.CoreWebView2WebResourceRequestedEventArgs";
+}
+unsafe impl Send for CoreWebView2WebResourceRequestedEventArgs {}
+unsafe impl Sync for CoreWebView2WebResourceRequestedEventArgs {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2WebResourceResponse(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2WebResourceResponse,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2WebResourceResponse {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2WebResourceResponse>();
+}
+unsafe impl windows_core::Interface for CoreWebView2WebResourceResponse {
+    type Vtable = <ICoreWebView2WebResourceResponse as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2WebResourceResponse as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2WebResourceResponse {
+    type Target = ICoreWebView2WebResourceResponse;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2WebResourceResponse {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2WebResourceResponse";
+}
+unsafe impl Send for CoreWebView2WebResourceResponse {}
+unsafe impl Sync for CoreWebView2WebResourceResponse {}
 pub type CreatePackageDependencyOptions = u32;
 pub const CreatePackageDependencyOptions_DoNotVerifyDependencyResolution:
     CreatePackageDependencyOptions = 1;
@@ -6055,6 +6240,46 @@ impl ICoreWebView2 {
             ))
         }
     }
+    pub fn WebResourceRequested<F>(
+        &self,
+        handler: F,
+    ) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(
+                windows_core::Ref<CoreWebView2>,
+                windows_core::Ref<CoreWebView2WebResourceRequestedEventArgs>,
+            ) + 'static,
+    {
+        let handler: TypedEventHandler<CoreWebView2, CoreWebView2WebResourceRequestedEventArgs> = {
+            let com =
+                windows_core::imp::DelegateBox::<
+                    TypedEventHandler<CoreWebView2, CoreWebView2WebResourceRequestedEventArgs>,
+                    F,
+                >::new(
+                    &TypedEventHandlerBox::<
+                        CoreWebView2,
+                        CoreWebView2WebResourceRequestedEventArgs,
+                        F,
+                    >::VTABLE,
+                    handler,
+                );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).WebResourceRequested)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveWebResourceRequested,
+            ))
+        }
+    }
     pub fn WindowCloseRequested<F>(
         &self,
         handler: F,
@@ -6320,8 +6545,13 @@ pub struct ICoreWebView2_Vtbl {
     ) -> windows_core::HRESULT,
     pub RemoveContainsFullScreenElementChanged:
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
-    WebResourceRequested: usize,
-    RemoveWebResourceRequested: usize,
+    pub WebResourceRequested: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveWebResourceRequested:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     pub WindowCloseRequested: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
@@ -7196,11 +7426,45 @@ impl ICoreWebView2Environment {
             })
         }
     }
+    pub fn CreateWebResourceResponse<P0>(
+        &self,
+        content: P0,
+        statuscode: i32,
+        reasonphrase: &str,
+        headers: &str,
+    ) -> windows_core::Result<CoreWebView2WebResourceResponse>
+    where
+        P0: windows_core::Param<IRandomAccessStream>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CreateWebResourceResponse)(
+                windows_core::Interface::as_raw(self),
+                content.param().abi(),
+                statuscode,
+                core::mem::transmute_copy(&windows_core::HSTRING::from(reasonphrase)),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(headers)),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
 }
 #[repr(C)]
 pub struct ICoreWebView2Environment_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
     pub BrowserVersionString: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    NewBrowserVersionAvailable: usize,
+    RemoveNewBrowserVersionAvailable: usize,
+    CreateCoreWebView2ControllerAsync: usize,
+    pub CreateWebResourceResponse: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        i32,
+        *mut core::ffi::c_void,
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
@@ -7926,6 +8190,39 @@ pub struct ICoreWebView2Profile2_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2Profile3,
+    ICoreWebView2Profile3_Vtbl,
+    0x507ed587_c511_5e47_be5b_fc9ccdf179b6
+);
+impl windows_core::RuntimeType for ICoreWebView2Profile3 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2Profile3 {
+    pub fn SetPreferredTrackingPreventionLevel(
+        &self,
+        value: CoreWebView2TrackingPreventionLevel,
+    ) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetPreferredTrackingPreventionLevel)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2Profile3_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    PreferredTrackingPreventionLevel: usize,
+    pub SetPreferredTrackingPreventionLevel: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        CoreWebView2TrackingPreventionLevel,
+    )
+        -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2Profile4,
     ICoreWebView2Profile4_Vtbl,
     0xeeae109a_f641_5a5b_942f_9922594ffb4d
@@ -8315,6 +8612,97 @@ pub struct ICoreWebView2WebMessageReceivedEventArgs_Vtbl {
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2WebResourceRequest,
+    ICoreWebView2WebResourceRequest_Vtbl,
+    0x5c742259_67d2_5df2_8382_0f201b4d7197
+);
+impl windows_core::RuntimeType for ICoreWebView2WebResourceRequest {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2WebResourceRequest {
+    pub fn Uri(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Uri)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2WebResourceRequest_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Uri: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2WebResourceRequestedEventArgs,
+    ICoreWebView2WebResourceRequestedEventArgs_Vtbl,
+    0x577f1fc4_c943_54a9_9700_bd469b48bd41
+);
+impl windows_core::RuntimeType for ICoreWebView2WebResourceRequestedEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2WebResourceRequestedEventArgs {
+    pub fn Request(&self) -> windows_core::Result<CoreWebView2WebResourceRequest> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Request)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn SetResponse<P0>(&self, value: P0) -> windows_core::Result<()>
+    where
+        P0: windows_core::Param<CoreWebView2WebResourceResponse>,
+    {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetResponse)(
+                windows_core::Interface::as_raw(self),
+                value.param().abi(),
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2WebResourceRequestedEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Request: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    Response: usize,
+    pub SetResponse: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2WebResourceResponse,
+    ICoreWebView2WebResourceResponse_Vtbl,
+    0x14621923_e485_5f44_8f5d_bd4243bc398f
+);
+impl windows_core::RuntimeType for ICoreWebView2WebResourceResponse {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct ICoreWebView2WebResourceResponse_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2_11,
@@ -8970,6 +9358,43 @@ pub struct ICoreWebView2_9_Vtbl {
     OpenDefaultDownloadDialog: usize,
     pub CloseDefaultDownloadDialog:
         unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2_Manual,
+    ICoreWebView2_Manual_Vtbl,
+    0x2d988546_9962_516b_be53_859fb0f50179
+);
+impl windows_core::RuntimeType for ICoreWebView2_Manual {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2_Manual {
+    pub fn AddWebResourceRequestedFilter(
+        &self,
+        uri: &str,
+        resourcecontext: CoreWebView2WebResourceContext,
+        requestsourcekinds: CoreWebView2WebResourceRequestSourceKinds,
+    ) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).AddWebResourceRequestedFilter)(
+                windows_core::Interface::as_raw(self),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(uri)),
+                resourcecontext,
+                requestsourcekinds,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2_Manual_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub AddWebResourceRequestedFilter: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        CoreWebView2WebResourceContext,
+        CoreWebView2WebResourceRequestSourceKinds,
+    ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICryptographicBufferStatics,

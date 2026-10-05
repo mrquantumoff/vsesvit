@@ -1,7 +1,7 @@
 //! Settings, bound to vsesvit-core preferences, in categories down the side as in Windows
 //! Settings. Every choice applies at once, in every window, except the engine's startup
-//! switches (at the next start), the home page (written when the dialog closes) and the sync
-//! server (written when its box loses focus).
+//! switches (at the next start), tracking protection (from each page's next load), the home page
+//! (written when the dialog closes) and the sync server (written when its box loses focus).
 
 use std::rc::Rc;
 
@@ -10,6 +10,7 @@ use vsesvit_core::prefs::{
 };
 use vsesvit_core::search::SearchEngineId;
 use vsesvit_core::sync::Changed;
+use vsesvit_core::trackers::TrackingProtection;
 use windows_core::{Interface, Result};
 
 use super::{Category, Wired, on_click, side_list};
@@ -162,6 +163,11 @@ pub(super) const MARKUP: &str = r#"
                   Visibility="Collapsed">
       <StackPanel Spacing="28" Padding="0,0,0,12">
         <StackPanel Spacing="16">
+          <StackPanel Spacing="4">
+            <ComboBox x:Name="TrackingProtection" Header="Tracking protection" MinWidth="320"/>
+            <TextBlock x:Name="TrackingProtectionDescription" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+          </StackPanel>
           <StackPanel Spacing="4">
             <ToggleSwitch x:Name="BlockPopups" Header="Block pop-ups"/>
             <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
@@ -405,6 +411,24 @@ pub(super) fn wire(
     })?;
     follow.push(Box::new(move |b| {
         show(b.core(|p| p.prefs().get(&keys::STARTUP)));
+    }));
+
+    let tracking: ComboBox = xaml::find(root, "TrackingProtection")?;
+    let description: TextBlock = xaml::find(root, "TrackingProtectionDescription")?;
+    let levels = TrackingProtection::ALL.map(|level| (level, level.label()));
+    let current = browser.core(|p| p.prefs().get(&keys::TRACKING_PROTECTION));
+    description.SetText(current.description())?;
+    let (w, described) = (weak.clone(), description.clone());
+    let show = choices(&tracking, &levels, current, move |level| {
+        let _ = described.SetText(level.description());
+        if let Some(b) = w.upgrade() {
+            b.write_pref(&keys::TRACKING_PROTECTION, &level);
+        }
+    })?;
+    follow.push(Box::new(move |b| {
+        let level = b.core(|p| p.prefs().get(&keys::TRACKING_PROTECTION));
+        let _ = description.SetText(level.description());
+        show(level);
     }));
 
     let theme: ComboBox = xaml::find(root, "Theme")?;

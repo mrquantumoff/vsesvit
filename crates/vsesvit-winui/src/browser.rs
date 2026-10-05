@@ -21,6 +21,7 @@ use vsesvit_core::search::{SelectionAction, Suggestions};
 use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
+use vsesvit_core::trackers::TrackerList;
 use vsesvit_core::{Profile, Url, onboarding};
 
 use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
@@ -103,6 +104,8 @@ pub(crate) struct Browser {
     profile: RefCell<Profile>,
     engine: Engine,
     page_script: Rc<shortcuts::PageScript>,
+    /// The tracker list tracking protection blocks from (see `trackers`).
+    trackers: RefCell<Rc<TrackerList>>,
     windows: RefCell<Vec<Rc<BrowserWindow>>>,
     /// Bookmarks, History, Downloads and Settings, each in a window of its own while open.
     dialog_windows: RefCell<Vec<Rc<DialogWindow>>>,
@@ -191,6 +194,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         profile: RefCell::new(profile),
         engine,
         page_script,
+        trackers: RefCell::new(Rc::new(TrackerList::bundled().clone())),
         windows: RefCell::new(Vec::new()),
         dialog_windows: RefCell::new(Vec::new()),
         closed_tabs: RefCell::new(Vec::new()),
@@ -320,6 +324,20 @@ impl Browser {
 
     pub fn page_script(&self) -> Rc<shortcuts::PageScript> {
         self.page_script.clone()
+    }
+
+    pub fn trackers(&self) -> Rc<TrackerList> {
+        self.trackers.borrow().clone()
+    }
+
+    /// Blocks from `list` instead, in the tabs already open too (the self-tests add a tracker).
+    #[cfg(feature = "self-test")]
+    pub fn set_trackers(&self, list: TrackerList) {
+        let list = Rc::new(list);
+        for tab in self.windows().iter().flat_map(|w| w.tabs_in_order()) {
+            tab.filter_trackers(&list);
+        }
+        *self.trackers.borrow_mut() = list;
     }
 
     pub fn profile_open_ms(&self) -> u128 {

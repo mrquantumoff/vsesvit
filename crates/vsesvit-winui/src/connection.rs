@@ -1,7 +1,7 @@
 //! The popup of the security icon at the start of the address bar: whether the connection is
-//! secure, the host, the site's permissions (filled by the window), the TLS parameters and the
-//! site's certificate chain, and Chrome's "Show certificate" button, which opens the Windows
-//! certificate viewer.
+//! secure, the host, tracking protection's switch for the site, the site's permissions (filled
+//! by the window), the TLS parameters and the site's certificate chain, and Chrome's "Show
+//! certificate" button, which opens the Windows certificate viewer.
 //!
 //! Each tab keeps the engine's last `Security.visibleSecurityStateChanged` report (the DevTools
 //! protocol's view of the page's connection: the TLS parameters and the chain as base64 DER),
@@ -13,6 +13,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::Value;
 use vsesvit_core::certificate::{self, Certificate};
+use vsesvit_core::trackers;
 use windows_core::{Interface, Result};
 
 use crate::bindings::*;
@@ -196,8 +197,14 @@ fn local_date(unix: i64) -> String {
         .unwrap_or_else(|_| format!("{unix} (Unix time)"))
 }
 
-/// The popup's content for the page at `url` on `host`.
-pub(crate) fn content(url: &str, host: &str, report: Option<&Report>) -> Result<FrameworkElement> {
+/// The popup's content for the page at `url` on `host`. `tracking`: tracking protection's switch
+/// for the site, on or off, and how many trackers it blocked on the page; `None` for no switch.
+pub(crate) fn content(
+    url: &str,
+    host: &str,
+    report: Option<&Report>,
+    tracking: Option<(bool, usize)>,
+) -> Result<FrameworkElement> {
     let headline = Headline::of(url, report);
     let (glyph, title, explanation) = headline.text();
     let mut body = String::new();
@@ -211,6 +218,18 @@ pub(crate) fn content(url: &str, host: &str, report: Option<&Report>) -> Result<
         r#"<TextBlock Text="{}" TextWrapping="Wrap" Style="{{StaticResource CaptionTextBlockStyle}}"/>"#,
         xaml::escape(explanation)
     ));
+    if let Some((on, blocked)) = tracking {
+        body.push_str(&format!(
+            r#"<StackPanel Spacing="4">
+                 <Border Height="1" Margin="0,4" Background="{{ThemeResource DividerStrokeColorDefaultBrush}}"/>
+                 <ToggleSwitch x:Name="TrackingProtectionSwitch" Header="{}" IsOn="{on}"/>
+                 <TextBlock x:Name="TrackingProtectionStatus" Text="{}" TextWrapping="Wrap"
+                            Style="{{StaticResource CaptionTextBlockStyle}}" Foreground="{{ThemeResource TextFillColorSecondaryBrush}}"/>
+               </StackPanel>"#,
+            xaml::escape(trackers::TITLE),
+            xaml::escape(&trackers::site_status(on, Some(blocked)))
+        ));
+    }
     body.push_str(r#"<StackPanel x:Name="SitePermissions" Visibility="Collapsed"/>"#);
     let report = report.filter(|_| headline != Headline::Local);
     if let Some(tls) = report.and_then(|r| r.tls.as_ref()) {

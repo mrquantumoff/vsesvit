@@ -18,10 +18,12 @@ use std::time::{Duration, Instant};
 use vsesvit_core::Url;
 use vsesvit_core::downloads::State;
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
+use vsesvit_core::permissions::Origin;
 use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::NavTarget;
 use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
+use vsesvit_core::trackers::{self, Category, TrackerList};
 
 use windows_core::{IInspectable, Interface};
 
@@ -642,6 +644,63 @@ async fn checks(
             .ok_or(detail)
     })
     .await;
+
+    let open = tab_ids(&window);
+    let page = server.url("/trackers.html");
+    let site = Origin::parse(page.as_str()).ok_or("no fixture origin")?;
+    browser.set_trackers(
+        TrackerList::bundled()
+            .clone()
+            .with_tracker("localhost", Category::Analytics),
+    );
+    check(report, "tracking_protection", DEFAULT_TIMEOUT, async |p| {
+        let pixel = || server.hits().iter().any(|h| h == "/tracker/pixel.png");
+        let protected = window
+            .open_url_tab(page.as_str(), true)
+            .map_err(|e| e.to_string())?;
+        until(p, |p| {
+            let s = protected.state();
+            p.observe(format!(
+                "title {:?}, blocked {:?}",
+                s.title,
+                protected.blocked_trackers()
+            ));
+            (s.title == "tracker blocked" && !s.loading()).then_some(())
+        })
+        .await;
+        let blocked = protected.blocked_trackers();
+        if pixel() || blocked != ["localhost"] {
+            return Err(format!(
+                "blocked {blocked:?}; server saw {:?}",
+                server.hits()
+            ));
+        }
+        protected.set_tracking_protection(false);
+        until(p, |p| {
+            let s = protected.state();
+            p.observe(format!(
+                "off for the site: title {:?}, server saw the image: {}",
+                s.title,
+                pixel()
+            ));
+            (s.title == "tracker loaded" && pixel()).then_some(())
+        })
+        .await;
+        let allowed = browser.core(|c| trackers::allowed(c, &site));
+        let detail = format!(
+            "blocked {blocked:?} unseen by the server; off for {} (stored: {allowed}), it loaded",
+            site.as_str()
+        );
+        allowed.then_some(detail.clone()).ok_or(detail)
+    })
+    .await;
+    if let Err(e) = browser.core(|c| trackers::set_allowed(c, &site, false)) {
+        log::warn!("tracking protection for {}: {e}", site.as_str());
+    }
+    for id in tab_ids(&window).into_iter().filter(|id| !open.contains(id)) {
+        window.close_tab(id);
+    }
+    browser.set_trackers(TrackerList::bundled().clone());
 
     check(report, "shortcuts", Duration::from_secs(90), async |p| {
         shortcut_checks::shortcuts(&window, &tab, out_dir, p)

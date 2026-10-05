@@ -4,6 +4,7 @@
 //! Every web view in the process must use this environment: WebView2 refuses a second
 //! environment on the same user data folder with different options (ERROR_INVALID_STATE).
 
+use std::cell::Cell;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
@@ -16,6 +17,8 @@ use crate::bindings::*;
 
 pub(crate) struct Engine {
     environment: CoreWebView2Environment,
+    /// The profile the web views share is set up (see [`Engine::set_up_profile`]).
+    profile_set_up: Cell<bool>,
 }
 
 /// Preferences the engine reads only when its environment is created, each with the browser
@@ -113,7 +116,30 @@ impl Engine {
             environment.BrowserVersionString().unwrap_or_default(),
             user_data_dir.display()
         );
-        Ok(Self { environment })
+        Ok(Self {
+            environment,
+            profile_set_up: Cell::new(false),
+        })
+    }
+
+    /// Sets up the profile every web view shares, from the first web view's `core` (WebView2
+    /// gives the profile only through a web view), before that view loads anything.
+    ///
+    /// WebView2's own tracking prevention is turned off. Off, Standard and Strict would map
+    /// naturally onto its None, Balanced and Strict, but it has no per-site exceptions and
+    /// reports nothing it blocks, which the site-info popup's switch and count need. So the shell
+    /// blocks Vsesvit's tracker list itself (see `trackers`), the list Linux compiles, and turning
+    /// protection off, everywhere or for a site, really lets everything load.
+    pub fn set_up_profile(&self, core: &CoreWebView2) -> Result<()> {
+        if self.profile_set_up.get() {
+            return Ok(());
+        }
+        core.cast::<ICoreWebView2_13>()?
+            .Profile()?
+            .cast::<ICoreWebView2Profile3>()?
+            .SetPreferredTrackingPreventionLevel(CoreWebView2TrackingPreventionLevel::None)?;
+        self.profile_set_up.set(true);
+        Ok(())
     }
 
     pub fn environment(&self) -> &CoreWebView2Environment {

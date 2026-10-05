@@ -16,6 +16,7 @@ mod progress;
 mod tab_actions;
 mod tab_layout;
 mod tab_menu;
+mod trackers;
 mod wiring;
 
 use std::cell::{Cell, OnceCell, RefCell};
@@ -683,6 +684,7 @@ impl BrowserWindow {
         self.show_zoom(state.zoom);
         self.show_pip_button();
         self.show_permissions_state();
+        self.show_tracking_status();
         let _ = xaml::set_visible(&self.ui.copy_link, omnibox::has_link(&state.url));
         let title = if state.title.is_empty() || state.url.is_empty() {
             "Vsesvit".to_owned()
@@ -841,7 +843,9 @@ impl BrowserWindow {
             .security_report()
             .and_then(|json| connection::parse_report(&json));
         let host = connection::host_of(&url);
-        let content = connection::content(&url, &host, report.as_ref())?;
+        let content =
+            connection::content(&url, &host, report.as_ref(), self.tracking_status(&tab))?;
+        self.wire_tracking_switch(&content, &tab)?;
         if let (Ok(button), Some(report)) =
             (xaml::find::<Button>(&content, "ShowCertificate"), report)
         {

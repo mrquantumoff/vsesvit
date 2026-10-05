@@ -13,6 +13,7 @@ use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::testkit;
+use vsesvit_core::trackers::TrackingProtection;
 use windows_core::{IInspectable, Interface, Result};
 
 use super::{shoot, wait_layout};
@@ -190,6 +191,33 @@ pub(super) async fn settings(
         "save_passwords_switch": switch,
         "engine_password_autosave": autosave,
         "ok": notice && !switch && !autosave,
+    }));
+
+    let tracking: ComboBox = preview.find("TrackingProtection")?;
+    let description: TextBlock = preview.find("TrackingProtectionDescription")?;
+    let seen = || {
+        let shown = dialogs::selected_index(&tracking)
+            .and_then(|i| TrackingProtection::ALL.get(i).copied());
+        let stored = browser.core(|p| p.prefs().get(&keys::TRACKING_PROTECTION));
+        let text = description
+            .Text()
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        let ok = shown == Some(stored) && text == stored.description();
+        (format!("{shown:?} stored {stored:?}: {text}"), stored, ok)
+    };
+    let default = seen();
+    select_index(&tracking, 2)?;
+    let strict = seen();
+    select_index(&tracking, 1)?;
+    let restored = seen();
+    steps.push(json!({
+        "name": "14h-settings-tracking-protection",
+        "seen": [default.0, strict.0, restored.0],
+        "ok": default.2 && strict.2 && restored.2
+            && default.1 == TrackingProtection::Standard
+            && strict.1 == TrackingProtection::Strict
+            && restored.1 == TrackingProtection::Standard,
     }));
     Ok(())
 }
