@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Trackers</title></head>
+<body style="font: 16px system-ui; margin: 32px">
+  <h1>Tracking protection fixture</h1>
+  <p>The self-test adds <code>localhost</code> to the tracker list, so tracking protection blocks the
+  image below on this page at 127.0.0.1 unless it is turned off for the site. The title says what happened.</p>
+  <script>
+    const img = new Image(16, 16);
+    img.onload = () => document.title = 'tracker loaded';
+    img.onerror = () => document.title = 'tracker blocked';
+    img.src = 'http://localhost:' + location.port + '/tracker/pixel.png';
+    document.body.append(img);
+  </script>
+</body>
+</html>
