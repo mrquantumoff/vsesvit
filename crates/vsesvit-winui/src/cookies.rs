@@ -212,7 +212,7 @@ pub(crate) fn delete_blocked(browser: &Browser, rules: SiteRules) {
         return;
     };
     exec::spawn(async move {
-        match delete_cookies(&core, |domain| rules.blocks(domain)).await {
+        match delete_cookies(&core, |domain| rules.blocks_cookie(domain)).await {
             Ok(0) => {}
             Ok(n) => log::info!("deleted {n} cookie(s) of sites set to Block"),
             Err(e) => log::warn!("deleting the cookies of sites set to Block: {e}"),
