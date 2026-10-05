@@ -398,7 +398,7 @@ impl TabPermissions {
 
 /// The stored settings changed: a prompt answer, the site-info popup or the Settings page.
 /// Every tab's waiting requests that they now decide are answered, captures they now block
-/// stop, and the engine's copy follows.
+/// stop, the engine's copy follows, and so do the tabs' cookie controls.
 pub(crate) fn settings_changed(browser: &Rc<Browser>) {
     for window in browser.windows() {
         for tab in window.tabs_in_order() {
@@ -420,6 +420,7 @@ pub(crate) fn settings_changed(browser: &Rc<Browser>) {
         window.show_media();
     }
     mirror(browser);
+    crate::cookies::changed(browser);
 }
 
 /// The engine's per-origin permission state.

@@ -4,9 +4,10 @@
 //! Every web view in the process must use this environment: WebView2 refuses a second
 //! environment on the same user data folder with different options (ERROR_INVALID_STATE).
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
+use std::task::{Poll, Waker};
 
 use vsesvit_core::prefs::{Pref, keys};
 use windows_core::imp::IGenericFactory;
@@ -17,8 +18,15 @@ use crate::bindings::*;
 
 pub(crate) struct Engine {
     environment: CoreWebView2Environment,
-    /// The profile the web views share is set up (see [`Engine::set_up_profile`]).
-    profile_set_up: Cell<bool>,
+    profile: RefCell<ProfileSetUp>,
+}
+
+/// Where setting up the profile the web views share is (see [`Engine::set_up_profile`]).
+enum ProfileSetUp {
+    NotYet,
+    /// A web view is setting it up; these wait for it.
+    Running(Vec<Waker>),
+    Done,
 }
 
 /// Preferences the engine reads only when its environment is created, each with the browser
@@ -118,28 +126,58 @@ impl Engine {
         );
         Ok(Self {
             environment,
-            profile_set_up: Cell::new(false),
+            profile: RefCell::new(ProfileSetUp::NotYet),
         })
     }
 
     /// Sets up the profile every web view shares, from the first web view's `core` (WebView2
-    /// gives the profile only through a web view), before that view loads anything.
+    /// gives the profile only through a web view), before that view loads anything; `then` is
+    /// what else must happen before any page loads (deleting the data of sites set to Clear on
+    /// exit, see `cookies`). Web views that start meanwhile wait here until it is done; after a
+    /// failure the next one tries again.
     ///
     /// WebView2's own tracking prevention is turned off. Off, Standard and Strict would map
     /// naturally onto its None, Balanced and Strict, but it has no per-site exceptions and
     /// reports nothing it blocks, which the site-info popup's switch and count need. So the shell
     /// blocks Vsesvit's tracker list itself (see `trackers`), the list Linux compiles, and turning
     /// protection off, everywhere or for a site, really lets everything load.
-    pub fn set_up_profile(&self, core: &CoreWebView2) -> Result<()> {
-        if self.profile_set_up.get() {
+    pub async fn set_up_profile(
+        &self,
+        core: &CoreWebView2,
+        then: impl AsyncFnOnce(),
+    ) -> Result<()> {
+        std::future::poll_fn(|cx| match &mut *self.profile.borrow_mut() {
+            ProfileSetUp::Running(waiting) => {
+                waiting.push(cx.waker().clone());
+                Poll::Pending
+            }
+            ProfileSetUp::NotYet | ProfileSetUp::Done => Poll::Ready(()),
+        })
+        .await;
+        if matches!(*self.profile.borrow(), ProfileSetUp::Done) {
             return Ok(());
         }
-        core.cast::<ICoreWebView2_13>()?
-            .Profile()?
-            .cast::<ICoreWebView2Profile3>()?
-            .SetPreferredTrackingPreventionLevel(CoreWebView2TrackingPreventionLevel::None)?;
-        self.profile_set_up.set(true);
-        Ok(())
+        *self.profile.borrow_mut() = ProfileSetUp::Running(Vec::new());
+        let set_up = core
+            .cast::<ICoreWebView2_13>()
+            .and_then(|core| core.Profile())
+            .and_then(|profile| profile.cast::<ICoreWebView2Profile3>())
+            .and_then(|profile| {
+                profile
+                    .SetPreferredTrackingPreventionLevel(CoreWebView2TrackingPreventionLevel::None)
+            });
+        then().await;
+        let next = if set_up.is_ok() {
+            ProfileSetUp::Done
+        } else {
+            ProfileSetUp::NotYet
+        };
+        if let ProfileSetUp::Running(waiting) =
+            std::mem::replace(&mut *self.profile.borrow_mut(), next)
+        {
+            waiting.into_iter().for_each(Waker::wake);
+        }
+        set_up
     }
 
     pub fn environment(&self) -> &CoreWebView2Environment {

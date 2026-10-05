@@ -1,5 +1,5 @@
 //! Settings' Site permissions page: every stored site setting, grouped by site, each with its
-//! Allow / Block choice and a button that removes it (back to Ask).
+//! Allow / Block (or Clear on exit) choice and a button that removes it (back to Ask).
 
 use std::cell::Cell;
 use std::rc::{Rc, Weak};
@@ -62,7 +62,7 @@ fn site_markup(index: usize, site: &SiteGroup) -> String {
                      </Grid.ColumnDefinitions>
                      <FontIcon Glyph="{glyph}" FontSize="16" VerticalAlignment="Center"/>
                      <TextBlock Grid.Column="1" Text="{label}" VerticalAlignment="Center"/>
-                     <ComboBox x:Name="SiteChoice{index}{key}" Grid.Column="2" Width="120" SelectedIndex="{selected}"
+                     <ComboBox x:Name="SiteChoice{index}{key}" Grid.Column="2" Width="140" SelectedIndex="{selected}"
                                AutomationProperties.Name="{label}">{items}</ComboBox>
                      <Button x:Name="SiteRemove{index}{key}" Grid.Column="3" Width="36" Height="32" Padding="0"
                              ToolTipService.ToolTip="Remove" AutomationProperties.Name="Remove">

@@ -14,7 +14,8 @@ use vsesvit_core::https_only::{self, Cause, Next, Upgrades};
 use vsesvit_core::permissions::{Origin, Permission};
 use vsesvit_core::trackers::{self, TrackerList, TrackingProtection};
 use vsesvit_core::{Url, new_tab, session, view_source};
-use windows_core::{IInspectable, Interface, Ref, Result};
+use windows_core::{HSTRING, IInspectable, Interface, Ref, Result};
+use windows_future::IAsyncOperation;
 
 use crate::bindings::*;
 use crate::browser::{Browser, CommitKind};
@@ -26,7 +27,7 @@ use crate::tab_header::{Audio, TabLook};
 use crate::window::BrowserWindow;
 use crate::media::{self, MediaAction, Playback};
 use crate::trackers::Protection;
-use crate::{capturing, connection, exec, platform, xaml, zoom};
+use crate::{capturing, connection, cookies, exec, platform, xaml, zoom};
 
 /// Identifies a tab within this process.
 pub(crate) type TabId = u64;
@@ -152,6 +153,8 @@ pub(crate) struct Tab {
     trackers: RefCell<Protection>,
     /// HTTPS-only's upgrades and warning page in the tab.
     https: RefCell<Upgrades>,
+    /// Cookie controls in the tab's DevTools sessions (see `cookies`).
+    cookies: cookies::Sessions,
     /// The navigation the tab last stopped to load its https URL or the warning instead.
     stopped: Cell<Option<u64>>,
     closed: Cell<bool>,
@@ -189,6 +192,7 @@ impl Tab {
             zoom_memory: RefCell::default(),
             trackers: RefCell::default(),
             https: RefCell::default(),
+            cookies: cookies::Sessions::default(),
             stopped: Cell::new(None),
             closed: Cell::new(false),
         }))
@@ -337,7 +341,13 @@ impl Tab {
         settings.SetIsWebMessageEnabled(false)?;
         if let Some(browser) = self.browser() {
             self.apply_autofill(&settings, browser.autofill_forms());
-            if let Err(e) = browser.engine().set_up_profile(&core) {
+            let rules = browser.core(vsesvit_core::cookies::site_rules);
+            let clear = async || {
+                if let Err(e) = cookies::clear_sites(&core, &rules).await {
+                    log::warn!("clearing site data: {e}");
+                }
+            };
+            if let Err(e) = browser.engine().set_up_profile(&core, clear).await {
                 log::warn!("tab {}: engine profile: {e}", self.id);
             }
         }
@@ -390,6 +400,7 @@ impl Tab {
                         params.ok().and_then(|p| shortcuts::attached_session(&p))
                     {
                         tab.shortcut_worlds.borrow_mut().remove(&session);
+                        tab.cookies.detached(&session);
                     }
                 },
             ))?
@@ -433,6 +444,7 @@ impl Tab {
             core.CallDevToolsProtocolMethodAsync(method, &params)?
                 .await?;
         }
+        self.set_up_cookies(core, "").await;
         self.apply_shortcuts(core, "").await
     }
 
@@ -463,12 +475,36 @@ impl Tab {
             if let Err(e) = set_up {
                 log::debug!("tab {}: frame session {session}: {e}", tab.id);
             }
+            if frame {
+                tab.set_up_cookies(&core, &session).await;
+            }
             // A frame the setup failed in still starts, without the shortcuts.
             let run = devtools_in(&core, &session, "Runtime.runIfWaitingForDebugger", "{}").await;
             if let Err(e) = run {
                 log::debug!("tab {}: starting frame session {session}: {e}", tab.id);
             }
         });
+    }
+
+    /// Sets up the cookie controls in DevTools session `session`; the page or frame loads
+    /// without them if that fails.
+    async fn set_up_cookies(&self, core: &CoreWebView2, session: &str) {
+        let script = self.browser().and_then(|b| cookies::block_script(&b));
+        if let Err(e) = self.cookies.set_up(core, session, script.as_deref()).await {
+            log::warn!(
+                "tab {}: cookie controls in session {session:?}: {e}",
+                self.id
+            );
+        }
+    }
+
+    /// Applies changed cookie controls to the documents to come: third-party cookies `blocked`
+    /// or not on the page, and the block script. The calls go out at once, so a reload after
+    /// this loads under them.
+    pub fn apply_cookies(&self, blocked: bool, script: Option<&str>) {
+        if let Some(core) = self.core.get() {
+            self.cookies.apply_all(core, blocked, script);
+        }
     }
 
     async fn set_up_frame(
@@ -1001,10 +1037,15 @@ impl Tab {
                 if tab.stopped_for_https(args, &uri) {
                     return;
                 }
+                let origin = Origin::parse(&uri);
                 let level = tab.browser().map_or(TrackingProtection::Off, |b| {
-                    b.core(|p| trackers::level_for(p, Origin::parse(&uri).as_ref()))
+                    b.core(|p| trackers::level_for(p, origin.as_ref()))
                 });
                 tab.trackers.borrow_mut().navigation_starting(&uri, level);
+                if let (Some(core), Some(browser)) = (tab.core.get(), tab.browser()) {
+                    let blocked = cookies::third_party_blocked(&browser, origin.as_ref());
+                    tab.cookies.navigation_starting(core, blocked);
+                }
                 *tab.requested.borrow_mut() = uri;
                 tab.transition.borrow_mut().starting();
                 tab.state.borrow_mut().load = Load::Started;
@@ -1062,6 +1103,10 @@ impl Tab {
                 let warning = tab.https.borrow_mut().finished(ended);
                 if let Some(url) = warning {
                     tab.show_https_warning(&url);
+                }
+                if let Some(browser) = tab.browser() {
+                    let rules = browser.core(vsesvit_core::cookies::site_rules);
+                    cookies::delete_blocked(&browser, rules);
                 }
             },
         ))?
@@ -1576,20 +1621,28 @@ fn signal(
 
 /// Calls a DevTools method in `session`: the page's own when it is empty, else one `AUTO_ATTACH`
 /// attached.
-async fn devtools_in(
+pub(crate) async fn devtools_in(
     core: &CoreWebView2,
     session: &str,
     method: &str,
     params: &str,
 ) -> Result<String> {
-    let result = if session.is_empty() {
-        core.CallDevToolsProtocolMethodAsync(method, params)?.await?
+    Ok(call_in(core, session, method, params)?.await?.to_string_lossy())
+}
+
+/// [`devtools_in`]'s call, which goes out as it is made.
+pub(crate) fn call_in(
+    core: &CoreWebView2,
+    session: &str,
+    method: &str,
+    params: &str,
+) -> Result<IAsyncOperation<HSTRING>> {
+    if session.is_empty() {
+        core.CallDevToolsProtocolMethodAsync(method, params)
     } else {
         core.cast::<ICoreWebView2_11>()?
-            .CallDevToolsProtocolMethodForSessionAsync(session, method, params)?
-            .await?
-    };
-    Ok(result.to_string_lossy())
+            .CallDevToolsProtocolMethodForSessionAsync(session, method, params)
+    }
 }
 
 /// The DevTools session an event came from; empty for the page's own.

@@ -32,6 +32,7 @@ use crate::bindings::{CoreWebView2BrowsingDataKinds, ICoreWebView2Profile2};
 use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
 use crate::bookmarks_bar::{self, BarItem};
 use crate::config::{Config, Mode};
+use crate::cookies::ExitClearing;
 use crate::dialogs::{Dialog, DialogWindow};
 use crate::downloads::Downloads;
 use crate::engine::{self, Engine};
@@ -42,7 +43,7 @@ use crate::shortcuts::Bindings;
 use crate::sync::{PrefEffect, SyncController};
 use crate::updates::{self, Action, Trigger, Updates};
 use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
-use crate::{app, cli, exec, instance, omnibox, platform, shortcuts, sync};
+use crate::{app, cli, cookies, exec, instance, omnibox, platform, shortcuts, sync};
 
 /// Recently closed tabs kept for Ctrl+Shift+T.
 const CLOSED_TABS_KEPT: usize = 25;
@@ -137,6 +138,8 @@ pub(crate) struct Browser {
     /// Set once the last window's session has been saved on close; later saves would only
     /// record an empty session over it.
     session_final: Cell<bool>,
+    /// Started as the last window or its last tab closes, while a tab can still reach the engine.
+    exit_clearing: RefCell<Option<ExitClearing>>,
     profile_open_ms: u128,
     updates: Updates,
     sync: SyncController,
@@ -223,6 +226,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         favicon_preload: Cell::new(Preload::Idle),
         favicon_listeners: RefCell::new(Vec::new()),
         session_final: Cell::new(false),
+        exit_clearing: RefCell::new(None),
         profile_open_ms,
         updates,
         sync,
@@ -464,16 +468,28 @@ impl Browser {
             }
             self.session_final.set(true);
         }
+        if last {
+            self.start_exit_clearing();
+        }
     }
 
     /// A tab is about to close, leaving `tabs_left` in its window.
     pub(crate) fn tab_closing(&self, tabs_left: usize) {
-        if save_before_closing_tab(
-            tabs_left,
-            self.windows.borrow().len(),
-            self.session_final.get(),
-        ) {
+        let windows = self.windows.borrow().len();
+        if save_before_closing_tab(tabs_left, windows, self.session_final.get()) {
             self.save_session_now();
+        }
+        if tabs_left == 0 && windows <= 1 {
+            self.start_exit_clearing();
+        }
+    }
+
+    /// Starts deleting the data of the sites set to Clear on exit or Block, once, before the
+    /// last tabs close (see `cookies`).
+    fn start_exit_clearing(&self) {
+        if self.exit_clearing.borrow().is_none() {
+            let clearing = ExitClearing::start(self);
+            *self.exit_clearing.borrow_mut() = Some(clearing);
         }
     }
 
@@ -499,7 +515,13 @@ impl Browser {
             log::info!("last window closed");
             // `window_closing` saved the session; a ready update installs once `app::run` returns.
             updates::queue_install_on_exit(self);
-            app::exit(0);
+            match self.exit_clearing.take().filter(|c| !c.is_empty()) {
+                Some(clearing) => exec::spawn(async move {
+                    clearing.finish().await;
+                    app::exit(0);
+                }),
+                None => app::exit(0),
+            }
         } else {
             self.session_changed();
         }
@@ -1142,6 +1164,7 @@ impl Browser {
                 PrefEffect::Keymap => self.shortcuts_changed(),
                 PrefEffect::Autofill => self.apply_autofill(),
                 PrefEffect::ExtensionToolbar => self.show_extension_actions(),
+                PrefEffect::Cookies => cookies::changed(self),
             }
         }
         if let Some(me) = self.me.upgrade() {

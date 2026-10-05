@@ -606,12 +606,14 @@ pub(crate) enum PrefEffect {
     Keymap,
     Autofill,
     ExtensionToolbar,
+    /// Third-party cookies, applied in every tab (`cookies::changed`).
+    Cookies,
 }
 
 /// The synced preferences with an effect. The others are read where they are used: the home
 /// page, startup, the default search engine and suggestions, pop-ups, downloads, and the
 /// engine's startup switches.
-const PREF_EFFECTS: [(&str, PrefEffect); 11] = [
+const PREF_EFFECTS: [(&str, PrefEffect); 12] = [
     (keys::THEME.key, PrefEffect::Window),
     (keys::TABS_POSITION.key, PrefEffect::Window),
     (keys::SHOW_BOOKMARKS_BAR.key, PrefEffect::Window),
@@ -623,6 +625,7 @@ const PREF_EFFECTS: [(&str, PrefEffect); 11] = [
     (keys::SHORTCUTS.key, PrefEffect::Keymap),
     (keys::AUTOFILL_FORMS.key, PrefEffect::Autofill),
     (toolbar::TOOLBAR.key, PrefEffect::ExtensionToolbar),
+    (keys::THIRD_PARTY_COOKIES.key, PrefEffect::Cookies),
 ];
 
 /// Each effect of the changed preferences `keys`, once.
@@ -818,6 +821,10 @@ mod tests {
                 PrefEffect::Autofill,
                 PrefEffect::ExtensionToolbar
             ]
+        );
+        assert_eq!(
+            pref_effects(&keys(&["privacy.third_party_cookies"])),
+            [PrefEffect::Cookies]
         );
         assert!(pref_effects(&keys(&["startup", "search.default"])).is_empty());
     }

@@ -62,6 +62,7 @@ mod capturing;
 mod cli;
 mod config;
 mod connection;
+mod cookies;
 mod dialogs;
 mod downloads;
 mod engine;
