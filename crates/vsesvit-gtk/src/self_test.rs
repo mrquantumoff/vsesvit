@@ -651,7 +651,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         item.gaction().ok_or_else(|| "the link item has no action".to_owned())?.activate(None);
         let from_page = copied().await;
         window.select_tab(&first);
-        if from_menu != clean || whole != tracked || from_key != clean || from_page != clean || at != Some(1) || accels.iter().all(|a| a != "<Control><Shift>c") {
+        if from_menu != clean || whole != tracked || from_key != clean || from_page != clean || at != Some(1) || !accels.iter().any(|a| gtk::accelerator_parse(a) == gtk::accelerator_parse("<Control><Shift>c")) {
             return Err(format!(
                 "Copy Link gave {from_menu:?}, win.copy-link {whole:?}, win.copy-clean-link ({accels:?}) {from_key:?}, the link's item at {at:?} {from_page:?}"
             ));
