@@ -45,6 +45,8 @@ const MAX_REQUEST_HEAD: usize = 16 * 1024;
 /// Engines open speculative connections that never send a request; each connection
 /// thread gives up after this long.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The first byte of a TLS handshake record.
+const TLS_HANDSHAKE: u8 = 0x16;
 
 /// Serves until dropped. Each connection gets its own thread and one response
 /// (`Connection: close`, `Cache-Control: no-store`, so every page load hits the server).
@@ -137,12 +139,13 @@ fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>) -> io::Result<()> {
 }
 
 /// Reads up to the blank line that ends the request head. `None` if the peer closed or
-/// went idle first.
+/// went idle first, or opened with a TLS handshake: an https load of this plain server, as the
+/// HTTPS-only self-tests make, is refused at once rather than left to go idle.
 fn read_head(stream: &mut TcpStream) -> io::Result<Option<String>> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 2048];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
-        if buf.len() > MAX_REQUEST_HEAD {
+        if buf.len() > MAX_REQUEST_HEAD || buf.first() == Some(&TLS_HANDSHAKE) {
             return Ok(None);
         }
         match stream.read(&mut chunk) {

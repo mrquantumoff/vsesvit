@@ -56,6 +56,18 @@ fn an_idle_connection_does_not_block_other_requests() {
 }
 
 #[test]
+fn a_tls_handshake_is_refused_at_once() {
+    let server = FixtureServer::start().unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", server.port())).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    stream.write_all(&[0x16, 0x03, 0x01, 0x02, 0x00]).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).expect("closed before the idle timeout");
+    assert!(response.is_empty());
+    assert!(server.hits().is_empty());
+}
+
+#[test]
 fn fixture_server_stops_on_drop() {
     let server = FixtureServer::start().unwrap();
     let port = server.port();
