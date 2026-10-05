@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, NodeKind};
+use vsesvit_core::cookies::ThirdPartyCookies;
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, keys};
@@ -237,6 +238,33 @@ pub(super) async fn settings(
         "stored_on": on,
         "secure_dns": dns,
         "ok": default == (false, false) && on && !stored() && !dns.is_empty(),
+    }));
+
+    let cookies: ComboBox = preview.find("ThirdPartyCookies")?;
+    let description: TextBlock = preview.find("ThirdPartyCookiesDescription")?;
+    let seen = || {
+        let shown =
+            dialogs::selected_index(&cookies).and_then(|i| ThirdPartyCookies::ALL.get(i).copied());
+        let stored = browser.core(|p| p.prefs().get(&keys::THIRD_PARTY_COOKIES));
+        let text = description
+            .Text()
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        let ok = shown == Some(stored) && text == stored.description();
+        (format!("{shown:?} stored {stored:?}: {text}"), stored, ok)
+    };
+    let default = seen();
+    select_index(&cookies, 2)?;
+    let block = seen();
+    select_index(&cookies, 1)?;
+    let restored = seen();
+    steps.push(json!({
+        "name": "14k-settings-third-party-cookies",
+        "seen": [default.0, block.0, restored.0],
+        "ok": default.2 && block.2 && restored.2
+            && default.1 == ThirdPartyCookies::BlockInPrivate
+            && block.1 == ThirdPartyCookies::Block
+            && restored.1 == ThirdPartyCookies::BlockInPrivate,
     }));
     Ok(())
 }

@@ -1,17 +1,19 @@
 //! Tracking protection in the site-info popup, on the fixture page whose image comes from
 //! `localhost`, a tracker in scripted runs: the switch on with that tracker counted, and turning
-//! it off storing the site's exception and loading the image.
+//! it off storing the site's exception and loading the image. Then the popup's cookie choice for
+//! the site: Default with what that means, and Clear on exit stored when chosen.
 
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use vsesvit_core::permissions::Origin;
+use vsesvit_core::cookies::{self, Browsing};
+use vsesvit_core::permissions::{Origin, Setting};
 use vsesvit_core::testkit::FixtureServer;
 use vsesvit_core::trackers::{self, Category, TrackerList};
 
-use super::permission_steps::{in_popup, open_site_info, text_of};
+use super::permission_steps::{in_popup, open_site_info, select, text_of};
 use super::{shoot, wait_title};
 use crate::bindings::*;
 use crate::browser::Browser;
@@ -43,6 +45,10 @@ pub(super) async fn run(
     window.hide_connection();
     if let Err(e) = browser.core(|c| trackers::set_allowed(c, &site, false)) {
         log::warn!("tracking protection for {}: {e}", site.as_str());
+    }
+    match browser.core(|c| cookies::set(c, &site, None)) {
+        Ok(()) => crate::permissions::settings_changed(browser),
+        Err(e) => log::warn!("cookies for {}: {e}", site.as_str()),
     }
     if let Ok(tab) = tab {
         window.close_tab(tab.id);
@@ -95,6 +101,39 @@ async fn site_info(
         "server_saw_the_image": pixel(),
         "status": status,
         "ok": stored && loaded.is_ok() && pixel() && status == "Off for this site",
+    }));
+
+    window.hide_connection();
+    exec::sleep(Duration::from_millis(300)).await;
+    let popup = open_site_info(window).await?;
+    let choice: Selector = in_popup(&popup, "CookiesChoice")?;
+    let selected = choice.SelectedIndex().unwrap_or(-1);
+    let status = text_of(&popup, "CookiesStatus");
+    let expected = browser.core(|c| {
+        cookies::site_status(
+            cookies::third_party_blocked(c, Browsing::Normal, Some(site)),
+            None,
+        )
+    });
+    let choices = cookies::site_choices(None, true);
+    let clear = choices
+        .iter()
+        .position(|c| *c == Some(Setting::ClearOnExit))
+        .ok_or("no Clear on exit choice")?;
+    select(&popup, "CookiesChoice", i32::try_from(clear).unwrap_or(-1))?;
+    exec::sleep(Duration::from_millis(300)).await;
+    let stored = browser.core(|c| cookies::setting(c, site));
+    let chosen_status = text_of(&popup, "CookiesStatus");
+    steps.push(json!({
+        "name": "43c-site-info-cookies",
+        "selected": selected,
+        "status": status,
+        "stored": format!("{stored:?}"),
+        "status_after": chosen_status,
+        "ok": selected == 0
+            && status == expected
+            && stored == Some(Setting::ClearOnExit)
+            && chosen_status == cookies::site_status(false, Some(Setting::ClearOnExit)),
     }));
     Ok(())
 }
