@@ -36,9 +36,17 @@
 //!    and a tab that navigates away disconnect their ports, a disconnected port refuses to
 //!    post, another extension messages and connects where `externally_connectable` lets
 //!    it and not elsewhere, and `getBackgroundPage` answers in the background page;
-//! 9. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
-//!    `runtime.reload()` from a page restarts the background and drops its alarms, and an
-//!    uninstall followed by a reinstall fires `onInstalled(install)` again.
+//! 9. context menus (`tests/fixtures/extensions/menus/`, a service worker, and the *classic*,
+//!    an MV2 extension without a background): the page menu shows an extension's several
+//!    items under its name and a lone one on its own, by context, `documentUrlPatterns` (a
+//!    frame's own URL) and `targetUrlPatterns`, with `%s` as the selection; the worker cannot
+//!    reuse an id or leave one out; a click flips a checkbox and fires `onClicked` with the
+//!    click and the tab, from the page menu and the action's; `update` and `remove` work from
+//!    a popup; the items outlive a restart of the worker's extension until `removeAll`; the
+//!    classic's popup makes an item with a generated id whose `onclick` it runs;
+//! 10. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
+//!     uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
 //! Prints every observation and exits non-zero on failure. Runs under WSLg; the window
 //! is created but not presented unless `--show` is given, so nothing steals focus.
@@ -70,6 +78,7 @@ mod linux {
     use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension};
     use vsesvit_core::testkit::FixtureServer;
     use vsesvit_core::{OpenOptions, Profile};
+    use vsesvit_webext::menus::{Entry, ItemId, Target};
     use vsesvit_webext::{Gate, LoadReason, Runtime, TabHost, TabId, TabInfo};
     use webkit::glib;
     use webkit::prelude::*;
@@ -78,6 +87,7 @@ mod linux {
     const TWIN_ID: &str = "twin@vsesvit.test";
     const PORTS_ID: &str = "ports@vsesvit.test";
     const FRIEND_ID: &str = "friend@vsesvit.test";
+    const MENUS_ID: &str = "menus@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -123,6 +133,10 @@ mod linux {
         write_xpi(&ports_xpi, &fixture_files("ports"));
         let friend_xpi = out_dir.join("friend.xpi");
         write_xpi(&friend_xpi, &fixture_files("ports-friend"));
+        let menus_xpi = out_dir.join("menus.xpi");
+        write_xpi(&menus_xpi, &fixture_files("menus"));
+        let classic_xpi = out_dir.join("classic.xpi");
+        write_xpi(&classic_xpi, &classic_files());
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -131,7 +145,10 @@ mod linux {
         let widget = install(&profile, &widget_xpi);
         let ports = install(&profile, &ports_xpi);
         let friend = install(&profile, &friend_xpi);
-        for ext in [&probe, &twin, &widget, &ports, &friend] {
+        let menus = install(&profile, &menus_xpi);
+        assert_eq!(menus.id.as_str(), MENUS_ID);
+        let classic = install(&profile, &classic_xpi);
+        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -155,6 +172,8 @@ mod linux {
             twin: RefCell::new(twin),
             twin_xpi,
             widget_id: widget.id.clone(),
+            menus,
+            classic_id: classic.id.clone(),
             window: window.clone(),
             results: RefCell::new(Vec::new()),
         };
@@ -195,6 +214,8 @@ mod linux {
         twin: RefCell<InstalledExtension>,
         twin_xpi: PathBuf,
         widget_id: ExtensionId,
+        menus: InstalledExtension,
+        classic_id: ExtensionId,
         window: gtk::Window,
         results: RefCell<Vec<(&'static str, bool)>>,
     }
@@ -250,7 +271,10 @@ mod linux {
             // 6. ports and messages between extensions
             self.ports().await;
 
-            // 7. lifecycle events
+            // 7. context menus
+            self.menus().await;
+
+            // 8. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -605,6 +629,99 @@ mod linux {
             self.note("external_refused", refused_ok, format!("twin (not in externally_connectable) -> ports: [sendMessage, connect] = {refused:?}"));
             self.host.remove_tab(tab);
             self.host.remove_tab(other);
+        }
+
+        async fn menus(&self) {
+            let id = self.menus.id.clone();
+            let top = Target { page_url: self.url("/index.html"), ..Target::default() };
+            let ours = |target: &Target| self.runtime.page_menu(target).into_iter().find(|(e, _)| *e == id).map(|(_, entry)| entry);
+            let item = |id: &str, title: &str, checked: Option<bool>| Entry::Item { id: ItemId::Str(id.to_owned()), title: title.to_owned(), enabled: true, checked };
+            let submenu = |title: &str, children: Vec<Entry>| Entry::Submenu { title: title.to_owned(), enabled: true, children };
+
+            let on_page = wait_for_value(|| ours(&top), TIMEOUT).await;
+            let order: Vec<ExtensionId> = self.runtime.page_menu(&top).into_iter().map(|(e, _)| e).collect();
+            let expected = submenu("Vsesvit Menus", vec![item("parent", "Menus parent", None), item("check", "Menus check", Some(true))]);
+            self.note("menus_page", on_page.as_ref() == Some(&expected) && order.first() == Some(&id), format!("{on_page:?}; extensions by name: {order:?}"));
+            let link = Target { link_url: Some(self.url("/page2.html")), selection: "hello".to_owned(), ..top.clone() };
+            let on_link = ours(&link);
+            let expected = submenu("Menus parent", vec![item("link", "Link with hello", None), item("selection", "Find \u{201c}hello\u{201d}", None)]);
+            self.note("menus_link_and_selection", on_link.as_ref() == Some(&expected), format!("{on_link:?}"));
+            let frame = Target { frame_url: Some(self.url("/page2.html")), ..top.clone() };
+            let in_frame = ours(&frame);
+            let expected = submenu("Vsesvit Menus", vec![item("parent", "Menus parent", None), item("frame", "Menus frame", None), item("check", "Menus check", Some(true))]);
+            self.note("menus_frame", in_frame.as_ref() == Some(&expected), format!("{in_frame:?}"));
+            let errors = wait_for_value(|| {
+                let created: Vec<Value> = self.menus_log().into_iter().filter(|e| e.get("created").is_some()).collect();
+                (created.len() == 2).then_some(created)
+            }, TIMEOUT).await;
+            let error_of = |what: &str| errors.iter().flatten().find(|e| e["created"] == what).and_then(|e| e["error"].as_str().map(str::to_owned)).unwrap_or_default();
+            let refused = error_of("duplicate") == "Cannot create item with duplicate id parent" && error_of("generated").contains("must pass an id parameter");
+            self.note("menus_create_errors", refused, format!("{errors:?}"));
+
+            self.runtime.menu_clicked(&id, &ItemId::Str("check".to_owned()), Some(self.tab), Some(&top));
+            let click = wait_for_value(|| self.menus_log().into_iter().find(|e| e["clicked"]["menuItemId"] == "check"), TIMEOUT).await.unwrap_or_default();
+            let info = serde_json::json!({ "menuItemId": "check", "editable": false, "wasChecked": true, "checked": false, "pageUrl": top.page_url, "frameId": 0 });
+            let flipped = ours(&top).is_some_and(|e| matches!(e, Entry::Submenu { children, .. } if children.contains(&item("check", "Menus check", Some(false)))));
+            self.note("menus_clicked", click["clicked"] == info && click["tab"] == self.tab.0 && flipped, format!("{click}; unchecked after = {flipped}"));
+            let action_menu = self.runtime.action_menu(&id);
+            self.runtime.menu_clicked(&id, &ItemId::Str("action".to_owned()), Some(self.tab), None);
+            let click = wait_for_value(|| self.menus_log().into_iter().find(|e| e["clicked"]["menuItemId"] == "action"), TIMEOUT).await.unwrap_or_default();
+            let action_ok = action_menu == [item("parent", "Menus parent", None), item("action", "Menus action", None)] && click["clicked"] == serde_json::json!({ "menuItemId": "action", "editable": false }) && click["tab"] == self.tab.0;
+            self.note("menus_action", action_ok, format!("action menu = {action_menu:?}; {click}"));
+
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("menus_update_and_remove", false, "no popup view");
+                return;
+            };
+            let window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Menus"), TIMEOUT).await;
+            let edits = self.eval_async(&popup, "await chrome.contextMenus.update('check', { title: 'Menus check 2' }); try { await chrome.contextMenus.remove('nope'); return 'removed'; } catch (e) { return e.message; }").await;
+            let renamed = ours(&top);
+            let expected = submenu("Vsesvit Menus", vec![item("parent", "Menus parent", None), item("check", "Menus check 2", Some(false))]);
+            self.note("menus_update_and_remove", edits.as_ref().and_then(Value::as_str) == Some("Cannot find menu item with id nope") && renamed.as_ref() == Some(&expected), format!("remove('nope') -> {edits:?}; {renamed:?}"));
+            window.destroy();
+            drop(window);
+            drop(popup);
+
+            self.runtime.unload(&id);
+            if let Err(e) = self.runtime.load(&self.menus) {
+                self.note("menus_kept", false, format!("load: {e}"));
+                return;
+            }
+            let kept = ours(&top);
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("menus_kept", false, "no popup view after the restart");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Menus"), TIMEOUT).await;
+            let cleared = self.eval_async(&popup, "await chrome.contextMenus.removeAll(); return 'cleared';").await;
+            let left = ours(&top);
+            self.note("menus_kept", kept.as_ref() == Some(&expected) && cleared.is_some() && left.is_none(), format!("after a restart: {kept:?}; after removeAll: {left:?}"));
+
+            let Some(classic) = self.popup(&self.classic_id, self.tab).await else {
+                self.note("menus_onclick", false, "no classic popup");
+                return;
+            };
+            let _classic_window = self.park(&classic);
+            wait_until(|| classic.title().as_deref() == Some("classic"), TIMEOUT).await;
+            let made = self.eval_async(&classic, "return chrome.contextMenus.create({ title: 'Classic item', onclick: (info) => { document.title = 'clicked:' + info.menuItemId; } });").await;
+            let made = made.as_ref().and_then(Value::as_i64).map(ItemId::Int);
+            let entry = wait_for_value(|| self.runtime.page_menu(&top).into_iter().find(|(e, _)| *e == self.classic_id).map(|(_, e)| e), TIMEOUT).await;
+            if let Some(made) = &made {
+                self.runtime.menu_clicked(&self.classic_id, made, Some(self.tab), Some(&top));
+            }
+            let title = wait_for_value(|| classic.title().map(String::from).filter(|t| t.starts_with("clicked:")), TIMEOUT).await;
+            let wanted = made.as_ref().map(|id| Entry::Item { id: id.clone(), title: "Classic item".to_owned(), enabled: true, checked: None });
+            let onclick_ok = entry.is_some() && entry == wanted && title == made.as_ref().map(|id| format!("clicked:{id}"));
+            self.note("menus_onclick", onclick_ok, format!("create() returned {made:?}; page menu entry = {entry:?}; popup title = {title:?}"));
+        }
+
+        /// What the menus fixture's background logged into its `storage.local`.
+        fn menus_log(&self) -> Vec<Value> {
+            let mut profile = self.profile.borrow_mut();
+            let items = profile.ext_storage().get(&self.menus.id, Area::Local, Some(&["log".to_owned()])).unwrap_or_default();
+            items.get("log").and_then(Value::as_array).cloned().unwrap_or_default()
         }
 
         async fn lifecycle(&self) {
@@ -1100,6 +1217,24 @@ log("alive");
                 (&*name.leak(), std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
             })
             .collect()
+    }
+
+    /// An MV2 extension without a background: its popup makes its own menu items.
+    fn classic_files() -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "manifest.json",
+                serde_json::json!({
+                    "manifest_version": 2,
+                    "name": "Vsesvit Classic",
+                    "version": "1.0.0",
+                    "permissions": ["contextMenus"],
+                    "browser_action": { "default_title": "Vsesvit Classic", "default_popup": "popup.html" }
+                })
+                .to_string(),
+            ),
+            ("popup.html", "<!doctype html><html><head><meta charset=\"utf-8\"><title>classic</title></head><body></body></html>".to_owned()),
+        ]
     }
 
     /// A popup that frames a fixture page. No host permissions, so the frame may load.

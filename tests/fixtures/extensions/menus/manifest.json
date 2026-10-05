@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Vsesvit Menus",
+  "version": "1.0.0",
+  "description": "Test extension for contextMenus.",
+  "browser_specific_settings": { "gecko": { "id": "menus@vsesvit.test" } },
+  "permissions": ["contextMenus", "storage"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Vsesvit Menus", "default_popup": "popup.html" }
+}
