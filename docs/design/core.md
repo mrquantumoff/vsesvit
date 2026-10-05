@@ -9,7 +9,7 @@ Both shells are thin and call one library, from their UI thread, for all data an
 three requirements that pull against each other. It must answer per-navigation and per-keystroke queries without
 visible latency. It must install extensions from two stores plus unpacked dirs, with network I/O off the UI thread and
 idempotent re-runs. Most importantly, every synced kind (bookmarks, history, tabs, extensions, `storage.sync`, prefs,
-search engines, and later passwords and autofill) must be stored so that a sync engine added later can enumerate local
+search engines) must be stored so that a sync engine added later can enumerate local
 changes, apply remote batches idempotently in any order, propagate deletions, and converge bookmark trees under
 concurrent move/reorder/delete. That last part must work without a migration.
 
@@ -265,7 +265,7 @@ satisfies "apply in any order, idempotently".
 | Prefs (7) | key | `Lww<Option<JsonText>>`; `Scope::Local` rows never exported, and records for them rejected on apply (a shell's Local key with no local row yet stores one, which reads and writes of the pref ignore) | `None` = default |
 | SearchEngines (8) | `builtin:*` or UUID | name/keyword/urls LWW; built-ins are code at `Stamp::ZERO`, never seeded | terminal tombstone |
 | ReadingList (9) | URL | title/present/read LWW, `added_ms` min | `present = false` (re-add allowed) |
-| Passwords (10), Autofill (11) | reserved | same table conventions; secret columns hold ciphertext sealed by a DPAPI/libsecret key. The lattice works on ciphertext unchanged | terminal tombstone |
+| Passwords (10), Autofill (11) | retired, never reused | Vsesvit leaves passwords to password managers and their extensions, so nothing is stored or synced under these codes | n/a |
 
 Rule of thumb: random-id kinds use terminal tombstones, because a re-add is a new thing. Natural-key kinds use LWW
 presence, because the key can come back. "Exactly one of" constraints are single registers (default engine is a pref;

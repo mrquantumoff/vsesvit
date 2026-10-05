@@ -16,6 +16,7 @@ Vsesvit gives each platform a shell built with its own toolkit around the platfo
 - **Chrome Web Store extensions on both platforms.** Install from the Chrome Web Store, Microsoft Edge Add-ons or Firefox's AMO, or from a local `.crx`/`.xpi` file or an unpacked directory. Every CRX3 signature is verified before anything is unpacked. WebView2 runs the extensions on Windows, and Vsesvit's own WebExtensions runtime (`vsesvit-webext`) runs them on Linux.
 - **Vertical tabs.** A sidebar on the left by default. You can move it to the right or go back to a strip along the top.
 - **Sync you can host.** Bookmarks, history, open tabs, extensions, settings, search engines and site permissions sync through [a small server](server/README.md) (Docker image, SQLite or Postgres) that signs people in with the OpenID Connect provider you choose. The server stores records and never reads or merges them.
+- **Passwords stay in your password manager.** Vsesvit doesn't save passwords. Use a password manager such as Bitwarden or Proton Pass through its extension; the welcome screen offers both.
 - **Sync-ready from the start.** All data lives in one SQLite file per profile, in a format that merges the same way whatever order changes arrive in. Secrets are sealed with DPAPI on Windows and the Secret Service on Linux.
 - **Packaged for each system.** An NSIS installer on Windows. deb, rpm, pacman, AppImage and Flatpak on Linux. Everything except Flatpak updates itself ([docs/design/packaging.md](docs/design/packaging.md)).
 

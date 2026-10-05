@@ -42,7 +42,7 @@ Both shells are thin. They own the engine views (WebView2 / WebKitWebView) and t
 6. Session: the open windows and tabs, restored on startup, and published later as "tabs on this device" for sync.
 7. A later sync engine must be able to: enumerate local changes since its last sync, apply a batch of remote changes idempotently and in any order, and converge with other devices. Deletions must propagate. Bookmark trees edited concurrently on two devices (moves, reorders, deletes of a folder while a child is added elsewhere) must converge to a valid tree (no cycles, no orphans).
 
-Data kinds that are commonly synced by browsers: bookmarks, history, open tabs (per device), extensions (installed set + enabled state), extension settings (`storage.sync`), preferences, search engines, passwords, autofill, reading list. Passwords and autofill need an OS secret store and are deferred; the format should leave room for them.
+Data kinds that are commonly synced by browsers: bookmarks, history, open tabs (per device), extensions (installed set + enabled state), extension settings (`storage.sync`), preferences, search engines, passwords, autofill, reading list. Vsesvit syncs neither passwords nor autofill: it leaves them to password managers and their extensions.
 
 ## Constraints
 

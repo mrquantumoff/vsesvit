@@ -1,5 +1,5 @@
 //! The profile vault: one random 256-bit key per profile, protected by the OS, seals the
-//! profile's secrets (sync tokens today, passwords later), as Chrome's os_crypt does.
+//! profile's secrets (sync tokens), as Chrome's os_crypt does.
 //!
 //! | where                                   | the key                                                  |
 //! |-----------------------------------------|----------------------------------------------------------|

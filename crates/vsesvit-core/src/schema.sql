@@ -139,7 +139,3 @@ CREATE TABLE sync_state (
   key    TEXT PRIMARY KEY,
   value  BLOB NOT NULL
 ) WITHOUT ROWID;
-
--- Reserved for later schema versions (same conventions; secret columns hold ciphertext
--- sealed with a key from DPAPI / libsecret):
---   logins (Kind 10), autofill_profiles + autofill_entries (Kind 11)

@@ -32,6 +32,8 @@ WebView2 then loads the directory natively. On Linux, `vsesvit-webext` runs it. 
 
 **Sync signs in with OpenID Connect and keeps a dumb server.** The server (`server/`) stores the last uploaded body of each record per account and never merges, which is the server `sync.rs` was designed for. Every write takes the account's next sequence number, so a download is a cursor over writes. Anyone can host one: SQLite or Postgres through SeaORM, one Docker image, and the OpenID Connect provider the operator names (there is no default). The browser talks to the sync server only, so it works with any server and needs no client id: the server is an OAuth authorization server of its own, and signs people in with its provider as that provider's client. The browser runs the authorization code flow with PKCE against the server, in a Vsesvit tab, and receives the code on a loopback port of its choosing; the server's callback learns who signed in from the provider's userinfo `sub` (an access token's own `sub` need not be the user) and hands back a one-time code that only the browser holding the PKCE verifier can trade for a session. Requests for records use that session and never reach the provider. The server address is the local pref `sync.server`, by default `https://vsesvit-service.mrquantumoff.dev`. Bodies are opaque to the server, so end-to-end encryption can come later without a server change.
 
+**Passwords are left to password managers.** Vsesvit stores, fills and syncs no passwords. WebView2's password saving is always off on Windows (its form autofill for addresses stays, behind a Privacy switch), and WebKitGTK has no password store. Settings > Privacy says so and suggests a password manager's extension, such as Bitwarden or Proton Pass, which the welcome screen also offers. Sync kinds 10 and 11, once reserved for passwords and autofill, stay unused.
+
 ## Architecture
 
 ```
@@ -54,7 +56,7 @@ Threading model:
 - Every call a shell makes on the UI thread is a local SQLite transaction or an in-memory lookup. Bookmarks are held in memory.
 - Slow work is a `Send` value with no database handle: an extension download and verify (`InstallJob::run`) today, and a sync engine's network I/O later. It runs on a worker thread and its result is committed back on the UI thread.
 - Nothing is shared between threads, so there are no locks.
-- Secrets (sync tokens; later passwords) are sealed with one random key per profile (`vault.rs`), fetched on the UI thread on first use and kept for the process. On Linux that first use may wait on a keyring unlock prompt.
+- Secrets (sync tokens) are sealed with one random key per profile (`vault.rs`), fetched on the UI thread on first use and kept for the process. On Linux that first use may wait on a keyring unlock prompt.
 
 Profile directory, one per profile:
 
@@ -81,7 +83,6 @@ Profile directory, one per profile:
 | Preferences | key | LWW per key; local-only prefs never exported | value `None` (default) |
 | Search engines | id | per-field LWW | tombstone |
 | Site permissions | permission + origin | LWW per (origin, permission): allow or block; screen sharing remembers only block; picture-in-picture is never asked for | setting `None` (ask; for picture-in-picture, block) |
-| Passwords, autofill | reserved (kinds 10, 11) | same conventions; secret columns hold ciphertext sealed by DPAPI / libsecret | tombstone |
 
 `storage.sync` data from Windows extensions stays inside WebView2, which owns the extension runtime there, so it syncs only between Linux installs until a bridge exists.
 
@@ -122,7 +123,6 @@ Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (
 6. **Packaging and updates.** An NSIS installer on Windows. deb, rpm, pacman, AppImage and Flatpak on Linux. Every format but Flatpak updates itself through the Tauri updater protocol, so an existing Tauri update server serves Vsesvit (`design/packaging.md`).
 7. **Later.**
    - End-to-end encryption of sync records. The server stores bodies it never reads, so only the engine changes.
-   - Passwords and autofill: secret-store integration.
    - Extension auto-update.
 
 ## Dependencies

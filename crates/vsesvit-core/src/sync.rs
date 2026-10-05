@@ -65,7 +65,8 @@ pub enum Kind {
     ExtStorageSync = 6,
     Prefs = 7,
     SearchEngines = 8,
-    // 9 = ReadingList (retired before release; never reuse), 10 = Passwords, 11 = Autofill: reserved (DESIGN.md "Passwords and autofill").
+    // Retired: 9 = ReadingList (dropped before release); 10 = Passwords and 11 = Autofill (reserved
+    // by the first design, dropped when Vsesvit left passwords to password managers).
     SitePermissions = 12,
 }
 
