@@ -31,6 +31,7 @@ use crate::address_bar::{AddressBar, Anchor};
 use crate::bookmark_editor;
 use crate::bookmarks_bar::BookmarksBar;
 use crate::browser::{Browser, ClosedTab};
+use crate::dialogs;
 use crate::find_bar::FindBar;
 use crate::permissions;
 use crate::session;
@@ -1036,7 +1037,7 @@ impl BrowserWindow {
         let Some(link) = tab.link() else { return };
         let text = if clean { clean_url::clean(&link) } else { link };
         self.clipboard().set_text(&text);
-        self.toast(adw::Toast::new("Link copied"));
+        self.toast(dialogs::plain_toast("Link copied"));
     }
 
     pub(crate) fn focus_page(&self) {
