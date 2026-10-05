@@ -144,6 +144,9 @@ pub mod keys {
         Pref { key: "privacy.tracking_protection", scope: Scope::Synced, default: || crate::trackers::TrackingProtection::Standard };
     /// Upgrade http navigations to https ([`crate::https_only`]).
     pub const HTTPS_ONLY: Pref<bool> = Pref { key: "privacy.https_only", scope: Scope::Synced, default: || false };
+    /// Where third-party cookies are blocked ([`crate::cookies`]).
+    pub const THIRD_PARTY_COOKIES: Pref<crate::cookies::ThirdPartyCookies> =
+        Pref { key: "privacy.third_party_cookies", scope: Scope::Synced, default: || crate::cookies::ThirdPartyCookies::BlockInPrivate };
     pub const SMOOTH_SCROLLING: Pref<bool> = Pref { key: "scrolling.smooth", scope: Scope::Synced, default: || true };
     /// Local: whether the GPU works well is a property of this device.
     pub const HARDWARE_ACCELERATION: Pref<bool> = Pref { key: "system.hardware_acceleration", scope: Scope::Local, default: || true };

@@ -141,10 +141,10 @@ fn a_v1_profile_gains_the_table_and_keeps_its_data() {
     assert!(p.bookmarks().is_bookmarked(&bookmark));
     let d = p.downloads().start("https://example.com/", Path::new("/dl/f"), None, T0).unwrap();
     drop(p);
-    assert_eq!(user_version(&dir.0), 8);
+    assert_eq!(user_version(&dir.0), 9);
 
     let mut p = open_at(&dir.0);
-    assert_eq!(user_version(&dir.0), 8, "reopening migrates nothing");
+    assert_eq!(user_version(&dir.0), 9, "reopening migrates nothing");
     assert_eq!(p.downloads().list(10).unwrap(), vec![d]);
     assert!(p.bookmarks().is_bookmarked(&bookmark));
 }

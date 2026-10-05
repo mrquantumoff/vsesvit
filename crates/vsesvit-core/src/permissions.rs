@@ -2,9 +2,9 @@
 //!
 //! Three layers, each owned where it lives:
 //!
-//! - **Stored settings** ([`SitePermissions`]): Allow or Block per `(origin, permission)`,
-//!   synced like Chrome's site settings. No row, or a reset row, means Ask, or Block for
-//!   picture-in-picture, which no site asks for.
+//! - **Stored settings** ([`SitePermissions`]): Allow or Block per `(origin, permission)`, or
+//!   Clear on exit for cookies, synced like Chrome's site settings. No row, or a reset row,
+//!   means Ask, or Block for picture-in-picture, which no site asks for.
 //! - **One-time grants** ([`TabGrants`]): "Allow this time", held in memory by one shell tab
 //!   until it leaves the site.
 //! - **The prompt** ([`prompt`]): the words and buttons both shells show, and
@@ -26,6 +26,7 @@ use crate::db::{seq_col, stamp_col};
 use crate::sync::{ChangedRows, Kind, SyncTable, changed_rows};
 use crate::{Error, Profile, Url};
 
+/// Migration v6. [`SCHEMA_CLEAR_ON_EXIT`] holds the table's current definition.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE site_permissions (          -- Kind::SitePermissions
   origin      TEXT NOT NULL,             -- Origin::as_str
@@ -35,6 +36,24 @@ CREATE TABLE site_permissions (          -- Kind::SitePermissions
   seq         INTEGER NOT NULL,
   PRIMARY KEY (origin, permission)
 ) WITHOUT ROWID;
+CREATE INDEX site_permissions_seq ON site_permissions(seq);
+";
+
+/// Migration v9: the setting CHECK accepts 'clear_on_exit'. SQLite cannot alter a CHECK, so the
+/// table is rebuilt as `extensions/schema_v4.sql` rebuilds the extension tables.
+pub(crate) const SCHEMA_CLEAR_ON_EXIT: &str = "
+CREATE TABLE site_permissions_v9 (
+  origin      TEXT NOT NULL,
+  permission  TEXT NOT NULL,
+  setting     TEXT CHECK (setting IN ('allow', 'block', 'clear_on_exit')),   -- NULL = ask
+  setting_at  BLOB NOT NULL,
+  seq         INTEGER NOT NULL,
+  PRIMARY KEY (origin, permission)
+) WITHOUT ROWID;
+INSERT INTO site_permissions_v9 (origin, permission, setting, setting_at, seq)
+  SELECT origin, permission, setting, setting_at, seq FROM site_permissions;
+DROP TABLE site_permissions;
+ALTER TABLE site_permissions_v9 RENAME TO site_permissions;
 CREATE INDEX site_permissions_seq ON site_permissions(seq);
 ";
 
@@ -60,6 +79,11 @@ pub enum Permission {
     /// site asks for it: Allow is the exception the warning page's "Continue to site" stores.
     /// Site info shows no row for it.
     Http,
+    /// Cookies and other site data ([`crate::cookies`]). No site asks for it: with nothing
+    /// stored, the site uses cookies as Settings' third-party cookies choice says. Its rules
+    /// never go through [`SitePermissions::decide`] or a prompt; site info shows them in a
+    /// section of their own.
+    Cookies,
 }
 
 impl Permission {
@@ -74,6 +98,7 @@ impl Permission {
         Permission::PictureInPicture,
         Permission::Trackers,
         Permission::Http,
+        Permission::Cookies,
     ];
 
     pub fn key(self) -> &'static str {
@@ -88,6 +113,7 @@ impl Permission {
             Permission::PictureInPicture => "picture_in_picture",
             Permission::Trackers => "trackers",
             Permission::Http => "http",
+            Permission::Cookies => "cookies",
         }
     }
 
@@ -107,20 +133,21 @@ impl Permission {
             Permission::PictureInPicture => "Picture-in-picture",
             Permission::Trackers => "Trackers",
             Permission::Http => "Insecure connections",
+            Permission::Cookies => "Cookies and site data",
         }
     }
 
     /// Whether a site may ask for it. The user turns picture-in-picture, trackers and insecure
     /// connections on for a site, so with nothing stored they are blocked, not asked for, and
-    /// their rows offer no Ask.
+    /// their rows offer no Ask. No site asks about cookies either.
     pub fn asks(self) -> bool {
-        !matches!(self, Permission::PictureInPicture | Permission::Trackers | Permission::Http)
+        !matches!(self, Permission::PictureInPicture | Permission::Trackers | Permission::Http | Permission::Cookies)
     }
 
-    /// Whether site info's Permissions section lists it: trackers have a switch of their own
-    /// there, and an insecure-connection exception is made from the warning page.
+    /// Whether site info's Permissions section lists it: trackers and cookies have sections of
+    /// their own there, and an insecure-connection exception is made from the warning page.
     pub fn in_site_info(self) -> bool {
-        !matches!(self, Permission::Trackers | Permission::Http)
+        !matches!(self, Permission::Trackers | Permission::Http | Permission::Cookies)
     }
 
     /// Screen sharing is chosen share by share, so only a block is remembered (as Chrome does),
@@ -130,10 +157,12 @@ impl Permission {
     }
 
     /// The settings a site can have stored for this permission: Allow only where it is
-    /// remembered, and no Block for insecure connections, which HTTPS-only blocks by itself.
+    /// remembered, no Block for insecure connections, which HTTPS-only blocks by itself, and
+    /// Clear on exit only for cookies.
     pub fn settings(self) -> &'static [Setting] {
         match self {
             Permission::Http => &[Setting::Allow],
+            Permission::Cookies => &[Setting::Allow, Setting::Block, Setting::ClearOnExit],
             _ if self.remembers_allow() => &[Setting::Allow, Setting::Block],
             _ => &[Setting::Block],
         }
@@ -153,6 +182,7 @@ impl Permission {
             Permission::PictureInPicture => ("show", "videos in picture-in-picture"),
             Permission::Trackers => ("load", "trackers"),
             Permission::Http => ("load", "the site without a secure connection"),
+            Permission::Cookies => ("use", "cookies"),
         }
     }
 }
@@ -162,6 +192,9 @@ impl Permission {
 pub enum Setting {
     Allow,
     Block,
+    /// Allowed, and the site's cookies and data are deleted when the browser closes. Only
+    /// [`Permission::Cookies`] offers it.
+    ClearOnExit,
 }
 
 impl Setting {
@@ -169,6 +202,7 @@ impl Setting {
         match self {
             Setting::Allow => "Allow",
             Setting::Block => "Block",
+            Setting::ClearOnExit => "Clear on exit",
         }
     }
 
@@ -176,11 +210,12 @@ impl Setting {
         match self {
             Setting::Allow => "allow",
             Setting::Block => "block",
+            Setting::ClearOnExit => "clear_on_exit",
         }
     }
 
     fn from_key(key: &str) -> Option<Setting> {
-        [Setting::Allow, Setting::Block].into_iter().find(|s| s.key() == key)
+        [Setting::Allow, Setting::Block, Setting::ClearOnExit].into_iter().find(|s| s.key() == key)
     }
 }
 
@@ -417,6 +452,7 @@ pub fn site_rows(storable: bool, stored: &[(Permission, Setting)], granted: &[Pe
             let current = match stored.iter().find(|(p, _)| *p == permission).map(|(_, s)| *s) {
                 Some(Setting::Allow) => SiteChoice::Allow,
                 Some(Setting::Block) => SiteChoice::Block,
+                Some(Setting::ClearOnExit) => return None,
                 None if permission.asks() && (granted.contains(&permission) || live) => SiteChoice::AllowedThisTime,
                 None => return None,
             };
@@ -492,7 +528,7 @@ pub enum Decision {
 fn decision(permissions: &[Permission], mut setting: impl FnMut(Permission) -> Option<Setting>, granted: impl Fn(Permission) -> bool) -> Decision {
     let blocked = |p: Permission, setting: Option<Setting>| match setting {
         Some(Setting::Block) => true,
-        Some(Setting::Allow) => false,
+        Some(Setting::Allow | Setting::ClearOnExit) => false,
         None => !p.asks(),
     };
     if permissions.iter().any(|&p| blocked(p, setting(p))) {
@@ -602,10 +638,11 @@ impl SitePermissions<'_> {
         sites
     }
 
-    /// Every setting of the site back to ask, in one transaction. Tracking protection, which the
-    /// site-info popup switches on its own, stays as it is.
+    /// Every setting of the site back to ask, in one transaction. Tracking protection and the
+    /// cookie rule, which the site-info popup sets in sections of their own, stay as they are.
     pub fn reset_site(&mut self, origin: &Origin) -> Result<(), Error> {
-        let permissions: Vec<Permission> = Permission::ALL.iter().copied().filter(|&p| p != Permission::Trackers).collect();
+        let permissions: Vec<Permission> =
+            Permission::ALL.iter().copied().filter(|p| !matches!(p, Permission::Trackers | Permission::Cookies)).collect();
         self.write(origin, &permissions, None)
     }
 

@@ -313,7 +313,7 @@ fn run_op(p: &mut Profile, op: &Op, expect: &mut Expect) {
         }
         Op::SetPermission { site, permission, setting } => {
             let permission = Permission::ALL[*permission as usize % Permission::ALL.len()];
-            let setting = [None, Some(Setting::Allow), Some(Setting::Block)][*setting as usize % 3];
+            let setting = [None, Some(Setting::Allow), Some(Setting::Block), Some(Setting::ClearOnExit)][*setting as usize % 4];
             // AlwaysAsks (an Allow of screen sharing) is an expected refusal. Anything else is a bug.
             match p.site_permissions().set(&origin(site % 3), permission, setting) {
                 Ok(()) | Err(vsesvit_core::Error::AlwaysAsks(_)) => {}
@@ -594,7 +594,7 @@ fn pref_record() -> impl Strategy<Value = PrefRecord> {
 }
 
 fn site_permission_record() -> impl Strategy<Value = SitePermissionRecord> {
-    let setting = prop::option::of(prop::sample::select(vec![Setting::Allow, Setting::Block]));
+    let setting = prop::option::of(prop::sample::select(vec![Setting::Allow, Setting::Block, Setting::ClearOnExit]));
     (stamp(), setting).prop_map(|(at, s)| SitePermissionRecord { origin: origin(0), permission: Permission::Camera, setting: Lww::new(s, at) })
 }
 

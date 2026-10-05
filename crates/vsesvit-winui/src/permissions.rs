@@ -104,6 +104,7 @@ pub(crate) fn glyph(permission: Permission) -> &'static str {
         Permission::PictureInPicture => PIP_GLYPH,
         Permission::Trackers => "\u{EA18}",
         Permission::Http => "\u{E785}",
+        Permission::Cookies => "\u{E7C3}",
     }
 }
 
@@ -432,7 +433,7 @@ enum EngineState {
 impl EngineState {
     fn of(setting: Setting) -> Self {
         match setting {
-            Setting::Allow => EngineState::Allow,
+            Setting::Allow | Setting::ClearOnExit => EngineState::Allow,
             Setting::Block => EngineState::Deny,
         }
     }

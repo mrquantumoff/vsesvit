@@ -290,3 +290,8 @@ pub fn simplified_url(shown: &str) -> String {
         _ => rest.to_owned(),
     }
 }
+
+/// Whether `host` is `domain` or one of its subdomains.
+pub fn covers(domain: &str, host: &str) -> bool {
+    host.strip_suffix(domain).is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
+}

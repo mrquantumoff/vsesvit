@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::address::covers;
 use crate::permissions::{Origin, Permission, Setting};
 use crate::prefs::keys;
 use crate::{Error, Profile};
@@ -187,11 +188,6 @@ impl TrackerList {
 /// `a.b.example.com`, `b.example.com`, `example.com`, `com`.
 fn suffixes(host: &str) -> impl Iterator<Item = &str> {
     std::iter::successors(Some(host), |h| h.split_once('.').map(|(_, rest)| rest))
-}
-
-/// Whether `host` is `domain` or one of its subdomains.
-fn covers(domain: &str, host: &str) -> bool {
-    host.strip_suffix(domain).is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
 }
 
 /// The title of tracking protection's row in Settings and of its switch in the site-info popup.

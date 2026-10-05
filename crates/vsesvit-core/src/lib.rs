@@ -20,6 +20,7 @@
 //! | [`address`]      | URLs as the address bar writes them: decoded, simplified              |
 //! | [`certificate`]  | X.509 certificates parsed for the connection popup                    |
 //! | [`clean_url`]    | links without tracking parameters, for "copy clean link"             |
+//! | [`cookies`]      | cookie controls: third-party cookies, site rules, clearing on exit    |
 //! | [`crdt`]         | clock, stamps, `Lww<T>`, `Lattice`: the only merge primitives         |
 //! | [`bookmarks`]    | records, fractional positions, in-memory tree, `materialize`          |
 //! | [`downloads`]    | the downloads list (LOCAL), file naming, status text                  |
@@ -51,6 +52,7 @@ pub mod address;
 pub mod bookmarks;
 pub mod certificate;
 pub mod clean_url;
+pub mod cookies;
 pub mod crdt;
 mod db;
 pub mod downloads;

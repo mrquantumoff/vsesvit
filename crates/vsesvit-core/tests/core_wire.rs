@@ -212,8 +212,12 @@ fn site_permission_records_keep_their_names() {
         (Permission::PictureInPicture, "picture_in_picture"),
         (Permission::Trackers, "trackers"),
         (Permission::Http, "http"),
+        (Permission::Cookies, "cookies"),
     ] {
         assert_eq!(serde_json::to_value(permission).unwrap(), name);
+    }
+    for (setting, name) in [(Setting::Allow, "allow"), (Setting::Block, "block"), (Setting::ClearOnExit, "clear_on_exit")] {
+        assert_eq!(serde_json::to_value(setting).unwrap(), name);
     }
     let pip = json!({ "origin": "https://video.example", "permission": "picture_in_picture", "setting": { "v": null, "at": at } });
     let record: SitePermissionRecord = serde_json::from_value(pip.clone()).unwrap();

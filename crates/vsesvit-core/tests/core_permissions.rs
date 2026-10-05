@@ -13,7 +13,7 @@ use vsesvit_core::permissions::{
 use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::{Error, OpenOptions, Profile, Url};
 
-use Permission::{Camera, ClipboardRead, Http, Location, Microphone, Midi, Notifications, PictureInPicture, ScreenShare, Trackers};
+use Permission::{Camera, ClipboardRead, Cookies, Http, Location, Microphone, Midi, Notifications, PictureInPicture, ScreenShare, Trackers};
 
 struct TempDir(PathBuf);
 impl Drop for TempDir {
@@ -90,7 +90,7 @@ fn permission_keys_and_labels() {
     let keys: Vec<&str> = Permission::ALL.iter().map(|p| p.key()).collect();
     assert_eq!(
         keys,
-        ["camera", "microphone", "location", "notifications", "screen_share", "clipboard_read", "midi", "picture_in_picture", "trackers", "http"]
+        ["camera", "microphone", "location", "notifications", "screen_share", "clipboard_read", "midi", "picture_in_picture", "trackers", "http", "cookies"]
     );
     for &p in Permission::ALL {
         assert_eq!(Permission::from_key(p.key()), Some(p));
@@ -100,15 +100,16 @@ fn permission_keys_and_labels() {
     let labels: Vec<&str> = Permission::ALL.iter().map(|p| p.label()).collect();
     assert_eq!(
         labels,
-        ["Camera", "Microphone", "Location", "Notifications", "Screen sharing", "Clipboard", "MIDI devices", "Picture-in-picture", "Trackers", "Insecure connections"]
+        ["Camera", "Microphone", "Location", "Notifications", "Screen sharing", "Clipboard", "MIDI devices", "Picture-in-picture", "Trackers", "Insecure connections", "Cookies and site data"]
     );
     assert!(Permission::ALL.iter().all(|p| p.remembers_allow() == (*p != ScreenShare)));
     assert_eq!(ScreenShare.settings(), [Setting::Block]);
     assert_eq!(Http.settings(), [Setting::Allow]);
-    for &p in Permission::ALL.iter().filter(|p| !matches!(p, ScreenShare | Http)) {
+    assert_eq!(Cookies.settings(), [Setting::Allow, Setting::Block, Setting::ClearOnExit]);
+    for &p in Permission::ALL.iter().filter(|p| !matches!(p, ScreenShare | Http | Cookies)) {
         assert_eq!(p.settings(), [Setting::Allow, Setting::Block]);
     }
-    assert_eq!([Setting::Allow.label(), Setting::Block.label()], ["Allow", "Block"]);
+    assert_eq!([Setting::Allow.label(), Setting::Block.label(), Setting::ClearOnExit.label()], ["Allow", "Block", "Clear on exit"]);
 }
 
 #[test]
@@ -441,7 +442,7 @@ fn picture_in_picture_is_off_until_allowed_and_never_asks() {
     let site = origin("https://video.example");
     let none = TabGrants::default();
     assert!(!PictureInPicture.asks());
-    assert!(Permission::ALL.iter().filter(|p| !matches!(p, PictureInPicture | Trackers | Http)).all(|p| p.asks()));
+    assert!(Permission::ALL.iter().filter(|p| !matches!(p, PictureInPicture | Trackers | Http | Cookies)).all(|p| p.asks()));
     assert_eq!(PictureInPicture.settings(), [Setting::Allow, Setting::Block]);
 
     assert_eq!(p.site_permissions().get(&site, PictureInPicture), None);
@@ -506,7 +507,7 @@ fn a_v5_profile_gains_the_table() {
     drop(p);
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
     drop(conn);
     assert_eq!(open_at(&dir, 1).site_permissions().get(&site, Location), Some(Setting::Allow));
 }
