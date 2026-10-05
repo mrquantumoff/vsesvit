@@ -867,7 +867,7 @@ mod linux {
                     }
                 }
             });
-            view.connect_create({
+            vsesvit_webext::connect_create(view, {
                 let (gate, runtime, me) = (gate.clone(), runtime.clone(), self.me.borrow().clone());
                 move |view, action| {
                     let host = me.upgrade()?;
@@ -882,7 +882,7 @@ mod linux {
                     let opened = Gate::opened_by(&gate.borrow());
                     host.add(&runtime, popup_id, &popup, opened);
                     println!("[harness] host: tab {} opened tab {} at {target}", id.0, popup_id.0);
-                    Some(popup.upcast())
+                    Some(popup)
                 }
             });
             self.tabs.borrow_mut().push(Tab { id, view: view.clone(), committed, gate: gate.clone() });

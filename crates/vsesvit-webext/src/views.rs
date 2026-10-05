@@ -188,23 +188,41 @@ fn adopt_popups(inner: &Rc<Inner>, ext: &Rc<Extension>, background: &webkit::Web
         settings.set_javascript_can_open_windows_automatically(true);
     }
     let (weak_inner, weak_ext) = (Rc::downgrade(inner), Rc::downgrade(ext));
-    background.connect_create(move |_, action| {
+    connect_create(background, move |_, action| {
         let (inner, ext) = (weak_inner.upgrade()?, weak_ext.upgrade()?);
         let uri = action.request().and_then(|r| r.uri()).map(String::from).unwrap_or_default();
         let pending = ext.opening_popup.borrow_mut().take_if(|p| p.url == uri)?;
         let popup = build(&inner, &ext, ViewKind::Popup);
         ext.adopted_popup.set(Some(&popup));
-        let show = std::cell::Cell::new(Some(pending.show));
-        popup.connect_ready_to_show(move |popup| {
-            let Some(show) = show.take() else { return };
-            show(popup.clone());
-            // SAFETY: the binding hands WebKit a strong reference where a C handler returns
-            // a floating one for the popup's owner to sink, and WebKit never releases it;
-            // the owner holds its own reference now, and the emission keeps `popup` alive.
-            unsafe { glib::gobject_ffi::g_object_unref(popup.as_ptr().cast()) };
+        // The popup holds itself until it is shown, and then whoever it is shown to does.
+        let show = std::cell::Cell::new(Some((pending.show, popup.clone())));
+        popup.connect_ready_to_show(move |_| {
+            if let Some((show, popup)) = show.take() {
+                show(popup);
+            }
         });
-        Some(popup.upcast())
+        Some(popup)
     });
+}
+
+/// Connects `create` to `view`'s `create` signal, which asks for the view of a `window.open`
+/// or a link to a new window. Whoever `create` gives that view to must hold it: the binding
+/// hands WebKit a strong reference where a C handler returns a floating one for the view's
+/// owner to sink, and WebKit never releases it, so it is released here once the signal is over.
+pub fn connect_create(
+    view: &webkit::WebView,
+    create: impl Fn(&webkit::WebView, &webkit::NavigationAction) -> Option<webkit::WebView> + 'static,
+) -> glib::SignalHandlerId {
+    view.connect_create(move |view, action| {
+        let created = create(view, action)?;
+        let handed = created.clone();
+        glib::idle_add_local_once(move || {
+            // SAFETY: the reference WebKit got from the binding, which nothing else
+            // releases; `handed` keeps the view alive through the call.
+            unsafe { glib::gobject_ffi::g_object_unref(handed.as_ptr().cast()) };
+        });
+        Some(created.upcast())
+    })
 }
 
 /// Create and start the background context, if the manifest declares one. Fires

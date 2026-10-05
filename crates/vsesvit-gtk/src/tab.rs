@@ -525,7 +525,7 @@ impl Tab {
             false,
             move |_, decision, kind| tab.decide_policy(decision, kind)
         ));
-        web_view.connect_create(glib::clone!(
+        vsesvit_webext::connect_create(web_view, glib::clone!(
             #[weak(rename_to = tab)]
             self,
             #[upgrade_or]
@@ -793,11 +793,11 @@ impl Tab {
 
     /// `window.open` and `target=_blank`: WebKit wants the new view now and shows it after
     /// `ready-to-show`, so the window keeps it aside until then.
-    fn create_related(&self) -> Option<gtk::Widget> {
+    fn create_related(&self) -> Option<webkit::WebView> {
         let window = self.window()?;
         let popup = Tab::new_related(window.browser(), self);
         window.adopt_popup(self, &popup);
-        Some(popup.web_view().clone().upcast())
+        Some(popup.web_view().clone())
     }
 }
 

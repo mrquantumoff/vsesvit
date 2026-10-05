@@ -35,6 +35,10 @@
 //! if !gate.decide(&runtime, &target, action.is_redirect(), new_window) { decision.ignore(); }
 //! gate.committed(&runtime, &view.uri().unwrap());     // on LoadEvent::Committed
 //!
+//! // `create` goes through `connect_create`, which releases the reference to the new view
+//! // that the binding hands WebKit and WebKit never releases.
+//! vsesvit_webext::connect_create(&view, move |_, action| new_tab_view(action));
+//!
 //! // Lifecycle: load/unload installed extensions (content scripts apply to loads that
 //! // start afterwards, as in Chrome). `load` returns after the synchronous part; DNR
 //! // rulesets compile in the background, `pending_filters()` counts them and
@@ -164,6 +168,8 @@ mod views;
 pub use runtime::{ActionInfo, LoadError, Runtime};
 #[cfg(target_os = "linux")]
 pub use tabs::TabHost;
+#[cfg(target_os = "linux")]
+pub use views::connect_create;
 pub use gate::{Gate, Policy};
 
 /// The JavaScript shim every context receives: one function expression that

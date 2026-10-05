@@ -50,7 +50,7 @@ Do not enable `v1_10` / `v4_24`: build scripts check system library versions thr
 - `UserContentFilterStore::new(path)`, `save_future(id, &glib::Bytes) -> UserContentFilter`, `load_future`, `remove_future`.
 - `javascriptcore6::Value::from_json(&ctx, s)`, `to_json(0)`, `context()`.
 
-Pitfalls: views returned from `create` must use `related_view` and be shown after `ready-to-show`; UCM scripts/filters affect later loads only; MV3 `background.service_worker` should be emulated as a hidden page (custom scheme service workers UNVERIFIED); WSLg rendering may need `WEBKIT_DISABLE_DMABUF_RENDERER=1` / `WEBKIT_DISABLE_COMPOSITING_MODE=1` (UNVERIFIED for 2.52; set before `gtk::init`); Ubuntu AppArmor userns restrictions can break the bubblewrap sandbox (dev-only escape `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`).
+Pitfalls: views returned from `create` must use `related_view` and be shown after `ready-to-show`, and the Rust binding hands WebKit a reference to them that WebKit never releases (`vsesvit_webext::connect_create` releases it); UCM scripts/filters affect later loads only; MV3 `background.service_worker` should be emulated as a hidden page (custom scheme service workers UNVERIFIED); WSLg rendering may need `WEBKIT_DISABLE_DMABUF_RENDERER=1` / `WEBKIT_DISABLE_COMPOSITING_MODE=1` (UNVERIFIED for 2.52; set before `gtk::init`); Ubuntu AppArmor userns restrictions can break the bubblewrap sandbox (dev-only escape `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`).
 
 ## 4. Store downloads (tested live)
 
