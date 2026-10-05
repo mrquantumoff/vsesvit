@@ -124,6 +124,9 @@ pub(crate) struct Tab {
     /// The URI of the last main-frame navigation request; WebView2 reports an empty `Source`
     /// for some documents (data: URLs), and then this is what was committed.
     requested: RefCell<String>,
+    /// The `view-source:` address the shell last loaded. WebView2 reports the address of the
+    /// page it shows the source of, so this is what the tab shows while that page is current.
+    view_source: RefCell<Option<String>>,
     /// How the navigation the shell started came about, for history. Page-initiated
     /// navigations have none and count as links.
     transition: RefCell<PendingTransition>,
@@ -165,6 +168,7 @@ impl Tab {
             favicon_png: RefCell::new(None),
             background_link: RefCell::new(None),
             requested: RefCell::new(String::new()),
+            view_source: RefCell::new(None),
             transition: RefCell::default(),
             last_active_ms: Cell::new(now_ms()),
             favicon_generation: Cell::new(0),
@@ -551,6 +555,7 @@ impl Tab {
             log::warn!("tab {}: navigate before the engine view is ready", self.id);
             return;
         };
+        *self.view_source.borrow_mut() = view_source::viewed_url(url).map(|_| url.to_owned());
         if let Err(e) = core.Navigate(url) {
             log::warn!("tab {}: navigate to {url}: {e}", self.id);
         }
@@ -1026,7 +1031,7 @@ impl Tab {
                 let url = if url.is_empty() {
                     self.requested.borrow().clone()
                 } else {
-                    url
+                    shown_url(url, self.view_source.borrow().as_deref())
                 };
                 log::debug!("tab {}: at {url}", self.id);
                 self.state.borrow_mut().url = url;
@@ -1343,6 +1348,15 @@ fn display_title(document_title: String, url: &str) -> String {
     }
 }
 
+/// `source` as the tab shows it: the `view-source:` address the shell loaded while that is the
+/// page WebView2 reports.
+fn shown_url(source: String, view_source: Option<&str>) -> String {
+    match view_source {
+        Some(shown) if view_source::viewed_url(shown) == Some(source.as_str()) => shown.to_owned(),
+        _ => source,
+    }
+}
+
 /// Where the context menu item called `name` is.
 fn item_named(
     items: &windows_collections::IVector<CoreWebView2ContextMenuItem>,
@@ -1474,7 +1488,26 @@ impl PendingTransition {
 
 #[cfg(test)]
 mod tests {
-    use super::{Load, PendingTransition, TabState, Transition, display_title, navigation_ended};
+    use super::{
+        Load, PendingTransition, TabState, Transition, display_title, navigation_ended, shown_url,
+    };
+
+    #[test]
+    fn a_view_source_tab_shows_its_view_source_address_while_on_that_page() {
+        let shown = Some("view-source:http://e.test/a.html");
+        assert_eq!(
+            shown_url("http://e.test/a.html".to_owned(), shown),
+            "view-source:http://e.test/a.html"
+        );
+        assert_eq!(
+            shown_url("http://e.test/b.html".to_owned(), shown),
+            "http://e.test/b.html"
+        );
+        assert_eq!(
+            shown_url("http://e.test/a.html".to_owned(), None),
+            "http://e.test/a.html"
+        );
+    }
 
     #[test]
     fn a_first_navigation_that_never_commits_leaves_no_url_to_restore() {
