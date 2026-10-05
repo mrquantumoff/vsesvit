@@ -121,6 +121,7 @@ const FLYOUT_XAML: &str = r#"
 </Flyout>"#;
 
 /// An open popup.
+#[derive(Clone)]
 pub(crate) struct Popup {
     flyout: FlyoutBase,
     core: Rc<RefCell<Option<CoreWebView2>>>,
@@ -130,6 +131,15 @@ impl Popup {
     /// The popup document's title, once its page has loaded.
     pub fn title(&self) -> Option<String> {
         self.core.borrow().as_ref()?.DocumentTitle().ok()
+    }
+
+    /// The popup document's address, once its page is loading.
+    pub fn url(&self) -> Option<String> {
+        self.core.borrow().as_ref()?.Source().ok()
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.flyout.IsOpen().unwrap_or(false)
     }
 
     pub fn hide(&self) {

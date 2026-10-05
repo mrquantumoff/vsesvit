@@ -1,26 +1,29 @@
 //! The `shortcuts`, `shortcuts_sync` and `save_page` checks: reassigning shortcuts through
 //! Settings or by a sync applies at once to the page already loaded and to the window, and
-//! Ctrl+Shift+S saves the page.
+//! Ctrl+Shift+S saves the page; and the `extension_commands` check of the probe's shortcuts.
 
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use vsesvit_core::crdt::{DeviceId, Hlc, JsonText, Lww, Seq, Stamp};
 use vsesvit_core::prefs::{PrefRecord, keys};
 use vsesvit_core::shortcuts::{Command as Core, Keymap};
 use vsesvit_core::sync::{Kind, WireRecord};
+use vsesvit_core::testkit;
 use windows_core::Interface;
 
-use super::{Probe, eval, tab_ids, until, wait_ready};
+use super::{POLL, Probe, eval, tab_ids, until, visits, wait_ready};
 use crate::automation::{confirm_flyout, invoke, press, settings_on};
 use crate::browser::Browser;
 use crate::bindings::{
     Button, CoreWebView2SaveAsKind, FrameworkElement, ICoreWebView2_9, ICoreWebView2_25,
     IScrollViewer, Point, UIElement,
 };
-use crate::dialogs::{Dialog, Preview, ShortcutsPage, shortcut_row_name};
+use crate::dialogs::{
+    Dialog, Preview, ShortcutsPage, extension_shortcut_row_name, shortcut_row_name,
+};
 use crate::exec;
 use crate::shortcuts::{self, Command, InPage, Mods};
 use crate::tab::Tab;
@@ -28,8 +31,11 @@ use crate::window::BrowserWindow;
 
 const SETTLE: Duration = Duration::from_millis(500);
 /// DevTools modifier bits for `press`.
+const ALT: u8 = 1;
 const CTRL: u8 = 2;
 const SHIFT: u8 = 8;
+/// How long the check waits for WebView2 to fire the probe's `commands.onCommand`.
+const ON_COMMAND_WAIT: Duration = Duration::from_secs(5);
 /// `VirtualKeyModifiers` bits of an accelerator.
 const ACCEL_CTRL: u32 = 1;
 const ACCEL_SHIFT: u32 = 4;
@@ -436,4 +442,110 @@ pub(super) async fn save_page(tab: &Rc<Tab>, out_dir: &Path, p: &Probe) -> Resul
         text.len()
     );
     (!edge_flyout).then_some(detail.clone()).ok_or(detail)
+}
+
+/// The `extension_commands` check, with the probe installed and the fixture page open: the
+/// probe's action command (Alt+Shift+P) is bound before the page and opens its popup from the
+/// page, its named command (Alt+Shift+K) is not bound, and Settings lists the action command.
+/// Whether WebView2 itself fires `commands.onCommand` for the named command is reported, not
+/// judged.
+pub(super) async fn extension_commands(
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    p: &Probe,
+) -> Result<String, String> {
+    let browser = window.browser().ok_or("no browser")?;
+    let mut detail = Vec::new();
+    let alt_shift = Mods::of(false, true, true);
+    let bindings = shortcuts::current();
+    let action = binding(0x50, alt_shift);
+    let opens = match action {
+        Some((Command::ExtensionAction(index), _)) => bindings.extension_action(index),
+        _ => None,
+    };
+    let named = binding(0x4B, alt_shift);
+    detail.push(format!(
+        "Alt+Shift+P binds {action:?}, opening the action of {opens:?}; Alt+Shift+K binds {named:?}"
+    ));
+    if action.map(|(_, kind)| kind) != Some(InPage::Reserved)
+        || opens != Some(testkit::PROBE_ID)
+        || named.is_some()
+    {
+        return Err(detail.join("; "));
+    }
+
+    let expected = browser
+        .extension_actions()
+        .into_iter()
+        .find(|a| a.extension_id == testkit::PROBE_ID)
+        .and_then(|a| a.popup_url())
+        .ok_or("the probe's action has no popup")?;
+    if let Some(open) = window.extension_popup() {
+        open.hide();
+    }
+    p.observe("Alt+Shift+P in the page");
+    press(tab, 0x50, ALT | SHIFT).await?;
+    let (url, title) = until(p, |p| {
+        let shown = window
+            .extension_popup()
+            .map(|popup| (popup.url(), popup.title()));
+        p.observe(format!("open popup (address, title): {shown:?}"));
+        match shown? {
+            (Some(url), Some(title)) if url == expected && visits(&title).is_some() => {
+                Some((url, title))
+            }
+            _ => None,
+        }
+    })
+    .await;
+    if let Some(popup) = window.extension_popup() {
+        popup.hide();
+    }
+    detail.push(format!(
+        "Alt+Shift+P in the page opened the popup {url}, titled {title:?}"
+    ));
+
+    eval(
+        tab,
+        "delete document.documentElement.dataset.vsesvitProbeCommand; 1",
+    )
+    .await?;
+    p.observe("Alt+Shift+K in the page");
+    press(tab, 0x4B, ALT | SHIFT).await?;
+    let deadline = Instant::now() + ON_COMMAND_WAIT;
+    let fired = loop {
+        let seen = eval(
+            tab,
+            "document.documentElement.dataset.vsesvitProbeCommand || null",
+        )
+        .await
+        .unwrap_or_default();
+        let fired = serde_json::from_str::<Option<String>>(&seen).ok().flatten();
+        if fired.is_some() || Instant::now() >= deadline {
+            break fired;
+        }
+        exec::sleep(POLL).await;
+    };
+    detail.push(match fired {
+        Some(command) => {
+            format!("Alt+Shift+K in the page: WebView2 fired commands.onCommand with {command}")
+        }
+        None => format!(
+            "Alt+Shift+K in the page: WebView2 fired no commands.onCommand within {} s",
+            ON_COMMAND_WAIT.as_secs()
+        ),
+    });
+
+    let probe_action = bindings
+        .extensions()
+        .iter()
+        .find(|(c, _)| c.extension.as_str() == testkit::PROBE_ID && c.command.activates_action())
+        .map(|(c, _)| extension_shortcut_row_name(c))
+        .ok_or("the bindings hold no action command of the probe")?;
+    let (preview, _page) = shortcuts_page(window).await?;
+    let listed = preview.find::<FrameworkElement>(&probe_action).is_ok();
+    drop(preview);
+    detail.push(format!("Settings lists {probe_action}: {listed}"));
+    let detail = detail.join("; ");
+    listed.then_some(detail.clone()).ok_or(detail)
 }

@@ -39,7 +39,10 @@ pub(crate) use windowed::DialogWindow;
 pub(crate) use {
     bookmarks::import_bookmarks,
     default_browser::describe as describe_default_browser,
-    shortcut_settings::{Page as ShortcutsPage, row_name as shortcut_row_name},
+    shortcut_settings::{
+        Page as ShortcutsPage, extension_row_name as extension_shortcut_row_name,
+        row_name as shortcut_row_name,
+    },
     welcome::{PAGES as WELCOME_PAGES, Page as WelcomePage},
 };
 

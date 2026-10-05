@@ -1,12 +1,14 @@
 //! Settings' Keyboard shortcuts page: a group per core section, a row per command this shell
-//! implements with its shortcuts, and the flyout that captures a new one.
+//! implements with its shortcuts, then a row per extension action command, and the flyout that
+//! captures a new one.
 //!
 //! Every edit goes through core's `Keymap` (see `Browser::edit_keymap`) and applies at once in
 //! every window.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use vsesvit_core::extensions::commands::{ExtensionCommand, ExtensionShortcuts};
 use vsesvit_core::shortcuts::{
     Chord, Command as Core, Key, Keymap, NEEDS_MODIFIER_NOTE, NOT_A_KEY_NOTE, Section,
 };
@@ -15,7 +17,7 @@ use windows_core::{Interface, Result};
 use super::on_click;
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::shortcuts::{self, Mods, Press};
+use crate::shortcuts::{self, Bindings, Mods, Press};
 use crate::window::BrowserWindow;
 use crate::{exec, platform, xaml};
 
@@ -147,16 +149,95 @@ fn chords_text(chords: &[Chord]) -> String {
         .join(" or ")
 }
 
+/// Chrome takes no extension shortcut without one of them.
+const EXTENSION_NEEDS_MODIFIER_NOTE: &str = "Extension shortcuts need Ctrl or Alt.";
+
 /// The `x:Name` of a command's row button, from its stable id.
 pub(crate) fn row_name(command: Core) -> String {
     format!("Shortcut_{}", command.id().replace('-', "_"))
 }
 
-fn reset_name(command: Core) -> String {
-    format!("ShortcutReset_{}", command.id().replace('-', "_"))
+/// The `x:Name` of an extension command's row button. Only action commands have rows, and
+/// their names are XAML names already.
+pub(crate) fn extension_row_name(command: &ExtensionCommand) -> String {
+    format!(
+        "ExtensionShortcut_{}_{}",
+        command.extension.as_str(),
+        command.command.name
+    )
 }
 
-fn row_markup(command: Core, chords: &[Chord], is_default: bool) -> String {
+/// A row's command, which the capture flyout asks a shortcut for.
+#[derive(Clone)]
+enum Target {
+    Browser(Core),
+    Extension(ExtensionCommand),
+}
+
+impl Target {
+    fn row_name(&self) -> String {
+        match self {
+            Self::Browser(command) => row_name(*command),
+            Self::Extension(command) => extension_row_name(command),
+        }
+    }
+
+    fn reset_name(&self) -> String {
+        match self {
+            Self::Browser(command) => format!("ShortcutReset_{}", command.id().replace('-', "_")),
+            Self::Extension(command) => format!("Reset{}", extension_row_name(command)),
+        }
+    }
+
+    fn title(&self) -> String {
+        match self {
+            Self::Browser(command) => command.title().to_owned(),
+            Self::Extension(command) => format!("{}: {}", command.extension_name, command.title()),
+        }
+    }
+
+    /// What saving `chord` would assign, and a note about it, as `Keymap::offer`.
+    fn offer(&self, bindings: &Bindings, chord: Chord) -> (Option<Chord>, Option<String>) {
+        let (keymap, extensions) = (bindings.keymap(), bindings.extensions());
+        match self {
+            Self::Browser(command) => {
+                let (chord, note) =
+                    keymap.offer(*command, chord, |h| !shortcuts::listed().any(|c| c == h));
+                let note = note.or_else(|| extensions.note_for_browser(chord?));
+                (chord, note)
+            }
+            Self::Extension(_) if !(chord.mods().ctrl || chord.mods().alt) => {
+                (None, Some(EXTENSION_NEEDS_MODIFIER_NOTE.to_owned()))
+            }
+            Self::Extension(c) => {
+                keymap.offer_extension(extensions, &c.extension, &c.command.name, chord)
+            }
+        }
+    }
+
+    /// Gives the command exactly `chord`; `None` removes its shortcut.
+    fn assign(&self, keymap: &mut Keymap, extensions: &ExtensionShortcuts, chord: Option<Chord>) {
+        match self {
+            Self::Browser(command) => {
+                keymap.assign(*command, chord);
+            }
+            Self::Extension(c) => {
+                keymap.assign_extension(extensions, &c.extension, &c.command.name, chord);
+            }
+        }
+    }
+
+    fn reset(&self, keymap: &mut Keymap, extensions: &ExtensionShortcuts) {
+        match self {
+            Self::Browser(command) => {
+                keymap.reset(*command);
+            }
+            Self::Extension(c) => keymap.reset_extension(extensions, &c.extension, &c.command.name),
+        }
+    }
+}
+
+fn row_markup(target: &Target, chords: &[Chord], is_default: bool) -> String {
     format!(
         r#"<Grid {{ns}} ColumnSpacing="4">
              <Grid.ColumnDefinitions>
@@ -181,9 +262,9 @@ fn row_markup(command: Core, chords: &[Chord], is_default: bool) -> String {
                <FontIcon Glyph="&#xE7A7;" FontSize="14"/>
              </Button>
            </Grid>"#,
-        row = row_name(command),
-        reset = reset_name(command),
-        title = xaml::escape(command.title()),
+        row = target.row_name(),
+        reset = target.reset_name(),
+        title = xaml::escape(&target.title()),
         text = xaml::escape(&chords_text(chords)),
         chords = chords_markup(chords),
         visibility = if is_default { "Collapsed" } else { "Visible" },
@@ -210,7 +291,7 @@ struct Capture {
     keys: Panel,
     note: TextBlock,
     save: Control,
-    command: Cell<Option<Core>>,
+    target: RefCell<Option<Target>>,
     chord: Cell<Option<Chord>>,
 }
 
@@ -231,7 +312,7 @@ pub(super) fn wire(
         keys: xaml::find(&content, "CaptureKeys")?,
         note: xaml::find(&content, "CaptureNote")?,
         save: xaml::find(&content, "CaptureSave")?,
-        command: Cell::new(None),
+        target: RefCell::new(None),
         chord: Cell::new(None),
     };
     let scroller = xaml::find(root, "ShortcutsPanel")?;
@@ -282,36 +363,69 @@ impl Page {
             ))?;
             children.Append(&group.cast::<UIElement>()?)?;
             for command in commands {
-                let row: FrameworkElement = xaml::load(&row_markup(
-                    command,
+                self.add_row(
+                    &group,
+                    Target::Browser(command),
                     keymap.chords(command),
                     keymap.is_default(command),
-                ))?;
-                group.Children()?.Append(&row.cast::<UIElement>()?)?;
-                let (me, button) = (
-                    self.me.clone(),
-                    xaml::find::<FrameworkElement>(&row, &row_name(command))?,
-                );
-                let anchor = button.clone();
-                on_click(&button, move || {
-                    if let Some(me) = me.upgrade() {
-                        me.open_capture(command, &anchor);
-                    }
-                })?;
-                let me = self.me.clone();
-                on_click(
-                    &xaml::find::<Button>(&row, &reset_name(command))?,
-                    move || {
-                        if let Some(me) = me.upgrade() {
-                            me.edit(|k| {
-                                k.reset(command);
-                            });
-                        }
-                    },
                 )?;
             }
         }
+        let extensions = bindings.extensions();
+        let actions: Vec<_> = extensions
+            .iter()
+            .filter(|(c, _)| c.command.activates_action())
+            .collect();
+        if actions.is_empty() {
+            return Ok(());
+        }
+        let group: Panel = xaml::load(
+            r#"<StackPanel {ns} Spacing="4">
+                 <TextBlock Text="Extension shortcuts" Margin="0,0,0,4" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+               </StackPanel>"#,
+        )?;
+        children.Append(&group.cast::<UIElement>()?)?;
+        for (command, chord) in actions {
+            let is_default = extensions.is_default(&command.extension, &command.command.name);
+            let chords: Vec<Chord> = chord.into_iter().collect();
+            self.add_row(
+                &group,
+                Target::Extension(command.clone()),
+                &chords,
+                is_default,
+            )?;
+        }
         Ok(())
+    }
+
+    /// Adds `target`'s row to `group`: a click on it captures a shortcut, its reset button
+    /// resets it.
+    fn add_row(
+        &self,
+        group: &Panel,
+        target: Target,
+        chords: &[Chord],
+        is_default: bool,
+    ) -> Result<()> {
+        let row: FrameworkElement = xaml::load(&row_markup(&target, chords, is_default))?;
+        group.Children()?.Append(&row.cast::<UIElement>()?)?;
+        let button = xaml::find::<FrameworkElement>(&row, &target.row_name())?;
+        let (me, anchor, opened) = (self.me.clone(), button.clone(), target.clone());
+        on_click(&button, move || {
+            if let Some(me) = me.upgrade() {
+                me.open_capture(opened.clone(), &anchor);
+            }
+        })?;
+        let me = self.me.clone();
+        on_click(
+            &xaml::find::<Button>(&row, &target.reset_name())?,
+            move || {
+                if let Some(me) = me.upgrade() {
+                    let bindings = shortcuts::current();
+                    me.edit(|k| target.reset(k, bindings.extensions()));
+                }
+            },
+        )
     }
 
     /// Edits the keymap, then shows the result, after the click that asked for it has finished
@@ -371,7 +485,7 @@ impl Page {
             .flyout
             .Closed(move |_, _| {
                 if let Some(me) = me.upgrade() {
-                    me.capture.command.set(None);
+                    me.capture.target.replace(None);
                     if let Some(window) = me.window.upgrade() {
                         window.suspend_shortcuts(false);
                     }
@@ -381,13 +495,13 @@ impl Page {
         Ok(())
     }
 
-    fn open_capture(&self, command: Core, anchor: &FrameworkElement) {
+    fn open_capture(&self, target: Target, anchor: &FrameworkElement) {
         let capture = &self.capture;
-        capture.command.set(Some(command));
-        capture.chord.set(None);
         let _ = capture
             .title
-            .SetText(&format!("Press the new shortcut for {}", command.title()));
+            .SetText(&format!("Press the new shortcut for {}", target.title()));
+        capture.target.replace(Some(target));
+        capture.chord.set(None);
         self.show_capture(None, None);
         let Some(window) = self.window.upgrade() else {
             return;
@@ -435,30 +549,25 @@ impl Page {
 
     /// A key pressed while the capture flyout is open, as its key handler and buttons report it.
     pub(crate) fn capture_key(&self, vk: u16, mods: Mods) {
-        let Some(command) = self.capture.command.get() else {
+        let Some(target) = self.capture.target.borrow().clone() else {
             return;
+        };
+        let bindings = shortcuts::current();
+        let assign = |chord| {
+            self.close_capture();
+            self.edit(|k| target.assign(k, bindings.extensions(), chord));
         };
         match shortcuts::press(vk, mods) {
             Press::Cancel => self.close_capture(),
-            Press::Remove => {
-                self.close_capture();
-                self.edit(|k| {
-                    k.assign(command, []);
-                });
-            }
+            Press::Remove => assign(None),
             Press::Save => {
                 if let Some(chord) = self.capture.chord.get() {
-                    self.close_capture();
-                    self.edit(|k| {
-                        k.assign(command, [chord]);
-                    });
+                    assign(Some(chord));
                 }
             }
             Press::Modifier => {}
             Press::Chord(chord) => {
-                let (chord, note) = shortcuts::current()
-                    .keymap()
-                    .offer(command, chord, |h| !shortcuts::listed().any(|c| c == h));
+                let (chord, note) = target.offer(&bindings, chord);
                 self.show_capture(chord, note.as_deref());
             }
             Press::NeedsModifier => self.show_capture(None, Some(NEEDS_MODIFIER_NOTE)),
@@ -478,7 +587,11 @@ impl Page {
 
 #[cfg(test)]
 mod tests {
+    use vsesvit_core::extensions::ExtensionId;
+    use vsesvit_core::extensions::manifest::{ACTION_COMMANDS, ManifestCommand};
+
     use super::*;
+    use crate::popup::ExtensionAction;
 
     #[test]
     fn keycaps_name_each_key() {
@@ -492,14 +605,66 @@ mod tests {
         assert_eq!(chords_text(&[]), "Disabled");
     }
 
+    fn action_command(name: &str, key: &str) -> ExtensionCommand {
+        ExtensionCommand {
+            extension: ExtensionId::parse("abcdefghijklmnopabcdefghijklmnop").unwrap(),
+            extension_name: "Probe".into(),
+            command: ManifestCommand {
+                name: name.into(),
+                description: String::new(),
+                suggested_key: key.parse().ok(),
+            },
+        }
+    }
+
     #[test]
     fn row_names_are_xaml_names() {
-        for &command in Core::ALL {
-            let name = row_name(command);
-            assert!(
-                name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
-                "{name}"
-            );
+        let targets = Core::ALL
+            .iter()
+            .map(|&command| Target::Browser(command))
+            .chain(ACTION_COMMANDS.map(|name| Target::Extension(action_command(name, ""))));
+        for target in targets {
+            for name in [target.row_name(), target.reset_name()] {
+                assert!(
+                    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    "{name}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn capture_notes_name_the_other_holder() {
+        let command = action_command("_execute_action", "Alt+Shift+P");
+        let action = ExtensionAction {
+            id: command.extension.as_str().into(),
+            extension_id: "engine".into(),
+            title: "Probe".into(),
+            popup: None,
+            icon: None,
+        };
+        let bindings = Bindings::new(Keymap::default(), vec![command.clone()], &[action]);
+        let chord = |s: &str| s.parse::<Chord>().unwrap();
+        let extension = Target::Extension(command);
+        assert_eq!(
+            extension.offer(&bindings, chord("F9")),
+            (None, Some(EXTENSION_NEEDS_MODIFIER_NOTE.to_owned()))
+        );
+        assert_eq!(
+            extension.offer(&bindings, chord("Ctrl+Alt+Y")),
+            (Some(chord("Ctrl+Alt+Y")), None)
+        );
+        assert_eq!(
+            extension.offer(&bindings, chord("Ctrl+T")).0,
+            None,
+            "the browser's chords stay the browser's"
+        );
+        assert_eq!(
+            Target::Browser(Core::ShowHistory).offer(&bindings, chord("Alt+Shift+P")),
+            (
+                Some(chord("Alt+Shift+P")),
+                Some("Also used by Probe: Activate the extension. Saving moves it here.".into())
+            )
+        );
     }
 }

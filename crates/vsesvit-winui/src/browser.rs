@@ -12,6 +12,7 @@ use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
+use vsesvit_core::extensions::commands::extension_commands;
 use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
@@ -37,6 +38,7 @@ use crate::engine::{self, Engine};
 use crate::extensions::ExtensionHost;
 use crate::popup::ExtensionAction;
 use crate::session::{self, TabPlan, WindowPlan};
+use crate::shortcuts::Bindings;
 use crate::sync::{PrefEffect, SyncController};
 use crate::updates::{self, Action, Trigger, Updates};
 use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
@@ -182,7 +184,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
     }
     let engine = Engine::create(&profile.paths().engine_data, &arguments).await?;
     let page_script = Rc::new(shortcuts::PageScript::new(&secret()));
-    shortcuts::set_current(profile.prefs().keymap());
+    shortcuts::set_current(Bindings::new(profile.prefs().keymap(), Vec::new(), &[]));
     let prefs = WindowPrefs {
         tabs: profile.prefs().get(&keys::TABS_POSITION),
         pane_collapsed: profile.prefs().get(&TAB_PANE_COLLAPSED),
@@ -1103,15 +1105,26 @@ impl Browser {
         if let Err(e) = self.core(|p| p.prefs().set_keymap(&keymap)) {
             log::warn!("keyboard shortcuts: {e}");
         }
-        self.keymap_changed();
+        self.shortcuts_changed();
     }
 
-    /// Applies the stored keyboard shortcuts in every window, after an edit here or a
-    /// sync (`sync_applied`) wrote `keyboard.shortcuts`.
-    pub fn keymap_changed(&self) {
-        shortcuts::set_current(self.core(|p| p.prefs().keymap()));
-        for window in self.windows() {
-            window.shortcuts_changed();
+    /// Applies the stored keyboard shortcuts, the extensions' included, in every window: after
+    /// an edit here, a sync (`sync_applied`) that wrote `keyboard.shortcuts`, or a change to the
+    /// extensions or to what the engine has loaded (`sync_extensions`).
+    pub fn shortcuts_changed(&self) {
+        let keymap = self.core(|p| p.prefs().keymap());
+        let commands = match self.core(|p| p.extensions().list()) {
+            Ok(installed) => extension_commands(&installed),
+            Err(e) => {
+                log::warn!("extension shortcuts: {e}");
+                Vec::new()
+            }
+        };
+        let bindings = Bindings::new(keymap, commands, &self.extension_actions());
+        if shortcuts::set_current(bindings) {
+            for window in self.windows() {
+                window.shortcuts_changed();
+            }
         }
     }
 
@@ -1126,7 +1139,7 @@ impl Browser {
         for effect in sync::pref_effects(&changed.prefs) {
             match effect {
                 PrefEffect::Window => self.window_prefs_synced(),
-                PrefEffect::Keymap => self.keymap_changed(),
+                PrefEffect::Keymap => self.shortcuts_changed(),
                 PrefEffect::Autofill => self.apply_autofill(),
                 PrefEffect::ExtensionToolbar => self.show_extension_actions(),
             }

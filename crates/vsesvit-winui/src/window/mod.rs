@@ -218,6 +218,8 @@ pub(crate) struct BrowserWindow {
     editor: RefCell<Option<Rc<Editor>>>,
     /// The security icon's popup opened last.
     connection: RefCell<Option<Flyout>>,
+    /// The extension popup opened last.
+    popup: RefCell<Option<Popup>>,
     permissions: permissions::PermissionUi,
     dialog_open: Cell<bool>,
     /// What a scripted run's `show_dialog` shows over the window instead of the modal dialog.
@@ -288,6 +290,7 @@ impl BrowserWindow {
             toolbar,
             editor: RefCell::new(None),
             connection: RefCell::new(None),
+            popup: RefCell::new(None),
             permissions: permissions::PermissionUi::default(),
             dialog_open: Cell::new(false),
             scripted_dialog: RefCell::new(None),
@@ -1045,6 +1048,20 @@ impl BrowserWindow {
                     log::warn!("tab {}: developer tools: {e}", tab.id);
                 }
             }
+            Command::ExtensionAction(index) => {
+                let bindings = shortcuts::current();
+                let Some(engine_id) = bindings.extension_action(index) else {
+                    return;
+                };
+                let activation = if self.is_foreground() {
+                    Activation::Focus
+                } else {
+                    Activation::Keep
+                };
+                if let Err(e) = self.open_extension_popup(engine_id, activation) {
+                    log::warn!("extension shortcut of {engine_id}: {e}");
+                }
+            }
         }
     }
 
@@ -1562,13 +1579,20 @@ impl BrowserWindow {
                 active: Some(t.id) == active,
             })
             .collect();
-        popup::open(
+        let popup = popup::open(
             anchor,
             browser.engine().environment().clone(),
             action,
             activation,
             &opener,
-        )
+        )?;
+        *self.popup.borrow_mut() = Some(popup.clone());
+        Ok(popup)
+    }
+
+    /// The extension popup opened last, while it is open.
+    pub fn extension_popup(&self) -> Option<Popup> {
+        self.popup.borrow().clone().filter(Popup::is_open)
     }
 
     fn set_fullscreen(&self, on: bool) {

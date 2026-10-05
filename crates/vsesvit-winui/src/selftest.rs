@@ -795,6 +795,14 @@ async fn checks(
     })
     .await;
 
+    check(report, "extension_commands", Duration::from_secs(40), async |p| {
+        shortcut_checks::extension_commands(&window, &tab, p)
+            .await
+            .map_err(|e| format!("{e} (at: {})", p.last()))
+    })
+    .await;
+    window.close_scripted_dialog();
+
     check(report, "download", DEFAULT_TIMEOUT, async |p| {
         let dir = out_dir.join("downloads");
         browser.set_download_dir(Some(&dir));

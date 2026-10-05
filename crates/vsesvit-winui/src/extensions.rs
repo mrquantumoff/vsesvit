@@ -277,6 +277,7 @@ impl Browser {
             *self.extensions.last_sync_error.borrow_mut() = result.err();
             self.extensions.sync_done.set(target);
             self.refresh_extension_actions();
+            self.shortcuts_changed();
             self.extensions.notify();
         }
         self.extensions.sync_running.set(false);

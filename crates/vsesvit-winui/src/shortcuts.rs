@@ -18,13 +18,19 @@
 //! page can neither see nor send its messages. Frames from other sites run in processes of their
 //! own, which the page's DevTools session does not reach: each gets a session of its own
 //! (`AUTO_ATTACH`), set up the same way before its first document runs.
+//!
+//! Extensions' action commands (`_execute_action` and its MV2 forms) are bound too, `Reserved`,
+//! as Chrome handles extension shortcuts before the page. Their named commands are not: the shell
+//! has no way to fire `commands.onCommand`, so their chords stay the page's.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::Value;
+use vsesvit_core::extensions::commands::{ExtensionCommand, ExtensionShortcuts};
 use vsesvit_core::shortcuts::{self as keymap, Chord, Key, Keymap};
 
+use crate::popup::ExtensionAction;
 use crate::store::{self, StoreRequest};
 use InPage::{Native, Overridable, Reserved};
 use keymap::Command as Core;
@@ -67,6 +73,9 @@ pub(crate) enum Command {
     /// WebView2 cannot open DevTools on a given panel, so this opens them as `DeveloperTools`
     /// does; in the page, WebView2 itself opens the console on Ctrl+Shift+J.
     JavaScriptConsole,
+    /// Opens an extension's popup as its toolbar button does; `Bindings::extension_action`
+    /// says whose.
+    ExtensionAction(usize),
 }
 
 /// Where a key press for a command is taken while the page has focus.
@@ -137,12 +146,11 @@ pub(crate) fn listed() -> impl Iterator<Item = Core> {
         .filter(|&c| implemented(c).is_some())
 }
 
-fn core_of(command: Command) -> Core {
+fn core_of(command: Command) -> Option<Core> {
     IMPLEMENTED
         .iter()
         .find(|(_, c, _)| *c == command)
         .map(|&(core, _, _)| core)
-        .expect("every shell command has a core command")
 }
 
 /// Modifiers as the page script and XAML encode them.
@@ -304,34 +312,64 @@ pub(crate) struct Binding {
 }
 
 /// The effective key bindings of the commands this shell implements.
+#[derive(PartialEq)]
 pub(crate) struct Bindings {
     keymap: Keymap,
     list: Vec<Binding>,
     /// Default chords of `Native` commands that no longer run them and run nothing this shell
     /// implements: the script takes them so WebView2 does not act on them.
     swallowed: Vec<(u16, Mods)>,
+    extensions: ExtensionShortcuts,
+    /// The engine id of the extension each `Command::ExtensionAction` opens, and its chord.
+    extension_actions: Vec<(String, Chord)>,
+}
+
+/// Binds `chord` unless its key press is bound already, and says whether it did: Ctrl+Plus and
+/// Ctrl+Shift+Equal are one key press.
+fn bind(list: &mut Vec<Binding>, chord: Chord, command: Command, in_page: InPage) -> bool {
+    let (vk, mods) = vk_chord(chord);
+    let free = !list.iter().any(|b| b.vk == vk && b.mods == mods);
+    if free {
+        list.push(Binding {
+            vk,
+            mods,
+            command,
+            in_page,
+        });
+    }
+    free
 }
 
 impl Bindings {
-    pub fn new(keymap: Keymap) -> Self {
+    /// `commands` are the enabled extensions' commands and `actions` the toolbar's: an action
+    /// command is bound once the engine has loaded its extension.
+    pub fn new(
+        keymap: Keymap,
+        commands: Vec<ExtensionCommand>,
+        actions: &[ExtensionAction],
+    ) -> Self {
         let mut list: Vec<Binding> = Vec::new();
         for (core, chords) in keymap.iter() {
             let Some((command, kind)) = implemented(core) else {
                 continue;
             };
             for &chord in chords {
-                let (vk, mods) = vk_chord(chord);
-                // Ctrl+Plus and Ctrl+Shift+Equal are one key press.
-                if list.iter().any(|b| b.vk == vk && b.mods == mods) {
-                    continue;
-                }
                 let in_page = in_page(kind, core.defaults().contains(&chord));
-                list.push(Binding {
-                    vk,
-                    mods,
-                    command,
-                    in_page,
-                });
+                bind(&mut list, chord, command, in_page);
+            }
+        }
+        let extensions = keymap.extension_shortcuts(commands);
+        let mut extension_actions = Vec::new();
+        let action_commands = extensions
+            .iter()
+            .filter(|(c, _)| c.command.activates_action());
+        for (command, chord) in action_commands {
+            let action = actions.iter().find(|a| a.id == command.extension.as_str());
+            let index = extension_actions.len();
+            if let (Some(chord), Some(action)) = (chord, action)
+                && bind(&mut list, chord, Command::ExtensionAction(index), Reserved)
+            {
+                extension_actions.push((action.extension_id.clone(), chord));
             }
         }
         let swallowed = IMPLEMENTED
@@ -349,11 +387,24 @@ impl Bindings {
             keymap,
             list,
             swallowed,
+            extensions,
+            extension_actions,
         }
     }
 
     pub fn keymap(&self) -> &Keymap {
         &self.keymap
+    }
+
+    /// The enabled extensions' commands and their shortcuts, bound or not.
+    pub fn extensions(&self) -> &ExtensionShortcuts {
+        &self.extensions
+    }
+
+    /// The engine id of the extension whose popup `Command::ExtensionAction(index)` opens.
+    pub fn extension_action(&self, index: usize) -> Option<&str> {
+        let (engine_id, _) = self.extension_actions.get(index)?;
+        Some(engine_id)
     }
 
     pub fn list(&self) -> &[Binding] {
@@ -371,10 +422,11 @@ impl Bindings {
 
     /// How menus and tooltips name the command's shortcut: its first chord.
     pub fn label(&self, command: Command) -> Option<String> {
-        self.keymap
-            .chords(core_of(command))
-            .first()
-            .map(ToString::to_string)
+        let chord = match command {
+            Command::ExtensionAction(index) => self.extension_actions.get(index).map(|&(_, c)| c),
+            command => core_of(command).and_then(|core| self.keymap.chords(core).first().copied()),
+        };
+        chord.map(|chord| chord.to_string())
     }
 
     /// `text` with the command's shortcut in parentheses, for a tooltip.
@@ -409,7 +461,8 @@ impl Bindings {
 }
 
 thread_local! {
-    static CURRENT: RefCell<Rc<Bindings>> = RefCell::new(Rc::new(Bindings::new(Keymap::default())));
+    static CURRENT: RefCell<Rc<Bindings>> =
+        RefCell::new(Rc::new(Bindings::new(Keymap::default(), Vec::new(), &[])));
 }
 
 /// The bindings in effect, for every window of this (UI) thread.
@@ -417,8 +470,13 @@ pub(crate) fn current() -> Rc<Bindings> {
     CURRENT.with_borrow(Rc::clone)
 }
 
-pub(crate) fn set_current(keymap: Keymap) {
-    CURRENT.set(Rc::new(Bindings::new(keymap)));
+/// Puts `bindings` in effect; false when they already are.
+pub(crate) fn set_current(bindings: Bindings) -> bool {
+    let changed = *current() != bindings;
+    if changed {
+        CURRENT.set(Rc::new(bindings));
+    }
+    changed
 }
 
 /// A message the shortcut script sent to the host.
@@ -625,19 +683,22 @@ fn page_script() -> String {
 
 #[cfg(test)]
 mod tests {
+    use vsesvit_core::extensions::ExtensionId;
+    use vsesvit_core::extensions::manifest::ManifestCommand;
+
     use super::*;
 
     const CTRL_SHIFT: Mods = Mods(3);
     const CTRL_ALT_SHIFT: Mods = Mods(7);
 
     fn defaults() -> Bindings {
-        Bindings::new(Keymap::default())
+        Bindings::new(Keymap::default(), Vec::new(), &[])
     }
 
     fn with(edit: impl FnOnce(&mut Keymap)) -> Bindings {
         let mut keymap = Keymap::default();
         edit(&mut keymap);
-        Bindings::new(keymap)
+        Bindings::new(keymap, Vec::new(), &[])
     }
 
     fn chord(s: &str) -> Chord {
@@ -946,7 +1007,7 @@ mod tests {
         keymap.assign(Core::NewTab, [chord("Ctrl+R")]);
         keymap.assign(Core::ToggleTabList, []);
         keymap.reset_all();
-        let bindings = Bindings::new(keymap);
+        let bindings = Bindings::new(keymap, Vec::new(), &[]);
         assert_eq!(bindings.list(), defaults().list());
         assert_eq!(bindings.keys_script(), defaults().keys_script());
     }
@@ -1149,5 +1210,165 @@ mod tests {
         assert!(top_only < source.find(r#"addEventListener("click""#).unwrap());
         assert!(top_only < source.find("zoom()").unwrap());
         assert!(top_only < source.find("vsesvit-store").unwrap());
+    }
+
+    const ALT_SHIFT: Mods = Mods(6);
+    const PROBE: &str = "abcdefghijklmnopabcdefghijklmnop";
+    const OTHER: &str = "ponmlkjihgfedcbaponmlkjihgfedcba";
+
+    fn id(extension: &str) -> ExtensionId {
+        ExtensionId::parse(extension).unwrap()
+    }
+
+    fn command(extension: &str, name: &str, key: &str) -> ExtensionCommand {
+        ExtensionCommand {
+            extension: id(extension),
+            extension_name: "Probe".into(),
+            command: ManifestCommand {
+                name: name.into(),
+                description: String::new(),
+                suggested_key: Some(chord(key)),
+            },
+        }
+    }
+
+    fn action(extension: &str) -> ExtensionAction {
+        ExtensionAction {
+            id: extension.into(),
+            extension_id: format!("engine-{extension}"),
+            title: "Probe".into(),
+            popup: Some("popup.html".into()),
+            icon: None,
+        }
+    }
+
+    /// The probe's commands (`tests/fixtures/extensions/probe/manifest.json`).
+    fn probe() -> Vec<ExtensionCommand> {
+        vec![
+            command(PROBE, "_execute_action", "Alt+Shift+P"),
+            command(PROBE, "probe-command", "Alt+Shift+K"),
+        ]
+    }
+
+    fn with_probe(keymap: Keymap) -> Bindings {
+        Bindings::new(keymap, probe(), &[action(PROBE)])
+    }
+
+    #[test]
+    fn an_action_command_opens_its_popup_before_the_page() {
+        let bindings = with_probe(Keymap::default());
+        assert_eq!(
+            lookup(&bindings, 0x50, ALT_SHIFT).map(|b| (b.command, b.in_page)),
+            Some((Command::ExtensionAction(0), Reserved))
+        );
+        assert_eq!(
+            bindings.extension_action(0),
+            Some(format!("engine-{PROBE}").as_str())
+        );
+        assert_eq!(bindings.extension_action(1), None);
+        let script = bindings.keys_script();
+        let (reserved, _) = script.split_once("overridable").unwrap();
+        assert!(reserved.contains("\"80:6\""), "{script}");
+        let key = r#"{"t":"key","vk":80,"m":6}"#;
+        for in_frame in [false, true] {
+            assert_eq!(
+                parse_binding_call(&called(BINDING, key), &bindings, in_frame),
+                Some(PageMessage::Key(Command::ExtensionAction(0)))
+            );
+        }
+        assert_eq!(
+            bindings.label(Command::ExtensionAction(0)).as_deref(),
+            Some("Alt+Shift+P")
+        );
+        assert_eq!(
+            bindings.tip("Probe", Command::ExtensionAction(0)),
+            "Probe (Alt+Shift+P)"
+        );
+        assert_eq!(bindings.label(Command::ExtensionAction(7)), None);
+        assert_eq!(bindings.tip("Probe", Command::ExtensionAction(7)), "Probe");
+        for (i, a) in bindings.list().iter().enumerate() {
+            for b in &bindings.list()[i + 1..] {
+                assert!(!(a.vk == b.vk && a.mods == b.mods), "{a:?} and {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn named_commands_are_not_bound() {
+        let bindings = with_probe(Keymap::default());
+        assert!(lookup(&bindings, 0x4B, ALT_SHIFT).is_none());
+        assert!(!bindings.keys_script().contains("\"75:6\""));
+        assert_eq!(
+            bindings.extensions().chord(&id(PROBE), "probe-command"),
+            Some(chord("Alt+Shift+K")),
+            "Settings still shows the named command's shortcut"
+        );
+        let key = r#"{"t":"key","vk":75,"m":6}"#;
+        assert_eq!(
+            parse_binding_call(&called(BINDING, key), &bindings, false),
+            None
+        );
+    }
+
+    #[test]
+    fn an_action_command_is_bound_once_the_engine_has_its_extension() {
+        let unloaded = Bindings::new(Keymap::default(), probe(), &[action(OTHER)]);
+        assert!(lookup(&unloaded, 0x50, ALT_SHIFT).is_none());
+        assert_eq!(unloaded.list(), defaults().list());
+        let mv2 = Bindings::new(
+            Keymap::default(),
+            vec![command(OTHER, "_execute_browser_action", "Alt+Shift+B")],
+            &[action(OTHER)],
+        );
+        assert_eq!(
+            lookup(&mv2, 0x42, ALT_SHIFT).map(|b| b.command),
+            Some(Command::ExtensionAction(0))
+        );
+        assert_eq!(
+            mv2.extension_action(0),
+            Some(format!("engine-{OTHER}").as_str())
+        );
+    }
+
+    #[test]
+    fn the_browsers_chords_are_never_an_extensions() {
+        let taken = Bindings::new(
+            Keymap::default(),
+            vec![command(PROBE, "_execute_action", "Ctrl+T")],
+            &[action(PROBE)],
+        );
+        assert_eq!(
+            lookup(&taken, 0x54, Mods::CTRL).map(|b| b.command),
+            Some(Command::NewTab)
+        );
+        assert_eq!(taken.list(), defaults().list());
+        let mut keymap = Keymap::default();
+        keymap.assign(Core::ShowHistory, [chord("Alt+Shift+P")]);
+        let moved = with_probe(keymap);
+        assert_eq!(
+            lookup(&moved, 0x50, ALT_SHIFT).map(|b| b.command),
+            Some(Command::ShowHistory)
+        );
+        assert_eq!(moved.extension_action(0), None);
+    }
+
+    #[test]
+    fn an_action_command_follows_the_shortcut_the_user_gives_it() {
+        let mut keymap = Keymap::default();
+        let shortcuts = keymap.extension_shortcuts(probe());
+        keymap.assign_extension(
+            &shortcuts,
+            &id(PROBE),
+            "_execute_action",
+            Some(chord("Ctrl+Alt+Y")),
+        );
+        let bindings = with_probe(keymap);
+        assert!(lookup(&bindings, 0x50, ALT_SHIFT).is_none());
+        assert_eq!(
+            lookup(&bindings, 0x59, Mods(5)).map(|b| (b.command, b.in_page)),
+            Some((Command::ExtensionAction(0), Reserved))
+        );
+        let probe = id(PROBE);
+        assert!(!bindings.extensions().is_default(&probe, "_execute_action"));
     }
 }
