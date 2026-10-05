@@ -152,6 +152,13 @@ impl SiteRules {
         self.blocked_hosts.iter().any(|d| covers(d, host))
     }
 
+    /// Whether a cookie under `domain` (leading dot or not) reaches a site set to Block: the
+    /// domain covers a blocked host, as `.example.com` does `www.example.com`, or one covers it.
+    pub fn blocks_cookie(&self, domain: &str) -> bool {
+        let domain = domain.strip_prefix('.').unwrap_or(domain);
+        self.blocked_hosts.iter().any(|h| covers(domain, h) || covers(h, domain))
+    }
+
     /// Sites whose data is deleted at exit and at the next start, those set to Block and to
     /// Clear on exit, in order.
     pub fn to_clear(&self) -> &[Origin] {

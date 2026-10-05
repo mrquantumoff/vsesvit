@@ -151,6 +151,8 @@ fn site_rules_cover_a_site_and_its_subdomains() {
     assert!(!rules.blocks("www.cleared.example"), "clear on exit lets the site use cookies");
     assert!(!rules.blocks("allowed.example"));
     assert!(!rules.blocks("camera.example"));
+    assert!(rules.blocks_cookie(".www.example.com") && rules.blocks_cookie("ads.example"));
+    assert!(!rules.blocks_cookie(".cleared.example") && !rules.blocks_cookie("notexample.com"));
 
     assert_eq!(
         rules.to_clear(),
@@ -171,6 +173,16 @@ fn site_rules_cover_a_site_and_its_subdomains() {
     let rules = cookies::site_rules(&mut empty);
     assert!(rules.blocked_hosts().is_empty() && rules.to_clear().is_empty());
     assert!(!rules.blocks("example.com") && !rules.clears("example.com"));
+}
+
+#[test]
+fn a_parent_domains_cookie_reaches_a_blocked_subdomain() {
+    let (mut p, _dir) = open(1);
+    cookies::set(&mut p, &origin("https://www.shop.example"), Some(Block)).unwrap();
+    let rules = cookies::site_rules(&mut p);
+    assert!(!rules.blocks("shop.example"), "the parent site may use cookies");
+    assert!(rules.blocks_cookie(".shop.example"), "but its domain cookies reach www.shop.example");
+    assert!(!rules.blocks_cookie("mail.shop.example"));
 }
 
 #[test]
