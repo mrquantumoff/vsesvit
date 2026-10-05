@@ -1,0 +1,282 @@
+{
+  "about": "Vsesvit's tracker list, written for Vsesvit and licensed with it under the MIT licence (LICENSE at the repository root). Each entity lists the sites it runs, on whose pages its own trackers are first party and not blocked, and its tracker domains by category: advertising and analytics are blocked by Standard, social by Strict too. A domain covers its subdomains.",
+  "entities": {
+    "33Across": {
+      "advertising": ["33across.com"]
+    },
+    "Adform": {
+      "advertising": ["adform.net"]
+    },
+    "Adobe": {
+      "sites": ["adobe.com", "behance.net"],
+      "advertising": ["demdex.net", "everesttech.net"],
+      "analytics": ["omtrdc.net", "2o7.net"]
+    },
+    "AdRoll": {
+      "advertising": ["adroll.com"]
+    },
+    "Amazon": {
+      "sites": [
+        "amazon.com", "amazon.ca", "amazon.co.jp", "amazon.co.uk", "amazon.com.au", "amazon.com.br", "amazon.com.mx",
+        "amazon.de", "amazon.es", "amazon.fr", "amazon.in", "amazon.it", "amazon.nl", "amazon.pl", "amazon.se",
+        "audible.com", "imdb.com", "media-amazon.com", "primevideo.com", "ssl-images-amazon.com", "twitch.tv"
+      ],
+      "advertising": ["amazon-adsystem.com", "assoc-amazon.com"]
+    },
+    "Amplitude": {
+      "analytics": ["amplitude.com"]
+    },
+    "Baidu": {
+      "sites": ["baidu.com"],
+      "analytics": ["hm.baidu.com"]
+    },
+    "Bidswitch": {
+      "advertising": ["bidswitch.net"]
+    },
+    "Chartbeat": {
+      "analytics": ["chartbeat.com", "chartbeat.net"]
+    },
+    "Clicky": {
+      "analytics": ["getclicky.com"]
+    },
+    "Comscore": {
+      "analytics": ["scorecardresearch.com"]
+    },
+    "Crazy Egg": {
+      "analytics": ["crazyegg.com"]
+    },
+    "Criteo": {
+      "advertising": ["criteo.com", "criteo.net"]
+    },
+    "Disqus": {
+      "advertising": ["disqusads.com"]
+    },
+    "DoubleVerify": {
+      "advertising": ["doubleverify.com"]
+    },
+    "Equativ": {
+      "advertising": ["smartadserver.com"]
+    },
+    "FullStory": {
+      "analytics": ["fullstory.com"]
+    },
+    "Gemius": {
+      "analytics": ["gemius.pl"]
+    },
+    "Google": {
+      "sites": [
+        "google.com", "google.ca", "google.co.in", "google.co.jp", "google.co.uk", "google.com.au", "google.com.br",
+        "google.de", "google.es", "google.fr", "google.it", "google.nl", "google.pl", "android.com", "blogger.com",
+        "gmail.com", "youtube.com"
+      ],
+      "advertising": [
+        "doubleclick.net", "googlesyndication.com", "googleadservices.com", "googletagservices.com", "2mdn.net",
+        "admob.com", "adservice.google.com"
+      ],
+      "analytics": ["google-analytics.com", "googletagmanager.com", "analytics.google.com", "app-measurement.com"]
+    },
+    "GumGum": {
+      "advertising": ["gumgum.com"]
+    },
+    "Heap": {
+      "analytics": ["heapanalytics.com"]
+    },
+    "Histats": {
+      "analytics": ["histats.com"]
+    },
+    "Hotjar": {
+      "analytics": ["hotjar.com", "hotjar.io"]
+    },
+    "HubSpot": {
+      "sites": ["hubspot.com"],
+      "analytics": ["hs-analytics.net", "track.hubspot.com"]
+    },
+    "ID5": {
+      "advertising": ["id5-sync.com"]
+    },
+    "Index Exchange": {
+      "advertising": ["casalemedia.com", "indexww.com"]
+    },
+    "INFOnline": {
+      "analytics": ["ioam.de"]
+    },
+    "Inspectlet": {
+      "analytics": ["inspectlet.com"]
+    },
+    "Integral Ad Science": {
+      "advertising": ["adsafeprotected.com"]
+    },
+    "LiveRamp": {
+      "advertising": ["rlcdn.com"]
+    },
+    "Lotame": {
+      "advertising": ["crwdcntrl.net"]
+    },
+    "Lucky Orange": {
+      "analytics": ["luckyorange.com", "luckyorange.net"]
+    },
+    "Magnite": {
+      "advertising": ["rubiconproject.com"]
+    },
+    "Marketo": {
+      "analytics": ["munchkin.marketo.net"]
+    },
+    "Media.net": {
+      "advertising": ["media.net"]
+    },
+    "MediaMath": {
+      "advertising": ["mathtag.com"]
+    },
+    "Mediavine": {
+      "advertising": ["mediavine.com"]
+    },
+    "Meta": {
+      "sites": [
+        "facebook.com", "facebook.net", "fb.com", "fbcdn.net", "fbsbx.com", "instagram.com", "cdninstagram.com",
+        "meta.com", "messenger.com", "threads.com", "threads.net", "whatsapp.com", "whatsapp.net", "oculus.com"
+      ],
+      "social": ["facebook.com", "facebook.net", "instagram.com"]
+    },
+    "Microsoft": {
+      "sites": [
+        "microsoft.com", "bing.com", "msn.com", "live.com", "office.com", "outlook.com", "xbox.com", "skype.com",
+        "linkedin.com", "licdn.com", "github.com"
+      ],
+      "advertising": ["adnxs.com", "bat.bing.com", "c.bing.com", "c.msn.com", "ads.linkedin.com", "snap.licdn.com"],
+      "analytics": ["clarity.ms"],
+      "social": ["linkedin.com"]
+    },
+    "Mixpanel": {
+      "analytics": ["mixpanel.com", "mxpnl.com"]
+    },
+    "MNTN": {
+      "advertising": ["steelhousemedia.com"]
+    },
+    "Mouseflow": {
+      "analytics": ["mouseflow.com"]
+    },
+    "New Relic": {
+      "analytics": ["nr-data.net", "js-agent.newrelic.com"]
+    },
+    "Nielsen": {
+      "advertising": ["exelator.com"],
+      "analytics": ["imrworldwide.com"]
+    },
+    "OpenX": {
+      "advertising": ["openx.net"]
+    },
+    "Oracle": {
+      "advertising": ["bluekai.com", "bkrtx.com", "moatads.com", "addthis.com"]
+    },
+    "Outbrain": {
+      "advertising": ["outbrain.com"]
+    },
+    "Parse.ly": {
+      "analytics": ["parsely.com"]
+    },
+    "Piano": {
+      "analytics": ["xiti.com"]
+    },
+    "Pinterest": {
+      "sites": ["pinterest.com", "pinimg.com"],
+      "advertising": ["ct.pinterest.com"],
+      "social": ["pinterest.com"]
+    },
+    "PubMatic": {
+      "advertising": ["pubmatic.com"]
+    },
+    "Quantcast": {
+      "advertising": ["quantserve.com", "quantcount.com"]
+    },
+    "Quora": {
+      "sites": ["quora.com"],
+      "advertising": ["q.quora.com"]
+    },
+    "Reddit": {
+      "sites": ["reddit.com", "redditmedia.com", "redditstatic.com", "redd.it"],
+      "advertising": ["alb.reddit.com"],
+      "social": ["reddit.com", "redditmedia.com"]
+    },
+    "Salesforce": {
+      "sites": ["salesforce.com"],
+      "analytics": ["pi.pardot.com"]
+    },
+    "Segment": {
+      "analytics": ["segment.com", "segment.io"]
+    },
+    "ShareThis": {
+      "advertising": ["sharethis.com"]
+    },
+    "Sharethrough": {
+      "advertising": ["sharethrough.com"]
+    },
+    "Sizmek": {
+      "advertising": ["serving-sys.com"]
+    },
+    "Smartlook": {
+      "analytics": ["smartlook.com"]
+    },
+    "Snap": {
+      "sites": ["snapchat.com"],
+      "advertising": ["sc-static.net", "tr.snapchat.com"]
+    },
+    "Sovrn": {
+      "advertising": ["lijit.com"]
+    },
+    "StatCounter": {
+      "analytics": ["statcounter.com"]
+    },
+    "Taboola": {
+      "advertising": ["taboola.com"]
+    },
+    "Tapad": {
+      "advertising": ["tapad.com"]
+    },
+    "Teads": {
+      "advertising": ["teads.tv"]
+    },
+    "The Trade Desk": {
+      "advertising": ["adsrvr.org"]
+    },
+    "TikTok": {
+      "sites": ["tiktok.com", "tiktokcdn.com", "bytedance.com", "capcut.com"],
+      "advertising": ["analytics.tiktok.com", "ads.tiktok.com"],
+      "social": ["tiktok.com"]
+    },
+    "TripleLift": {
+      "advertising": ["3lift.com"]
+    },
+    "Umeng": {
+      "analytics": ["cnzz.com"]
+    },
+    "VK": {
+      "sites": ["vk.com", "vk.ru", "mail.ru"],
+      "analytics": ["top-fwz1.mail.ru"],
+      "social": ["vk.com"]
+    },
+    "Webtrends": {
+      "analytics": ["webtrends.com", "webtrendslive.com"]
+    },
+    "Woopra": {
+      "analytics": ["woopra.com"]
+    },
+    "Wunderkind": {
+      "advertising": ["bounceexchange.com", "bouncex.net"]
+    },
+    "X": {
+      "sites": ["x.com", "twitter.com", "twimg.com", "t.co"],
+      "advertising": ["ads-twitter.com", "analytics.twitter.com"],
+      "social": ["x.com", "twitter.com"]
+    },
+    "Yahoo": {
+      "sites": ["yahoo.com", "aol.com"],
+      "advertising": ["advertising.com", "ads.yahoo.com"],
+      "analytics": ["analytics.yahoo.com"]
+    },
+    "Yandex": {
+      "sites": ["yandex.ru", "yandex.com", "ya.ru"],
+      "advertising": ["an.yandex.ru", "yandexadexchange.net"],
+      "analytics": ["mc.yandex.ru", "mc.yandex.com"]
+    }
+  }
+}

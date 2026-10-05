@@ -13,7 +13,7 @@ use vsesvit_core::permissions::{
 use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::{Error, OpenOptions, Profile, Url};
 
-use Permission::{Camera, ClipboardRead, Location, Microphone, Midi, Notifications, PictureInPicture, ScreenShare};
+use Permission::{Camera, ClipboardRead, Location, Microphone, Midi, Notifications, PictureInPicture, ScreenShare, Trackers};
 
 struct TempDir(PathBuf);
 impl Drop for TempDir {
@@ -88,14 +88,20 @@ fn origins_are_normalized_and_shown_by_host() {
 #[test]
 fn permission_keys_and_labels() {
     let keys: Vec<&str> = Permission::ALL.iter().map(|p| p.key()).collect();
-    assert_eq!(keys, ["camera", "microphone", "location", "notifications", "screen_share", "clipboard_read", "midi", "picture_in_picture"]);
+    assert_eq!(
+        keys,
+        ["camera", "microphone", "location", "notifications", "screen_share", "clipboard_read", "midi", "picture_in_picture", "trackers"]
+    );
     for &p in Permission::ALL {
         assert_eq!(Permission::from_key(p.key()), Some(p));
         assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{}\"", p.key()));
     }
     assert_eq!(Permission::from_key("usb"), None);
     let labels: Vec<&str> = Permission::ALL.iter().map(|p| p.label()).collect();
-    assert_eq!(labels, ["Camera", "Microphone", "Location", "Notifications", "Screen sharing", "Clipboard", "MIDI devices", "Picture-in-picture"]);
+    assert_eq!(
+        labels,
+        ["Camera", "Microphone", "Location", "Notifications", "Screen sharing", "Clipboard", "MIDI devices", "Picture-in-picture", "Trackers"]
+    );
     assert!(Permission::ALL.iter().all(|p| p.remembers_allow() == (*p != ScreenShare)));
     assert_eq!(ScreenShare.settings(), [Setting::Block]);
     for &p in Permission::ALL.iter().filter(|p| **p != ScreenShare) {
@@ -434,7 +440,7 @@ fn picture_in_picture_is_off_until_allowed_and_never_asks() {
     let site = origin("https://video.example");
     let none = TabGrants::default();
     assert!(!PictureInPicture.asks());
-    assert!(Permission::ALL.iter().filter(|p| **p != PictureInPicture).all(|p| p.asks()));
+    assert!(Permission::ALL.iter().filter(|p| !matches!(p, PictureInPicture | Trackers)).all(|p| p.asks()));
     assert_eq!(PictureInPicture.settings(), [Setting::Allow, Setting::Block]);
 
     assert_eq!(p.site_permissions().get(&site, PictureInPicture), None);

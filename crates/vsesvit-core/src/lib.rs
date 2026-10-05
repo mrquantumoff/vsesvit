@@ -34,6 +34,7 @@
 //! | [`prefs`]        | typed preferences                                                    |
 //! | [`search`]       | search engines, omnibox resolve + suggest                             |
 //! | [`shortcuts`]    | commands, default chords, the user's keymap                           |
+//! | [`trackers`]     | tracking protection: the bundled tracker list, level, site exceptions |
 //! | [`extensions`]   | desired set (synced) vs installed set (local), CRX3/XPI/unpacked      |
 //! | [`ext_storage`]  | `chrome.storage.local` / `.sync` backing for the Linux runtime        |
 //! | [`sync`]         | what the sync engine (`vsesvit-sync`) calls: `changes_since`, `apply` |
@@ -67,6 +68,7 @@ pub mod shortcuts;
 pub mod sync;
 #[cfg(feature = "testkit")]
 pub mod testkit;
+pub mod trackers;
 pub mod vault;
 pub mod view_source;
 pub mod zoom;

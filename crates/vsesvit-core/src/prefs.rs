@@ -136,6 +136,9 @@ pub mod keys {
     pub const BLOCK_POPUPS: Pref<bool> = Pref { key: "content.block_popups", scope: Scope::Synced, default: || true };
     /// Save and fill form entries such as addresses, where the engine supports it.
     pub const AUTOFILL_FORMS: Pref<bool> = Pref { key: "autofill.forms", scope: Scope::Synced, default: || true };
+    /// What tracking protection blocks ([`crate::trackers`]).
+    pub const TRACKING_PROTECTION: Pref<crate::trackers::TrackingProtection> =
+        Pref { key: "privacy.tracking_protection", scope: Scope::Synced, default: || crate::trackers::TrackingProtection::Standard };
     pub const SMOOTH_SCROLLING: Pref<bool> = Pref { key: "scrolling.smooth", scope: Scope::Synced, default: || true };
     /// Local: whether the GPU works well is a property of this device.
     pub const HARDWARE_ACCELERATION: Pref<bool> = Pref { key: "system.hardware_acceleration", scope: Scope::Local, default: || true };

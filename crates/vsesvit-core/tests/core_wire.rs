@@ -210,6 +210,7 @@ fn site_permission_records_keep_their_names() {
         (Permission::ClipboardRead, "clipboard_read"),
         (Permission::Midi, "midi"),
         (Permission::PictureInPicture, "picture_in_picture"),
+        (Permission::Trackers, "trackers"),
     ] {
         assert_eq!(serde_json::to_value(permission).unwrap(), name);
     }

@@ -52,6 +52,10 @@ pub enum Permission {
     /// Showing the site's playing video in the media player while another tab is selected.
     /// No site asks for it: it is off until the user turns it on (see [`Permission::asks`]).
     PictureInPicture,
+    /// Loading the trackers tracking protection blocks ([`crate::trackers`]). No site asks for
+    /// it: Allow turns tracking protection off for the site. The site-info popup shows it as its
+    /// own switch, not as a Permissions row.
+    Trackers,
 }
 
 impl Permission {
@@ -64,6 +68,7 @@ impl Permission {
         Permission::ClipboardRead,
         Permission::Midi,
         Permission::PictureInPicture,
+        Permission::Trackers,
     ];
 
     pub fn key(self) -> &'static str {
@@ -76,6 +81,7 @@ impl Permission {
             Permission::ClipboardRead => "clipboard_read",
             Permission::Midi => "midi",
             Permission::PictureInPicture => "picture_in_picture",
+            Permission::Trackers => "trackers",
         }
     }
 
@@ -93,13 +99,14 @@ impl Permission {
             Permission::ClipboardRead => "Clipboard",
             Permission::Midi => "MIDI devices",
             Permission::PictureInPicture => "Picture-in-picture",
+            Permission::Trackers => "Trackers",
         }
     }
 
-    /// Whether a site may ask for it. The user turns picture-in-picture on for a site, so with
-    /// nothing stored it is blocked, not asked for, and its rows offer no Ask.
+    /// Whether a site may ask for it. The user turns picture-in-picture and trackers on for a
+    /// site, so with nothing stored they are blocked, not asked for, and their rows offer no Ask.
     pub fn asks(self) -> bool {
-        self != Permission::PictureInPicture
+        !matches!(self, Permission::PictureInPicture | Permission::Trackers)
     }
 
     /// Screen sharing is chosen share by share, so only a block is remembered (as Chrome does),
@@ -126,6 +133,7 @@ impl Permission {
             Permission::ClipboardRead => ("see", "text and images copied to the clipboard"),
             Permission::Midi => ("use your", "MIDI devices"),
             Permission::PictureInPicture => ("show", "videos in picture-in-picture"),
+            Permission::Trackers => ("load", "trackers"),
         }
     }
 }
@@ -378,12 +386,13 @@ pub struct SiteRow {
 }
 
 /// A row for every permission the site has a setting for, was granted this time, or uses, in
-/// [`Permission::ALL`] order. `storable`: the page has an origin, so Allow and Block can be
+/// [`Permission::ALL`] order, but trackers, which the popup shows as a switch of its own. `storable`: the page has an origin, so Allow and Block can be
 /// remembered for it; Allow is never offered for what is asked every time, nor Ask for what
 /// is never asked.
 pub fn site_rows(storable: bool, stored: &[(Permission, Setting)], granted: &[Permission], capturing: Capturing) -> Vec<SiteRow> {
     Permission::ALL
         .iter()
+        .filter(|&&permission| permission != Permission::Trackers)
         .filter_map(|&permission| {
             let live = capturing.uses(permission);
             let current = match stored.iter().find(|(p, _)| *p == permission).map(|(_, s)| *s) {
@@ -574,9 +583,11 @@ impl SitePermissions<'_> {
         sites
     }
 
-    /// Every setting of the site back to ask, in one transaction.
+    /// Every setting of the site back to ask, in one transaction. Tracking protection, which the
+    /// site-info popup switches on its own, stays as it is.
     pub fn reset_site(&mut self, origin: &Origin) -> Result<(), Error> {
-        self.write(origin, Permission::ALL, None)
+        let permissions: Vec<Permission> = Permission::ALL.iter().copied().filter(|&p| p != Permission::Trackers).collect();
+        self.write(origin, &permissions, None)
     }
 
     /// Whether a request for `permissions` may go ahead. With no origin only `grants` count.

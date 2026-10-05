@@ -1099,6 +1099,28 @@ mod tests {
         assert!(parse_rules("{}").is_err());
     }
 
+    /// Tracking protection's rules (vsesvit_core::trackers) translate whole: site exceptions
+    /// first, then a block rule per tracker domain that spares its company's own sites.
+    #[test]
+    fn the_tracker_list_translates_whole() {
+        use vsesvit_core::permissions::Origin;
+        use vsesvit_core::trackers::{TrackerList, TrackingProtection};
+        let allowed = [Origin::parse("https://shop.example").unwrap(), Origin::parse("http://127.0.0.1:8080").unwrap()];
+        let text = TrackerList::bundled().dnr_rules(TrackingProtection::Strict, &allowed);
+        let (parsed, malformed) = parse_rules(&text).unwrap();
+        assert!(malformed.is_empty(), "{malformed:?}");
+        let t = translate(&parsed, "", &ALL);
+        assert!(t.skipped.is_empty(), "{:?}", t.skipped);
+        assert_eq!(t.rules[0]["trigger"]["if-top-url"], json!([r"^https:\/\/shop\.example\/"]));
+        assert_eq!(t.rules[1]["trigger"]["if-top-url"], json!([r"^http:\/\/127\.0\.0\.1:8080\/"]));
+        assert!(t.rules[..2].iter().all(|r| r["action"]["type"] == "ignore-following-rules"));
+        let analytics = t.rules.iter().find(|r| r["trigger"]["url-filter"] == r"^[^:]+://+([^:/]+\.)?google-analytics\.com[:/]").unwrap();
+        assert_eq!(analytics["action"]["type"], "block");
+        let spared = analytics["trigger"]["unless-frame-url"].as_array().unwrap();
+        assert!(spared.contains(&json!(r"^[^:]+://+([^:/]+\.)?youtube\.com[:/]")), "{spared:?}");
+        assert!(t.rules[2..].iter().all(|r| r["action"]["type"] == "block"));
+    }
+
     #[test]
     fn json_output_is_an_array() {
         let t = translate(&rules(r#"[{"id": 1, "action": {"type": "block"}, "condition": {"urlFilter": "x"}}]"#), BASE, &ALL);
