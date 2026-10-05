@@ -1241,4 +1241,34 @@ mod tests {
         assert!(refused_via_opener, "the opener went to the options page from a window it opened");
         assert!(refused_typed_over, "the held window went on from the typed options page");
     }
+
+    #[gtk::test]
+    fn a_tab_a_page_opened_lets_its_view_go_when_it_closes() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/opener" => Reply::Page("Opener"),
+            "/opened" => Reply::Page("Opened"),
+            _ => Reply::NotFound,
+        });
+        let window = BrowserWindow::new(&browser());
+        // Shown, as a window that was never shown keeps the tabs closed in it, and with a tab
+        // that stays, as a window keeps its last tab until the window itself goes.
+        window.present();
+        window.open_tab(None, None, Focus::Background);
+        let opener = window.open_tab(Some(&server.url("/opener")), None, Focus::Foreground);
+        wait_until("the opener", || opener.web_view().title().as_deref() == Some("Opener"));
+        let script = "window.open('/opened'); 0";
+        let ran = glib::MainContext::default().block_on(opener.web_view().evaluate_javascript_future(script, None, None));
+        ran.expect("window.open runs");
+        let opened = || window.tabs().into_iter().find(|tab| tab.web_view().title().as_deref() == Some("Opened"));
+        wait_until("the opened tab", || opened().is_some());
+        let opened = opened().expect("the opened tab");
+        let views = [opened.web_view().downgrade(), opener.web_view().downgrade()];
+
+        for tab in [opened, opener] {
+            window.close_tab(&tab);
+        }
+        wait_until("the opened tab's view to go", || views[0].upgrade().is_none());
+        wait_until("the opener's view to go", || views[1].upgrade().is_none());
+        window.destroy();
+    }
 }
