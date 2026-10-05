@@ -33,6 +33,7 @@ use crate::permissions;
 use crate::session;
 use crate::site_info;
 use crate::tab::{Tab, TabChange};
+use crate::trackers;
 use crate::updates::Banner;
 use crate::zoom;
 use ext_actions::ExtensionActions;
@@ -631,8 +632,9 @@ impl BrowserWindow {
     /// The connection popover of the selected tab's page, on the security icon.
     pub(crate) fn show_site_info(&self) {
         let Some(tab) = self.selected_tab() else { return };
+        let trackers = trackers::site_info_section(self.browser(), &tab);
         let permissions = permissions::site_info_section(self.browser(), &tab);
-        let popover = site_info::popover(&site_info::Connection::of(&tab), permissions.as_ref());
+        let popover = site_info::popover(&site_info::Connection::of(&tab), trackers.as_ref(), permissions.as_ref());
         self.ui().address.show_popover(&popover, Anchor::Security);
     }
 

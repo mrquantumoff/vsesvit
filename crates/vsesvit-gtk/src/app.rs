@@ -207,6 +207,10 @@ fn startup(app: &adw::Application, slot: &Slot, profile: Profile) {
 
 /// Runs in the primary instance for its own command line and for each later `vsesvit`
 /// invocation on the same profile, which GApplication forwards here and then exits.
+///
+/// The windows open once tracking protection's blocker is on the tabs, so no page of the
+/// restored session or the command line loads before it. The application is held meanwhile,
+/// and an invocation arriving then waits its turn behind the first.
 fn open_from_command_line(
     browser: &Browser,
     command_line: &gio::ApplicationCommandLine,
@@ -230,13 +234,21 @@ fn open_from_command_line(
             )),
         }
     }
-    if browser.windows().is_empty() {
-        browser.open_startup_windows(&urls);
-    } else if urls.is_empty() {
-        browser.present();
-    } else {
-        browser.open_window(&urls);
-    }
+    let hold = browser.app().hold();
+    browser.trackers().when_applied(glib::clone!(
+        #[strong]
+        browser,
+        move || {
+            if browser.windows().is_empty() {
+                browser.open_startup_windows(&urls);
+            } else if urls.is_empty() {
+                browser.present();
+            } else {
+                browser.open_window(&urls);
+            }
+            drop(hold);
+        }
+    ));
     glib::ExitCode::SUCCESS
 }
 

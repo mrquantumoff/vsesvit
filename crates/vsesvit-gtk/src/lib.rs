@@ -36,6 +36,7 @@ mod sync;
 mod tab;
 #[cfg(test)]
 mod test_support;
+mod trackers;
 mod updates;
 mod view_source;
 mod window;

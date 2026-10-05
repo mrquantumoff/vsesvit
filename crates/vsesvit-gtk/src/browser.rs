@@ -24,6 +24,7 @@ use vsesvit_core::onboarding;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
+use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_core::{Profile, Url};
 use vsesvit_webext::{ActionInfo, Runtime, TabHost, TabId, TabInfo};
 use webkit::prelude::*;
@@ -35,6 +36,7 @@ use crate::engine::Engine;
 use crate::profile::{self, Core};
 use crate::sync::Syncer;
 use crate::tab::{Commit, Tab};
+use crate::trackers::Trackers;
 use crate::updates::Updates;
 use crate::window::{BrowserWindow, Focus};
 use crate::{dialogs, favicons, keymap, location, omnibox, permissions, session};
@@ -56,6 +58,7 @@ pub(crate) struct Inner {
     core: Core,
     engine: Engine,
     runtime: Runtime,
+    trackers: Trackers,
     downloads: Rc<Downloads>,
     closed_tabs: RefCell<ClosedTabs<ClosedTab>>,
     /// Why the runtime could not load an enabled extension, by extension.
@@ -104,6 +107,7 @@ impl Browser {
     pub(crate) fn new(app: &adw::Application, profile: Profile) -> Self {
         let core: Core = Rc::new(RefCell::new(profile));
         let engine = Engine::new(&mut core.borrow_mut());
+        let trackers = Trackers::new(core.clone());
         let downloads = Downloads::new(app, core.clone(), engine.session(), profile::downloads_dir());
         let updates_automatic = core.borrow_mut().prefs().get(&keys::UPDATES_AUTOMATIC);
         let updates_channel = core.borrow_mut().prefs().get(&keys::UPDATES_CHANNEL);
@@ -117,6 +121,7 @@ impl Browser {
                 core,
                 engine,
                 runtime,
+                trackers,
                 downloads,
                 closed_tabs: RefCell::new(ClosedTabs::new(CLOSED_TABS_KEPT)),
                 extension_errors: RefCell::new(HashMap::new()),
@@ -147,12 +152,14 @@ impl Browser {
         browser
     }
 
-    /// Applies the profile's preferences and brings the extension runtime in line with the
-    /// profile: loads every enabled extension, then reconciles against the synced desired
-    /// state (installs missing store extensions, unloads ones removed elsewhere).
+    /// Applies the profile's preferences, starts compiling tracking protection's blocker, and
+    /// brings the extension runtime in line with the profile: loads every enabled extension,
+    /// then reconciles against the synced desired state (installs missing store extensions,
+    /// unloads ones removed elsewhere).
     pub(crate) fn start(&self) {
         self.apply_theme();
         self.apply_keymap();
+        self.trackers().apply();
         let installed = self.core().borrow_mut().extensions().list();
         match installed {
             Ok(list) => {
@@ -181,6 +188,10 @@ impl Browser {
 
     pub(crate) fn runtime(&self) -> &Runtime {
         &self.0.runtime
+    }
+
+    pub(crate) fn trackers(&self) -> &Trackers {
+        &self.0.trackers
     }
 
     pub(crate) fn downloads(&self) -> &Rc<Downloads> {
@@ -721,6 +732,13 @@ impl Browser {
         self.engine().apply_prefs(&mut self.core().borrow_mut());
     }
 
+    /// The Settings choice of tracking protection: writes the synced preference and gives every
+    /// tab the blocker for it.
+    pub(crate) fn set_tracking_protection(&self, level: TrackingProtection) {
+        self.set_pref(&keys::TRACKING_PROTECTION, &level);
+        self.trackers().apply();
+    }
+
     pub(crate) fn theme(&self) -> Theme {
         self.pref(&keys::THEME)
     }
@@ -802,6 +820,9 @@ impl Browser {
         }
         if changed.site_permissions {
             permissions::enforce(self);
+        }
+        if changed.site_permissions || changed.prefs.iter().any(|key| key == keys::TRACKING_PROTECTION.key) {
+            self.trackers().apply();
         }
         if changed.prefs.iter().any(|key| key == keys::SHORTCUTS.key) {
             self.apply_keymap();

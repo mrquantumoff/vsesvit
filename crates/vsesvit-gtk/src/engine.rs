@@ -90,7 +90,8 @@ impl Engine {
     }
 
     /// A tab's view. `content` is the extension runtime's manager for that tab, which
-    /// carries every loaded extension's content scripts and content blockers.
+    /// carries every loaded extension's content scripts and content blockers, and tracking
+    /// protection's.
     pub(crate) fn web_view(&self, content: &webkit::UserContentManager) -> webkit::WebView {
         webkit::WebView::builder()
             .network_session(&self.session)

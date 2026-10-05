@@ -2,8 +2,9 @@
 //! in Chrome: whether the connection is secure and to which host, and for HTTPS the
 //! certificate WebKit checked (who it was issued to and by, when it is valid, the names it
 //! covers, its SHA-256 fingerprint) with the chain up to the root. WebKit hands over the
-//! certificates as `GTlsCertificate`s; core parses their DER. What the site may use follows,
-//! from [`crate::permissions::site_info_section`].
+//! certificates as `GTlsCertificate`s; core parses their DER. Tracking protection's switch for
+//! the site ([`crate::trackers::site_info_section`]) and what the site may use
+//! ([`crate::permissions::site_info_section`]) come between the summary and the certificate.
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -134,8 +135,9 @@ fn certificate_groups(cert: &Certificate) -> Vec<(&'static str, Vec<(&'static st
     ]
 }
 
-/// `permissions` is the page's Permissions section, when it has one.
-pub(crate) fn popover(connection: &Connection, permissions: Option<&gtk::Box>) -> gtk::Popover {
+/// `trackers` and `permissions` are the page's tracking protection and Permissions sections,
+/// when it has them.
+pub(crate) fn popover(connection: &Connection, trackers: Option<&gtk::ListBox>, permissions: Option<&gtk::Box>) -> gtk::Popover {
     let (title, icon, explanation) = summary(connection);
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -154,6 +156,10 @@ pub(crate) fn popover(connection: &Connection, permissions: Option<&gtk::Box>) -
         content.append(&text(&connection.host, &["dim-label"]));
     }
     content.append(&text(explanation, &[]));
+    if let Some(trackers) = trackers {
+        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        content.append(trackers);
+    }
     if let Some(permissions) = permissions {
         content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         content.append(permissions);

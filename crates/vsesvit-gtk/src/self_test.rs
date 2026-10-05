@@ -4,6 +4,7 @@
 //! drives those widgets, writing `report.json` and `window.png` and exiting non-zero if any
 //! check fails.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -22,13 +23,15 @@ use vsesvit_core::search::{NavTarget, SearchEngineId, UrlTemplate};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
+use vsesvit_core::trackers::{self, Category, TrackerList, TrackingProtection};
 use vsesvit_core::{OpenOptions, Profile};
 use webkit::prelude::*;
 
 use crate::browser::Browser;
-use crate::dialogs::settings::PASSWORDS_NOTICE;
+use crate::dialogs::settings::{PASSWORDS_NOTICE, TRACKING_PROTECTION_ROW};
 use crate::dialogs::{Windowed, shortcut_settings};
 use crate::keymap;
+use crate::tab::Tab;
 use crate::window::{Focus, classify_layout};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
@@ -60,7 +63,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 36] = [
+const CHECKS: [&str; 37] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -94,6 +97,7 @@ const CHECKS: [&str; 36] = [
     "zoom_is_remembered_per_site",
     "connection_info",
     "site_permissions",
+    "tracking_protection",
     "capture_in_use",
     "welcome",
     "screenshot",
@@ -1522,6 +1526,83 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("tracking_protection", CHECK_TIMEOUT, |last| async move {
+        let url = ctx.server.url("/trackers.html");
+        let origin = Origin::of(&url).ok_or_else(|| "the fixture server has no origin".to_owned())?;
+        let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let opened: RefCell<Option<Tab>> = RefCell::new(None);
+        let _cleanup = Cleanup(|| {
+            if let Some(bubble) = window.address_bar().bubble() {
+                bubble.popdown();
+            }
+            if let Some(dialog) = window.visible_dialog() {
+                dialog.close();
+            }
+            if let Some(tab) = opened.take() {
+                window.select_tab(&first);
+                window.close_tab(&tab);
+            }
+            browser.reset_pref(&keys::TRACKING_PROTECTION);
+            if let Err(e) = trackers::set_allowed(&mut browser.core().borrow_mut(), &origin, false) {
+                log::warn!("tracking protection: {e}");
+            }
+            browser.trackers().use_list(Cow::Borrowed(TrackerList::bundled()));
+        });
+        let tracker_loaded = || ctx.server.hits().iter().any(|path| path == "/tracker/pixel.png");
+        let title_is = |view: &webkit::WebView, title: &str, loaded: bool| {
+            let (shown, seen) = (title_of(view), tracker_loaded());
+            if shown == title && seen == loaded { Ok(()) } else { Err(format!("title {shown:?}, the server saw the tracker: {seen}")) }
+        };
+
+        browser.trackers().use_list(Cow::Owned(TrackerList::bundled().clone().with_tracker("localhost", Category::Analytics)));
+        tracking_applied(browser).await;
+        let tab = window.open_tab(Some(url.as_str()), None, Focus::Foreground);
+        opened.replace(Some(tab.clone()));
+        let view = tab.web_view();
+        wait_for(&last, || title_is(view, "tracker blocked", false)).await;
+
+        let address = window.address_bar();
+        address.click_security();
+        let info = address.bubble().ok_or_else(|| "the security icon opened no popover".to_owned())?;
+        let switch = find::<adw::SwitchRow>(info.upcast_ref(), |r| r.title() == trackers::TITLE)
+            .ok_or_else(|| "site info has no tracking protection switch".to_owned())?;
+        let shown_on = (switch.is_active(), switch.subtitle().unwrap_or_default().to_string());
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&info), &ctx.out_dir.join("site-info-trackers.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        switch.set_active(false);
+        let shown_off = switch.subtitle().unwrap_or_default().to_string();
+        info.popdown();
+        wait_for(&last, || title_is(view, "tracker loaded", true)).await;
+        let exception = trackers::allowed(&mut browser.core().borrow_mut(), &origin);
+
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        dialog.set_visible_page_name("privacy");
+        let row = find::<adw::ComboRow>(dialog.upcast_ref(), |r| r.title() == TRACKING_PROTECTION_ROW)
+            .ok_or_else(|| "the Privacy page has no tracking protection row".to_owned())?;
+        let listed = (selected_label(&row), row.subtitle().unwrap_or_default().to_string());
+        select(&row, TrackingProtection::Strict.label())?;
+        let strict = (browser.pref(&keys::TRACKING_PROTECTION), row.subtitle().unwrap_or_default().to_string());
+        dialog.close();
+
+        let standard = TrackingProtection::Standard;
+        let detail = format!(
+            "with localhost a tracker, /trackers.html at 127.0.0.1 showed \"tracker blocked\" and the server never saw /tracker/pixel.png; site info's switch was {shown_on:?} (site-info-trackers.png), switched off it read {shown_off:?}, stored the exception ({exception}) and the reloaded page loaded the tracker; Settings > Privacy shows {listed:?}, and choosing Strict there stored {strict:?}"
+        );
+        let ok = shown_on == (true, trackers::site_status(true, None))
+            && shown_off == trackers::site_status(false, None)
+            && exception
+            && listed == (standard.label().to_owned(), standard.description().to_owned())
+            && strict == (TrackingProtection::Strict, TrackingProtection::Strict.description().to_owned());
+        if ok { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
     ctx.check("capture_in_use", CHECK_TIMEOUT, |last| async move {
         let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
         let view = tab.web_view();
@@ -1798,6 +1879,15 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         })
         .await;
     }
+}
+
+/// Waits until tracking protection's latest blocker is on every tab.
+async fn tracking_applied(browser: &Browser) {
+    let (done, applied) = futures_channel::oneshot::channel();
+    browser.trackers().when_applied(move || {
+        let _ = done.send(());
+    });
+    let _ = applied.await;
 }
 
 /// The first widget of type `W` under `root` (itself included) that `matches`.

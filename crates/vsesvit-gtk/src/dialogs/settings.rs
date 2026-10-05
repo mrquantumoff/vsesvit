@@ -1,9 +1,9 @@
 //! The Settings dialog, bound to core's preferences: General (startup, downloads, scrolling and
 //! the GPU, updates, the profile folder), Sync (the account, what it syncs and its server),
 //! Appearance (theme, tabs, bars and buttons), Search (the engine, the address bar and what it
-//! suggests), Privacy (pop-ups, passwords, site permissions, browsing data) and Shortcuts
-//! (`shortcut_settings`). Every change applies at once, in every window, and an open dialog
-//! follows what sync changes.
+//! suggests), Privacy (tracking protection, pop-ups, passwords, site permissions, browsing
+//! data) and Shortcuts (`shortcut_settings`). Every change applies at once, in every window,
+//! and an open dialog follows what sync changes.
 //!
 //! WebKitGTK fills no forms, so `autofill.forms` has no row here.
 
@@ -18,6 +18,7 @@ use vsesvit_core::prefs::{
 };
 use vsesvit_core::search::SearchEngine;
 use vsesvit_core::sync::DataType;
+use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
 
 use super::{confirm, plain_toast};
@@ -59,6 +60,10 @@ const CHANNELS: [(UpdateChannel, &str); 4] = [
     (UpdateChannel::Weekly, "Weekly"),
     (UpdateChannel::Nightly, "Nightly"),
 ];
+
+/// The Privacy page's row choosing tracking protection's level: core's title in this page's
+/// capitalization.
+pub(crate) const TRACKING_PROTECTION_ROW: &str = "Tracking Protection";
 
 /// The Privacy page's row saying passwords are left to a password manager.
 pub(crate) const PASSWORDS_NOTICE: &str = "Vsesvit Doesn't Save Passwords";
@@ -522,6 +527,9 @@ fn search_page(browser: &Browser) -> adw::PreferencesPage {
 }
 
 fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
+    let tracking = group("Trackers");
+    tracking.add(&tracking_protection_row(window.browser()));
+
     let popups = group("Pop-ups");
     popups.add(&pref_switch_row(
         window.browser(),
@@ -603,7 +611,44 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
     ));
     let permissions = group("Permissions");
     permissions.add(&site_permissions);
-    page("privacy", "Privacy", "security-high-symbolic", &[popups, passwords, permissions, data])
+    page("privacy", "Privacy", "security-high-symbolic", &[tracking, popups, passwords, permissions, data])
+}
+
+/// Off, Standard or Strict, with what the chosen level blocks under it. Sites it is off for are
+/// listed with the other site settings, as Trackers.
+fn tracking_protection_row(browser: &Browser) -> adw::ComboRow {
+    let row = adw::ComboRow::builder()
+        .title(TRACKING_PROTECTION_ROW)
+        .model(&gtk::StringList::new(&TrackingProtection::ALL.map(TrackingProtection::label)))
+        .build();
+    let show = |row: &adw::ComboRow, level: TrackingProtection| {
+        let index = TrackingProtection::ALL.iter().position(|l| *l == level).unwrap_or(0);
+        row.set_selected(u32::try_from(index).unwrap_or(0));
+        row.set_subtitle(level.description());
+    };
+    show(&row, browser.pref(&keys::TRACKING_PROTECTION));
+    row.connect_selected_notify(glib::clone!(
+        #[strong]
+        browser,
+        move |row| {
+            let Some(&level) = TrackingProtection::ALL.get(row.selected() as usize) else { return };
+            row.set_subtitle(level.description());
+            if browser.pref(&keys::TRACKING_PROTECTION) != level {
+                browser.set_tracking_protection(level);
+            }
+        }
+    ));
+    browser.watch_prefs(glib::clone!(
+        #[weak]
+        row,
+        #[upgrade_or]
+        false,
+        move |browser: &Browser| {
+            show(&row, browser.pref(&keys::TRACKING_PROTECTION));
+            true
+        }
+    ));
+    row
 }
 
 /// Every stored site setting Linux lists ([`permissions::listed`]), by site, each with its
@@ -677,13 +722,16 @@ fn site_setting_row(content: &adw::Bin, browser: &Browser, origin: &Origin, perm
     row
 }
 
-/// `None` removes the setting, so the site asks again: every permission listed here is one
-/// sites ask for. The list is rebuilt once the row that changed has finished emitting.
+/// `None` removes the setting, so the site asks again, or for Trackers is protected again. The
+/// list is rebuilt once the row that changed has finished emitting.
 fn change_site_setting(content: &adw::Bin, browser: &Browser, origin: &Origin, permission: Permission, setting: Option<Setting>) {
     if let Err(e) = browser.core().borrow_mut().site_permissions().set(origin, permission, setting) {
         log::warn!("site permissions: {e}");
     }
     permissions::enforce(browser);
+    if permission == Permission::Trackers {
+        browser.trackers().apply();
+    }
     glib::idle_add_local_once(glib::clone!(
         #[weak]
         content,
