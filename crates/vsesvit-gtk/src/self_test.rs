@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
+use vsesvit_core::cookies::{self, ThirdPartyCookies};
 use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Verification};
 use vsesvit_core::https_only::{self, Reach};
@@ -33,6 +34,7 @@ use webkit::prelude::*;
 use crate::address_bar::Security;
 use crate::browser::Browser;
 use crate::dialogs::settings::{HTTPS_ONLY_ROW, PASSWORDS_NOTICE, SECURE_DNS_ROW, TRACKING_PROTECTION_ROW};
+use crate::dialogs::site_data::SEE_ALL_ROW;
 use crate::dialogs::{Windowed, shortcut_settings};
 use crate::keymap;
 use crate::tab::Tab;
@@ -67,7 +69,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 43] = [
+const CHECKS: [&str; 44] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -108,6 +110,7 @@ const CHECKS: [&str; 43] = [
     "site_permissions",
     "tracking_protection",
     "https_only",
+    "cookies",
     "capture_in_use",
     "welcome",
     "screenshot",
@@ -2126,6 +2129,144 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("cookies", CHECK_TIMEOUT, |last| async move {
+        let url = ctx.server.url("/cookies.html");
+        let set_cookie_url = ctx.server.url("/set-cookie");
+        let origin = Origin::of(&url).ok_or_else(|| "the fixture server has no origin".to_owned())?;
+        let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let opened: RefCell<Option<Tab>> = RefCell::new(None);
+        let _cleanup = Cleanup(|| {
+            if let Some(bubble) = window.address_bar().bubble() {
+                bubble.popdown();
+            }
+            if let Some(dialog) = window.visible_dialog() {
+                dialog.close();
+            }
+            if let Some(tab) = opened.take() {
+                window.select_tab(&first);
+                window.close_tab(&tab);
+            }
+            browser.reset_pref(&keys::THIRD_PARTY_COOKIES);
+            if let Err(e) = cookies::set(&mut browser.core().borrow_mut(), &origin, None) {
+                log::warn!("cookies: {e}");
+            }
+            browser.cookies().apply();
+        });
+        let session = browser.engine().session();
+        let jar = session.cookie_manager().ok_or_else(|| "the session has no cookie manager".to_owned())?;
+        let policy = async || jar.accept_policy_future().await.map_err(|e| e.to_string());
+
+        let default_policy = policy().await?;
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        dialog.set_visible_page_name("privacy");
+        let choice_row = |choice: ThirdPartyCookies| {
+            find::<adw::ActionRow>(dialog.upcast_ref(), |r| r.title() == choice.label())
+                .ok_or_else(|| format!("the Privacy page has no {:?} row", choice.label()))
+        };
+        let checked = |choice: ThirdPartyCookies| choice_row(choice).map(|r| find::<gtk::CheckButton>(r.upcast_ref(), |c| c.is_active()).is_some());
+        let listed: Vec<ThirdPartyCookies> = ThirdPartyCookies::ALL.into_iter().filter(|&c| checked(c).unwrap_or(false)).collect();
+        let shown = choice_row(ThirdPartyCookies::BlockInPrivate)?.subtitle().unwrap_or_default().to_string();
+        ActionRowExt::activate(&choice_row(ThirdPartyCookies::Block)?);
+        let blocking = (browser.pref(&keys::THIRD_PARTY_COOKIES), policy().await?);
+        ActionRowExt::activate(&choice_row(ThirdPartyCookies::BlockInPrivate)?);
+        let restored = policy().await?;
+        dialog.close();
+
+        let tab = window.open_tab(Some(url.as_str()), None, Focus::Foreground);
+        opened.replace(Some(tab.clone()));
+        let view = tab.web_view();
+        let titled = |title: &str| {
+            let shown = title_of(view);
+            if shown == title && !view.is_loading() { Ok(()) } else { Err(format!("title {shown:?}")) }
+        };
+        wait_for(&last, || titled("cookies:ready")).await;
+        let page = eval_js(view, "cookieResults.page").await?;
+        let stored = cookie_names(&jar, url.as_str()).await?;
+
+        let address = window.address_bar();
+        address.click_security();
+        let info = address.bubble().ok_or_else(|| "the security icon opened no popover".to_owned())?;
+        let rule = find::<adw::ComboRow>(info.upcast_ref(), |r| r.title() == cookies::SITE_TITLE)
+            .ok_or_else(|| "site info has no cookies section".to_owned())?;
+        let shown_default = (selected_label(&rule), rule.subtitle().unwrap_or_default().to_string());
+        eval_js(view, "document.title = 'reloading'").await?;
+        select(&rule, cookies::choice_label(Some(Setting::Block)))?;
+        let shown_block = rule.subtitle().unwrap_or_default().to_string();
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&info), &ctx.out_dir.join("site-info-cookies.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        info.popdown();
+        wait_for(&last, || titled("cookies:ready")).await;
+        let blocked_page = eval_js(view, "cookieResults.page").await?;
+        let deleted = wait_cookies(&last, &jar, url.as_str(), |names| names.is_empty()).await?;
+        tab.load(set_cookie_url.as_str());
+        wait_for(&last, || titled("Cookie set")).await;
+        let served_blocked = cookie_names(&jar, set_cookie_url.as_str()).await?;
+
+        address.click_security();
+        let info = address.bubble().ok_or_else(|| "the security icon opened no popover".to_owned())?;
+        let rule = find::<adw::ComboRow>(info.upcast_ref(), |r| r.title() == cookies::SITE_TITLE)
+            .ok_or_else(|| "site info has no cookies section".to_owned())?;
+        select(&rule, cookies::choice_label(Some(Setting::ClearOnExit)))?;
+        info.popdown();
+        let served = wait_cookies(&last, &jar, set_cookie_url.as_str(), |names| names.iter().any(|n| n == "served")).await?;
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        dialog.set_visible_page_name("privacy");
+        let see_all = find::<adw::ActionRow>(dialog.upcast_ref(), |r| r.title() == SEE_ALL_ROW)
+            .ok_or_else(|| format!("the Privacy page has no {SEE_ALL_ROW:?} row"))?;
+        ActionRowExt::activate(&see_all);
+        let site_data = wait_for(&last, || {
+            find::<adw::ActionRow>(dialog.upcast_ref(), |r| r.title() == "127.0.0.1" && r.is_mapped())
+                .map(|r| r.subtitle().unwrap_or_default().to_string())
+                .ok_or_else(|| "Site Data lists no 127.0.0.1".to_owned())
+        })
+        .await;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("settings-site-data.png")).await.map_err(|e| e.to_string())?;
+        dialog.close();
+        browser.cookies().clear().await;
+        let left = cookie_names(&jar, set_cookie_url.as_str()).await?;
+        let data = session.website_data_manager().ok_or_else(|| "the session has no website data manager".to_owned())?;
+        let records: Vec<String> = data
+            .fetch_future(webkit::WebsiteDataTypes::ALL)
+            .await
+            .map_err(|e| e.to_string())?
+            .iter()
+            .filter_map(|r| r.name().map(String::from))
+            .collect();
+        let host_kept = records.iter().any(|name| name == "127.0.0.1");
+
+        let detail = format!(
+            "the session's accept policy was {default_policy:?}; Settings > Privacy checked {listed:?}, reading {shown:?}, choosing Block stored and set {blocking:?}, and back {restored:?}; /cookies.html read {page:?} and stored {stored:?}; site info's {:?} showed {shown_default:?}, Block read {shown_block:?} (site-info-cookies.png), the reloaded page read {blocked_page:?}, the site's cookies were deleted ({deleted:?}) and /set-cookie under Block stored {served_blocked:?}; Clear on exit let it store {served:?}, which Settings' Site Data lists as {site_data:?} (settings-site-data.png), and clearing left {left:?} and the site data records {records:?}",
+            cookies::SITE_TITLE
+        );
+        let ok = default_policy == webkit::CookieAcceptPolicy::Always
+            && listed == [ThirdPartyCookies::BlockInPrivate]
+            && shown == ThirdPartyCookies::BlockInPrivate.description()
+            && blocking == (ThirdPartyCookies::Block, webkit::CookieAcceptPolicy::NoThirdParty)
+            && restored == webkit::CookieAcceptPolicy::Always
+            && page.contains("first=1")
+            && stored.iter().any(|n| n == "first")
+            && shown_default == (cookies::choice_label(None).to_owned(), cookies::site_status(false, None).to_owned())
+            && shown_block == cookies::site_status(false, Some(Setting::Block))
+            && blocked_page.is_empty()
+            && served_blocked.is_empty()
+            && site_data.starts_with("Cookies")
+            && left.is_empty()
+            && !host_kept;
+        if ok { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
     ctx.check("capture_in_use", CHECK_TIMEOUT, |last| async move {
         let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
         let view = tab.web_view();
@@ -2401,6 +2542,24 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             if ext.verification == Verification::ChromeWebStore { Ok(detail) } else { Err(detail) }
         })
         .await;
+    }
+}
+
+/// The names of the cookies `jar` would send to `url`.
+async fn cookie_names(jar: &webkit::CookieManager, url: &str) -> Result<Vec<String>, String> {
+    let found = jar.cookies_future(url).await.map_err(|e| e.to_string())?;
+    Ok(found.into_iter().filter_map(|mut c| c.name().map(String::from)).collect())
+}
+
+/// Polls [`cookie_names`] until `done` accepts them.
+async fn wait_cookies(last: &Last, jar: &webkit::CookieManager, url: &str, done: impl Fn(&[String]) -> bool) -> Result<Vec<String>, String> {
+    loop {
+        let names = cookie_names(jar, url).await?;
+        if done(&names) {
+            return Ok(names);
+        }
+        last.set(format!("cookies for {url}: {names:?}"));
+        glib::timeout_future(POLL).await;
     }
 }
 
