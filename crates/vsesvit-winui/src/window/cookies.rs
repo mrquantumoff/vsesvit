@@ -50,10 +50,10 @@ impl BrowserWindow {
             .SelectionChanged(move |_, _| {
                 let picked =
                     crate::dialogs::selected_index(&source).and_then(|i| choices.get(i).copied());
-                // A combo box raises this for its initial selection too.
                 let (Some(picked), Some(w), Some(tab)) = (picked, w.upgrade(), t.upgrade()) else {
                     return;
                 };
+                // A combo box raises this for its initial selection too.
                 if picked != shown.get() && w.set_site_cookies(&tab, picked) {
                     shown.set(picked);
                     if let Some((setting, blocked)) = w.cookies_status(&tab) {
