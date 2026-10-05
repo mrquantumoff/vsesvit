@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use serde_json::json;
-use vsesvit_core::search::{SearchEngineId, UrlTemplate};
+use vsesvit_core::search::{EngineForm, SearchEngineId, UrlTemplate};
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
 
@@ -194,9 +194,12 @@ pub(super) async fn selection_search(
     let (engine, previous) = browser
         .core(|c| {
             let previous = c.search_engines().default_engine()?.id;
-            let engine = c
-                .search_engines()
-                .add(SEARCH_ENGINE, None, template.clone())?;
+            let form = EngineForm {
+                name: SEARCH_ENGINE.to_owned(),
+                keyword: "fixture".to_owned(),
+                url: template.0.clone(),
+            };
+            let engine = c.search_engines().save(None, &form)?;
             c.search_engines().set_default(&engine)?;
             Ok::<_, vsesvit_core::Error>((engine, previous))
         })

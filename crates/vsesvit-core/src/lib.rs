@@ -378,4 +378,8 @@ pub enum Error {
     NotFound,
     #[error("{} is asked for every time", .0.label())]
     AlwaysAsks(permissions::Permission),
+    #[error(transparent)]
+    EngineForm(#[from] search::FormError),
+    #[error("the default search engine cannot be removed")]
+    RemoveDefaultEngine,
 }

@@ -34,6 +34,12 @@ impl SearchEngineId {
     }
 }
 
+/// Where a [`UrlTemplate`] takes the search terms.
+const TERMS: &str = "{searchTerms}";
+
+/// What Chrome's editor writes for [`TERMS`].
+const CHROME_TERMS: &str = "%s";
+
 /// `{searchTerms}` is replaced by the percent-encoded query (OpenSearch convention): form
 /// encoded in the query (a space as `+`), and with a space as `%20` in a path or fragment,
 /// where `+` is a literal plus.
@@ -43,7 +49,7 @@ pub struct UrlTemplate(pub String);
 impl UrlTemplate {
     pub fn expand(&self, terms: &str) -> Option<Url> {
         let mut encoded: String = url::form_urlencoded::byte_serialize(terms.as_bytes()).collect();
-        let in_query = self.0.find("{searchTerms}").is_some_and(|at| {
+        let in_query = self.0.find(TERMS).is_some_and(|at| {
             let before = &self.0[..at];
             before.contains('?') && !before.contains('#')
         });
@@ -51,7 +57,25 @@ impl UrlTemplate {
             // A typed '+' is already %2B, so every '+' left stands for a space.
             encoded = encoded.replace('+', "%20");
         }
-        Url::parse(&self.0.replace("{searchTerms}", &encoded)).ok()
+        Url::parse(&self.0.replace(TERMS, &encoded)).ok()
+    }
+
+    /// The editor's URL box as a template: `%s` or `{searchTerms}` where the terms go, and
+    /// `https://` when no scheme is typed. Only `http` and `https` searches are taken.
+    fn parse(text: &str) -> Result<Self, FormError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(FormError::NoUrl);
+        }
+        let text = text.replace(CHROME_TERMS, TERMS);
+        if !text.contains(TERMS) {
+            return Err(FormError::NoTerms);
+        }
+        let template = UrlTemplate(if text.contains("://") { text } else { format!("https://{text}") });
+        match template.expand("terms") {
+            Some(url) if matches!(url.scheme(), "http" | "https") && url.host_str().is_some() => Ok(template),
+            _ => Err(FormError::NotWebAddress),
+        }
     }
 }
 
@@ -285,18 +309,37 @@ impl SearchEngines<'_> {
         self.p.prefs().set(&keys::DEFAULT_SEARCH_ENGINE, id)
     }
 
-    pub fn add(&mut self, name: &str, keyword: Option<&str>, search_url: UrlTemplate) -> Result<SearchEngineId, Error> {
+    /// The problems [`save`](Self::save) refuses `form` for, at most one per field and in
+    /// the form's order; empty when it would save it. `editing` is the engine being edited,
+    /// `None` for a new one.
+    pub fn check(&mut self, editing: Option<&SearchEngineId>, form: &EngineForm) -> Result<Vec<FormError>, Error> {
+        Ok(form.parse(&self.list()?, editing).err().unwrap_or_default())
+    }
+
+    /// Adds an engine from the editor, or with `editing` writes the form over that one. A form
+    /// [`check`](Self::check) finds a problem with is refused with the first problem.
+    pub fn save(&mut self, editing: Option<&SearchEngineId>, form: &EngineForm) -> Result<SearchEngineId, Error> {
+        let engine = form.parse(&self.list()?, editing).map_err(|errors| errors[0])?;
+        match editing {
+            Some(id) => {
+                self.update(id, engine)?;
+                Ok(id.clone())
+            }
+            None => self.add(engine),
+        }
+    }
+
+    fn add(&mut self, engine: FormEngine) -> Result<SearchEngineId, Error> {
         let id = SearchEngineId(uuid::Uuid::new_v4().to_string());
         let rec_id = id.clone();
-        let (name, keyword) = (name.to_owned(), keyword.map(str::to_owned));
         self.p.write(move |tx| {
             let at = tx.stamp();
             let rec = EngineRecord {
                 id: rec_id,
                 state: Record::Live(EngineFields {
-                    name: Lww::new(name, at),
-                    keyword: Lww::new(keyword, at),
-                    search_url: Lww::new(search_url, at),
+                    name: Lww::new(engine.name, at),
+                    keyword: Lww::new(Some(engine.keyword), at),
+                    search_url: Lww::new(engine.search_url, at),
                     suggest_url: Lww::new(None, at),
                     extra: Extra::default(),
                 }),
@@ -307,7 +350,7 @@ impl SearchEngines<'_> {
         Ok(id)
     }
 
-    pub fn update(&mut self, id: &SearchEngineId, edit: EngineEdit) -> Result<(), Error> {
+    fn update(&mut self, id: &SearchEngineId, edit: FormEngine) -> Result<(), Error> {
         let id = id.clone();
         self.p.write(move |tx| {
             let mut rec = match (load_record(&tx.sql, &id)?, Builtin::find(&id)) {
@@ -329,25 +372,10 @@ impl SearchEngines<'_> {
                 if f.search_url.at == Stamp::ZERO {
                     f.search_url = code.search_url;
                 }
-                if f.suggest_url.at == Stamp::ZERO {
-                    f.suggest_url = code.suggest_url;
-                }
             }
             let at = tx.stamp();
-            let mut changed = false;
-            if let Some(v) = edit.name {
-                changed |= f.name.set(v, at);
-            }
-            if let Some(v) = edit.keyword {
-                changed |= f.keyword.set(v, at);
-            }
-            if let Some(v) = edit.search_url {
-                changed |= f.search_url.set(v, at);
-            }
-            if let Some(v) = edit.suggest_url {
-                changed |= f.suggest_url.set(v, at);
-            }
-            if changed {
+            let changed = [f.name.set(edit.name, at), f.keyword.set(Some(edit.keyword), at), f.search_url.set(edit.search_url, at)];
+            if changed.contains(&true) {
                 let seq = tx.seq();
                 store_record(&tx.sql, &rec, seq)?;
             }
@@ -355,7 +383,12 @@ impl SearchEngines<'_> {
         })
     }
 
+    /// Removes an engine, built-ins too, as Chrome does, but never the default: whichever
+    /// engine is the default, there is always one to search with.
     pub fn remove(&mut self, id: &SearchEngineId) -> Result<(), Error> {
+        if self.default_engine().is_ok_and(|default| &default.id == id) {
+            return Err(Error::RemoveDefaultEngine);
+        }
         let id = id.clone();
         self.p.write(move |tx| {
             match (load_record(&tx.sql, &id)?, Builtin::find(&id)) {
@@ -370,12 +403,100 @@ impl SearchEngines<'_> {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct EngineEdit {
-    pub name: Option<String>,
-    pub keyword: Option<Option<String>>,
-    pub search_url: Option<UrlTemplate>,
-    pub suggest_url: Option<Option<UrlTemplate>>,
+/// What the search engine editor's three boxes hold, as typed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EngineForm {
+    pub name: String,
+    /// The shortcut: typing `w rust` in the address bar searches the engine `w`.
+    pub keyword: String,
+    /// `%s`, as Chrome writes it, or `{searchTerms}` where the search terms go.
+    pub url: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormField {
+    Name,
+    Keyword,
+    Url,
+}
+
+/// Why the editor cannot save its form, worded for the field it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FormError {
+    #[error("Enter a name")]
+    NoName,
+    #[error("Enter a shortcut")]
+    NoKeyword,
+    #[error("A shortcut is one word, without spaces")]
+    KeywordHasSpace,
+    #[error("Another search engine has this shortcut")]
+    KeywordTaken,
+    #[error("Enter a URL")]
+    NoUrl,
+    #[error("Put %s where the search terms go")]
+    NoTerms,
+    #[error("Not a web address")]
+    NotWebAddress,
+}
+
+impl FormError {
+    pub fn field(self) -> FormField {
+        match self {
+            FormError::NoName => FormField::Name,
+            FormError::NoKeyword | FormError::KeywordHasSpace | FormError::KeywordTaken => FormField::Keyword,
+            FormError::NoUrl | FormError::NoTerms | FormError::NotWebAddress => FormField::Url,
+        }
+    }
+
+    /// The field is only empty: the editor keeps Save off without calling it out, as Chrome does.
+    pub fn is_blank(self) -> bool {
+        matches!(self, FormError::NoName | FormError::NoKeyword | FormError::NoUrl)
+    }
+}
+
+/// A form that passed [`EngineForm::parse`].
+struct FormEngine {
+    name: String,
+    keyword: String,
+    search_url: UrlTemplate,
+}
+
+impl EngineForm {
+    /// `engine` as the editor shows it, with `%s` where the search terms go.
+    pub fn of(engine: &SearchEngine) -> Self {
+        EngineForm {
+            name: engine.name.clone(),
+            keyword: engine.keyword.clone().unwrap_or_default(),
+            url: engine.search_url.0.replace(TERMS, CHROME_TERMS),
+        }
+    }
+
+    /// The form against `engines`, the ones there are now, of which `editing` is the one
+    /// edited: its own shortcut is no clash.
+    fn parse(&self, engines: &[SearchEngine], editing: Option<&SearchEngineId>) -> Result<FormEngine, Vec<FormError>> {
+        let name = self.name.trim();
+        let keyword = self.keyword.trim();
+        let taken = engines.iter().any(|e| Some(&e.id) != editing && e.keyword.as_deref() == Some(keyword));
+        let search_url = UrlTemplate::parse(&self.url);
+        let errors: Vec<FormError> = [
+            name.is_empty().then_some(FormError::NoName),
+            if keyword.is_empty() {
+                Some(FormError::NoKeyword)
+            } else if keyword.contains(char::is_whitespace) {
+                Some(FormError::KeywordHasSpace)
+            } else {
+                taken.then_some(FormError::KeywordTaken)
+            },
+            search_url.as_ref().err().copied(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        match search_url {
+            Ok(search_url) if errors.is_empty() => Ok(FormEngine { name: name.to_owned(), keyword: keyword.to_owned(), search_url }),
+            _ => Err(errors),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -539,15 +660,17 @@ pub fn classify(text: &str, engines: &[SearchEngine], default: &SearchEngine) ->
     if text.is_empty() {
         return None;
     }
-    if let Some((first, rest)) = text.split_once(char::is_whitespace) {
-        let rest = rest.trim();
-        if !rest.is_empty()
-            && let Some(engine) = engines.iter().find(|e| e.keyword.as_deref() == Some(first))
-        {
-            return search_target(engine, rest);
-        }
+    if let Some((engine, terms)) = engines.iter().find_map(|e| keyword_terms(text, e).map(|terms| (e, terms))) {
+        return search_target(engine, terms);
     }
     search_target(default, text)
+}
+
+/// What `text` searches `engine` for when its first word is the engine's keyword and more follows.
+fn keyword_terms<'t>(text: &'t str, engine: &SearchEngine) -> Option<&'t str> {
+    let (first, rest) = text.trim().split_once(char::is_whitespace)?;
+    let rest = rest.trim();
+    (!rest.is_empty() && engine.keyword.as_deref() == Some(first)).then_some(rest)
 }
 
 fn search_target(engine: &SearchEngine, terms: &str) -> Option<NavTarget> {
@@ -824,8 +947,10 @@ impl Omnibox<'_> {
             }
             Some(target @ NavTarget::Search { .. }) => {
                 let NavTarget::Search { engine, .. } = &target else { unreachable!() };
-                let name = engines.iter().find(|e| &e.id == engine).map(|e| e.name.as_str()).unwrap_or("the web");
-                Some(Suggestion { source: SuggestionSource::Search, title: format!("Search {name} for \"{typed}\""), fill: typed.to_owned(), target })
+                let engine = engines.iter().find(|e| &e.id == engine);
+                let name = engine.map_or("the web", |e| e.name.as_str());
+                let terms = engine.and_then(|e| keyword_terms(typed, e)).unwrap_or(typed);
+                Some(Suggestion { source: SuggestionSource::Search, title: format!("Search {name} for \"{terms}\""), fill: typed.to_owned(), target })
             }
             None => None,
         };

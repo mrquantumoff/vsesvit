@@ -19,7 +19,7 @@ use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Verification};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
-use vsesvit_core::search::{NavTarget, SearchEngineId, UrlTemplate};
+use vsesvit_core::search::{EngineForm, NavTarget, SearchEngineId};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
@@ -730,8 +730,8 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     .await;
 
     ctx.check("selection_search", CHECK_TIMEOUT, |last| async move {
-        let template = UrlTemplate(format!("{}/search?q={{searchTerms}}", ctx.server.origin()));
-        let engine = browser.core().borrow_mut().search_engines().add("Fixture Search", None, template).map_err(|e| e.to_string())?;
+        let form = EngineForm { name: "Fixture Search".into(), keyword: "fixture".into(), url: format!("{}/search?q=%s", ctx.server.origin()) };
+        let engine = browser.core().borrow_mut().search_engines().save(None, &form).map_err(|e| e.to_string())?;
         let _engine = Cleanup(|| {
             let mut profile = browser.core().borrow_mut();
             let mut engines = profile.search_engines();
