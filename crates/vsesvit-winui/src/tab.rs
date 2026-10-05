@@ -73,13 +73,6 @@ impl Drop for NewWindowRequest {
     }
 }
 
-/// Password saving is always off: Vsesvit leaves passwords to a password manager's extension.
-fn set_autofill_settings(settings: &CoreWebView2Settings, forms: bool) -> Result<()> {
-    let settings = settings.cast::<ICoreWebView2Settings4>()?;
-    settings.SetIsPasswordAutosaveEnabled(false)?;
-    settings.SetIsGeneralAutofillEnabled(forms)
-}
-
 /// How far the tab's current navigation has got.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Load {
@@ -792,9 +785,14 @@ impl Tab {
         }
     }
 
-    /// A runtime too old for these settings keeps its defaults; the tab still works.
+    /// Password saving stays off: Vsesvit leaves passwords to a password manager's extension. A
+    /// runtime too old for these settings keeps its defaults; the tab still works.
     fn apply_autofill(&self, settings: &CoreWebView2Settings, forms: bool) {
-        if let Err(e) = set_autofill_settings(settings, forms) {
+        let applied = settings.cast::<ICoreWebView2Settings4>().and_then(|settings| {
+            settings.SetIsPasswordAutosaveEnabled(false)?;
+            settings.SetIsGeneralAutofillEnabled(forms)
+        });
+        if let Err(e) = applied {
             log::warn!("tab {}: autofill settings: {e}", self.id);
         }
     }

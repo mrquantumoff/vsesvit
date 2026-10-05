@@ -534,7 +534,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
     let passwords = group("Passwords");
     let notice = adw::ActionRow::builder()
         .title(PASSWORDS_NOTICE)
-        .subtitle("Use a password manager such as Bitwarden or Proton Pass, through its extension")
+        .subtitle("Use a password manager such as Bitwarden or Proton Pass through its browser extension")
         .build();
     notice.add_prefix(&gtk::Image::from_icon_name("dialog-password-symbolic"));
     passwords.add(&notice);
