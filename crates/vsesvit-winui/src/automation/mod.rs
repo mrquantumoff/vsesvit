@@ -87,9 +87,9 @@ async fn search_suggestion_steps(
             .then_some(())
     })
     .await;
-    shoot(window, out_dir, "13b-search-suggestions", steps, |w| {
+    shoot(window, out_dir, "13e-search-suggestions", steps, |w| {
         json!({
-            "name": "13b-search-suggestions",
+            "name": "13e-search-suggestions",
             "labels": w.suggestion_labels(),
             "ok": suggested.is_some(),
         })
