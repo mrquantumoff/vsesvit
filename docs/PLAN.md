@@ -96,7 +96,7 @@ Profile directory, one per profile:
 
 Tabs are vertical by default, in a sidebar on the left. A setting moves the sidebar to the right, or switches back to a horizontal strip at the top. The setting is the synced preference `tabs.position` (`left` | `right` | `top`).
 
-- **Linux.** An `AdwOverlaySplitView` holds a tab list bound to `AdwTabView`'s page model. Its `sidebar-position` places the list at the start or end, and it collapses to an overlay on narrow windows. The top layout uses `AdwTabBar`.
+- **Linux.** An `AdwOverlaySplitView` holds a tab list bound to `AdwTabView`'s page model. Its `sidebar-position` places the list at the start or end, and it collapses to an overlay on narrow windows. The top layout uses `AdwTabBar`. Both show `AdwTabView`'s tab menu, set up per tab, with Chrome's items: new tab to the right (below in the sidebar), move to a new window, reload, duplicate, pin, mute, copy link (without tracking parameters), close, close others and close to the right (both leave pinned tabs open), and reopen closed tab. Pinned tabs are `AdwTabView`'s pinned pages, which lead the list and are saved in the session. A muted tab, or one playing sound, shows a speaker that mutes or unmutes it.
 - **Windows.** A collapsible pane holds a reorderable `ListView` of tabs (favicon, title, close button), on either side of the web content. When collapsed, the pane shows only favicons. The top layout uses the `TabView` strip in the title bar. With vertical tabs, the title bar holds the toolbar instead.
 
 ## Page commands
