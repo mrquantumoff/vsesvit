@@ -3,8 +3,9 @@
 //! action with a pin toggle; and the popover that hosts an action's popup page, under the
 //! action's button or, for an unpinned one, under the puzzle piece.
 //!
-//! Pinned buttons can be dragged to reorder them and right-clicked to unpin them. Pins and
-//! moves go through `win.extension-pin` and `win.extension-move`, which write the preference.
+//! Pinned buttons can be dragged to reorder them, and right-clicked for the extension's own
+//! items for its action (`chrome.contextMenus`) and to unpin them. Pins and moves go through
+//! `win.extension-pin` and `win.extension-move`, which write the preference.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -16,6 +17,9 @@ use gtk::{gdk, gio, glib};
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_webext::ActionInfo;
 use webkit::prelude::*;
+
+use super::BrowserWindow;
+use crate::extension_menus::{self, Choose};
 
 /// Popup pages size themselves; these bound what a page can ask for, as Chrome does.
 const POPUP_MIN: (i32, i32) = (200, 80);
@@ -171,8 +175,8 @@ impl ExtensionActions {
         }
     }
 
-    /// Dragging a pinned button onto another moves it there; right-clicking it offers
-    /// Unpin and Manage Extensions.
+    /// Dragging a pinned button onto another moves it there; right-clicking it opens its
+    /// [`action_menu`].
     fn make_movable(self: &Rc<Self>, button: &gtk::Button, id: &ExtensionId) {
         let source = gtk::DragSource::builder().actions(gdk::DragAction::MOVE).build();
         let dragged = id.clone();
@@ -207,7 +211,7 @@ impl ExtensionActions {
         click.connect_pressed(move |gesture, _, x, y| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
             if let Some(button) = gesture.widget() {
-                unpin_menu(&button, &id, (x, y));
+                action_menu(&button, &id, (x, y));
             }
         });
         button.add_controller(click);
@@ -356,14 +360,32 @@ impl ExtensionActions {
     }
 }
 
-/// A pinned button's context menu.
-pub(crate) fn unpin_menu(button: &gtk::Widget, id: &ExtensionId, (x, y): (f64, f64)) -> gtk::PopoverMenu {
-    let menu = gio::Menu::new();
+/// A pinned button's context menu: the extension's items for its action, then Unpin and
+/// Manage Extensions.
+pub(crate) fn action_menu(button: &gtk::Widget, id: &ExtensionId, (x, y): (f64, f64)) -> gtk::PopoverMenu {
+    let items = gio::SimpleActionGroup::new();
+    let window = button.root().and_downcast::<BrowserWindow>();
+    let entries = window.as_ref().map(|w| w.browser().runtime().action_menu(id)).unwrap_or_default();
+    let menu = match window.filter(|_| !entries.is_empty()) {
+        Some(window) => {
+            let (window, extension) = (window.downgrade(), id.clone());
+            let choose: Choose = Rc::new(move |item| {
+                if let Some(window) = window.upgrade() {
+                    window.extension_menu_item_chosen(&extension, item);
+                }
+            });
+            extension_menus::model(&entries, &items, "extension-menu", &choose)
+        }
+        None => gio::Menu::new(),
+    };
+    let ours = gio::Menu::new();
     let unpin = gio::MenuItem::new(Some("_Unpin"), None);
     unpin.set_action_and_target_value(Some("win.extension-pin"), Some(&(id.as_str(), false).to_variant()));
-    menu.append_item(&unpin);
-    menu.append(Some("_Manage Extensions"), Some("win.show-extensions"));
+    ours.append_item(&unpin);
+    ours.append(Some("_Manage Extensions"), Some("win.show-extensions"));
+    menu.append_section(None, &ours);
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.insert_action_group("extension-menu", Some(&items));
     popover.set_has_arrow(false);
     popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
     crate::popup(&popover, button);

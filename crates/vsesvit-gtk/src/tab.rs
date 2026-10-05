@@ -779,7 +779,7 @@ impl Tab {
         self.imp().gate.borrow_mut().decide(self.runtime(), target, redirect, new_window)
     }
 
-    fn runtime(&self) -> &Runtime {
+    pub(crate) fn runtime(&self) -> &Runtime {
         self.imp().runtime.get().expect("set in Tab::wrap")
     }
 

@@ -9,6 +9,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({ id: "probe-page", title: "Vsesvit Probe page item", contexts: ["page"] });
+  chrome.contextMenus.create({ id: "probe-action", title: "Vsesvit Probe action item", contexts: ["action"] });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  const click = { id: info.menuItemId, pageUrl: info.pageUrl ?? null, tab: tab?.id ?? null, at: Date.now() };
+  chrome.storage.local.set({ menuClick: click });
+});
+
 chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((message) => {
     if (message === "ping") port.postMessage("pong:" + port.name);

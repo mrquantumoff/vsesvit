@@ -3,7 +3,7 @@
   "name": "Vsesvit Probe",
   "version": "1.0.0",
   "description": "Test extension that reports which WebExtension APIs work.",
-  "permissions": ["storage", "declarativeNetRequest"],
+  "permissions": ["storage", "declarativeNetRequest", "contextMenus"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

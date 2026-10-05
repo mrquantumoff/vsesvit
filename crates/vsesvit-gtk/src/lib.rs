@@ -16,6 +16,7 @@ mod dialogs;
 mod downloads;
 mod engine;
 mod error_page;
+mod extension_menus;
 mod extensions;
 mod favicons;
 mod find_bar;

@@ -771,6 +771,12 @@ impl BrowserWindow {
         });
     }
 
+    /// The user chose `item`, one of extension `id`'s items, in its action's menu.
+    pub(crate) fn extension_menu_item_chosen(&self, id: &ExtensionId, item: &vsesvit_webext::menus::ItemId) {
+        let tab = self.selected_tab().map(|tab| tab.id());
+        self.browser().runtime().menu_clicked(id, item, tab, None);
+    }
+
     #[cfg(feature = "self-test")]
     pub(crate) fn extension_action_button(&self, id: &ExtensionId) -> Option<gtk::Button> {
         self.ui().extension_actions.button_for(id)
@@ -791,7 +797,7 @@ impl BrowserWindow {
     #[cfg(feature = "self-test")]
     pub(crate) fn open_extension_context_menu(&self, id: &ExtensionId) -> Option<gtk::PopoverMenu> {
         let button = self.extension_action_button(id)?;
-        Some(ext_actions::unpin_menu(button.upcast_ref(), id, (8.0, 8.0)))
+        Some(ext_actions::action_menu(button.upcast_ref(), id, (8.0, 8.0)))
     }
 
     /// Clicks the puzzle piece and returns the Extensions menu it opened.

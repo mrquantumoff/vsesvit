@@ -25,6 +25,7 @@ use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::trackers::{self, Category, TrackerList, TrackingProtection};
 use vsesvit_core::{OpenOptions, Profile};
+use vsesvit_webext::menus::Target;
 use webkit::prelude::*;
 
 use crate::browser::Browser;
@@ -63,7 +64,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 38] = [
+const CHECKS: [&str; 39] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -80,6 +81,7 @@ const CHECKS: [&str; 38] = [
     "tab_layout",
     "popup",
     "extension_toolbar",
+    "context_menus",
     "omnibox",
     "address_completion",
     "selection_search",
@@ -649,6 +651,67 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         .await;
         let detail = format!("pinned at start={pinned_at_start}; the menu's pin toggle unpinned it (saved in toolbar.extensions); its row opened the popup from the puzzle piece={from_puzzle}; pinned again; extensions-*.png");
         if pinned_at_start && from_puzzle { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
+    ctx.check("context_menus", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        if tab.committed_uri().as_deref() != Some(index_url.as_str()) {
+            return Err(format!("the selected tab shows {:?}", tab.committed_uri()));
+        }
+        let clicked = async |what: &str| {
+            let click = |seen: &str| serde_json::from_str::<serde_json::Value>(seen).unwrap_or_default();
+            let seen = wait_js(&last, tab.web_view(), "String(document.documentElement.dataset.vsesvitProbeMenu)", |seen| click(seen)["id"] == what).await;
+            click(&seen)
+        };
+        let listed = |menu: &webkit::ContextMenu| -> Vec<String> {
+            menu.items()
+                .iter()
+                .map(|item| match item.stock_action() {
+                    _ if item.is_separator() => "-".to_owned(),
+                    webkit::ContextMenuAction::Custom => item.title().map(String::from).unwrap_or_default(),
+                    stock => format!("{stock:?}"),
+                })
+                .collect()
+        };
+
+        let menu = webkit::ContextMenu::new();
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::Reload));
+        menu.append(&webkit::ContextMenuItem::new_separator());
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::InspectElement));
+        let page = Target { page_url: index_url.to_string(), ..Target::default() };
+        let added = crate::page_menu::add_extension_items(&tab, &menu, &page);
+        let on_page = listed(&menu);
+        if on_page != ["Reload", "-", "Vsesvit Probe page item", "-", "InspectElement"] {
+            return Err(format!("the page's context menu lists {on_page:?}"));
+        }
+        let link = Target { link_url: Some(page2_url.to_string()), ..page.clone() };
+        let on_link = crate::page_menu::add_extension_items(&tab, &webkit::ContextMenu::new(), &link).len();
+        if on_link != 0 {
+            return Err(format!("a link's context menu got {on_link} extension items"));
+        }
+        added.get(1).and_then(|item| item.gaction()).ok_or_else(|| "the probe's item has no action".to_owned())?.activate(None);
+        let from_page = clicked("probe-page").await;
+        if from_page["pageUrl"] != index_url.as_str() || from_page["tab"] != tab.id().0 {
+            return Err(format!("contextMenus.onClicked got {from_page}"));
+        }
+
+        let action_menu = window.open_extension_context_menu(probe_id).ok_or_else(|| "the probe has no toolbar button".to_owned())?;
+        let model = action_menu.menu_model().ok_or_else(|| "the action's menu has no model".to_owned())?;
+        let first = model.item_link(0, gio::MENU_LINK_SECTION).ok_or_else(|| "the action's menu has no sections".to_owned())?;
+        let label = first.item_attribute_value(0, gio::MENU_ATTRIBUTE_LABEL, None).and_then(|v| v.get::<String>());
+        let action = first.item_attribute_value(0, gio::MENU_ATTRIBUTE_ACTION, None).and_then(|v| v.get::<String>());
+        if label.as_deref() != Some("Vsesvit Probe action item") {
+            return Err(format!("the action's menu starts with {label:?}"));
+        }
+        let action = action.ok_or_else(|| "the action item has no action".to_owned())?;
+        WidgetExt::activate_action(&action_menu, &action, None).map_err(|e| e.to_string())?;
+        action_menu.popdown();
+        let from_action = clicked("probe-action").await;
+        if from_action["pageUrl"] != serde_json::Value::Null || from_action["tab"] != tab.id().0 {
+            return Err(format!("contextMenus.onClicked from the action's menu got {from_action}"));
+        }
+        Ok(format!("the page's context menu lists {on_page:?}, a link's none of the probe's; choosing the item fired onClicked with {from_page}; the action's menu starts with {label:?}, which fired {from_action}"))
     })
     .await;
 
