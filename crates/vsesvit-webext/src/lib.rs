@@ -5,7 +5,8 @@
 //! from a custom URI scheme, and declarativeNetRequest translated to content blockers.
 //!
 //! Platform-neutral pieces compile and test everywhere: [`dnr`] (the translator),
-//! [`protocol`] (the JS/Rust wire format), [`messaging`] (port channels), [`patterns`],
+//! [`protocol`] (the JS/Rust wire format), [`messaging`] (port channels), [`menus`] (context
+//! menu items), [`patterns`],
 //! [`mime`], [`i18n`], the tab
 //! types in [`tabs`] and [`support`] (which of a manifest's requests this runtime lacks).
 //! The WebKit glue ([`Runtime`]) is Linux only.
@@ -66,6 +67,13 @@
 //! runtime.connect_actions_changed(move || rebuild_toolbar());
 //! runtime.activate_action(&id, Some(tab_id), move |popup| popover.set_child(Some(&popup)));
 //!
+//! // Extensions' context menu items (`menus`): the shell asks what to show when a menu opens,
+//! // with what was clicked, and reports the item the user chose.
+//! let target = menus::Target { page_url, frame_url, link_url, selection, ..Default::default() };
+//! let items: Vec<(ExtensionId, menus::Entry)> = runtime.page_menu(&target);
+//! let entries: Vec<menus::Entry> = runtime.action_menu(&id);
+//! runtime.menu_clicked(&id, &item, Some(tab_id), Some(&target));   // None for the action's menu
+//!
 //! // Remote storage.sync changes (from a future sync engine's ApplyReport):
 //! runtime.storage_sync_changed(&ext_id, &changes);
 //! ```
@@ -93,7 +101,8 @@
 //!   `onUpdated/onActivated/onRemoved`, `scripting.executeScript/insertCSS`,
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
 //!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
-//!   `permissions.contains/getAll`, `extension.getURL`,
+//!   `permissions.contains/getAll`, `contextMenus` (also as Firefox's `menus`, see [`menus`]),
+//!   `extension.getURL`,
 //!   `runtime.openOptionsPage`, `runtime.reload` (the whole extension starts over, its
 //!   pages in tabs reload), and `runtime.onInstalled` on the first load of an install
 //!   or version (`runtime.onStartup` on later startups), `tabs.connect`, and
@@ -124,7 +133,8 @@
 //! message an extension (`externally_connectable.matches`: WebKitGTK does not say which
 //! document posted a message, so the sender could not be told apart from a frame
 //! claiming its URL); `getBackgroundPage` cannot reach the background from an extension
-//! page in a tab; no `webRequest`; one runtime per process;
+//! page in a tab; a context menu click in a subframe has no `frameId`; WebKit's menus show
+//! a radio item with a check mark; no `webRequest`; one runtime per process;
 //! `about:blank` frames inside extension pages get no API; in a background or popup view,
 //! an `http(s)` iframe loads only for an extension without host permissions (WebKitGTK
 //! applies the view's CORS allowlist to every frame); WebKitGTK does not say which frame

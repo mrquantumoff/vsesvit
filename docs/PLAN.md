@@ -114,14 +114,15 @@ Settings > Search lists every engine with its name, shortcut and URL, as Chrome'
 
 Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (a bare slug is not accepted, because it cannot be told apart from a relative path), local `.crx`/`.xpi` files, and unpacked developer directories. Each install records how it was verified.
 
-**Windows.** WebView2 runs extensions natively: MV3 service workers, content scripts, `chrome.storage`, `chrome.tabs` inside extension pages, and declarativeNetRequest. WebView2 has no browser chrome for extensions, so Vsesvit draws the toolbar action buttons and shows each popup page in a flyout. `chrome.tabs` in WebView2 does not know about Vsesvit's tabs (WebView2Feedback #3853 and #3854).
+**Windows.** WebView2 runs extensions natively: MV3 service workers, content scripts, `chrome.storage`, `chrome.tabs` inside extension pages, and declarativeNetRequest. WebView2 has no browser chrome for extensions, so Vsesvit draws the toolbar action buttons and shows each popup page in a flyout. `chrome.tabs` in WebView2 does not know about Vsesvit's tabs (WebView2Feedback #3853 and #3854). WebView2 puts extensions' `contextMenus` items in the page's context menu itself. It offers no way to read an extension's items for its action, so the toolbar button's menu has none.
 
 **Linux.** `vsesvit-webext` implements the WebExtensions subset below on WebKitGTK:
 
 - A `chrome-extension://` URI scheme serves extension files. Only `web_accessible_resources` are visible to web pages.
 - The background runs as a hidden web view. MV3 service workers are emulated as a page.
 - Content scripts run in a per-extension isolated world.
-- `chrome.*` and `browser.*` are available with both promises and callbacks. The covered APIs are runtime messaging and ports (`runtime.connect`, `tabs.connect`, messages and connections from other extensions as `externally_connectable` allows), storage (local, sync, onChanged), i18n, tabs, scripting, action/browserAction, alarms, permissions.contains, extension.getURL and `runtime.getBackgroundPage` (in the background page and its popups).
+- `chrome.*` and `browser.*` are available with both promises and callbacks. The covered APIs are runtime messaging and ports (`runtime.connect`, `tabs.connect`, messages and connections from other extensions as `externally_connectable` allows), storage (local, sync, onChanged), i18n, tabs, scripting, action/browserAction, alarms, context menus (`contextMenus`, and Firefox's `menus`), permissions.contains, extension.getURL and `runtime.getBackgroundPage` (in the background page and its popups).
+- Extensions' context menu items show in the page's context menu, by what was clicked and in which frame, grouped under the extension's name when it has several, and those for the action show in its toolbar button's menu. A service worker's items are kept across restarts, as in Chrome.
 - declarativeNetRequest static rules are translated to WebKit content-blocker rules. Rules WebKit cannot express are skipped and logged.
 - Not supported: `webRequest` blocking, native messaging, devtools pages, messages from web pages (`externally_connectable.matches`) and some other surfaces. Heavily API-dependent extensions may therefore work partially. The extensions page shows which APIs an extension requests that the runtime lacks.
 
