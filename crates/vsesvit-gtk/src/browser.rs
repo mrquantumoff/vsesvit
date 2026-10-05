@@ -17,6 +17,7 @@ use gtk::{gio, glib};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
+use vsesvit_core::extensions::commands::{self, ExtensionShortcuts};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::extensions::{ExtensionId, toolbar};
 use vsesvit_core::history::Transition;
@@ -810,6 +811,11 @@ impl Browser {
         self.core().borrow_mut().prefs().keymap()
     }
 
+    /// The enabled extensions' commands with the shortcuts `keymap` gives them.
+    pub(crate) fn extension_shortcuts(&self, keymap: &Keymap) -> ExtensionShortcuts {
+        keymap.extension_shortcuts(commands::extension_commands(&self.installed_extensions()))
+    }
+
     /// Every change to the shortcuts goes through here: `edit` changes the stored keymap and
     /// every window's shortcuts follow at once.
     pub(crate) fn edit_keymap<T>(&self, edit: impl FnOnce(&mut Keymap) -> T) -> T {
@@ -818,12 +824,14 @@ impl Browser {
         if let Err(e) = self.core().borrow_mut().prefs().set_keymap(&edited) {
             log::warn!("prefs: {e}");
         }
-        keymap::apply(self.app(), &edited);
+        keymap::apply(self.app(), &edited, &self.extension_shortcuts(&edited));
         out
     }
 
+    /// Also after the enabled extensions change, which changes their commands.
     pub(crate) fn apply_keymap(&self) {
-        keymap::apply(self.app(), &self.keymap());
+        let keymap = self.keymap();
+        keymap::apply(self.app(), &keymap, &self.extension_shortcuts(&keymap));
     }
 
     /// The homepage preference as a URL, or `None` for the new tab page.

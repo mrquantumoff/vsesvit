@@ -67,7 +67,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 41] = [
+const CHECKS: [&str; 42] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -85,6 +85,7 @@ const CHECKS: [&str; 41] = [
     "popup",
     "extension_toolbar",
     "context_menus",
+    "extension_commands",
     "omnibox",
     "address_completion",
     "search_suggestions",
@@ -725,6 +726,90 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("extension_commands", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        if tab.committed_uri().as_deref() != Some(index_url.as_str()) {
+            return Err(format!("the selected tab shows {:?}", tab.committed_uri()));
+        }
+        let app = browser.app();
+        let (action, named) = (keymap::extension_action(probe_id, "_execute_action"), keymap::extension_action(probe_id, "probe-command"));
+        let accels = |detailed: &str| -> Vec<String> { app.accels_for_action(detailed).iter().map(|a| a.to_string()).collect() };
+        let has = |detailed: &str, want: &str| accels(detailed).iter().map(|a| gtk::accelerator_parse(a.as_str())).eq([gtk::accelerator_parse(want)]);
+        if !has(&action, "<Alt><Shift>p") || !has(&named, "<Alt><Shift>k") {
+            return Err(format!("{action} has {:?} and {named} has {:?}", accels(&action), accels(&named)));
+        }
+        let _restore = Cleanup(|| {
+            browser.edit_keymap(|keymap| {
+                let extensions = browser.extension_shortcuts(keymap);
+                keymap.reset_extension(&extensions, probe_id, "probe-command");
+            });
+        });
+
+        gio::prelude::ActionGroupExt::activate_action(window, "extension-command", Some(&(probe_id.as_str(), "probe-command").to_variant()));
+        let seen = wait_js(&last, tab.web_view(), "String(document.documentElement.dataset.vsesvitProbeCommand)", |seen| {
+            serde_json::from_str::<serde_json::Value>(seen).is_ok_and(|command| command["name"] == "probe-command")
+        })
+        .await;
+        let command: serde_json::Value = serde_json::from_str(&seen).unwrap_or_default();
+        if command["tab"] != tab.id().0 || command["url"] != index_url.as_str() {
+            return Err(format!("commands.onCommand got {command}"));
+        }
+
+        gio::prelude::ActionGroupExt::activate_action(window, "extension-command", Some(&(probe_id.as_str(), "_execute_action").to_variant()));
+        let popup = wait_for(&last, || window.extension_popup_view().ok_or_else(|| "no popup from _execute_action".to_owned())).await;
+        let popup_url = popup.uri().map(String::from).unwrap_or_default();
+        window.close_extension_popup();
+        if !popup_url.ends_with("/popup.html") || window.extension_popup_view().is_some() {
+            return Err(format!("_execute_action opened {popup_url:?}; still open after closing: {}", window.extension_popup_view().is_some()));
+        }
+
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        let edited = async {
+            dialog.set_visible_page_name("shortcuts");
+            let page = dialog.visible_page().ok_or_else(|| "the shortcuts page is not shown".to_owned())?;
+            let row = find::<adw::ActionRow>(page.upcast_ref(), |row| row.title() == "Vsesvit Probe command" && row.subtitle().as_deref() == Some("Vsesvit Probe"))
+                .ok_or_else(|| "Settings > Shortcuts has no row for the probe's command".to_owned())?;
+            let shown = || find::<adw::ShortcutLabel>(row.upcast_ref(), |_| true).map(|label| label.accelerator().to_string());
+            let listed = shown();
+            if listed.as_deref() != Some("<Alt><Shift>k") {
+                return Err(format!("the probe's command row shows {listed:?}"));
+            }
+            glib::timeout_future(Duration::from_millis(300)).await;
+            if let Some(scrolled) = row.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>() {
+                let at = scrolled.vadjustment();
+                at.set_value(at.upper() - at.page_size());
+            }
+            glib::timeout_future(Duration::from_millis(300)).await;
+            crate::screenshot::save_png(window, &ctx.out_dir.join("extension-shortcuts.png")).await.map_err(|e| e.to_string())?;
+            let alt_shift_j = "Alt+Shift+J".parse::<Chord>().map_err(|e| e.to_string())?;
+            browser.edit_keymap(|keymap| {
+                let extensions = browser.extension_shortcuts(keymap);
+                keymap.assign_extension(&extensions, probe_id, "probe-command", Some(alt_shift_j));
+            });
+            let moved = (accels(&named), app.actions_for_accel("<Alt><Shift>k").len());
+            if !has(&named, "<Alt><Shift>j") || moved.1 != 0 {
+                return Err(format!("after assigning Alt+Shift+J, {named} has {:?} and Alt+Shift+K runs {} actions", moved.0, moved.1));
+            }
+            let reset = find::<gtk::Button>(row.upcast_ref(), |b| b.tooltip_text().as_deref() == Some("Reset to Default"))
+                .ok_or_else(|| "the probe's command row has no Reset to Default button".to_owned())?;
+            reset.emit_clicked();
+            let back = shown();
+            if !has(&named, "<Alt><Shift>k") || back.as_deref() != Some("<Alt><Shift>k") || reset.is_visible() {
+                return Err(format!("after Reset to Default, {named} has {:?}, the row shows {back:?}, its reset button shown={}", accels(&named), reset.is_visible()));
+            }
+            Ok(format!("its Settings row lists {listed:?} (extension-shortcuts.png); Alt+Shift+J moved it to {:?}; the row's Reset to Default brought back {back:?}", moved.0))
+        }
+        .await;
+        dialog.close();
+        let edited = edited?;
+        Ok(format!("{action} is Alt+Shift+P and {named} Alt+Shift+K; probe-command fired onCommand with {command}; _execute_action opened {popup_url}, closed again; {edited}"))
+    })
+    .await;
+
     ctx.check("omnibox", CHECK_TIMEOUT, |_| async move {
         let typed_url = format!("127.0.0.1:{}/page2.html", ctx.server.port());
         let (search, url, default) = {
@@ -1347,7 +1432,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             }
             glib::timeout_future(Duration::from_millis(300)).await;
             crate::screenshot::save_png(window, &ctx.out_dir.join("shortcuts-edited.png")).await.map_err(|e| e.to_string())?;
-            let capture = shortcut_settings::capture(&dialog, browser, Command::ShowHistory, || {});
+            let capture = shortcut_settings::capture(&dialog, browser, shortcut_settings::Target::Browser(Command::ShowHistory), || {});
             capture.press(keymap::pressed(gdk::Key::t, gdk::ModifierType::CONTROL_MASK, gdk::ModifierType::empty(), Some(gdk::Key::t)));
             let note = capture.note();
             glib::timeout_future(POPOVER_SETTLE).await;

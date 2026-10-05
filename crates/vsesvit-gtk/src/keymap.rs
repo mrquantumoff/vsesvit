@@ -1,8 +1,11 @@
 //! Core's shortcut commands on GTK: which action each one runs, chords as GTK accelerators,
-//! and a key press as a chord for the capture dialog.
+//! and a key press as a chord for the capture dialog. Extensions' commands run
+//! [`EXTENSION_COMMAND`], one detailed action per command.
 
-use gtk::gdk;
 use gtk::prelude::*;
+use gtk::{gdk, gio};
+use vsesvit_core::extensions::ExtensionId;
+use vsesvit_core::extensions::commands::ExtensionShortcuts;
 use vsesvit_core::shortcuts::{Chord, Command, Key, Keymap, Mods};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,12 +68,28 @@ pub(crate) fn actions() -> impl Iterator<Item = (Command, &'static str)> {
     })
 }
 
-/// Sets every action's accelerators from `keymap`.
-pub(crate) fn apply(app: &impl IsA<gtk::Application>, keymap: &Keymap) {
+/// The window action an extension's command runs, with the extension's id and the command's
+/// name as its target.
+pub(crate) const EXTENSION_COMMAND: &str = "win.extension-command";
+
+/// [`EXTENSION_COMMAND`] for `name` of `extension`, which carries its accelerator.
+pub(crate) fn extension_action(extension: &ExtensionId, name: &str) -> String {
+    gio::Action::print_detailed_name(EXTENSION_COMMAND, Some(&(extension.as_str(), name).to_variant())).into()
+}
+
+/// Sets every action's accelerators from `keymap`, and the extension commands' from
+/// `extensions`, taking them from commands that no longer have one.
+pub(crate) fn apply(app: &impl IsA<gtk::Application>, keymap: &Keymap, extensions: &ExtensionShortcuts) {
     for (cmd, action) in actions() {
         let accels: Vec<String> = keymap.chords(cmd).iter().map(|&chord| accelerator(chord)).collect();
         let accels: Vec<&str> = accels.iter().map(String::as_str).collect();
         app.set_accels_for_action(action, &accels);
+    }
+    clear_extension_commands(app);
+    for (command, chord) in extensions.iter() {
+        if let Some(chord) = chord {
+            app.set_accels_for_action(&extension_action(&command.extension, &command.command.name), &[&accelerator(chord)]);
+        }
     }
 }
 
@@ -78,6 +97,14 @@ pub(crate) fn apply(app: &impl IsA<gtk::Application>, keymap: &Keymap) {
 /// chords the window would otherwise run.
 pub(crate) fn suspend(app: &impl IsA<gtk::Application>) {
     for (_, action) in actions() {
+        app.set_accels_for_action(action, &[]);
+    }
+    clear_extension_commands(app);
+}
+
+fn clear_extension_commands(app: &impl IsA<gtk::Application>) {
+    let prefix = format!("{EXTENSION_COMMAND}(");
+    for action in app.list_action_descriptions().iter().filter(|action| action.starts_with(&prefix)) {
         app.set_accels_for_action(action, &[]);
     }
 }
@@ -273,5 +300,33 @@ mod tests {
         assert_eq!(binding(Command::DeveloperTools), Some(Binding::Action("win.developer-tools")));
         assert_eq!(binding(Command::NextTab), Some(Binding::BuiltIn("<Control>Tab")));
         assert_eq!(binding(Command::CopyLink), None);
+    }
+
+    #[gtk::test]
+    fn extension_commands_get_their_chords_and_lose_stale_ones() {
+        use vsesvit_core::extensions::commands::ExtensionCommand;
+        use vsesvit_core::extensions::manifest::ManifestCommand;
+
+        let app = gtk::Application::builder().build();
+        let id = ExtensionId::parse("commands@vsesvit.test").expect("an extension id");
+        let command = |name: &str, key: &str| ExtensionCommand {
+            extension: id.clone(),
+            extension_name: "Commands".to_owned(),
+            command: ManifestCommand { name: name.to_owned(), description: String::new(), suggested_key: Some(chord(key)) },
+        };
+        let keymap = Keymap::default();
+        let runs = |accel: &str| -> Vec<String> { app.actions_for_accel(accel).iter().map(|a| a.to_string()).collect() };
+        let run = extension_action(&id, "run");
+        assert_eq!(run, "win.extension-command(('commands@vsesvit.test', 'run'))");
+
+        apply(&app, &keymap, &keymap.extension_shortcuts(vec![command("_execute_action", "Alt+Shift+A"), command("run", "Alt+Shift+R")]));
+        assert_eq!(runs("<Alt><Shift>r"), [run]);
+        assert_eq!(runs("<Alt><Shift>a"), [extension_action(&id, "_execute_action")]);
+        assert_eq!(runs("<Control>t"), ["win.new-tab"]);
+
+        apply(&app, &keymap, &keymap.extension_shortcuts(vec![command("_execute_action", "Alt+Shift+A")]));
+        assert!(runs("<Alt><Shift>r").is_empty(), "a command gone keeps its accelerator");
+        suspend(&app);
+        assert!(runs("<Alt><Shift>a").is_empty() && runs("<Control>t").is_empty(), "suspend left accelerators");
     }
 }

@@ -4,6 +4,7 @@
 use adw::prelude::*;
 use gtk::gio::ActionEntry;
 use gtk::glib;
+use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
 use webkit::prelude::*;
 
@@ -141,6 +142,16 @@ pub(super) fn install(window: &BrowserWindow) {
             .activate(|w: &BrowserWindow, _, target| {
                 if let Some((id, to)) = target.and_then(glib::Variant::get::<(String, u32)>) {
                     w.browser().move_extension(&id, to as usize);
+                }
+            })
+            .build(),
+        ActionEntry::builder("extension-command")
+            .parameter_type(Some(glib::VariantTy::new("(ss)").expect("a valid type")))
+            .activate(|w: &BrowserWindow, _, target| {
+                if let Some((id, name)) = target.and_then(glib::Variant::get::<(String, String)>)
+                    && let Ok(id) = ExtensionId::parse(&id)
+                {
+                    w.run_extension_command(&id, &name);
                 }
             })
             .build(),

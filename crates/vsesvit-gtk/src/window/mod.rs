@@ -18,6 +18,7 @@ use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::bookmarks::BookmarkNode;
 use vsesvit_core::extensions::ExtensionId;
+use vsesvit_core::extensions::manifest::ACTION_COMMANDS;
 use vsesvit_core::history::Transition;
 use vsesvit_core::new_tab;
 use vsesvit_core::permissions::{Answer, Permission};
@@ -769,6 +770,17 @@ impl BrowserWindow {
                 window.ui().extension_actions.show_popup(&extension, view);
             }
         });
+    }
+
+    /// The user pressed the shortcut of extension `id`'s command `name`. An action command
+    /// does what clicking the action's button does; the others go to the extension.
+    pub(crate) fn run_extension_command(&self, id: &ExtensionId, name: &str) {
+        if ACTION_COMMANDS.contains(&name) {
+            self.activate_extension_action(id);
+            return;
+        }
+        let tab = self.selected_tab().map(|tab| tab.id());
+        self.browser().runtime().command(id, name, tab);
     }
 
     /// The user chose `item`, one of extension `id`'s items, in its action's menu.

@@ -4,6 +4,8 @@
 //! `InstallJob::run` on a worker thread (`gio::spawn_blocking`) with its progress relayed
 //! back over a channel, and `commit` on the UI thread again, after which the runtime
 //! loads the extension.
+//!
+//! Every change to the enabled extensions applies the keymap again, which binds their commands.
 
 use std::fmt;
 
@@ -106,6 +108,7 @@ impl Browser {
         let staged = staged.map_err(InstallFailure::Run)?;
         let committed = self.core().borrow_mut().extensions().commit(staged);
         let committed = committed.map_err(InstallFailure::Commit)?;
+        self.apply_keymap();
         if let Some(ext) = &committed
             && let Err(e) = self.load_into_runtime(ext)
         {
@@ -127,6 +130,7 @@ impl Browser {
         for id in &work.removed {
             self.unload_from_runtime(id);
         }
+        self.apply_keymap();
         for job in work.install {
             let browser = self.clone();
             let source = format!("{:?}", job.source());
@@ -154,6 +158,7 @@ impl Browser {
         enabled: bool,
     ) -> Result<(), EnableFailure> {
         self.core().borrow_mut().extensions().set_enabled(id, enabled)?;
+        self.apply_keymap();
         let ext = self.core().borrow_mut().extensions().get(id)?;
         match ext {
             Some(ext) => self.load_into_runtime(&ext).map_err(EnableFailure::Load),
@@ -169,6 +174,7 @@ impl Browser {
     pub(crate) fn uninstall_extension(&self, id: &ExtensionId) -> Result<(), vsesvit_core::Error> {
         self.unload_from_runtime(id);
         let removed = self.core().borrow_mut().extensions().uninstall(id);
+        self.apply_keymap();
         if removed.is_err() {
             let kept = self.core().borrow_mut().extensions().get(id);
             if let Ok(Some(ext)) = kept {
