@@ -6,19 +6,21 @@
 //! keys its saved back/forward state in the profile.
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, glib};
 use vsesvit_core::history::Transition;
+use vsesvit_core::https_only::{self, Cause, Next, Upgrades};
 use vsesvit_core::permissions::{Capturing, Origin};
 use vsesvit_core::session::TabId as SessionTabId;
-use vsesvit_core::view_source;
+use vsesvit_core::{Url, view_source};
 use vsesvit_webext::{Gate, Runtime, TabId};
 use webkit::prelude::*;
 
 use crate::address_bar::Security;
-use crate::browser::Browser;
+use crate::browser::{self, Browser};
 use crate::error_page;
 use crate::page_menu;
 use crate::permissions::{self, TabPermissions};
@@ -60,6 +62,8 @@ pub(crate) enum FindResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ErrorPage {
     Certificate,
+    /// HTTPS-only's warning that the site has no secure connection.
+    HttpsOnly,
     Other,
 }
 
@@ -78,6 +82,7 @@ mod imp {
     pub struct Tab {
         pub(super) web_view: OnceCell<webkit::WebView>,
         pub(super) id: OnceCell<TabId>,
+        pub(super) browser: OnceCell<Weak<browser::Inner>>,
         pub(super) runtime: OnceCell<Runtime>,
         /// Which navigations the view may make (see `vsesvit_webext::gate`).
         pub(super) gate: RefCell<Gate>,
@@ -94,6 +99,13 @@ mod imp {
         pub(super) committed_uri: RefCell<Option<String>>,
         pub(super) error_page_pending: Cell<Option<ErrorPage>>,
         pub(super) error_page_shown: Cell<Option<ErrorPage>>,
+        /// HTTPS-only's upgrades and warning page in the tab.
+        pub(super) https: RefCell<Upgrades>,
+        /// The target of the navigation HTTPS-only judged when WebKit asked about it, so its
+        /// load is not judged again when it starts.
+        pub(super) https_judged: RefCell<Option<String>>,
+        /// The warning HTTPS-only shows once WebKit reports the load it stopped for it failed.
+        pub(super) https_warning_due: RefCell<Option<Url>>,
         pub(super) typed: RefCell<Option<String>>,
         /// The text last selected in the page, for its context menu.
         pub(super) selection: RefCell<String>,
@@ -127,7 +139,7 @@ impl Tab {
         let id = browser.allocate_tab_id();
         let content = browser.runtime().user_content_manager(id);
         browser.trackers().attach(&content);
-        Self::wrap(browser.engine().web_view(&content), id, browser.runtime())
+        Self::wrap(browser.engine().web_view(&content), id, browser)
     }
 
     pub(crate) fn new_related(browser: &Browser, opener: &Tab) -> Self {
@@ -137,18 +149,19 @@ impl Tab {
         let popup = Self::wrap(
             browser.engine().related_web_view(opener.web_view(), &content),
             id,
-            browser.runtime(),
+            browser,
         );
         let gate = Gate::opened_by(&opener.imp().gate.borrow());
         popup.imp().gate.replace(gate);
         popup
     }
 
-    fn wrap(web_view: webkit::WebView, id: TabId, runtime: &Runtime) -> Self {
+    fn wrap(web_view: webkit::WebView, id: TabId, browser: &Browser) -> Self {
         let tab: Self = glib::Object::new();
         let imp = tab.imp();
         imp.id.set(id).expect("wrap runs once");
-        assert!(imp.runtime.set(runtime.clone()).is_ok(), "wrap runs once");
+        imp.browser.set(Rc::downgrade(&browser.0)).expect("wrap runs once");
+        assert!(imp.runtime.set(browser.runtime().clone()).is_ok(), "wrap runs once");
         web_view.set_hexpand(true);
         web_view.set_vexpand(true);
 
@@ -353,7 +366,7 @@ impl Tab {
     /// even under an `https` URI, and a certificate error page is flagged as insecure.
     pub(crate) fn security(&self) -> Security {
         match self.imp().error_page_shown.get() {
-            Some(ErrorPage::Certificate) => Security::Insecure,
+            Some(ErrorPage::Certificate | ErrorPage::HttpsOnly) => Security::Insecure,
             Some(ErrorPage::Other) => Security::NotApplicable,
             None => Security::of(self.committed_uri().as_deref()),
         }
@@ -500,6 +513,9 @@ impl Tab {
             #[upgrade_or]
             false,
             move |_, uri, _certificate, errors| {
+                if tab.https_failed() {
+                    return true;
+                }
                 tab.show_error_page(
                     uri,
                     &error_page::tls_error(uri, errors),
@@ -642,9 +658,11 @@ impl Tab {
         match event {
             webkit::LoadEvent::Started | webkit::LoadEvent::Redirected => {
                 imp.load.set(LoadPhase::Provisional);
+                self.https_started(event == webkit::LoadEvent::Redirected);
             }
             webkit::LoadEvent::Committed => {
                 imp.load.set(LoadPhase::Committed);
+                imp.https.borrow_mut().committed();
                 let uri = self.web_view().uri().map(String::from);
                 imp.gate.borrow_mut().committed(self.runtime(), uri.as_deref().unwrap_or_default());
                 let error_page = imp.error_page_pending.take();
@@ -702,8 +720,16 @@ impl Tab {
         let benign = error.matches(webkit::NetworkError::Cancelled)
             || error.matches(webkit::PolicyError::FrameLoadInterruptedByPolicyChange)
             || error.matches(webkit::MediaError::Load);
+        let warning_due = self.imp().https_warning_due.take();
+        if let Some(url) = warning_due.filter(|_| benign) {
+            self.show_https_warning(&url);
+            return true;
+        }
         if benign || error_page_failed || event != webkit::LoadEvent::Started {
             return false;
+        }
+        if self.https_failed() {
+            return true;
         }
         self.show_error_page(
             uri,
@@ -734,6 +760,9 @@ impl Tab {
                 };
                 let target = action.request().and_then(|r| r.uri());
                 let new_window = kind == webkit::PolicyDecisionType::NewWindowAction;
+                let browser_load = target
+                    .as_deref()
+                    .is_some_and(|target| self.imp().gate.borrow().started_by_browser(target));
                 if let Some(target) = target.as_deref().filter(|target| !self.may_navigate(&action, target, new_window)) {
                     self.refused(target.to_owned());
                     decision.ignore();
@@ -743,7 +772,10 @@ impl Tab {
                 let Some(focus) =
                     new_tab_for_click(action.navigation_type(), action.mouse_button(), modifiers)
                 else {
-                    return false;
+                    return !new_window
+                        && target.is_some_and(|target| {
+                            self.https_policy(decision, &action, &target, browser_load)
+                        });
                 };
                 let (Some(uri), Some(window)) = (target, self.window()) else {
                     return false;
@@ -777,6 +809,100 @@ impl Tab {
     fn may_navigate(&self, action: &webkit::NavigationAction, target: &str, new_window: bool) -> bool {
         let redirect = action.is_redirect();
         self.imp().gate.borrow_mut().decide(self.runtime(), target, redirect, new_window)
+    }
+
+    /// HTTPS-only's say on a navigation WebKit asks about where it is surely the main frame's,
+    /// which WebKit doesn't tell: one the browser started (`browser_load`), or any while the
+    /// document on screen can hold no http frame. The rest are judged as they start loading.
+    fn https_policy(
+        &self,
+        decision: &webkit::PolicyDecision,
+        action: &webkit::NavigationAction,
+        target: &str,
+        browser_load: bool,
+    ) -> bool {
+        if !browser_load && !self.holds_no_http_frame() {
+            return false;
+        }
+        let cause = if action.is_redirect() {
+            Cause::Redirect
+        } else if !browser_load && action.navigation_type() == webkit::NavigationType::LinkClicked {
+            Cause::Link
+        } else {
+            Cause::Other
+        };
+        self.imp().https_judged.replace(Some(target.to_owned()));
+        self.https_next(target, cause, || decision.ignore())
+    }
+
+    /// Whether the document on screen can hold no http frame, so that a navigation WebKit asks
+    /// about is the main frame's: an https page, whose http frames would be blocked mixed
+    /// content, a blank page or the new tab page, or one of our error pages.
+    fn holds_no_http_frame(&self) -> bool {
+        self.shows_error_page()
+            || self
+                .committed_uri()
+                .is_none_or(|uri| uri == "about:blank" || uri.starts_with("https:"))
+    }
+
+    /// HTTPS-only's say on a main-frame load that started without being judged when WebKit asked
+    /// about it. Its http request may have gone out by now, but its page never shows.
+    fn https_started(&self, redirect: bool) {
+        let Some(uri) = self.web_view().uri() else { return };
+        if self.imp().https_judged.take().as_deref() == Some(uri.as_str()) {
+            return;
+        }
+        let cause = if redirect { Cause::Redirect } else { Cause::Other };
+        self.https_next(&uri, cause, || self.web_view().stop_loading());
+    }
+
+    /// Feeds HTTPS-only a navigation to `uri` and does what it answers; `stop` stops the
+    /// navigation. Whether it stopped it.
+    fn https_next(&self, uri: &str, cause: Cause, stop: impl FnOnce()) -> bool {
+        let (Some(browser), Ok(url)) = (self.browser(), Url::parse(uri)) else {
+            return false;
+        };
+        let upgrade = browser.https_upgrade(&url);
+        let next = self.imp().https.borrow_mut().starting(&url, cause, upgrade);
+        match next {
+            Next::Load => false,
+            Next::Allow(url) => {
+                log::info!("continuing to {url} without a secure connection");
+                if let Err(e) = https_only::allow(&mut browser.core().borrow_mut(), &url) {
+                    log::warn!("HTTPS-only exception for {url}: {e}");
+                }
+                false
+            }
+            Next::Upgrade(https) => {
+                log::debug!("upgrading {uri} to {https}");
+                stop();
+                self.load(https.as_str());
+                true
+            }
+            Next::Warn(http) => {
+                // Shown in place of the stopped load once WebKit reports it failed, as the other
+                // error pages are.
+                self.imp().https_warning_due.replace(Some(http));
+                stop();
+                true
+            }
+        }
+    }
+
+    /// Shows HTTPS-only's warning in place of an upgraded load that failed. Whether there was
+    /// one.
+    fn https_failed(&self) -> bool {
+        let warning = self.imp().https.borrow_mut().finished(false);
+        warning.inspect(|url| self.show_https_warning(url)).is_some()
+    }
+
+    fn show_https_warning(&self, url: &Url) {
+        log::info!("{url} has no secure connection");
+        self.show_error_page(url.as_str(), &https_only::warning_page(url), ErrorPage::HttpsOnly);
+    }
+
+    fn browser(&self) -> Option<Browser> {
+        self.imp().browser.get()?.upgrade().map(Browser)
     }
 
     pub(crate) fn runtime(&self) -> &Runtime {

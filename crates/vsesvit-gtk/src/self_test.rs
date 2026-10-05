@@ -17,6 +17,7 @@ use gtk::{gdk, gio, glib};
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Verification};
+use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
 use vsesvit_core::search::{EngineForm, NavTarget, SearchEngineId};
@@ -28,8 +29,9 @@ use vsesvit_core::{OpenOptions, Profile};
 use vsesvit_webext::menus::Target;
 use webkit::prelude::*;
 
+use crate::address_bar::Security;
 use crate::browser::Browser;
-use crate::dialogs::settings::{PASSWORDS_NOTICE, TRACKING_PROTECTION_ROW};
+use crate::dialogs::settings::{HTTPS_ONLY_ROW, PASSWORDS_NOTICE, SECURE_DNS_ROW, TRACKING_PROTECTION_ROW};
 use crate::dialogs::{Windowed, shortcut_settings};
 use crate::keymap;
 use crate::tab::Tab;
@@ -101,6 +103,7 @@ const CHECKS: [&str; 39] = [
     "connection_info",
     "site_permissions",
     "tracking_protection",
+    "https_only",
     "capture_in_use",
     "welcome",
     "screenshot",
@@ -1742,6 +1745,68 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             && exception
             && listed == (standard.label().to_owned(), standard.description().to_owned())
             && strict == (TrackingProtection::Strict, TrackingProtection::Strict.description().to_owned());
+        if ok { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
+    ctx.check("https_only", CHECK_TIMEOUT, |last| async move {
+        let origin = Origin::of(index_url).ok_or_else(|| "the fixture server has no origin".to_owned())?;
+        let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let opened: RefCell<Option<Tab>> = RefCell::new(None);
+        let _cleanup = Cleanup(|| {
+            if let Some(dialog) = window.visible_dialog() {
+                dialog.close();
+            }
+            if let Some(tab) = opened.take() {
+                window.select_tab(&first);
+                window.close_tab(&tab);
+            }
+            browser.reset_pref(&keys::HTTPS_ONLY);
+            browser.set_https_reach(Reach::Public);
+            if let Err(e) = browser.core().borrow_mut().site_permissions().set(&origin, Permission::Http, None) {
+                log::warn!("HTTPS-only exception: {e}");
+            }
+        });
+
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        dialog.set_visible_page_name("privacy");
+        let switch = find::<adw::SwitchRow>(dialog.upcast_ref(), |r| r.title() == HTTPS_ONLY_ROW)
+            .ok_or_else(|| "the Privacy page has no HTTPS-only switch".to_owned())?;
+        let dns = find::<adw::ActionRow>(dialog.upcast_ref(), |r| r.title() == SECURE_DNS_ROW)
+            .map(|r| r.subtitle().unwrap_or_default().to_string())
+            .ok_or_else(|| "the Privacy page has no Secure DNS row".to_owned())?;
+        let off = (switch.is_active(), browser.pref(&keys::HTTPS_ONLY));
+        switch.set_active(true);
+        let on = browser.pref(&keys::HTTPS_ONLY);
+        dialog.close();
+
+        browser.set_https_reach(Reach::Everywhere);
+        let tab = window.open_tab(Some(index_url.as_str()), None, Focus::Foreground);
+        opened.replace(Some(tab.clone()));
+        let at = |title: &str| {
+            let (shown, uri) = (title_of(tab.web_view()), tab.committed_uri().unwrap_or_default());
+            if shown == title && uri == index_url.as_str() && !tab.web_view().is_loading() {
+                Ok(())
+            } else {
+                Err(format!("at {uri:?}, titled {shown:?}"))
+            }
+        };
+        wait_for(&last, || at(https_only::WARNING_TITLE)).await;
+        let insecure = tab.security() == Security::Insecure;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("https-only-warning.png")).await.map_err(|e| e.to_string())?;
+        eval_js(tab.web_view(), "document.getElementById('continue').click()").await?;
+        wait_for(&last, || at("Vsesvit fixture")).await;
+        let allowed = https_only::allowed(&mut browser.core().borrow_mut(), &origin);
+
+        let detail = format!(
+            "Settings > Privacy's {HTTPS_ONLY_ROW:?} switch and preference were {off:?}, switched on stored {on}; Secure DNS reads {dns:?}; {index_url} failed over https and showed {:?} at its own address, marked insecure ({insecure}) (https-only-warning.png); Continue to site loaded it over http and stored the exception ({allowed})",
+            https_only::WARNING_TITLE
+        );
+        let ok = off == (false, false) && on && !dns.is_empty() && insecure && allowed;
         if ok { Ok(detail) } else { Err(detail) }
     })
     .await;

@@ -1,9 +1,9 @@
 //! The Settings dialog, bound to core's preferences: General (startup, downloads, scrolling and
 //! the GPU, updates, the profile folder), Sync (the account, what it syncs and its server),
 //! Appearance (theme, tabs, bars and buttons), Search (the engines in `search_engines`, the
-//! address bar and what it suggests), Privacy (tracking protection, pop-ups, passwords, site
-//! permissions, browsing data) and Shortcuts (`shortcut_settings`). Every change applies at once,
-//! in every window, and an open dialog follows what sync changes.
+//! address bar and what it suggests), Privacy (tracking protection, secure connections and DNS,
+//! pop-ups, passwords, site permissions, browsing data) and Shortcuts (`shortcut_settings`).
+//! Every change applies at once, in every window, and an open dialog follows what sync changes.
 //!
 //! WebKitGTK fills no forms, so `autofill.forms` has no row here.
 
@@ -17,6 +17,7 @@ use vsesvit_core::prefs::{
     DEFAULT_SYNC_SERVER, HomepageValue, Pref, Startup, TabsPosition, Theme, UpdateChannel, homepage_input, keys,
 };
 use vsesvit_core::sync::DataType;
+use vsesvit_core::https_only;
 use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
 
@@ -63,6 +64,12 @@ const CHANNELS: [(UpdateChannel, &str); 4] = [
 /// The Privacy page's row choosing tracking protection's level: core's title in this page's
 /// capitalization.
 pub(crate) const TRACKING_PROTECTION_ROW: &str = "Tracking Protection";
+
+/// The Privacy page's switch for HTTPS-only: core's title in this page's capitalization.
+pub(crate) const HTTPS_ONLY_ROW: &str = "Always Use Secure Connections";
+
+/// The Privacy page's row saying the system resolves names: WebKitGTK uses its resolver.
+pub(crate) const SECURE_DNS_ROW: &str = "Secure DNS";
 
 /// The Privacy page's row saying passwords are left to a password manager.
 pub(crate) const PASSWORDS_NOTICE: &str = "Vsesvit Doesn't Save Passwords";
@@ -528,6 +535,21 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
     let tracking = group("Trackers");
     tracking.add(&tracking_protection_row(window.browser()));
 
+    let security = group("Security");
+    security.add(&pref_switch_row(
+        window.browser(),
+        HTTPS_ONLY_ROW,
+        Some(https_only::DESCRIPTION),
+        &keys::HTTPS_ONLY,
+        |b, pref, on| b.set_pref(pref, &on),
+    ));
+    security.add(
+        &adw::ActionRow::builder()
+            .title(SECURE_DNS_ROW)
+            .subtitle("Your system's network settings control DNS, and whether it is secure")
+            .build(),
+    );
+
     let popups = group("Pop-ups");
     popups.add(&pref_switch_row(
         window.browser(),
@@ -609,7 +631,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
     ));
     let permissions = group("Permissions");
     permissions.add(&site_permissions);
-    page("privacy", "Privacy", "security-high-symbolic", &[tracking, popups, passwords, permissions, data])
+    page("privacy", "Privacy", "security-high-symbolic", &[tracking, security, popups, passwords, permissions, data])
 }
 
 /// Off, Standard or Strict, with what the chosen level blocks under it. Sites it is off for are

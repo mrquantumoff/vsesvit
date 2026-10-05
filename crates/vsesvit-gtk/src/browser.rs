@@ -20,6 +20,7 @@ use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::extensions::{ExtensionId, toolbar};
 use vsesvit_core::history::Transition;
+use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::onboarding;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::shortcuts::Keymap;
@@ -59,6 +60,8 @@ pub(crate) struct Inner {
     engine: Engine,
     runtime: Runtime,
     trackers: Trackers,
+    /// Which http URLs HTTPS-only upgrades (the self-test adds its local server).
+    https_reach: Cell<Reach>,
     downloads: Rc<Downloads>,
     closed_tabs: RefCell<ClosedTabs<ClosedTab>>,
     /// Why the runtime could not load an enabled extension, by extension.
@@ -122,6 +125,7 @@ impl Browser {
                 engine,
                 runtime,
                 trackers,
+                https_reach: Cell::new(Reach::Public),
                 downloads,
                 closed_tabs: RefCell::new(ClosedTabs::new(CLOSED_TABS_KEPT)),
                 extension_errors: RefCell::new(HashMap::new()),
@@ -192,6 +196,16 @@ impl Browser {
 
     pub(crate) fn trackers(&self) -> &Trackers {
         &self.0.trackers
+    }
+
+    /// The https URL a navigation to `url` loads instead, under HTTPS-only.
+    pub(crate) fn https_upgrade(&self, url: &Url) -> Option<Url> {
+        https_only::upgrade(&mut self.core().borrow_mut(), url, self.0.https_reach.get())
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn set_https_reach(&self, reach: Reach) {
+        self.0.https_reach.set(reach);
     }
 
     pub(crate) fn downloads(&self) -> &Rc<Downloads> {

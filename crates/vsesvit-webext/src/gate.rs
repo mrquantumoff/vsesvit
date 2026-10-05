@@ -64,6 +64,11 @@ impl Gate {
         self.browser_load = Some(target.to_owned());
     }
 
+    /// Whether `target` is the load the browser started last, which WebKit has not asked about.
+    pub fn started_by_browser(&self, target: &str) -> bool {
+        self.browser_load.as_deref().is_some_and(|load| same_url(load, target))
+    }
+
     /// The browser stopped the view's load, so a load it started may never be asked about.
     pub fn stop(&mut self) {
         self.browser_load = None;
@@ -72,7 +77,7 @@ impl Gate {
     /// Whether the view may navigate to `target` (`new_window`: open a window there), which
     /// WebKit asks before it loads anything: a server redirect asks again (`redirect`).
     pub fn decide(&mut self, policy: &impl Policy, target: &str, redirect: bool, new_window: bool) -> bool {
-        if !new_window && !redirect && self.browser_load.as_deref().is_some_and(|load| same_url(load, target)) {
+        if !new_window && !redirect && self.started_by_browser(target) {
             self.browser_load = None;
             self.pending = Some((target.to_owned(), target.to_owned()));
             return true;
