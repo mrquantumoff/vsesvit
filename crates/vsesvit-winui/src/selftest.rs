@@ -7,6 +7,7 @@
 //! a timeout reports the last value the check saw.
 
 mod omnibox_checks;
+mod page_checks;
 mod shortcut_checks;
 
 use std::cell::RefCell;
@@ -660,6 +661,11 @@ async fn checks(
 
     check(report, "save_page", DEFAULT_TIMEOUT, async |p| {
         shortcut_checks::save_page(&tab, out_dir, p).await
+    })
+    .await;
+
+    check(report, "page_commands", DEFAULT_TIMEOUT, async |p| {
+        page_checks::page_commands(&window, &tab, p).await
     })
     .await;
 

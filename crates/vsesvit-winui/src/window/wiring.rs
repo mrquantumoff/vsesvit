@@ -165,6 +165,12 @@ impl BrowserWindow {
             ("MenuDownloads", MenuAction::Show(Dialog::Downloads)),
             ("MenuExtensions", MenuAction::Show(Dialog::Extensions)),
             ("MenuSavePage", MenuAction::Run(Command::SavePage)),
+            ("MenuPrint", MenuAction::Run(Command::Print)),
+            (
+                "MenuDeveloperTools",
+                MenuAction::Run(Command::DeveloperTools),
+            ),
+            ("MenuViewSource", MenuAction::Run(Command::ViewSource)),
             ("MenuSettings", MenuAction::Show(Dialog::Settings)),
             ("MenuWelcome", MenuAction::Show(Dialog::Welcome)),
             ("MenuAbout", MenuAction::Show(Dialog::About)),
@@ -182,6 +188,10 @@ impl BrowserWindow {
             })?
             .forget();
         }
+        let w = me();
+        xaml::find::<FlyoutBase>(&ui.root, "MainMenu")?
+            .Opening(move |_, _| with(&w, BrowserWindow::menu_opening))?
+            .forget();
 
         let w = me();
         self.window

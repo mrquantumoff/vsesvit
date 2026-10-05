@@ -27,6 +27,7 @@ use vsesvit_core::bookmarks::BookmarkId;
 use vsesvit_core::extensions::toolbar::Layout;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
+use vsesvit_core::view_source;
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
@@ -1015,6 +1016,27 @@ impl BrowserWindow {
                     exec::spawn(save_page(self.me.clone(), tab));
                 }
             }
+            Command::Print => {
+                if let Some(tab) = active
+                    && let Err(e) = tab.print()
+                {
+                    log::warn!("tab {}: print: {e}", tab.id);
+                }
+            }
+            Command::ViewSource => {
+                if let Some(tab) = active
+                    && let Some(url) = view_source::source_url(&tab.state().url)
+                {
+                    self.open_tab_from(tab.id, Initial::Url(url), false);
+                }
+            }
+            Command::DeveloperTools | Command::JavaScriptConsole => {
+                if let Some(tab) = active
+                    && let Err(e) = tab.open_devtools()
+                {
+                    log::warn!("tab {}: developer tools: {e}", tab.id);
+                }
+            }
         }
     }
 
@@ -1080,6 +1102,9 @@ impl BrowserWindow {
             ("MenuHistory", Command::ShowHistory),
             ("MenuDownloads", Command::ShowDownloads),
             ("MenuSavePage", Command::SavePage),
+            ("MenuPrint", Command::Print),
+            ("MenuDeveloperTools", Command::DeveloperTools),
+            ("MenuViewSource", Command::ViewSource),
         ];
         for (name, command) in menu {
             let label = bindings.label(command).unwrap_or_default();
@@ -1088,6 +1113,13 @@ impl BrowserWindow {
         }
         self.refresh_chrome();
         self.side.show_shortcuts();
+    }
+
+    /// View page source is only for pages with a source, as in Chrome.
+    pub(super) fn menu_opening(&self) {
+        let url = self.active_tab().map(|t| t.state().url).unwrap_or_default();
+        let _ = xaml::find::<Control>(&self.ui.root, "MenuViewSource")
+            .and_then(|item| item.SetIsEnabled(view_source::source_url(&url).is_some()));
     }
 
     /// Says in the window that something the user asked for failed.

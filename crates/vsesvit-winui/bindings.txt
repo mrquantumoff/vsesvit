@@ -210,7 +210,7 @@ Microsoft.Web.WebView2.Core.ICoreWebView2EnvironmentStatics::{CreateWithOptionsA
 Microsoft.Web.WebView2.Core.ICoreWebView2Environment::get_BrowserVersionString
 Microsoft.Web.WebView2.Core.ICoreWebView2Environment15::CreateFindOptions
 Microsoft.Web.WebView2.Core.ICoreWebView2FindOptions::{put_FindTerm, put_SuppressDefaultFindDialog}
-Microsoft.Web.WebView2.Core.ICoreWebView2::{get_Settings, get_Source, get_CanGoBack, get_CanGoForward, get_DocumentTitle, get_ContainsFullScreenElement, NavigationStarting, ContentLoading, SourceChanged, HistoryChanged, NavigationCompleted, WebMessageReceived, NewWindowRequested, DocumentTitleChanged, ContainsFullScreenElementChanged, WindowCloseRequested, ProcessFailed, Navigate, NavigateToString, AddScriptToExecuteOnDocumentCreatedAsync, ExecuteScriptAsync, CapturePreviewAsync, CallDevToolsProtocolMethodAsync, Reload, GoBack, GoForward, Stop, GetDevToolsProtocolEventReceiver}
+Microsoft.Web.WebView2.Core.ICoreWebView2::{get_Settings, get_Source, get_CanGoBack, get_CanGoForward, get_DocumentTitle, get_ContainsFullScreenElement, NavigationStarting, ContentLoading, SourceChanged, HistoryChanged, NavigationCompleted, WebMessageReceived, NewWindowRequested, DocumentTitleChanged, ContainsFullScreenElementChanged, WindowCloseRequested, ProcessFailed, Navigate, NavigateToString, AddScriptToExecuteOnDocumentCreatedAsync, ExecuteScriptAsync, CapturePreviewAsync, CallDevToolsProtocolMethodAsync, Reload, GoBack, GoForward, Stop, GetDevToolsProtocolEventReceiver, OpenDevToolsWindow}
 Microsoft.Web.WebView2.Core.ICoreWebView2Settings::{put_AreDevToolsEnabled, put_IsWebMessageEnabled}
 Microsoft.Web.WebView2.Core.ICoreWebView2Settings4::{get_IsPasswordAutosaveEnabled, put_IsPasswordAutosaveEnabled, put_IsGeneralAutofillEnabled}
 Microsoft.Web.WebView2.Core.ICoreWebView2SourceChangedEventArgs::get_IsNewDocument
@@ -243,6 +243,8 @@ Microsoft.Web.WebView2.Core.ICoreWebView2DownloadOperation::{get_Uri, get_BytesR
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadState
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadInterruptReason
 Microsoft.Web.WebView2.Core.ICoreWebView2_25::{ShowSaveAsUIAsync, SaveAsUIShowing}
+Microsoft.Web.WebView2.Core.ICoreWebView2_16::ShowPrintUI
+Microsoft.Web.WebView2.Core.CoreWebView2PrintDialogKind
 Microsoft.Web.WebView2.Core.ICoreWebView2_9::{IsDefaultDownloadDialogOpenChanged, get_IsDefaultDownloadDialogOpen, CloseDefaultDownloadDialog}
 Microsoft.Web.WebView2.Core.ICoreWebView2SaveAsUIShowingEventArgs::{get_ContentMimeType, put_Cancel, put_SuppressDefaultDialog, put_SaveAsFilePath, put_AllowReplace, put_Kind}
 Microsoft.Web.WebView2.Core.CoreWebView2SaveAsKind
@@ -264,7 +266,8 @@ Microsoft.Web.WebView2.Core.ICoreWebView2PermissionSetting::{get_PermissionKind,
 // ---- page context menu ----
 Microsoft.Web.WebView2.Core.ICoreWebView2_11::ContextMenuRequested
 Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuRequestedEventArgs::{get_MenuItems, get_ContextMenuTarget, put_SelectedCommandId, put_Handled}
-Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuTarget::{get_HasSelection, get_SelectionText}
+Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuTarget::{get_Kind, get_HasLinkUri, get_IsEditable, get_HasSelection, get_SelectionText}
+Microsoft.Web.WebView2.Core.CoreWebView2ContextMenuTargetKind
 Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuItem::{get_Name, get_Label, get_CommandId, CustomItemSelected}
 Microsoft.Web.WebView2.Core.ICoreWebView2Environment9::CreateContextMenuItem
 Microsoft.Web.WebView2.Core.CoreWebView2ContextMenuItemKind

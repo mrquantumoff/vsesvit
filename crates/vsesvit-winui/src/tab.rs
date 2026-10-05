@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use vsesvit_core::history::Transition;
 use vsesvit_core::permissions::{Origin, Permission};
-use vsesvit_core::{new_tab, session};
+use vsesvit_core::{new_tab, session, view_source};
 use windows_core::{IInspectable, Interface, Ref, Result};
 
 use crate::bindings::*;
@@ -30,6 +30,9 @@ pub(crate) type TabId = u64;
 
 /// How often a page that may capture is asked what it captures.
 const CAPTURE_POLL: Duration = Duration::from_millis(500);
+
+/// The name WebView2 would give a View page source item of its own (lower camel case English).
+pub(crate) const VIEW_SOURCE_ITEM: &str = "viewPageSource";
 
 /// What a new tab loads first.
 pub(crate) enum Initial {
@@ -531,6 +534,18 @@ impl Tab {
         core.cast::<ICoreWebView2_25>()?.ShowSaveAsUIAsync()?.await
     }
 
+    /// WebView2's print preview for the page, as Chrome's Print.
+    pub fn print(&self) -> Result<()> {
+        let core = self.core.get().ok_or_else(windows_core::Error::empty)?;
+        core.cast::<ICoreWebView2_16>()?
+            .ShowPrintUI(CoreWebView2PrintDialogKind::Browser)
+    }
+
+    pub fn open_devtools(&self) -> Result<()> {
+        let core = self.core.get().ok_or_else(windows_core::Error::empty)?;
+        core.OpenDevToolsWindow()
+    }
+
     pub fn navigate(&self, url: &str) {
         let Some(core) = self.core.get() else {
             log::warn!("tab {}: navigate before the engine view is ready", self.id);
@@ -954,8 +969,10 @@ impl Tab {
             .ContextMenuRequested(on(
                 self,
                 |tab, args: &CoreWebView2ContextMenuRequestedEventArgs| {
-                    if let Err(e) = tab.add_selection_item(args) {
-                        log::warn!("tab {}: context menu: {e}", tab.id);
+                    for added in [tab.add_selection_item(args), tab.add_view_source_item(args)] {
+                        if let Err(e) = added {
+                            log::warn!("tab {}: context menu: {e}", tab.id);
+                        }
                     }
                 },
             ))?
@@ -1124,17 +1141,59 @@ impl Tab {
         let Some(action) = browser.selection_action(&target.SelectionText()?) else {
             return Ok(());
         };
+        let item = self.new_tab_item(&browser, &action.label, action.url.to_string())?;
+        let items = args.MenuItems()?;
+        match item_named(&items, "copy")? {
+            Some(index) => items.InsertAt(index + 1, &item),
+            None => items.Append(&item),
+        }
+    }
+
+    /// Chrome's View page source on the page's own menu, right before Inspect, which WebView2's
+    /// menu lacks.
+    fn add_view_source_item(
+        self: &Rc<Self>,
+        args: &CoreWebView2ContextMenuRequestedEventArgs,
+    ) -> Result<()> {
+        let target = args.ContextMenuTarget()?;
+        if target.Kind()? != CoreWebView2ContextMenuTargetKind::Page
+            || target.HasLinkUri()?
+            || target.IsEditable()?
+        {
+            return Ok(());
+        }
+        let items = args.MenuItems()?;
+        let (Some(url), None, Some(browser)) = (
+            view_source::source_url(&self.state.borrow().url),
+            item_named(&items, VIEW_SOURCE_ITEM)?,
+            self.browser(),
+        ) else {
+            return Ok(());
+        };
+        let item = self.new_tab_item(&browser, "View page source", url)?;
+        match item_named(&items, "inspect")? {
+            Some(index) => items.InsertAt(index, &item),
+            None => items.Append(&item),
+        }
+    }
+
+    /// A context menu item that opens `url` in a new tab next to this one.
+    fn new_tab_item(
+        self: &Rc<Self>,
+        browser: &Browser,
+        label: &str,
+        url: String,
+    ) -> Result<CoreWebView2ContextMenuItem> {
         let item = browser
             .engine()
             .environment()
             .cast::<ICoreWebView2Environment9>()?
             .CreateContextMenuItem(
-                &action.label,
+                label,
                 None::<&IRandomAccessStream>,
                 CoreWebView2ContextMenuItemKind::Command,
             )?;
         let tab = Rc::downgrade(self);
-        let url = action.url.to_string();
         item.CustomItemSelected(move |_, _| {
             let (tab, url) = (tab.clone(), url.clone());
             // After the menu has closed, not from inside its event.
@@ -1147,17 +1206,7 @@ impl Tab {
             });
         })?
         .forget();
-        let items = args.MenuItems()?;
-        let copy = (0..items.Size()?).find(|&i| {
-            items
-                .GetAt(i)
-                .and_then(|m| m.Name())
-                .is_ok_and(|n| n == "copy")
-        });
-        match copy {
-            Some(index) => items.InsertAt(index + 1, &item),
-            None => items.Append(&item),
-        }
+        Ok(item)
     }
 
     pub fn permissions(&self) -> &TabPermissions {
@@ -1292,6 +1341,19 @@ fn display_title(document_title: String, url: &str) -> String {
         ("", url) => url.to_owned(),
         _ => document_title,
     }
+}
+
+/// Where the context menu item called `name` is.
+fn item_named(
+    items: &windows_collections::IVector<CoreWebView2ContextMenuItem>,
+    name: &str,
+) -> Result<Option<u32>> {
+    Ok((0..items.Size()?).find(|&i| {
+        items
+            .GetAt(i)
+            .and_then(|m| m.Name())
+            .is_ok_and(|n| n == name)
+    }))
 }
 
 /// A handler for events that carry no arguments (WebView2 passes null): runs while the tab lives.

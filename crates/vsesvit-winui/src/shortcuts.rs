@@ -5,7 +5,8 @@
 //! each binding is a `KeyboardAccelerator` on the window root. While the page has focus, keys go
 //! to the engine's own window and XAML never sees them (WinUI's `WebView2` does not forward
 //! `AcceleratorKeyPressed`), so:
-//! - `Native` keys (reload, back/forward, find) are left to WebView2's built-in handling;
+//! - `Native` keys (reload, back/forward, find, print, developer tools) are left to WebView2's
+//!   built-in handling;
 //! - `Reserved` keys are taken by a script injected into every page before the page sees them;
 //! - `Overridable` keys reach the page first and are taken only if it does not
 //!   `preventDefault()` them, which is how Chromium treats non-reserved browser shortcuts.
@@ -58,6 +59,14 @@ pub(crate) enum Command {
     CopyLink,
     /// WebView2's Save As dialog for the page: HTML pages and other files (images, PDFs) alike.
     SavePage,
+    /// WebView2's print preview.
+    Print,
+    /// The page's `view-source:` address in a new tab.
+    ViewSource,
+    DeveloperTools,
+    /// WebView2 cannot open DevTools on a given panel, so this opens them as `DeveloperTools`
+    /// does; in the page, WebView2 itself opens the console on Ctrl+Shift+J.
+    JavaScriptConsole,
 }
 
 /// Where a key press for a command is taken while the page has focus.
@@ -94,6 +103,11 @@ const IMPLEMENTED: &[(Core, Command, InPage)] = &[
     (Core::Reload, Command::Reload, Native),
     // Pages such as editors keep a Ctrl+Shift+S of their own, as Chrome's Ctrl+S.
     (Core::SavePage, Command::SavePage, Overridable),
+    (Core::Print, Command::Print, Native),
+    // WebView2 has no Ctrl+U of its own; pages keep theirs, as in Chrome.
+    (Core::ViewSource, Command::ViewSource, Overridable),
+    (Core::DeveloperTools, Command::DeveloperTools, Native),
+    (Core::JavaScriptConsole, Command::JavaScriptConsole, Native),
     (Core::Find, Command::Find, Native),
     (Core::BookmarkPage, Command::Bookmark, Overridable),
     (Core::CopyCleanLink, Command::CopyCleanLink, Reserved),
@@ -815,6 +829,23 @@ mod tests {
             find(0x43, CTRL_ALT_SHIFT),
             Some((Command::CopyLink, Reserved))
         );
+        assert_eq!(find(0x50, Mods::CTRL), Some((Command::Print, Native)));
+        assert_eq!(
+            find(0x55, Mods::CTRL),
+            Some((Command::ViewSource, Overridable))
+        );
+        assert_eq!(
+            find(0x49, CTRL_SHIFT),
+            Some((Command::DeveloperTools, Native))
+        );
+        assert_eq!(
+            find(0x7B, Mods::NONE),
+            Some((Command::DeveloperTools, Native))
+        );
+        assert_eq!(
+            find(0x4A, CTRL_SHIFT),
+            Some((Command::JavaScriptConsole, Native))
+        );
         assert_eq!(find(0x54, Mods::ALT), None);
         assert!(bindings.swallowed.is_empty());
         assert_eq!(
@@ -882,6 +913,18 @@ mod tests {
             script.contains("swallowed: new Set([\"82:1\",\"116:0\"])"),
             "{script}"
         );
+    }
+
+    #[test]
+    fn developer_tools_moved_away_swallow_both_of_webview2s_chords() {
+        let bindings = with(|k| {
+            k.assign(Core::DeveloperTools, [chord("Ctrl+Shift+Y")]);
+        });
+        assert_eq!(
+            bindings.reported(0x59, CTRL_SHIFT),
+            Some(Command::DeveloperTools)
+        );
+        assert_eq!(bindings.swallowed, [(0x49, CTRL_SHIFT), (0x7B, Mods::NONE)]);
     }
 
     #[test]
@@ -1077,6 +1120,9 @@ mod tests {
             "Ctrl+Shift+S is overridable too"
         );
         assert!(!script.contains("\"82:1\""), "Ctrl+R is left to WebView2");
+        assert!(!script.contains("\"80:1\""), "Ctrl+P is left to WebView2");
+        assert!(!script.contains("\"123:0\""), "F12 is left to WebView2");
+        assert!(script.contains("\"85:1\""), "Ctrl+U is overridable");
     }
 
     #[test]

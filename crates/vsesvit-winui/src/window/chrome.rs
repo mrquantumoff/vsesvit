@@ -230,7 +230,7 @@ const WINDOW_XAML: &str = r#"
             ToolTipService.ToolTip="Settings and more" AutomationProperties.Name="Settings and more">
       <FontIcon Glyph="&#xE712;" FontSize="16"/>
       <Button.Flyout>
-        <MenuFlyout Placement="BottomEdgeAlignedRight">
+        <MenuFlyout x:Name="MainMenu" Placement="BottomEdgeAlignedRight">
           {acrylic_menu}
           <MenuFlyoutItem x:Name="MenuNewTab" Text="New tab">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xECCD;"/></MenuFlyoutItem.Icon>
@@ -255,6 +255,18 @@ const WINDOW_XAML: &str = r#"
           <MenuFlyoutItem x:Name="MenuSavePage" Text="Save page as…">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74E;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
+          <MenuFlyoutItem x:Name="MenuPrint" Text="Print…">
+            <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE749;"/></MenuFlyoutItem.Icon>
+          </MenuFlyoutItem>
+          <MenuFlyoutSubItem Text="More tools">
+            <MenuFlyoutSubItem.Icon><FontIcon Glyph="&#xE90F;"/></MenuFlyoutSubItem.Icon>
+            <MenuFlyoutItem x:Name="MenuDeveloperTools" Text="Developer tools">
+              <MenuFlyoutItem.Icon><FontIcon Glyph="&#xEC7A;"/></MenuFlyoutItem.Icon>
+            </MenuFlyoutItem>
+            <MenuFlyoutItem x:Name="MenuViewSource" Text="View page source">
+              <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE943;"/></MenuFlyoutItem.Icon>
+            </MenuFlyoutItem>
+          </MenuFlyoutSubItem>
           <MenuFlyoutSeparator/>
           <MenuFlyoutItem x:Name="MenuSettings" Text="Settings">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE713;"/></MenuFlyoutItem.Icon>

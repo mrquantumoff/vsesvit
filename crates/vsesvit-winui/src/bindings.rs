@@ -1486,6 +1486,24 @@ impl windows_core::RuntimeName for CoreWebView2ContextMenuTarget {
 unsafe impl Send for CoreWebView2ContextMenuTarget {}
 unsafe impl Sync for CoreWebView2ContextMenuTarget {}
 #[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2ContextMenuTargetKind(pub i32);
+impl CoreWebView2ContextMenuTargetKind {
+    pub const Page: Self = Self(0);
+    pub const Image: Self = Self(1);
+    pub const SelectedText: Self = Self(2);
+    pub const Audio: Self = Self(3);
+    pub const Video: Self = Self(4);
+}
+impl windows_core::imp::TypeKind for CoreWebView2ContextMenuTargetKind {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2ContextMenuTargetKind {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2ContextMenuTargetKind;i4)",
+    );
+}
+#[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWebView2DevToolsProtocolEventReceivedEventArgs(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
@@ -2070,6 +2088,21 @@ impl windows_core::imp::TypeKind for CoreWebView2PermissionState {
 impl windows_core::RuntimeType for CoreWebView2PermissionState {
     const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
         b"enum(Microsoft.Web.WebView2.Core.CoreWebView2PermissionState;i4)",
+    );
+}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CoreWebView2PrintDialogKind(pub i32);
+impl CoreWebView2PrintDialogKind {
+    pub const Browser: Self = Self(0);
+    pub const System: Self = Self(1);
+}
+impl windows_core::imp::TypeKind for CoreWebView2PrintDialogKind {
+    type TypeKind = windows_core::imp::CopyType;
+}
+impl windows_core::RuntimeType for CoreWebView2PrintDialogKind {
+    const SIGNATURE: windows_core::imp::ConstBuffer = windows_core::imp::ConstBuffer::from_slice(
+        b"enum(Microsoft.Web.WebView2.Core.CoreWebView2PrintDialogKind;i4)",
     );
 }
 #[repr(transparent)]
@@ -6173,6 +6206,14 @@ impl ICoreWebView2 {
             (windows_core::Interface::vtable(self).Stop)(windows_core::Interface::as_raw(self)).ok()
         }
     }
+    pub fn OpenDevToolsWindow(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).OpenDevToolsWindow)(
+                windows_core::Interface::as_raw(self),
+            )
+            .ok()
+        }
+    }
 }
 #[repr(C)]
 pub struct ICoreWebView2_Vtbl {
@@ -6331,6 +6372,10 @@ pub struct ICoreWebView2_Vtbl {
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
     pub Stop: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+    AddHostObjectToScript: usize,
+    RemoveHostObjectFromScript: usize,
+    pub OpenDevToolsWindow:
+        unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2BrowserExtension,
@@ -6635,6 +6680,36 @@ impl windows_core::RuntimeType for ICoreWebView2ContextMenuTarget {
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
 impl ICoreWebView2ContextMenuTarget {
+    pub fn Kind(&self) -> windows_core::Result<CoreWebView2ContextMenuTargetKind> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Kind)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn IsEditable(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsEditable)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn HasLinkUri(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).HasLinkUri)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
     pub fn HasSelection(&self) -> windows_core::Result<bool> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -6662,12 +6737,17 @@ impl ICoreWebView2ContextMenuTarget {
 #[repr(C)]
 pub struct ICoreWebView2ContextMenuTarget_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
-    Kind: usize,
-    IsEditable: usize,
+    pub Kind: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut CoreWebView2ContextMenuTargetKind,
+    ) -> windows_core::HRESULT,
+    pub IsEditable:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
     IsRequestedForMainFrame: usize,
     PageUri: usize,
     FrameUri: usize,
-    HasLinkUri: usize,
+    pub HasLinkUri:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
     LinkUri: usize,
     HasLinkText: usize,
     LinkText: usize,
@@ -8439,6 +8519,38 @@ pub struct ICoreWebView2_15_Vtbl {
         *mut core::ffi::c_void,
         CoreWebView2FaviconImageFormat,
         *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2_16,
+    ICoreWebView2_16_Vtbl,
+    0x61d0a57c_6c4f_50ff_a137_314b0099a2b8
+);
+impl windows_core::RuntimeType for ICoreWebView2_16 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2_16 {
+    pub fn ShowPrintUI(
+        &self,
+        printdialogkind: CoreWebView2PrintDialogKind,
+    ) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).ShowPrintUI)(
+                windows_core::Interface::as_raw(self),
+                printdialogkind,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2_16_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    PrintAsync: usize,
+    pub ShowPrintUI: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        CoreWebView2PrintDialogKind,
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(

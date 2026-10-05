@@ -101,7 +101,7 @@ fn history_chords(browser: &Browser) -> Vec<String> {
 }
 
 /// What the window's bindings run on `vk` with `mods`, and how the page may override it.
-fn binding(vk: u16, mods: Mods) -> Option<(Command, InPage)> {
+pub(super) fn binding(vk: u16, mods: Mods) -> Option<(Command, InPage)> {
     shortcuts::current()
         .list()
         .iter()
