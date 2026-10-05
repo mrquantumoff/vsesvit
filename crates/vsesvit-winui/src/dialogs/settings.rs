@@ -168,7 +168,6 @@ pub(super) const MARKUP: &str = r#"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        Text="Sites can still open windows when you click a link or button."/>
           </StackPanel>
-          <ToggleSwitch x:Name="SavePasswords" Header="Offer to save passwords"/>
           <ToggleSwitch x:Name="AutofillForms" Header="Save and fill form entries such as addresses"/>
         </StackPanel>
         <StackPanel Spacing="8">
@@ -276,18 +275,13 @@ type Follow = Vec<Shown>;
 /// Switches bound straight to a preference, and what follows once it is written. What the
 /// others change reads its preference when it needs it: the address bar's suggestions as the
 /// user types, a page's pop-up as it opens, and the engine's startup switches at the next start.
-const PREF_SWITCHES: [(&str, &Pref<bool>, Written); 8] = [
+const PREF_SWITCHES: [(&str, &Pref<bool>, Written); 7] = [
     ("DownloadsAsk", &keys::DOWNLOADS_ASK, |_| {}),
     ("SmoothScrolling", &keys::SMOOTH_SCROLLING, |_| {}),
     ("HardwareAcceleration", &keys::HARDWARE_ACCELERATION, |_| {}),
     ("SuggestHistory", &keys::SUGGEST_HISTORY, |_| {}),
     ("SuggestBookmarks", &keys::SUGGEST_BOOKMARKS, |_| {}),
     ("BlockPopups", &keys::BLOCK_POPUPS, |_| {}),
-    (
-        "SavePasswords",
-        &keys::SAVE_PASSWORDS,
-        Browser::apply_autofill,
-    ),
     (
         "AutofillForms",
         &keys::AUTOFILL_FORMS,
@@ -609,7 +603,8 @@ fn wire_clear_browsing_data(root: &FrameworkElement, browser: &Rc<Browser>) -> R
 }
 
 /// Deletes history on every synced device, then this device's cookies, site data and cache.
-/// Saved passwords and form entries stay, as with Chrome's defaults.
+/// Form entries stay, as with Chrome's defaults, and so do passwords WebView2 saved before
+/// Vsesvit stopped saving them.
 async fn clear_browsing_data(browser: &Browser) -> std::result::Result<(), String> {
     browser
         .core(|p| p.history().delete_range(0, super::history::now_ms()))

@@ -134,8 +134,6 @@ pub mod keys {
     pub const SUGGEST_BOOKMARKS: Pref<bool> = Pref { key: "address_bar.suggest.bookmarks", scope: Scope::Synced, default: || true };
     /// Refuse windows a page opens without a user gesture.
     pub const BLOCK_POPUPS: Pref<bool> = Pref { key: "content.block_popups", scope: Scope::Synced, default: || true };
-    /// Offer to save passwords typed into sign-in forms, where the engine has a password store.
-    pub const SAVE_PASSWORDS: Pref<bool> = Pref { key: "autofill.passwords", scope: Scope::Synced, default: || true };
     /// Save and fill form entries such as addresses, where the engine supports it.
     pub const AUTOFILL_FORMS: Pref<bool> = Pref { key: "autofill.forms", scope: Scope::Synced, default: || true };
     pub const SMOOTH_SCROLLING: Pref<bool> = Pref { key: "scrolling.smooth", scope: Scope::Synced, default: || true };

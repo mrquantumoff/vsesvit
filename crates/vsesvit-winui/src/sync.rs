@@ -611,7 +611,7 @@ pub(crate) enum PrefEffect {
 /// The synced preferences with an effect. The others are read where they are used: the home
 /// page, startup, the default search engine and suggestions, pop-ups, downloads, and the
 /// engine's startup switches.
-const PREF_EFFECTS: [(&str, PrefEffect); 12] = [
+const PREF_EFFECTS: [(&str, PrefEffect); 11] = [
     (keys::THEME.key, PrefEffect::Window),
     (keys::TABS_POSITION.key, PrefEffect::Window),
     (keys::SHOW_BOOKMARKS_BAR.key, PrefEffect::Window),
@@ -621,7 +621,6 @@ const PREF_EFFECTS: [(&str, PrefEffect); 12] = [
     (keys::SHOW_MEDIA_PLAYER.key, PrefEffect::Window),
     (keys::PICTURE_IN_PICTURE.key, PrefEffect::Window),
     (keys::SHORTCUTS.key, PrefEffect::Keymap),
-    (keys::SAVE_PASSWORDS.key, PrefEffect::Autofill),
     (keys::AUTOFILL_FORMS.key, PrefEffect::Autofill),
     (toolbar::TOOLBAR.key, PrefEffect::ExtensionToolbar),
 ];

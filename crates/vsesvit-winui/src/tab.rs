@@ -73,19 +73,11 @@ impl Drop for NewWindowRequest {
     }
 }
 
-/// The engine's autofill preferences, applied to each tab's engine view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Autofill {
-    pub passwords: bool,
-    pub forms: bool,
-}
-
-impl Autofill {
-    fn apply(self, settings: &CoreWebView2Settings) -> Result<()> {
-        let settings = settings.cast::<ICoreWebView2Settings4>()?;
-        settings.SetIsPasswordAutosaveEnabled(self.passwords)?;
-        settings.SetIsGeneralAutofillEnabled(self.forms)
-    }
+/// Password saving is always off: Vsesvit leaves passwords to a password manager's extension.
+fn set_autofill_settings(settings: &CoreWebView2Settings, forms: bool) -> Result<()> {
+    let settings = settings.cast::<ICoreWebView2Settings4>()?;
+    settings.SetIsPasswordAutosaveEnabled(false)?;
+    settings.SetIsGeneralAutofillEnabled(forms)
 }
 
 /// How far the tab's current navigation has got.
@@ -332,7 +324,7 @@ impl Tab {
         settings.SetAreDevToolsEnabled(true)?;
         settings.SetIsWebMessageEnabled(false)?;
         if let Some(browser) = self.browser() {
-            self.apply_autofill(&settings, browser.autofill());
+            self.apply_autofill(&settings, browser.autofill_forms());
         }
         self.wire(&core)?;
         self.inject(&core, page_script).await?;
@@ -794,15 +786,15 @@ impl Tab {
         self.notify();
     }
 
-    pub fn set_autofill(&self, autofill: Autofill) {
+    pub fn set_autofill(&self, forms: bool) {
         if let Some(settings) = self.core.get().and_then(|c| c.Settings().ok()) {
-            self.apply_autofill(&settings, autofill);
+            self.apply_autofill(&settings, forms);
         }
     }
 
     /// A runtime too old for these settings keeps its defaults; the tab still works.
-    fn apply_autofill(&self, settings: &CoreWebView2Settings, autofill: Autofill) {
-        if let Err(e) = autofill.apply(settings) {
+    fn apply_autofill(&self, settings: &CoreWebView2Settings, forms: bool) {
+        if let Err(e) = set_autofill_settings(settings, forms) {
             log::warn!("tab {}: autofill settings: {e}", self.id);
         }
     }

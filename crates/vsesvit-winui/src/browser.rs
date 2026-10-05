@@ -33,7 +33,6 @@ use crate::extensions::ExtensionHost;
 use crate::popup::ExtensionAction;
 use crate::session::{self, TabPlan, WindowPlan};
 use crate::sync::{PrefEffect, SyncController};
-use crate::tab::Autofill;
 use crate::updates::{self, Action, Trigger, Updates};
 use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
 use crate::{app, cli, exec, instance, omnibox, platform, shortcuts, sync};
@@ -965,19 +964,16 @@ impl Browser {
         self.core(|p| p.prefs().get(&keys::BLOCK_POPUPS))
     }
 
-    pub fn autofill(&self) -> Autofill {
-        self.core(|p| Autofill {
-            passwords: p.prefs().get(&keys::SAVE_PASSWORDS),
-            forms: p.prefs().get(&keys::AUTOFILL_FORMS),
-        })
+    pub fn autofill_forms(&self) -> bool {
+        self.core(|p| p.prefs().get(&keys::AUTOFILL_FORMS))
     }
 
-    /// Gives every open tab the autofill preferences; a new tab reads them as it starts.
+    /// Gives every open tab the form autofill preference; a new tab reads it as it starts.
     pub fn apply_autofill(&self) {
-        let autofill = self.autofill();
+        let forms = self.autofill_forms();
         for window in self.windows() {
             for tab in window.tabs_in_order() {
-                tab.set_autofill(autofill);
+                tab.set_autofill(forms);
             }
         }
     }
