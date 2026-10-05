@@ -149,7 +149,7 @@ fn chords_text(chords: &[Chord]) -> String {
         .join(" or ")
 }
 
-/// Chrome takes no extension shortcut without one of them.
+/// Chrome takes no extension shortcut without Ctrl or Alt.
 const EXTENSION_NEEDS_MODIFIER_NOTE: &str = "Extension shortcuts need Ctrl or Alt.";
 
 /// The `x:Name` of a command's row button, from its stable id.
@@ -158,13 +158,15 @@ pub(crate) fn row_name(command: Core) -> String {
 }
 
 /// The `x:Name` of an extension command's row button. Only action commands have rows, and
-/// their names are XAML names already.
+/// their names are XAML names already; a Gecko id (`name@example.org`, `{uuid}`) is not.
 pub(crate) fn extension_row_name(command: &ExtensionCommand) -> String {
-    format!(
-        "ExtensionShortcut_{}_{}",
-        command.extension.as_str(),
-        command.command.name
-    )
+    let extension: String = command
+        .extension
+        .as_str()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("ExtensionShortcut_{extension}_{}", command.command.name)
 }
 
 /// A row's command, which the capture flyout asks a shortcut for.
@@ -605,9 +607,11 @@ mod tests {
         assert_eq!(chords_text(&[]), "Disabled");
     }
 
+    const PROBE: &str = "abcdefghijklmnopabcdefghijklmnop";
+
     fn action_command(name: &str, key: &str) -> ExtensionCommand {
         ExtensionCommand {
-            extension: ExtensionId::parse("abcdefghijklmnopabcdefghijklmnop").unwrap(),
+            extension: ExtensionId::parse(PROBE).unwrap(),
             extension_name: "Probe".into(),
             command: ManifestCommand {
                 name: name.into(),
@@ -622,7 +626,19 @@ mod tests {
         let targets = Core::ALL
             .iter()
             .map(|&command| Target::Browser(command))
-            .chain(ACTION_COMMANDS.map(|name| Target::Extension(action_command(name, ""))));
+            .chain(ACTION_COMMANDS.map(|name| Target::Extension(action_command(name, ""))))
+            .chain(
+                [
+                    "{8a5d2c3e-1b4f-4e6a-9c7d-0f1e2d3c4b5a}",
+                    "commands@vsesvit.test",
+                ]
+                .map(|id| {
+                    Target::Extension(ExtensionCommand {
+                        extension: ExtensionId::parse(id).unwrap(),
+                        ..action_command("_execute_action", "")
+                    })
+                }),
+            );
         for target in targets {
             for name in [target.row_name(), target.reset_name()] {
                 assert!(
