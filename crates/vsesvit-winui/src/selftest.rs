@@ -8,6 +8,7 @@
 
 mod omnibox_checks;
 mod page_checks;
+mod search_engine_checks;
 mod shortcut_checks;
 
 use std::cell::RefCell;
@@ -590,6 +591,14 @@ async fn checks(
 
     check(report, "selection_search", DEFAULT_TIMEOUT, async |p| {
         omnibox_checks::selection_search(browser, &window, &tab, &server, p).await
+    })
+    .await;
+
+    check(report, "search_engines", DEFAULT_TIMEOUT, async |p| {
+        let search_url = format!("http://127.0.0.1:{}/search?q={{searchTerms}}", server.port());
+        search_engine_checks::search_engines(&window, &search_url, index.as_str(), out_dir, p)
+            .await
+            .map_err(|e| format!("{e} (at: {})", p.last()))
     })
     .await;
 

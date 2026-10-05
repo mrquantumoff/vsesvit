@@ -173,7 +173,7 @@ const CONTENT: &str = r#"
     </StackPanel>
   </StackPanel>"#;
 
-const VK_RETURN: i32 = 0x0D;
+pub(crate) const VK_RETURN: i32 = 0x0D;
 
 /// An open editor.
 pub(crate) struct Editor {

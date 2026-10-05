@@ -12,6 +12,7 @@ use vsesvit_core::bookmarks::{BookmarkId, NodeKind};
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, keys};
+use vsesvit_core::search::FormField;
 use vsesvit_core::testkit;
 use vsesvit_core::trackers::TrackingProtection;
 use windows_core::{IInspectable, Interface, Result};
@@ -19,6 +20,7 @@ use windows_core::{IInspectable, Interface, Result};
 use super::{shoot, wait_layout};
 use crate::bindings::*;
 use crate::browser::Browser;
+use crate::dialogs::search_engines::Engines;
 use crate::dialogs::{self, Dialog, Preview, SETTINGS_CATEGORIES};
 use crate::window::{Backdrop, BrowserWindow};
 use crate::{engine, exec, xaml};
@@ -156,6 +158,7 @@ pub(super) async fn settings(
         "widths": [narrow, wide],
         "ok": defaults == (true, false) && narrow > 0.0 && narrow <= 720.5 && wide > narrow,
     }));
+    search_engines(window, out_dir, &preview, steps).await?;
 
     select_category(&preview, "GeneralPanel")?;
     settle().await;
@@ -219,6 +222,42 @@ pub(super) async fn settings(
             && strict.1 == TrackingProtection::Strict
             && restored.1 == TrackingProtection::Standard,
     }));
+    Ok(())
+}
+
+/// Settings, Search: the list shows every engine with the default marked, and Add opens the
+/// editor, which refuses a shortcut another engine has. It closes without saving.
+async fn search_engines(
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    preview: &Preview,
+    steps: &mut Vec<Value>,
+) -> Result<()> {
+    let engines = preview
+        .wired::<Engines>()
+        .ok_or_else(|| windows_core::Error::new(E_FAIL, "the Settings dialog has no search engines"))?;
+    let names: Vec<String> = engines.rows()?.into_iter().map(|(name, _)| name).collect();
+    click(preview, "SearchEngineAdd")?;
+    settle().await;
+    let editor = engines
+        .editor()
+        .ok_or_else(|| windows_core::Error::new(E_FAIL, "Add opened no editor"))?;
+    editor.fill(FormField::Name, "Example")?;
+    editor.fill(FormField::Keyword, "w")?;
+    settle().await;
+    let taken = editor.shown(FormField::Keyword);
+    shoot(window, out_dir, "14h-settings-search-engine-editor", steps, |_| {
+        json!({
+            "engines": names,
+            "shortcut_w": taken,
+            "ok": names.len() == 4
+                && names.iter().any(|n| n == "DuckDuckGo (Default)")
+                && taken == (Some("Another search engine has this shortcut".to_owned()), false),
+        })
+    })
+    .await;
+    editor.close();
+    settle().await;
     Ok(())
 }
 

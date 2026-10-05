@@ -8,7 +8,6 @@ use std::rc::Rc;
 use vsesvit_core::prefs::{
     HomepageValue, Pref, Startup, TabsPosition, Theme, UpdateChannel, homepage_input, keys,
 };
-use vsesvit_core::search::SearchEngineId;
 use vsesvit_core::sync::Changed;
 use vsesvit_core::trackers::TrackingProtection;
 use windows_core::{Interface, Result};
@@ -129,7 +128,7 @@ pub(super) const MARKUP: &str = r#"
     <ScrollViewer x:Name="SearchPanel" Grid.Column="1" Padding="0,0,16,0" VerticalScrollBarVisibility="Auto"
                   Visibility="Collapsed">
       <StackPanel Spacing="28" Padding="0,0,0,12">
-        <ComboBox x:Name="SearchEngine" Header="Search engine used in the address bar" MinWidth="320"/>
+        {search_engines}
         <StackPanel Spacing="12">
           <TextBlock Text="Address bar" Style="{StaticResource BodyStrongTextBlockStyle}"/>
           <ToggleSwitch x:Name="CompactAddress" Header="Compact address bar, centered in the toolbar"/>
@@ -370,34 +369,13 @@ pub(super) fn wire(
     )?;
     follow.push(Box::new(move |b| show(b.tabs_position())));
 
-    let (engines, default) = browser.core(|p| {
-        let engines = p.search_engines().list().unwrap_or_default();
-        let default = p.search_engines().default_engine().ok().map(|e| e.id);
-        (engines, default)
-    });
-    let engine_choices: Vec<(SearchEngineId, String)> =
-        engines.into_iter().map(|e| (e.id, e.name)).collect();
-    let search: ComboBox = xaml::find(root, "SearchEngine")?;
-    let named: Vec<(SearchEngineId, &str)> = engine_choices
-        .iter()
-        .map(|(id, name)| (id.clone(), name.as_str()))
-        .collect();
-    let w = weak.clone();
-    let show = choices(
-        &search,
-        &named,
-        default.unwrap_or_else(SearchEngineId::builtin_default),
-        move |id| {
-            if let Some(b) = w.upgrade()
-                && let Err(e) = b.core(|p| p.search_engines().set_default(&id))
-            {
-                log::warn!("default search engine: {e}");
-            }
-        },
-    )?;
-    follow.push(Box::new(move |b| {
-        if let Some(default) = b.core(|p| p.search_engines().default_engine().ok()) {
-            show(default.id);
+    let engines = super::search_engines::wire(root, browser)?;
+    let shown = Rc::downgrade(&engines);
+    follow.push(Box::new(move |_| {
+        if let Some(engines) = shown.upgrade()
+            && let Err(e) = engines.fill()
+        {
+            log::warn!("search engines page: {e}");
         }
     }));
 
@@ -484,6 +462,7 @@ pub(super) fn wire(
             default_browser,
             updates,
             shortcuts,
+            engines,
             sync.clone(),
             Rc::new(synced),
         ],

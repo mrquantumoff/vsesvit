@@ -14,6 +14,7 @@ mod downloads;
 mod extensions;
 mod history;
 mod other_devices;
+pub(crate) mod search_engines;
 mod settings;
 mod shortcut_settings;
 mod site_permissions;
@@ -93,6 +94,7 @@ impl Dialog {
             Self::Extensions => extensions::MARKUP.into(),
             Self::Settings => settings::MARKUP
                 .replacen("{default_browser}", default_browser::MARKUP, 1)
+                .replacen("{search_engines}", search_engines::MARKUP, 1)
                 .replacen("{shortcuts}", shortcut_settings::PANEL, 1)
                 .replacen("{sync}", &sync_settings::panel(), 1)
                 .into(),
