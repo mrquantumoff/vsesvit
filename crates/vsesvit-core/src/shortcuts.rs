@@ -265,6 +265,7 @@ commands! {
     }
     Page {
         SavePage = "save-page", "Save page as…", [ctrl_shift(S)];
+        Print = "print", "Print…", [ctrl(P)];
         Find = "find", "Find", [ctrl(F)];
         FindNext = "find-next", "Next match", [ctrl(G)];
         FindPrevious = "find-previous", "Previous match", [ctrl_shift(G)];
@@ -272,6 +273,7 @@ commands! {
         // Chrome opens the element inspector with Ctrl+Shift+C.
         CopyCleanLink = "copy-clean-link", "Copy link without tracking", [ctrl_shift(C)];
         CopyLink = "copy-link", "Copy link", [chord(Mods::CTRL.and(Mods::ALT).and(Mods::SHIFT), C)];
+        ViewSource = "view-source", "View page source", [ctrl(U)];
         ZoomIn = "zoom-in", "Zoom in", [ctrl(Plus), ctrl(Equal), ctrl(KeypadPlus)];
         ZoomOut = "zoom-out", "Zoom out", [ctrl(Minus), ctrl(KeypadMinus)];
         ZoomReset = "zoom-reset", "Reset zoom", [ctrl(Digit0), ctrl(Keypad0)];
@@ -284,6 +286,8 @@ commands! {
         ShowDownloads = "show-downloads", "Downloads", [ctrl(J)];
         ShowSettings = "show-settings", "Settings", [ctrl(Comma)];
         ShowShortcuts = "show-shortcuts", "Keyboard shortcuts", [ctrl(Question)];
+        DeveloperTools = "developer-tools", "Developer tools", [ctrl_shift(I), bare(F12)];
+        JavaScriptConsole = "javascript-console", "JavaScript console", [ctrl_shift(J)];
     }
 }
 

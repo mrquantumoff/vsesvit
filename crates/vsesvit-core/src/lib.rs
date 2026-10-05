@@ -38,6 +38,7 @@
 //! | [`ext_storage`]  | `chrome.storage.local` / `.sync` backing for the Linux runtime        |
 //! | [`sync`]         | what the sync engine (`vsesvit-sync`) calls: `changes_since`, `apply` |
 //! | [`vault`]        | the profile's OS-protected key that seals secrets (LOCAL)             |
+//! | [`view_source`]  | `view-source:` addresses, and the source page for engines without one |
 //! | `db`             | schema, migrations, `Tx` (stamp + seq + clock persistence)            |
 
 use std::marker::PhantomData;
@@ -67,6 +68,7 @@ pub mod sync;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod vault;
+pub mod view_source;
 pub mod zoom;
 
 pub use url::Url;

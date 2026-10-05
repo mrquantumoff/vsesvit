@@ -39,7 +39,7 @@ pub(crate) fn binding(cmd: Command) -> Option<Binding> {
         FindNext => Action("win.find-next"),
         FindPrevious => Action("win.find-previous"),
         BookmarkPage => Action("win.bookmark-page"),
-        CopyCleanLink | CopyLink => return None,
+        CopyCleanLink | CopyLink | Print | ViewSource | DeveloperTools | JavaScriptConsole => return None,
         ZoomIn => Action("win.zoom-in"),
         ZoomOut => Action("win.zoom-out"),
         ZoomReset => Action("win.zoom-reset"),

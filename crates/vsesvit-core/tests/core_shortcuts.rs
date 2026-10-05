@@ -106,6 +106,18 @@ fn the_default_table() {
     assert_eq!(Command::ToggleTabList.defaults(), [c("Ctrl+S"), c("F9")]);
     assert_eq!(Command::FocusAddress.defaults(), [c("Ctrl+L"), c("Alt+D"), c("F6")]);
     assert_eq!(Command::ZoomIn.defaults(), [c("Ctrl+Plus"), c("Ctrl+Equal"), c("Ctrl+KeypadPlus")]);
+    assert_eq!(Command::Print.id(), "print");
+    assert_eq!(Command::Print.defaults(), [c("Ctrl+P")]);
+    assert_eq!(Command::ViewSource.id(), "view-source");
+    assert_eq!(Command::ViewSource.defaults(), [c("Ctrl+U")]);
+    assert_eq!(Command::DeveloperTools.id(), "developer-tools");
+    assert_eq!(Command::DeveloperTools.defaults(), [c("Ctrl+Shift+I"), c("F12")]);
+    assert_eq!(Command::JavaScriptConsole.id(), "javascript-console");
+    assert_eq!(Command::JavaScriptConsole.defaults(), [c("Ctrl+Shift+J")]);
+    assert_eq!(
+        [Command::Print, Command::ViewSource, Command::DeveloperTools, Command::JavaScriptConsole].map(Command::section),
+        [Section::Page, Section::Page, Section::General, Section::General]
+    );
 
     let keymap = Keymap::default();
     assert!(Command::ALL.iter().all(|&cmd| keymap.is_default(cmd) && keymap.chords(cmd) == cmd.defaults()));
