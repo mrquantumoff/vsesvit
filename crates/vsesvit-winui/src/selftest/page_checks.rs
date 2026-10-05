@@ -1,5 +1,6 @@
 //! The `page_commands` check: Print, View page source and the developer tools on their keys and
-//! in the page's context menu, without opening a print dialog or DevTools.
+//! in the page's context menu, without opening a print dialog or DevTools; and the
+//! `context_menus` check of extensions' items in that menu.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -9,9 +10,10 @@ use vsesvit_core::view_source;
 use windows_core::Interface;
 
 use super::shortcut_checks::binding;
-use super::{FIXTURE_TITLE, Probe, eval, tab_ids, until};
+use super::{FIXTURE_TITLE, POLL, Probe, eval, tab_ids, until};
 use crate::automation::press;
 use crate::bindings::{ICoreWebView2_11, ICoreWebView2_16};
+use crate::exec;
 use crate::shortcuts::{Command, InPage, Mods};
 use crate::tab::{Tab, TabId, VIEW_SOURCE_ITEM};
 use crate::window::BrowserWindow;
@@ -23,6 +25,9 @@ const CTRL: u8 = 2;
 const EMPTY_SPOT: &str = "(() => { getSelection().removeAllRanges(); \
     const x = innerWidth - 24, y = innerHeight - 24; \
     return [x, y, document.elementFromPoint(x, y)?.tagName ?? null]; })()";
+
+/// The probe's item for the page (`tests/fixtures/extensions/probe/background.js`).
+const PROBE_ITEM: &str = "Vsesvit Probe page item";
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -192,4 +197,86 @@ async fn source_tab(
          its text holds {title:?}: {shows:?}"
     );
     (shown, ok)
+}
+
+/// The `context_menus` check: WebView2 shows extensions' own items (`chrome.contextMenus`) in
+/// the page's context menu, which the browser's handler leaves in place, and choosing one
+/// reaches the extension.
+pub(super) async fn extension_items(tab: &Rc<Tab>, p: &Probe) -> Result<String, String> {
+    let page = tab.state().url;
+    let spot: serde_json::Value =
+        serde_json::from_str(&eval(tab, EMPTY_SPOT).await?).map_err(err)?;
+    let (Some(x), Some(y)) = (spot[0].as_f64(), spot[1].as_f64()) else {
+        return Err(format!("finding an empty spot gave {spot}"));
+    };
+    let menu = Rc::new(RefCell::new(None::<Vec<(String, String)>>));
+    let seen = menu.clone();
+    let _watch = tab
+        .core()
+        .ok_or("no engine view")?
+        .cast::<ICoreWebView2_11>()
+        .and_then(|core| {
+            core.ContextMenuRequested(move |_, args| {
+                let Some(args) = args.as_ref() else { return };
+                let items: Vec<_> = args
+                    .MenuItems()
+                    .map(|i| i.into_iter().collect())
+                    .unwrap_or_default();
+                let listed = items
+                    .iter()
+                    .map(|i| (i.Name().unwrap_or_default(), i.Label().unwrap_or_default()))
+                    .collect();
+                let probe = items
+                    .iter()
+                    .find(|i| i.Label().is_ok_and(|l| l == PROBE_ITEM));
+                if let Some(id) = probe.and_then(|i| i.CommandId().ok()) {
+                    let _ = args.SetSelectedCommandId(id);
+                }
+                let _ = args.SetHandled(true);
+                *seen.borrow_mut() = Some(listed);
+            })
+        })
+        .map_err(err)?;
+    for kind in ["mousePressed", "mouseReleased"] {
+        let params = json!({
+            "type": kind, "x": x, "y": y, "button": "right", "buttons": 2, "clickCount": 1,
+        });
+        tab.devtools("Input.dispatchMouseEvent", &params.to_string())
+            .await
+            .map_err(|e| format!("right click: {e}"))?;
+    }
+    let listed = until(p, |p| {
+        p.observe(format!("right-clicked {spot}; no context menu yet"));
+        menu.borrow_mut().take()
+    })
+    .await;
+    let item = listed.iter().find(|(_, label)| label == PROBE_ITEM);
+    if item.is_none_or(|(name, _)| name != "extension") {
+        return Err(format!("the page's context menu holds {listed:?}"));
+    }
+    // The probe's background stores the click, which its content script puts on the page.
+    let click = loop {
+        let seen = eval(
+            tab,
+            "document.documentElement.dataset.vsesvitProbeMenu || null",
+        )
+        .await
+        .unwrap_or_default();
+        let click: serde_json::Value = serde_json::from_str::<Option<String>>(&seen)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+        if click["id"] == "probe-page" {
+            break click;
+        }
+        p.observe(format!("dataset.vsesvitProbeMenu = {seen}"));
+        exec::sleep(POLL).await;
+    };
+    if click["pageUrl"] != page.as_str() {
+        return Err(format!("contextMenus.onClicked got {click}"));
+    }
+    Ok(format!(
+        "the page's context menu holds {listed:?}; choosing {PROBE_ITEM:?} fired onClicked with {click}"
+    ))
 }

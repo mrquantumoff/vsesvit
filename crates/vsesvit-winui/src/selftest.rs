@@ -748,6 +748,11 @@ async fn checks(
     })
     .await;
 
+    check(report, "context_menus", DEFAULT_TIMEOUT, async |p| {
+        page_checks::extension_items(&tab, p).await
+    })
+    .await;
+
     check(report, "download", DEFAULT_TIMEOUT, async |p| {
         let dir = out_dir.join("downloads");
         browser.set_download_dir(Some(&dir));
