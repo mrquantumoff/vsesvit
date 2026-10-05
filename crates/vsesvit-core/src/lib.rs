@@ -25,6 +25,7 @@
 //! | [`downloads`]    | the downloads list (LOCAL), file naming, status text                  |
 //! | [`favicons`]     | icons of bookmarked sites (LOCAL, never synced)                       |
 //! | [`history`]      | page records (grow-only visit sets) + deletion directives             |
+//! | [`https_only`]   | HTTPS-only: http upgrades, the warning page, site exceptions          |
 //! | [`import`]       | bookmarks from other browsers: HTML export, Chromium, Firefox         |
 //! | [`new_tab`]      | the new tab page: search box + most visited sites, as HTML            |
 //! | [`onboarding`]   | the first-run welcome: when to show it, recommended extensions        |
@@ -57,6 +58,7 @@ pub mod extensions;
 pub mod favicons;
 pub mod history;
 pub mod html;
+pub mod https_only;
 pub mod import;
 pub mod new_tab;
 pub mod onboarding;

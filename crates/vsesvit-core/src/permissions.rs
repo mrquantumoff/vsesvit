@@ -56,6 +56,10 @@ pub enum Permission {
     /// it: Allow turns tracking protection off for the site. The site-info popup shows it as its
     /// own switch, not as a Permissions row.
     Trackers,
+    /// Loading the site over http where HTTPS-only would upgrade it ([`crate::https_only`]). No
+    /// site asks for it: Allow is the exception the warning page's "Continue to site" stores.
+    /// Site info shows no row for it.
+    Http,
 }
 
 impl Permission {
@@ -69,6 +73,7 @@ impl Permission {
         Permission::Midi,
         Permission::PictureInPicture,
         Permission::Trackers,
+        Permission::Http,
     ];
 
     pub fn key(self) -> &'static str {
@@ -82,6 +87,7 @@ impl Permission {
             Permission::Midi => "midi",
             Permission::PictureInPicture => "picture_in_picture",
             Permission::Trackers => "trackers",
+            Permission::Http => "http",
         }
     }
 
@@ -100,13 +106,21 @@ impl Permission {
             Permission::Midi => "MIDI devices",
             Permission::PictureInPicture => "Picture-in-picture",
             Permission::Trackers => "Trackers",
+            Permission::Http => "Insecure connections",
         }
     }
 
-    /// Whether a site may ask for it. The user turns picture-in-picture and trackers on for a
-    /// site, so with nothing stored they are blocked, not asked for, and their rows offer no Ask.
+    /// Whether a site may ask for it. The user turns picture-in-picture, trackers and insecure
+    /// connections on for a site, so with nothing stored they are blocked, not asked for, and
+    /// their rows offer no Ask.
     pub fn asks(self) -> bool {
-        !matches!(self, Permission::PictureInPicture | Permission::Trackers)
+        !matches!(self, Permission::PictureInPicture | Permission::Trackers | Permission::Http)
+    }
+
+    /// Whether site info's Permissions section lists it: trackers have a switch of their own
+    /// there, and an insecure-connection exception is made from the warning page.
+    pub fn in_site_info(self) -> bool {
+        !matches!(self, Permission::Trackers | Permission::Http)
     }
 
     /// Screen sharing is chosen share by share, so only a block is remembered (as Chrome does),
@@ -116,9 +130,13 @@ impl Permission {
     }
 
     /// The settings a site can have stored for this permission: Allow only where it is
-    /// remembered.
+    /// remembered, and no Block for insecure connections, which HTTPS-only blocks by itself.
     pub fn settings(self) -> &'static [Setting] {
-        if self.remembers_allow() { &[Setting::Allow, Setting::Block] } else { &[Setting::Block] }
+        match self {
+            Permission::Http => &[Setting::Allow],
+            _ if self.remembers_allow() => &[Setting::Allow, Setting::Block],
+            _ => &[Setting::Block],
+        }
     }
 
     /// What the site wants to do, as a verb and its object. Requests that share a verb read
@@ -134,6 +152,7 @@ impl Permission {
             Permission::Midi => ("use your", "MIDI devices"),
             Permission::PictureInPicture => ("show", "videos in picture-in-picture"),
             Permission::Trackers => ("load", "trackers"),
+            Permission::Http => ("load", "the site without a secure connection"),
         }
     }
 }
@@ -385,14 +404,14 @@ pub struct SiteRow {
     pub live: bool,
 }
 
-/// A row for every permission the site has a setting for, was granted this time, or uses, in
-/// [`Permission::ALL`] order, but trackers, which the popup shows as a switch of its own. `storable`: the page has an origin, so Allow and Block can be
-/// remembered for it; Allow is never offered for what is asked every time, nor Ask for what
-/// is never asked.
+/// A row for every permission site info lists ([`Permission::in_site_info`]) that the site has a
+/// setting for, was granted this time, or uses, in [`Permission::ALL`] order. `storable`: the
+/// page has an origin, so Allow and Block can be remembered for it; Allow is never offered for
+/// what is asked every time, nor Ask for what is never asked.
 pub fn site_rows(storable: bool, stored: &[(Permission, Setting)], granted: &[Permission], capturing: Capturing) -> Vec<SiteRow> {
     Permission::ALL
         .iter()
-        .filter(|&&permission| permission != Permission::Trackers)
+        .filter(|permission| permission.in_site_info())
         .filter_map(|&permission| {
             let live = capturing.uses(permission);
             let current = match stored.iter().find(|(p, _)| *p == permission).map(|(_, s)| *s) {

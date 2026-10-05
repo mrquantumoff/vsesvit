@@ -139,6 +139,8 @@ pub mod keys {
     /// What tracking protection blocks ([`crate::trackers`]).
     pub const TRACKING_PROTECTION: Pref<crate::trackers::TrackingProtection> =
         Pref { key: "privacy.tracking_protection", scope: Scope::Synced, default: || crate::trackers::TrackingProtection::Standard };
+    /// Upgrade http navigations to https ([`crate::https_only`]).
+    pub const HTTPS_ONLY: Pref<bool> = Pref { key: "privacy.https_only", scope: Scope::Synced, default: || false };
     pub const SMOOTH_SCROLLING: Pref<bool> = Pref { key: "scrolling.smooth", scope: Scope::Synced, default: || true };
     /// Local: whether the GPU works well is a property of this device.
     pub const HARDWARE_ACCELERATION: Pref<bool> = Pref { key: "system.hardware_acceleration", scope: Scope::Local, default: || true };
