@@ -30,7 +30,13 @@
 //!    navigate a tab to the options page, with or without a Referer, nor get it by a reload,
 //!    nor a site by redirecting a load the browser started there, nor a page through a window
 //!    it opened at the twin's web-accessible page, while going back to it still works;
-//! 8. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//! 8. ports (`tests/fixtures/extensions/ports/`, with `ports-friend/` beside it): a content
+//!    script's `runtime.connect` reaches the background and back, `tabs.connect` reaches a
+//!    content script, a connection nobody takes ends with Chrome's error, a closed popup
+//!    and a tab that navigates away disconnect their ports, a disconnected port refuses to
+//!    post, another extension messages and connects where `externally_connectable` lets
+//!    it and not elsewhere, and `getBackgroundPage` answers in the background page;
+//! 9. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!    `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!    uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -70,6 +76,8 @@ mod linux {
 
     const TIMEOUT: Duration = Duration::from_secs(20);
     const TWIN_ID: &str = "twin@vsesvit.test";
+    const PORTS_ID: &str = "ports@vsesvit.test";
+    const FRIEND_ID: &str = "friend@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -111,13 +119,19 @@ mod linux {
         write_xpi(&twin_xpi, &twin_files());
         let widget_xpi = out_dir.join("widget.xpi");
         write_xpi(&widget_xpi, &widget_files(server.port()));
+        let ports_xpi = out_dir.join("ports.xpi");
+        write_xpi(&ports_xpi, &fixture_files("ports"));
+        let friend_xpi = out_dir.join("friend.xpi");
+        write_xpi(&friend_xpi, &fixture_files("ports-friend"));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
         let twin = install(&profile, &twin_xpi);
         assert_eq!(twin.id.as_str(), TWIN_ID);
         let widget = install(&profile, &widget_xpi);
-        for ext in [&probe, &twin, &widget] {
+        let ports = install(&profile, &ports_xpi);
+        let friend = install(&profile, &friend_xpi);
+        for ext in [&probe, &twin, &widget, &ports, &friend] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -233,7 +247,10 @@ mod linux {
             // 5. the twin: options page in a tab, scripting, permissions, action paths
             self.twin_popup().await;
 
-            // 6. lifecycle events
+            // 6. ports and messages between extensions
+            self.ports().await;
+
+            // 7. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -250,8 +267,8 @@ mod linux {
         async fn probe_popup(&self) {
             let actions = self.runtime.actions();
             println!("[harness] actions: {actions:?}");
-            let Some(popup) = self.runtime.activate_action(&self.probe.id, Some(self.tab)) else {
-                self.note("popup", false, "activate_action returned no popup view");
+            let Some(popup) = self.popup(&self.probe.id, self.tab).await else {
+                self.note("popup", false, "no popup view");
                 return;
             };
             let _window = self.park(&popup);
@@ -300,8 +317,8 @@ mod linux {
 
         async fn widget_popup(&self) {
             let before = self.server.hits().iter().filter(|p| *p == "/page2.html").count();
-            let Some(popup) = self.runtime.activate_action(&self.widget_id, Some(self.tab)) else {
-                self.note("iframe_in_popup", false, "activate_action returned no popup view");
+            let Some(popup) = self.popup(&self.widget_id, self.tab).await else {
+                self.note("iframe_in_popup", false, "no popup view");
                 return;
             };
             let _window = self.park(&popup);
@@ -313,8 +330,8 @@ mod linux {
 
         async fn twin_popup(&self) {
             let twin_id = self.twin.borrow().id.clone();
-            let Some(popup) = self.runtime.activate_action(&twin_id, Some(self.tab)) else {
-                self.note("twin_popup", false, "activate_action returned no popup view");
+            let Some(popup) = self.popup(&twin_id, self.tab).await else {
+                self.note("twin_popup", false, "no popup view");
                 return;
             };
             let _window = self.park(&popup);
@@ -399,7 +416,7 @@ mod linux {
             self.note("tabs_url_redacted", redacted, format!("tabs.query({{}}) = {listing:?}"));
 
             // activeTab: the user invokes the action on the data: tab.
-            drop(self.runtime.activate_action(&twin_id, Some(other)));
+            drop(self.popup(&twin_id, other).await);
             let granted = self.eval_async(&popup, &format!("try {{ return await chrome.scripting.executeScript({{ target: {{ tabId: {} }}, func: () => document.title }}); }} catch (e) {{ return String(e.message); }}", other.0)).await;
             self.note("active_tab_grant", granted.as_ref().is_some_and(|v| v[0]["result"] == "Vsesvit other"), format!("after activate_action on tab {} = {granted:?}", other.0));
 
@@ -498,6 +515,98 @@ mod linux {
             self.note("held_window_cannot_open_extension_page", refused, format!("the window a web page opened at {public} = {held:?}; at {:?} after the page sent it to {target}", held_url()));
         }
 
+        async fn ports(&self) {
+            let ports_id = ExtensionId::parse(PORTS_ID).expect("ports id");
+            let tab = self.host.create_tab(&self.url("/index.html"), false).expect("ports tab");
+            let view = self.host.web_view(tab).expect("ports tab view");
+            let world = Some(PORTS_ID);
+            let reply = self.wait_for_js(&view, "String(document.documentElement.dataset.portsReply)", world, |v| v == "pong").await;
+            self.note("port_round_trip", reply.as_deref() == Some("pong"), format!("content script port -> background -> {reply:?}"));
+
+            let Some(popup) = self.popup(&ports_id, self.tab).await else {
+                self.note("port_popup", false, "no popup view");
+                return;
+            };
+            let window = self.park(&popup);
+            let title = wait_for_value(|| popup.title().map(String::from).filter(|t| t.starts_with("ports-popup:")), TIMEOUT).await;
+            self.note("port_popup", title.as_deref() == Some("ports-popup:pong"), format!("title = {title:?}"));
+            window.destroy();
+            drop(window);
+            drop(popup);
+
+            let Some(popup) = self.popup(&ports_id, self.tab).await else {
+                self.note("port_closed_popup_disconnects", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            let log = || self.eval_async(&popup, "return await chrome.runtime.sendMessage('log');");
+            let disconnected = wait_for_async(|| async move { log().await.filter(|l| l.as_array().is_some_and(|l| l.iter().any(|e| e == "disconnect:popup"))) }, TIMEOUT).await;
+            self.note("port_closed_popup_disconnects", disconnected.is_some(), format!("background log after the popup closed = {:?}", log().await));
+
+            let to_tab = self
+                .eval_async(&popup, &format!("const port = chrome.tabs.connect({}, {{ name: 'to-tab' }}); return await new Promise((resolve) => {{ port.onMessage.addListener(resolve); port.postMessage('hi'); }});", tab.0))
+                .await;
+            self.note("tabs_connect", to_tab.as_ref().is_some_and(|v| v["echo"] == "hi" && v["name"] == "to-tab"), format!("tabs.connect -> content script echo = {to_tab:?}"));
+
+            let other = self.host.create_tab(&self.url("/page2.html"), false).expect("page2 tab");
+            let other_view = self.host.web_view(other).expect("page2 tab view");
+            wait_until(|| other_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
+            let nobody = self
+                .eval_async(&popup, &format!("const port = chrome.tabs.connect({}); return await new Promise((resolve) => port.onDisconnect.addListener(() => resolve(chrome.runtime.lastError && chrome.runtime.lastError.message)));", other.0))
+                .await;
+            self.note("port_without_receiver", nobody.as_ref().and_then(Value::as_str).is_some_and(|s| s.contains("Receiving end does not exist")), format!("tabs.connect to a tab without a content script: lastError = {nobody:?}"));
+
+            let closed = self
+                .eval_async(&popup, "const port = chrome.runtime.connect({ name: 'closed' }); port.disconnect(); try { port.postMessage(1); return 'posted'; } catch (e) { return e.message; }")
+                .await;
+            self.note("port_disconnected_refuses_to_post", closed.as_ref().and_then(Value::as_str) == Some("Attempting to use a disconnected port object"), format!("{closed:?}"));
+
+            let count = |log: Option<Value>| log.as_ref().and_then(Value::as_array).map_or(0, |l| l.iter().filter(|e| *e == "disconnect:content").count());
+            let before = count(log().await);
+            self.host.update_tab(tab, Some(&self.url("/page2.html")), None);
+            let after = wait_for_async(|| async move { Some(count(log().await)).filter(|n| *n > before) }, TIMEOUT).await;
+            self.note("port_navigation_disconnects", after.is_some(), format!("disconnect:content in the background log {before} -> {after:?} after the tab left the page"));
+
+            let in_background = self.eval_async(&popup, "return await chrome.runtime.sendMessage('background-page');").await;
+            let in_popup = self.eval_async(&popup, "const page = await chrome.runtime.getBackgroundPage(); return page === chrome.extension.getBackgroundPage() && page.portsLog().includes('connect:popup:page');").await;
+            self.note("get_background_page", in_background == Some(Value::Bool(true)) && in_popup == Some(Value::Bool(true)), format!("runtime.getBackgroundPage in the background page = {in_background:?}, in the popup it opened = {in_popup:?}"));
+
+            let Some(friend) = self.popup(&ExtensionId::parse(FRIEND_ID).expect("friend id"), self.tab).await else {
+                self.note("external_messages", false, "no friend popup");
+                return;
+            };
+            let _friend_window = self.park(&friend);
+            wait_until(|| friend.title().as_deref() == Some("Vsesvit Ports Friend"), TIMEOUT).await;
+            let external = self
+                .eval_async(
+                    &friend,
+                    &format!("const id = {}; const port = chrome.runtime.connect(id, {{ name: 'external' }}); const echo = await new Promise((resolve) => {{ port.onMessage.addListener(resolve); port.postMessage('hi'); }}); return [await chrome.runtime.sendMessage(id, 'hello'), echo];", Value::from(PORTS_ID)),
+                )
+                .await;
+            let external_ok = external.as_ref().is_some_and(|v| v[0]["external"] == "hello" && v[0]["from"] == FRIEND_ID && v[1]["echo"] == "hi" && v[1]["from"] == FRIEND_ID && v[1]["name"] == "external");
+            self.note("external_messages", external_ok, format!("friend -> ports: [sendMessage, connect] = {external:?}"));
+
+            let twin_id = self.twin.borrow().id.clone();
+            let Some(stranger) = self.popup(&twin_id, self.tab).await else {
+                self.note("external_refused", false, "no twin popup");
+                return;
+            };
+            let _stranger_window = self.park(&stranger);
+            wait_until(|| stranger.title().is_some_and(|t| t.starts_with("twin-popup:")), TIMEOUT).await;
+            let refused = self
+                .eval_async(
+                    &stranger,
+                    &format!("const id = {}; let message; try {{ await chrome.runtime.sendMessage(id, 'hello'); message = 'answered'; }} catch (e) {{ message = e.message; }} const port = chrome.runtime.connect(id); const connected = await new Promise((resolve) => port.onDisconnect.addListener(() => resolve(chrome.runtime.lastError && chrome.runtime.lastError.message))); return [message, connected];", Value::from(PORTS_ID)),
+                )
+                .await;
+            let worker = self.eval_async(&stranger, "try { await chrome.runtime.getBackgroundPage(); return 'page'; } catch (e) { return e.message; }").await;
+            self.note("get_background_page_service_worker", worker.as_ref().and_then(Value::as_str) == Some("You do not have a background page."), format!("runtime.getBackgroundPage with a service worker = {worker:?}"));
+            let refused_ok = refused.as_ref().and_then(Value::as_array).is_some_and(|r| r.len() == 2 && r.iter().all(|m| m.as_str().is_some_and(|m| m.contains("Receiving end does not exist"))));
+            self.note("external_refused", refused_ok, format!("twin (not in externally_connectable) -> ports: [sendMessage, connect] = {refused:?}"));
+            self.host.remove_tab(tab);
+            self.host.remove_tab(other);
+        }
+
         async fn lifecycle(&self) {
             let id = self.twin.borrow().id.clone();
             let lives = wait_for_value(|| {
@@ -579,6 +688,14 @@ mod linux {
             self.server.url(path).to_string()
         }
 
+        /// The action popup `activate_action` shows, once it exists.
+        async fn popup(&self, id: &ExtensionId, tab: TabId) -> Option<webkit::WebView> {
+            let shown = Rc::new(RefCell::new(None));
+            let slot = shown.clone();
+            self.runtime.activate_action(id, Some(tab), move |view| *slot.borrow_mut() = Some(view));
+            wait_for_value(|| shown.borrow_mut().take(), TIMEOUT).await
+        }
+
         /// A window for a popup view (never presented), so it renders like the shell's popover.
         fn park(&self, popup: &webkit::WebView) -> gtk::Window {
             let window = gtk::Window::new();
@@ -619,6 +736,19 @@ mod linux {
                 glib::timeout_future(Duration::from_millis(100)).await;
             }
             last
+        }
+    }
+
+    async fn wait_for_async<T, F: std::future::Future<Output = Option<T>>>(probe: impl Fn() -> F, timeout: Duration) -> Option<T> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(v) = probe().await {
+                return Some(v);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
         }
     }
 
@@ -957,6 +1087,19 @@ log("alive");
                 "document.documentElement.dataset.twinInjected = (typeof chrome === \"object\" && chrome.runtime) ? chrome.runtime.id : \"no-chrome\";\n\"injected:\" + document.documentElement.dataset.twinInjected;\n".to_owned(),
             ),
         ]
+    }
+
+    /// Every file of the fixture extension `tests/fixtures/extensions/<name>/`.
+    fn fixture_files(name: &str) -> Vec<(&'static str, String)> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/extensions").join(name);
+        std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .map(|entry| {
+                let path = entry.expect("fixture entry").path();
+                let name = path.file_name().and_then(|n| n.to_str()).expect("fixture file name").to_owned();
+                (&*name.leak(), std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
+            })
+            .collect()
     }
 
     /// A popup that frames a fixture page. No host permissions, so the frame may load.

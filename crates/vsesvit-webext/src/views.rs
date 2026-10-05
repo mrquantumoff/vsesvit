@@ -5,13 +5,15 @@
 
 use std::rc::Rc;
 
+use gtk::prelude::*;
 use serde_json::json;
+use webkit::{gio, glib};
 use webkit::prelude::*;
 
 use crate::bridge::{self, Origin};
-use crate::extension::{ExtView, Extension, ViewId, ViewKind};
+use crate::extension::{ExtView, Extension, OpeningPopup, ViewId, ViewKind};
 use crate::lifecycle::InstallEvent;
-use crate::patterns;
+use crate::{patterns, protocol};
 use crate::runtime::Inner;
 
 pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> webkit::WebView {
@@ -42,7 +44,13 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
         settings.set_enable_write_console_messages_to_stdout(std::env::var_os("VSESVIT_WEBEXT_CONSOLE").is_some());
     }
 
+    let opens_popups = kind == ViewKind::Background && ext.background_is_page();
+    if opens_popups {
+        adopt_popups(inner, ext, &view);
+    }
+
     let weak_inner = Rc::downgrade(inner);
+    let weak_ext = Rc::downgrade(ext);
     let base = ext.base_url.clone();
     let ext_id = ext.id.as_str().to_owned();
     view.connect_decide_policy(move |_, decision, decision_type| {
@@ -60,6 +68,14 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
                 let action = nav.navigation_action();
                 let uri = action.as_ref().and_then(|a| a.request()).and_then(|r| r.uri()).map(String::from).unwrap_or_default();
                 let inside = inside(&uri);
+                if opens_popups && decision_type == webkit::PolicyDecisionType::NewWindowAction {
+                    // The only window a background opens is the popup `open_popup` asked for.
+                    if weak_ext.upgrade().is_some_and(|ext| ext.opening_popup.borrow().as_ref().is_some_and(|p| p.url == uri)) {
+                        return false;
+                    }
+                    decision.ignore();
+                    return true;
+                }
                 if decision_type == webkit::PolicyDecisionType::NavigationAction {
                     if inside {
                         return false;
@@ -105,11 +121,90 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
         }
     });
 
+    // A closed popup or a crashed page takes its ports with it. Not while the view is
+    // being torn down, which may happen inside a runtime call.
+    let close_ports = {
+        let weak_inner = Rc::downgrade(inner);
+        move || {
+            let weak_inner = weak_inner.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(inner) = weak_inner.upgrade() {
+                    inner.close_ports(|c| c.origin == Origin::Page { view: view_id });
+                }
+            });
+        }
+    };
     let ext_id = ext.id.as_str().to_owned();
-    view.connect_web_process_terminated(move |_, reason| log::warn!("{ext_id}: extension page web process terminated: {reason:?}"));
+    view.connect_web_process_terminated({
+        let close_ports = close_ports.clone();
+        move |_, reason| {
+            log::warn!("{ext_id}: extension page web process terminated: {reason:?}");
+            close_ports();
+        }
+    });
+    view.connect_destroy(move |_| close_ports());
 
     ext.views.borrow_mut().push(ExtView { id: view_id, kind, view: view.downgrade() });
     view
+}
+
+/// An action popup at `url`, handed to `show` once it exists (already loading). A page
+/// background opens it with `window.open`, so the popup's `opener` is the background page:
+/// WebKit lets a page reach another view's window only through that relationship, and
+/// `runtime.getBackgroundPage` needs it. Any other popup is a plain view.
+pub(crate) fn open_popup(inner: &Rc<Inner>, ext: &Rc<Extension>, url: String, show: Box<dyn FnOnce(webkit::WebView)>) {
+    let background = ext.background.borrow().clone().filter(|_| ext.background_is_page());
+    let Some(background) = background else {
+        let view = build(inner, ext, ViewKind::Popup);
+        view.load_uri(&url);
+        return show(view);
+    };
+    let source = format!("window.open({}, \"_blank\"); undefined", protocol::js_string(&url));
+    *ext.opening_popup.borrow_mut() = Some(OpeningPopup { url, show });
+    let (weak_inner, weak_ext) = (Rc::downgrade(inner), Rc::downgrade(ext));
+    ext.when_background_loaded(move || {
+        background.evaluate_javascript(&source, None, None, None::<&gio::Cancellable>, move |result| {
+            if let Err(e) = result {
+                log::debug!("window.open in the background: {e}");
+            }
+            // The background did not open it (its page is gone, or WebKit refused): the
+            // popup opens on its own, without an opener.
+            let (Some(inner), Some(ext)) = (weak_inner.upgrade(), weak_ext.upgrade()) else { return };
+            let Some(pending) = ext.opening_popup.borrow_mut().take() else { return };
+            if inner.extension(&ext.id).is_some_and(|loaded| Rc::ptr_eq(&loaded, &ext)) {
+                let view = build(&inner, &ext, ViewKind::Popup);
+                view.load_uri(&pending.url);
+                (pending.show)(view);
+            }
+        });
+    });
+}
+
+/// The popup [`open_popup`] asked the background for is built when WebKit creates it, as
+/// WebKit requires, and shown once WebKit says it may be. WebKit gives it the background's
+/// configuration, message handler included (see [`Extension::caller_view`]).
+fn adopt_popups(inner: &Rc<Inner>, ext: &Rc<Extension>, background: &webkit::WebView) {
+    if let Some(settings) = WebViewExt::settings(background) {
+        settings.set_javascript_can_open_windows_automatically(true);
+    }
+    let (weak_inner, weak_ext) = (Rc::downgrade(inner), Rc::downgrade(ext));
+    background.connect_create(move |_, action| {
+        let (inner, ext) = (weak_inner.upgrade()?, weak_ext.upgrade()?);
+        let uri = action.request().and_then(|r| r.uri()).map(String::from).unwrap_or_default();
+        let pending = ext.opening_popup.borrow_mut().take_if(|p| p.url == uri)?;
+        let popup = build(&inner, &ext, ViewKind::Popup);
+        ext.adopted_popup.set(Some(&popup));
+        let show = std::cell::Cell::new(Some(pending.show));
+        popup.connect_ready_to_show(move |popup| {
+            let Some(show) = show.take() else { return };
+            show(popup.clone());
+            // SAFETY: the binding hands WebKit a strong reference where a C handler returns
+            // a floating one for the popup's owner to sink, and WebKit never releases it;
+            // the owner holds its own reference now, and the emission keeps `popup` alive.
+            unsafe { glib::gobject_ffi::g_object_unref(popup.as_ptr().cast()) };
+        });
+        Some(popup.upcast())
+    });
 }
 
 /// Create and start the background context, if the manifest declares one. Fires

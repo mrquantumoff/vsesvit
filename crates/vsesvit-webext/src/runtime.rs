@@ -13,9 +13,10 @@ use vsesvit_core::extensions::{ExtensionId, InstalledExtension};
 use webkit::glib;
 use webkit::prelude::*;
 
-use crate::bridge::{self, Origin};
-use crate::extension::{Extension, ViewKind};
+use crate::bridge::{self, Origin, PortContext, Reply};
+use crate::extension::Extension;
 use crate::lifecycle::{self, InstallEvent, LoadReason};
+use crate::messaging::Ports;
 use crate::protocol::Sender;
 use crate::tabs::{TabHost, TabId, TabInfo};
 use crate::{filters, patterns, scheme, views};
@@ -60,6 +61,7 @@ pub(crate) struct Inner {
     pub(crate) pending_filters: Cell<usize>,
     pub(crate) filters_waiters: RefCell<Vec<Box<dyn FnOnce()>>>,
     pub(crate) next_view: Cell<u64>,
+    pub(crate) ports: RefCell<Ports<PortContext, Reply>>,
 }
 
 struct TabState {
@@ -94,6 +96,7 @@ impl Runtime {
             pending_filters: Cell::new(0),
             filters_waiters: RefCell::new(Vec::new()),
             next_view: Cell::new(1),
+            ports: RefCell::new(Ports::default()),
         });
         scheme::register(&inner);
         Runtime(inner)
@@ -144,6 +147,7 @@ impl Runtime {
             }
         }
         ext.clear_alarms();
+        self.0.close_ports(|c| c.ext == *id);
         if let Some(bg) = ext.background.borrow_mut().take() {
             bg.load_uri("about:blank");
         }
@@ -228,6 +232,7 @@ impl Runtime {
     pub fn tab_closed(&self, tab: TabId) {
         let removed = self.0.tabs.borrow_mut().remove(&tab);
         let Some(mut state) = removed else { return };
+        self.0.close_ports(|c| c.origin.tab() == Some(tab));
         for ext in &self.0.loaded_extensions() {
             detach(ext, &mut state);
             ext.revoke_active_tab(tab);
@@ -259,23 +264,22 @@ impl Runtime {
         self.0.actions_changed.borrow_mut().push(Rc::new(f));
     }
 
-    /// The user clicked the action on `tab` (which grants `activeTab` there). Returns the
-    /// popup WebView (already loading) when the action has a popup; the shell owns it and
-    /// drops it to close. Otherwise fires `action.onClicked` with `tab` and returns `None`.
-    pub fn activate_action(&self, id: &ExtensionId, tab: Option<TabId>) -> Option<webkit::WebView> {
-        let ext = self.0.extension(id)?;
-        let state = ext.action.borrow().clone()?;
+    /// The user clicked the action on `tab` (which grants `activeTab` there). When the
+    /// action has a popup, `show` gets its WebView (already loading) once it exists, which
+    /// may be after this returns; the shell owns it and drops it to close. Otherwise fires
+    /// `action.onClicked` with `tab`.
+    pub fn activate_action(&self, id: &ExtensionId, tab: Option<TabId>, show: impl FnOnce(webkit::WebView) + 'static) {
+        let Some(ext) = self.0.extension(id) else { return };
+        let Some(state) = ext.action.borrow().clone() else { return };
         if let Some(tab) = tab {
             ext.grant_active_tab(tab);
         }
         if state.popup.is_empty() {
             let tab_json = tab.and_then(|t| self.0.tab_info(t)).map(|t| ext.tab_json(&t)).unwrap_or(Value::Null);
             bridge::emit_to_pages(&self.0, &ext, "action.onClicked", &[tab_json]);
-            return None;
+            return;
         }
-        let view = views::build(&self.0, &ext, ViewKind::Popup);
-        view.load_uri(&ext.url(&state.popup));
-        Some(view)
+        views::open_popup(&self.0, &ext, ext.url(&state.popup), Box::new(show));
     }
 
     /// `storage.sync` changed remotely (a sync engine's `ApplyReport`): fire
@@ -409,6 +413,12 @@ impl Inner {
         for ext in self.loaded_extensions() {
             bridge::emit_to_pages(self, &ext, event, args);
         }
+    }
+
+    /// Contexts that went away lose their ports; see [`Ports::close_where`].
+    pub(crate) fn close_ports(&self, gone: impl Fn(&PortContext) -> bool) {
+        let wakes = self.ports.borrow_mut().close_where(gone);
+        bridge::wake(wakes);
     }
 
     pub(crate) fn notify_actions_changed(&self) {

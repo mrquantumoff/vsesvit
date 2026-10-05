@@ -760,9 +760,13 @@ impl BrowserWindow {
     /// extension's `action.onClicked`.
     pub(crate) fn activate_extension_action(&self, id: &ExtensionId) {
         let tab = self.selected_tab().map(|tab| tab.id());
-        if let Some(view) = self.browser().runtime().activate_action(id, tab) {
-            self.ui().extension_actions.show_popup(id, view);
-        }
+        let window = self.downgrade();
+        let extension = id.clone();
+        self.browser().runtime().activate_action(id, tab, move |view| {
+            if let Some(window) = window.upgrade() {
+                window.ui().extension_actions.show_popup(&extension, view);
+            }
+        });
     }
 
     #[cfg(feature = "self-test")]

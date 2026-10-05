@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Vsesvit Ports Friend",
+  "version": "1.0.0",
+  "description": "Test extension that the ports fixture lets message it.",
+  "browser_specific_settings": { "gecko": { "id": "friend@vsesvit.test" } },
+  "action": { "default_title": "Vsesvit Ports Friend", "default_popup": "popup.html" }
+}

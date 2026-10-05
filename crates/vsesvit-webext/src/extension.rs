@@ -49,6 +49,12 @@ pub(crate) struct ActionState {
     pub badge_text: String,
 }
 
+/// A popup the background page is opening with `window.open` (see `views::open_popup`).
+pub(crate) struct OpeningPopup {
+    pub url: String,
+    pub show: Box<dyn FnOnce(webkit::WebView)>,
+}
+
 pub(crate) struct Alarm {
     pub scheduled_time_ms: f64,
     pub period_minutes: Option<f64>,
@@ -94,6 +100,9 @@ pub(crate) struct Extension {
     /// is none.
     pub background_waiting: RefCell<Option<Vec<Waiting>>>,
     pub views: RefCell<Vec<ExtView>>,
+    pub opening_popup: RefCell<Option<OpeningPopup>>,
+    /// The popup the background page opened last.
+    pub adopted_popup: glib::WeakRef<webkit::WebView>,
     pub action: RefCell<Option<ActionState>>,
     pub filter: RefCell<Option<webkit::UserContentFilter>>,
     pub alarms: RefCell<BTreeMap<String, Alarm>>,
@@ -169,6 +178,8 @@ impl Extension {
             background: RefCell::new(None),
             background_waiting: RefCell::new(None),
             views: RefCell::new(Vec::new()),
+            opening_popup: RefCell::new(None),
+            adopted_popup: glib::WeakRef::new(),
             action: RefCell::new(action),
             filter: RefCell::new(None),
             alarms: RefCell::new(BTreeMap::new()),
@@ -241,6 +252,12 @@ impl Extension {
         }
     }
 
+    /// Whether the background is a page (`background.page` or `background.scripts`), which
+    /// `runtime.getBackgroundPage` returns, rather than a service worker.
+    pub fn background_is_page(&self) -> bool {
+        matches!(self.manifest.background, Some(Background::Page { .. } | Background::Scripts { .. }))
+    }
+
     /// The page that hosts `background.scripts` or the MV3 service worker.
     pub fn generated_background_page(&self) -> Option<String> {
         background_page(&self.manifest, &self.base_url, |path| RelPath::parse(path).ok().and_then(|rel| std::fs::read_to_string(rel.resolve(&self.dir)).ok()))
@@ -280,6 +297,20 @@ impl Extension {
             views.iter().filter_map(|v| v.view.upgrade().map(|w| (v.id, v.kind, w))).collect();
         live.sort_by_key(|(_, kind, _)| *kind != ViewKind::Background);
         live
+    }
+
+    /// The view a page call that arrived on `view`'s handler came from. A popup the
+    /// background page opened shares that page's handler, so a call from a document other
+    /// than the background's is the popup's.
+    pub fn caller_view(&self, view: ViewId, url: Option<&str>) -> ViewId {
+        let Some(popup) = self.adopted_popup.upgrade() else { return view };
+        let views = self.views.borrow();
+        let on_background = views.iter().any(|v| v.id == view && v.kind == ViewKind::Background);
+        let document = url.map(|u| u.split(['?', '#']).next().unwrap_or(u).to_owned());
+        if !on_background || document.is_none() || document == self.background_url() {
+            return view;
+        }
+        views.iter().find(|v| v.view.upgrade().is_some_and(|w| w == popup)).map_or(view, |v| v.id)
     }
 
     pub fn owns_view(&self, view: &webkit::WebView) -> bool {

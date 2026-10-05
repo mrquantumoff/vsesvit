@@ -35,7 +35,8 @@
   // --- events -------------------------------------------------------------------------
   const events = new Map();
   class ExtensionEvent {
-    constructor(name) { this.name = name; this.listeners = new Set(); events.set(name, this); }
+    // A port's events belong to the port, so only the API's own are reachable by name.
+    constructor(name, named = true) { this.name = name; this.listeners = new Set(); if (named) events.set(name, this); }
     addListener(fn) { if (typeof fn === "function") this.listeners.add(fn); }
     removeListener(fn) { this.listeners.delete(fn); }
     hasListener(fn) { return this.listeners.has(fn); }
@@ -60,6 +61,10 @@
   function takeCallback(args) {
     return args.length && typeof args[args.length - 1] === "function" ? args.pop() : undefined;
   }
+  function withLastError(message, fn) {
+    lastError = message ? { message } : null;
+    try { fn(); } finally { lastError = null; }
+  }
   // `mapArgs` turns the caller's arguments (callback removed) into the ones posted.
   function bridged(method, fixedArgs, mapArgs) {
     return function (...args) {
@@ -77,6 +82,62 @@
     };
   }
 
+  // --- ports ------------------------------------------------------------------------
+  // A port receives by keeping one `port.receive` call open, which the runtime answers
+  // with what arrived meanwhile: [{ m: message } | { d: error-or-null }, ...].
+  const ports = new Map();
+  function newPortId() {
+    const bytes = new Uint8Array(16);
+    g.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  function makePort(id, name, sender) {
+    let open = true;
+    const close = () => { open = false; ports.delete(id); };
+    const port = {
+      name,
+      onMessage: new ExtensionEvent("Port.onMessage", false),
+      onDisconnect: new ExtensionEvent("Port.onDisconnect", false),
+      postMessage(message) {
+        if (!open) throw new Error("Attempting to use a disconnected port object");
+        post("port.postMessage", [id, message === undefined ? null : message]).catch(() => {});
+      },
+      disconnect() {
+        if (!open) return;
+        close();
+        post("port.disconnect", [id]).catch(() => {});
+      },
+    };
+    if (sender) port.sender = sender;
+    ports.set(id, port);
+    (async () => {
+      while (open) {
+        let received;
+        try { received = await post("port.receive", [id]); } catch (_) { received = [{ d: null }]; }
+        for (const event of received || []) {
+          if (!open) return;
+          if ("m" in event) { port.onMessage.dispatch(event.m, port); continue; }
+          close();
+          withLastError(event.d, () => port.onDisconnect.dispatch(port));
+          return;
+        }
+      }
+    })();
+    return port;
+  }
+  // The runtime opens the connection before the port asks for its first events.
+  function connectPort(method, args, name) {
+    const id = newPortId();
+    post(method, [id].concat(args)).catch(() => {});
+    return makePort(id, name);
+  }
+  const portName = (info) => info && info.name != null ? String(info.name) : "";
+  // Chrome closes the ports of a document that goes away, which the runtime cannot see
+  // for a document in a tab.
+  g.addEventListener("pagehide", () => { for (const port of Array.from(ports.values())) port.disconnect(); });
+  // Another extension's id, or null for this one.
+  const otherExtension = (id) => id != null && id !== config.id ? String(id) : null;
+
   // --- runtime ----------------------------------------------------------------------
   const runtime = {
     id: config.id,
@@ -88,19 +149,22 @@
     onStartup: new ExtensionEvent("runtime.onStartup"),
     onConnect: new ExtensionEvent("runtime.onConnect"),
     onSuspend: new ExtensionEvent("runtime.onSuspend"),
-    connect() { throw new Error("runtime.connect is not supported by Vsesvit"); },
+    // connect(), (connectInfo), (extensionId), (extensionId, connectInfo)
+    connect(...args) {
+      const [target, info] = typeof args[0] === "string" || args.length >= 2 ? args : [null, args[0]];
+      const name = portName(info);
+      return connectPort("runtime.connect", [otherExtension(target), name], name);
+    },
     sendMessage(...args) {
       const callback = takeCallback(args);
       // sendMessage(message), (message, options), (extensionId, message), (extensionId, message, options)
-      let message = args[0], options = args[1];
+      let message = args[0], options = args[1], target = null;
       const looksLikeOptions = (o) => o && typeof o === "object" && Object.keys(o).every((k) => k === "includeTlsChannelId");
       if (args.length >= 3 || (args.length === 2 && typeof args[0] === "string" && !looksLikeOptions(args[1]))) {
-        if (args[0] != null && args[0] !== config.id) {
-          return settle(Promise.reject(new Error("Vsesvit: messaging other extensions is not supported")), callback);
-        }
+        target = otherExtension(args[0]);
         message = args[1]; options = args[2];
       }
-      return settle(post("runtime.sendMessage", [message === undefined ? null : message, options || null]), callback);
+      return settle(post("runtime.sendMessage", [message === undefined ? null : message, options || null, target]), callback);
     },
   };
   Object.defineProperty(runtime, "lastError", { get: () => lastError, enumerable: true });
@@ -236,13 +300,26 @@
   // --- extension pages only -----------------------------------------------------------
   if (isPage) {
     runtime.openOptionsPage = bridged("runtime.openOptionsPage");
-    runtime.getBackgroundPage = local(() => { throw new Error("runtime.getBackgroundPage is not supported by Vsesvit"); });
+    runtime.onMessageExternal = new ExtensionEvent("runtime.onMessageExternal");
+    runtime.onConnectExternal = new ExtensionEvent("runtime.onConnectExternal");
+    // A background page reaches its own window, and an action popup reaches the background
+    // page that opened it (views.rs); other views have no way to the background's window.
+    const background = config.manifest && config.manifest.background;
+    const backgroundPageUrl = !background ? null
+      : background.page ? new URL(String(background.page), baseUrl).href
+      : background.scripts ? baseUrl + "_generated_background_page.html" : null;
+    const isBackgroundPage = (w) => { try { return String(w.location.href).split(/[?#]/)[0] === backgroundPageUrl; } catch (_) { return false; } };
+    const backgroundPage = () => !backgroundPageUrl ? null : isBackgroundPage(g) ? g : g.opener && isBackgroundPage(g.opener) ? g.opener : null;
+    runtime.getBackgroundPage = local(() => {
+      const page = backgroundPage();
+      if (page) return page;
+      throw new Error(backgroundPageUrl ? "Vsesvit: runtime.getBackgroundPage works only in the background page and action popups" : "You do not have a background page.");
+    });
     runtime.reload = () => { post("runtime.reload", []).catch(() => {}); };
 
     // A classic MV3 service worker runs as the generated background page's script. The
     // page loads what the worker imports by string literal ahead of it (extension.rs), so
     // importScripts only checks that it did; anything else cannot load synchronously.
-    const background = config.manifest && config.manifest.background;
     if (background && background.service_worker && background.type !== "module" && String(g.location && g.location.href) === baseUrl + "_generated_background_page.html") {
       const worker = new URL(String(background.service_worker), baseUrl);
       g.importScripts = function (...urls) {
@@ -269,6 +346,10 @@
       sendMessage(tabId, message, options, callback) {
         if (typeof options === "function") { callback = options; options = null; }
         return settle(post("tabs.sendMessage", [tabId, message === undefined ? null : message, options || null]), callback);
+      },
+      connect(tabId, info) {
+        const name = portName(info);
+        return connectPort("tabs.connect", [tabId, name, info && info.frameId != null ? info.frameId : null], name);
       },
       onUpdated: new ExtensionEvent("tabs.onUpdated"),
       onActivated: new ExtensionEvent("tabs.onActivated"),
@@ -327,13 +408,14 @@
     };
     Object.assign(api, {
       tabs, scripting, action, browserAction: action, alarms, windows,
-      extension: { getURL: runtime.getURL, inIncognitoContext: false, getViews: () => [], getBackgroundPage: () => null },
+      extension: { getURL: runtime.getURL, inIncognitoContext: false, getViews: () => [], getBackgroundPage: backgroundPage },
     });
   }
 
   // --- runtime -> page entry points ---------------------------------------------------
-  function dispatchMessage(message, sender) {
-    const listeners = Array.from(runtime.onMessage.listeners);
+  function dispatchMessage(message, sender, external) {
+    const event = external ? runtime.onMessageExternal : runtime.onMessage;
+    const listeners = event ? Array.from(event.listeners) : [];
     if (listeners.length === 0) return { none: true };
     return new Promise((resolve) => {
       let settled = false;
@@ -350,13 +432,21 @@
     });
   }
 
+  // `id` is this context's end of a new channel, unused without a listener.
+  function dispatchConnect(id, name, sender, external) {
+    const event = external ? runtime.onConnectExternal : runtime.onConnect;
+    if (!event || !event.hasListeners()) return { none: true };
+    event.dispatch(makePort(id, name, sender));
+    return {};
+  }
+
   function emit(name, ...args) {
     const ev = events.get(name);
     if (ev) ev.dispatch(...args);
     if (name === "storage.onChanged" && storage[args[1]]) storage[args[1]].onChanged.dispatch(args[0]);
   }
 
-  Object.defineProperty(g, "__vsesvit", { value: Object.freeze({ dispatchMessage, emit, id: config.id, kind: config.kind }), configurable: false, enumerable: false });
+  Object.defineProperty(g, "__vsesvit", { value: Object.freeze({ dispatchMessage, dispatchConnect, emit, id: config.id, kind: config.kind }), configurable: false, enumerable: false });
   g.chrome = api;
   g.browser = api;
 })

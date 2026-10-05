@@ -1,0 +1,14 @@
+{
+  "manifest_version": 2,
+  "name": "Vsesvit Ports",
+  "version": "1.0.0",
+  "description": "Test extension for runtime.connect, tabs.connect and messages from other extensions.",
+  "browser_specific_settings": { "gecko": { "id": "ports@vsesvit.test" } },
+  "permissions": ["tabs", "http://127.0.0.1/*"],
+  "background": { "scripts": ["background.js"] },
+  "content_scripts": [
+    { "matches": ["http://127.0.0.1/index.html"], "js": ["content.js"], "run_at": "document_end" }
+  ],
+  "browser_action": { "default_title": "Vsesvit Ports", "default_popup": "popup.html" },
+  "externally_connectable": { "ids": ["friend@vsesvit.test"] }
+}

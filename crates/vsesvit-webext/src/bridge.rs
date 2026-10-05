@@ -18,8 +18,11 @@ use vsesvit_core::ext_storage::{Area, StorageChange};
 use webkit::prelude::*;
 use webkit::{gio, glib};
 
+use vsesvit_core::extensions::ExtensionId;
+
 use crate::extension::{Alarm, Extension, ViewId};
-use crate::protocol::{self, Call, Dispatched, Method, NO_RECEIVER, Replies, Sender};
+use crate::messaging::{self, PortEvent, Wake};
+use crate::protocol::{self, Call, Dispatch, Dispatched, Method, NO_RECEIVER, Replies, Sender};
 use crate::runtime::Inner;
 use crate::tabs::{TabId, TabInfo};
 
@@ -36,6 +39,13 @@ pub(crate) enum Origin {
 impl Origin {
     fn is_page(self) -> bool {
         !matches!(self, Origin::Content { .. })
+    }
+
+    pub(crate) fn tab(self) -> Option<TabId> {
+        match self {
+            Origin::Content { tab } | Origin::TabPage { tab } => Some(tab),
+            Origin::Page { .. } => None,
+        }
     }
 }
 
@@ -102,6 +112,10 @@ pub(crate) fn register(
             reply.err("Vsesvit: the extension bridge is unavailable in this context");
             return true;
         }
+        let origin = match origin {
+            Origin::Page { view } => Origin::Page { view: ext.caller_view(view, call.url.as_deref()) },
+            other => other,
+        };
         dispatch(&inner, &ext, origin, call, reply);
         true
     })
@@ -112,10 +126,9 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         return reply.err(&format!("{} is not available in content scripts", call.method));
     }
     match call.method {
-        Method::RuntimeSendMessage => {
-            let (inner, target) = (inner.clone(), ext.clone());
-            ext.when_background_loaded(move || send_to_pages(&inner, &target, origin, &call, reply));
-        }
+        Method::RuntimeSendMessage => send_message(inner, ext, origin, call, reply),
+        Method::RuntimeConnect | Method::TabsConnect => connect(inner, ext, origin, call, reply),
+        Method::PortPostMessage | Method::PortDisconnect | Method::PortReceive => port_call(inner, ext, origin, &call, reply),
         Method::TabsSendMessage => send_to_tab(inner, ext, origin, &call, reply),
         Method::ScriptingExecuteScript => execute_script(inner, ext, &call, reply),
         Method::StorageGet | Method::StorageSet | Method::StorageRemove | Method::StorageClear | Method::StorageGetBytesInUse => {
@@ -207,75 +220,120 @@ pub(crate) fn storage_changed(inner: &Inner, ext: &Extension, area: Area, change
 
 // --- messaging --------------------------------------------------------------------------
 
-fn sender_for(inner: &Inner, ext: &Extension, origin: Origin, call: &Call) -> Sender {
+/// The context at one end of a port: the extension it belongs to and where it runs.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PortContext {
+    pub ext: ExtensionId,
+    pub origin: Origin,
+}
+
+/// Answers the `port.receive` calls a change in the port table woke.
+pub(crate) fn wake(wakes: Vec<Wake<Reply>>) {
+    for (reply, events) in wakes {
+        reply.ok(Some(Value::Array(events.iter().map(PortEvent::to_json).collect())));
+    }
+}
+
+/// `chrome.runtime.MessageSender` for a call from `caller`'s context at `origin`, with the
+/// tab as `receiver` may see it.
+fn sender_for(inner: &Inner, caller: &Extension, receiver: &Extension, origin: Origin, call: &Call) -> Sender {
     let url = call.url.clone();
-    let mut sender = Sender { id: ext.id.as_str().to_owned(), origin: url.as_deref().and_then(Sender::origin_of), url, ..Sender::default() };
-    match origin {
-        Origin::Content { tab } | Origin::TabPage { tab } => {
-            sender.tab = inner.tab_info(tab).map(|t| ext.tab_json(&t));
-            sender.frame_id = call.top_frame.then_some(0);
-        }
-        Origin::Page { .. } => {}
+    let mut sender = Sender { id: caller.id.as_str().to_owned(), origin: url.as_deref().and_then(Sender::origin_of), url, ..Sender::default() };
+    if let Some(tab) = origin.tab() {
+        sender.tab = inner.tab_info(tab).map(|t| receiver.tab_json(&t));
+        sender.frame_id = call.top_frame.then_some(0);
     }
     sender
 }
 
-/// One context a message is offered to.
-struct Target {
-    view: webkit::WebView,
-    body: Rc<String>,
-    world: Option<String>,
+/// The extension another one names in `runtime.sendMessage` or `runtime.connect`, if it is
+/// loaded and takes messages from `caller`. Chrome tells the caller nothing more.
+fn external_target(inner: &Inner, caller: &Extension, id: &str) -> Option<Rc<Extension>> {
+    let id = ExtensionId::parse(id).ok()?;
+    inner.extension(&id).filter(|target| messaging::accepts_extension(&target.manifest, caller.id.as_str()))
 }
 
-fn send_to_pages(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call, reply: Reply) {
-    let sender = sender_for(inner, ext, origin, call);
-    let body = Rc::new(protocol::dispatch_source(call.arg(0), &sender));
-    let guarded = Rc::new(protocol::dispatch_source_in_page(&ext.host, call.arg(0), &sender));
-    let mut targets: Vec<Target> = ext
-        .live_views()
-        .into_iter()
-        .filter(|(id, _, _)| origin != Origin::Page { view: *id })
-        .map(|(_, _, view)| Target { view, body: body.clone(), world: None })
-        .collect();
-    targets.extend(
-        inner
-            .page_tab_views(ext)
-            .into_iter()
-            .filter(|(tab, _)| origin != Origin::TabPage { tab: *tab })
-            .map(|(_, view)| Target { view, body: guarded.clone(), world: None }),
-    );
-    deliver(targets, reply);
+/// Who a `runtime.sendMessage` or `runtime.connect` goes to: the extension named in
+/// argument `i`, else the caller's own.
+fn runtime_target(inner: &Inner, ext: &Rc<Extension>, call: &Call, i: usize) -> (Option<Rc<Extension>>, bool) {
+    match call.arg(i).as_str() {
+        Some(id) => (external_target(inner, ext, id), true),
+        None => (Some(ext.clone()), false),
+    }
+}
+
+/// One context a message or connection is offered to.
+struct Target {
+    view: webkit::WebView,
+    world: Option<String>,
+    /// A tab's default world, which may show a web page by now (see [`protocol::page_guard`]).
+    guarded: bool,
+    origin: Origin,
+}
+
+impl Target {
+    fn call(&self, host: &str, dispatch: Dispatch, done: impl FnOnce(Dispatched) + 'static) {
+        let body = if self.guarded { protocol::dispatch_source_in_page(host, dispatch) } else { protocol::dispatch_source(dispatch) };
+        self.view.call_async_javascript_function(&body, None, self.world.as_deref(), None, None::<&gio::Cancellable>, move |result| {
+            done(match result {
+                Ok(value) => Dispatched::parse(value.to_json(0).as_deref()),
+                Err(e) => {
+                    log::debug!("dispatch: {e}");
+                    Dispatched { none: true, value: None, error: None }
+                }
+            });
+        });
+    }
+}
+
+/// `ext`'s pages (its views, then the tabs showing one of its documents), but `except`.
+fn page_targets(inner: &Inner, ext: &Extension, except: Option<Origin>) -> Vec<Target> {
+    let views = ext.live_views().into_iter().map(|(id, _, view)| Target { view, world: None, guarded: false, origin: Origin::Page { view: id } });
+    let tabs = inner.page_tab_views(ext).into_iter().map(|(tab, view)| Target { view, world: None, guarded: true, origin: Origin::TabPage { tab } });
+    views.chain(tabs).filter(|t| Some(t.origin) != except).collect()
+}
+
+/// `ext`'s content scripts in `tab`'s top frame, and its page if the tab shows one.
+fn tab_targets(inner: &Inner, ext: &Extension, tab: TabId) -> Result<Vec<Target>, String> {
+    let view = inner.host.web_view(tab).ok_or_else(|| format!("No tab with id: {}.", tab.0))?;
+    let shows_page = view.uri().is_some_and(|u| ext.owns_url(&u));
+    let mut targets = vec![Target { view: view.clone(), world: Some(ext.world.clone()), guarded: false, origin: Origin::Content { tab } }];
+    if shows_page {
+        targets.push(Target { view, world: None, guarded: true, origin: Origin::TabPage { tab } });
+    }
+    Ok(targets)
+}
+
+fn send_message(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, reply: Reply) {
+    let (Some(target), external) = runtime_target(inner, ext, &call, 2) else { return reply.err(NO_RECEIVER) };
+    let (inner, caller) = (inner.clone(), ext.clone());
+    target.clone().when_background_loaded(move || {
+        let sender = sender_for(&inner, &caller, &target, origin, &call);
+        let targets = page_targets(&inner, &target, (!external).then_some(origin));
+        deliver(&target, targets, Dispatch::Message { message: call.arg(0), sender: &sender, external }, reply);
+    });
 }
 
 fn send_to_tab(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call, reply: Reply) {
     let Some(tab) = TabId::from_json(call.arg(0)) else { return reply.err("tabs.sendMessage: tabId must be an integer") };
-    let Some(view) = inner.host.web_view(tab) else { return reply.err(&format!("No tab with id: {}.", tab.0)) };
-    let sender = sender_for(inner, ext, origin, call);
-    let message = call.arg(1);
-    let mut targets = vec![Target { view: view.clone(), body: Rc::new(protocol::dispatch_source(message, &sender)), world: Some(ext.world.clone()) }];
-    if view.uri().is_some_and(|u| ext.owns_url(&u)) {
-        targets.push(Target { view, body: Rc::new(protocol::dispatch_source_in_page(&ext.host, message, &sender)), world: None });
-    }
-    deliver(targets, reply);
+    let targets = match tab_targets(inner, ext, tab) {
+        Ok(targets) => targets,
+        Err(e) => return reply.err(&e),
+    };
+    let sender = sender_for(inner, ext, ext, origin, call);
+    deliver(ext, targets, Dispatch::Message { message: call.arg(1), sender: &sender, external: false }, reply);
 }
 
 /// Deliver the message to every target at once; the sender gets the answer [`Replies`]
 /// settles on.
-fn deliver(targets: Vec<Target>, reply: Reply) {
+fn deliver(ext: &Extension, targets: Vec<Target>, dispatch: Dispatch, reply: Reply) {
     if targets.is_empty() {
         return reply.err(NO_RECEIVER);
     }
     let state = Rc::new(RefCell::new((Replies::new(targets.len()), Some(reply))));
     for target in targets {
         let state = state.clone();
-        target.view.call_async_javascript_function(&target.body, None, target.world.as_deref(), None, None::<&gio::Cancellable>, move |result| {
-            let dispatched = match result {
-                Ok(value) => Dispatched::parse(value.to_json(0).as_deref()),
-                Err(e) => {
-                    log::debug!("message dispatch: {e}");
-                    Dispatched { none: true, value: None, error: None }
-                }
-            };
+        target.call(&ext.host, dispatch, move |dispatched| {
             let settled = {
                 let (replies, reply) = &mut *state.borrow_mut();
                 replies.settle(dispatched).and_then(|answer| Some((reply.take()?, answer)))
@@ -285,6 +343,77 @@ fn deliver(targets: Vec<Target>, reply: Reply) {
             }
         });
     }
+}
+
+/// `runtime.connect` and `tabs.connect`. The caller's port opens at once, so what it posts
+/// meanwhile is kept, and every context the connection goes to is offered a port of its own.
+fn connect(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, reply: Reply) {
+    let Some(port) = call.arg(0).as_str().map(str::to_owned) else { return reply.err("port id must be a string") };
+    let opened = inner.ports.borrow_mut().open(&port, PortContext { ext: ext.id.clone(), origin });
+    if let Err(e) = opened {
+        return reply.err(&e);
+    }
+    reply.ok(None);
+    if call.method == Method::TabsConnect {
+        // Like messages, connections reach a tab's top frame only.
+        let top = call.arg(3).is_null() || call.arg(3).as_u64() == Some(0);
+        let targets = TabId::from_json(call.arg(1)).filter(|_| top).and_then(|tab| tab_targets(inner, ext, tab).ok()).unwrap_or_default();
+        let sender = sender_for(inner, ext, ext, origin, &call);
+        return offer(inner, ext, &port, targets, &call, &sender, false);
+    }
+    let (Some(target), external) = runtime_target(inner, ext, &call, 1) else {
+        let wakes = inner.ports.borrow_mut().seal(&port);
+        return wake(wakes);
+    };
+    let (inner, caller) = (inner.clone(), ext.clone());
+    target.clone().when_background_loaded(move || {
+        let sender = sender_for(&inner, &caller, &target, origin, &call);
+        let targets = page_targets(&inner, &target, (!external).then_some(origin));
+        offer(&inner, &target, &port, targets, &call, &sender, external);
+    });
+}
+
+fn offer(inner: &Rc<Inner>, target_ext: &Extension, opener: &str, targets: Vec<Target>, call: &Call, sender: &Sender, external: bool) {
+    let name = call.arg(2).as_str().unwrap_or("");
+    for target in targets {
+        let offered = inner.ports.borrow_mut().offer(opener, PortContext { ext: target_ext.id.clone(), origin: target.origin });
+        let Some(port) = offered else { return };
+        let weak = Rc::downgrade(inner);
+        let answered = port.clone();
+        target.call(&target_ext.host, Dispatch::Connect { port: &port, name, sender, external }, move |dispatched| {
+            if let Some(inner) = weak.upgrade() {
+                let wakes = inner.ports.borrow_mut().answer(&answered, !dispatched.none);
+                wake(wakes);
+            }
+        });
+    }
+    let wakes = inner.ports.borrow_mut().seal(opener);
+    wake(wakes);
+}
+
+/// `port.postMessage`, `port.disconnect` and `port.receive` from `ext`'s context at `origin`.
+fn port_call(inner: &Rc<Inner>, ext: &Extension, origin: Origin, call: &Call, reply: Reply) {
+    let Some(port) = call.arg(0).as_str() else { return reply.err("port id must be a string") };
+    let context = PortContext { ext: ext.id.clone(), origin };
+    let wakes = match call.method {
+        Method::PortPostMessage => {
+            let posted = inner.ports.borrow_mut().post(port, &context, call.arg(1).clone());
+            match posted {
+                Ok(wakes) => {
+                    reply.ok(None);
+                    wakes
+                }
+                Err(e) => return reply.err(&e),
+            }
+        }
+        Method::PortDisconnect => {
+            reply.ok(None);
+            inner.ports.borrow_mut().disconnect(port, &context)
+        }
+        Method::PortReceive => inner.ports.borrow_mut().receive(port, &context, reply).into_iter().collect(),
+        _ => unreachable!("not a port method"),
+    };
+    wake(wakes);
 }
 
 // --- storage ----------------------------------------------------------------------------
