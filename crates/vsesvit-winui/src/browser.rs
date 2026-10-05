@@ -23,7 +23,9 @@ use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
 use vsesvit_core::trackers::TrackerList;
 use vsesvit_core::{Profile, Url, onboarding};
+use windows_core::Interface;
 
+use crate::bindings::{CoreWebView2BrowsingDataKinds, ICoreWebView2Profile2};
 use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
 use crate::bookmarks_bar::{self, BarItem};
 use crate::config::{Config, Mode};
@@ -67,6 +69,14 @@ const WINDOW_BACKDROP: Pref<Backdrop> = Pref {
     key: "window.backdrop",
     scope: Scope::Local,
     default: || Backdrop::Mica,
+};
+
+/// Whether the passwords WebView2 saved before Vsesvit stopped saving them are deleted. Per
+/// device: they are in this device's engine data.
+pub(crate) const PASSWORDS_PURGED: Pref<bool> = Pref {
+    key: "passwords.purged",
+    scope: Scope::Local,
+    default: || false,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,6 +241,9 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         exec::spawn(show_welcome(window));
     }
     exec::spawn(browser.clone().start_extensions());
+    if !browser.core(|p| p.prefs().get(&PASSWORDS_PURGED)) {
+        exec::spawn(browser.clone().purge_saved_passwords());
+    }
     crate::permissions::mirror(&browser);
     if browser.config.mode.is_interactive() {
         browser.preload_favicons();
@@ -1257,6 +1270,29 @@ impl Browser {
     pub async fn engine_profile(&self) -> Option<crate::bindings::CoreWebView2Profile> {
         let window = self.windows.borrow().first().cloned()?;
         window.engine_profile().await
+    }
+
+    /// Deletes the passwords WebView2 saved before Vsesvit turned password saving off, and
+    /// nothing else. Until it succeeds, every start tries again.
+    async fn purge_saved_passwords(self: Rc<Self>) {
+        let Some(profile) = self.engine_profile().await else {
+            log::warn!("saved passwords: the web engine is not ready; trying next start");
+            return;
+        };
+        let purged: windows_core::Result<()> = async {
+            profile
+                .cast::<ICoreWebView2Profile2>()?
+                .ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds::PasswordAutosave)?
+                .await
+        }
+        .await;
+        match purged {
+            Ok(()) => {
+                log::info!("saved passwords: deleted what WebView2 saved");
+                self.write_pref(&PASSWORDS_PURGED, &true);
+            }
+            Err(e) => log::warn!("saved passwords: {e}; trying next start"),
+        }
     }
 }
 

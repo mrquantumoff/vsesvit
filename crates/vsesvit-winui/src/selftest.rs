@@ -28,7 +28,7 @@ use vsesvit_core::trackers::{self, Category, TrackerList};
 use windows_core::{IInspectable, Interface};
 
 use crate::bindings::{ItemsControl, Panel};
-use crate::browser::Browser;
+use crate::browser::{Browser, PASSWORDS_PURGED};
 use crate::dialogs::{self, Dialog};
 use crate::layout;
 use crate::popup::Activation;
@@ -701,6 +701,17 @@ async fn checks(
         window.close_tab(id);
     }
     browser.set_trackers(TrackerList::bundled().clone());
+
+    check(report, "passwords_purged", DEFAULT_TIMEOUT, async |p| {
+        until(p, |p| {
+            let purged = browser.core(|c| c.prefs().get(&PASSWORDS_PURGED));
+            p.observe(format!("{} = {purged}", PASSWORDS_PURGED.key));
+            purged.then_some(())
+        })
+        .await;
+        Ok(format!("{} is set", PASSWORDS_PURGED.key))
+    })
+    .await;
 
     check(report, "shortcuts", Duration::from_secs(90), async |p| {
         shortcut_checks::shortcuts(&window, &tab, out_dir, p)

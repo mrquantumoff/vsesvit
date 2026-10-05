@@ -632,8 +632,7 @@ fn wire_clear_browsing_data(root: &FrameworkElement, browser: &Rc<Browser>) -> R
 }
 
 /// Deletes history on every synced device, then this device's cookies, site data and cache.
-/// Form entries stay, as with Chrome's defaults, and so do passwords WebView2 saved before
-/// Vsesvit stopped saving them.
+/// Form entries stay, as with Chrome's defaults.
 async fn clear_browsing_data(browser: &Browser) -> std::result::Result<(), String> {
     browser
         .core(|p| p.history().delete_range(0, super::history::now_ms()))
