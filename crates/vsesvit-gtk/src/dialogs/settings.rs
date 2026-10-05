@@ -515,6 +515,13 @@ fn search_page(browser: &Browser) -> adw::PreferencesPage {
     let suggestions = group("Suggestions");
     suggestions.add(&pref_switch_row(
         browser,
+        "Search Suggestions",
+        Some("Sends what you type in the address bar to your search engine"),
+        &keys::SEARCH_SUGGESTIONS,
+        |b, pref, on| b.set_pref(pref, &on),
+    ));
+    suggestions.add(&pref_switch_row(
+        browser,
         "Browsing History",
         None,
         &keys::SUGGEST_HISTORY,

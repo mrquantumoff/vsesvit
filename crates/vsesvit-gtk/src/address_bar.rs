@@ -31,6 +31,7 @@ use gtk::glib::subclass::Signal;
 use gtk::{gdk, glib};
 use vsesvit_core::address::simplified_url;
 use vsesvit_core::search::ctrl_enter_url;
+use vsesvit_core::suggest::Queries;
 
 use crate::tab::display_uri;
 use crate::zoom;
@@ -194,6 +195,9 @@ mod imp {
         pub(super) shown: RefCell<Shown>,
         /// Set while the user edits the text.
         pub(super) edit: RefCell<Option<Edit>>,
+        /// The search engine's suggestions asked for the edit; cancelled when it ends, the
+        /// entry loses focus, or another tab's state shows.
+        pub(super) queries: Queries,
         /// The user's latest change only removed text (Backspace, Delete, cut), so it gets
         /// no inline completion.
         pub(super) deleted: Cell<bool>,
@@ -404,6 +408,7 @@ impl AddressBar {
     pub(crate) fn restore(&self, typed: Option<String>, uri: Option<&str>) {
         let imp = self.imp();
         imp.shown.replace(Shown::of(uri));
+        imp.queries.cancel();
         match typed {
             Some(typed) => {
                 self.set_text_quietly(&typed);
@@ -449,6 +454,7 @@ impl AddressBar {
         imp.focused.set(focused);
         if !focused {
             imp.popover.popdown();
+            imp.queries.cancel();
         }
         self.align_text();
         if self.is_editing() {
@@ -473,6 +479,11 @@ impl AddressBar {
     /// What the user typed and did not submit, if they have been editing.
     pub(crate) fn take_edit(&self) -> Option<String> {
         self.imp().edit.take().map(|edit| edit.typed)
+    }
+
+    /// The search engine's suggestions asked for while the user edits.
+    pub(crate) fn queries(&self) -> &Queries {
+        &self.imp().queries
     }
 
     fn is_editing(&self) -> bool {
@@ -753,22 +764,48 @@ impl AddressBar {
     /// completion follows the typed text, selected. The popover opens only while the entry has
     /// focus.
     pub(crate) fn set_suggestions(&self, suggestions: Suggestions) {
-        let imp = self.imp();
         let Suggestions { rows, inline } = suggestions;
-        let open = !rows.is_empty() && imp.focused.get();
         {
-            let mut edit = imp.edit.borrow_mut();
+            let mut edit = self.imp().edit.borrow_mut();
             let Some(edit) = edit.as_mut() else { return };
-            imp.list.remove_all();
-            for row in &rows {
-                imp.list.append(&suggestion_row(row));
-            }
+            self.list_rows(&rows);
             edit.rows = rows;
             edit.inline = inline;
             edit.highlighted = 0;
         }
         self.show_highlight(false);
-        if open {
+        self.show_list();
+    }
+
+    /// Replaces the rows for the same typed text, as when the search engine's suggestions
+    /// arrive, without disturbing the user: the highlighted row stays highlighted (found by its
+    /// `fill`, else the first), and the entry keeps its text, inline completion and caret.
+    pub(crate) fn refill_suggestions(&self, rows: Vec<Suggestion>) {
+        {
+            let mut edit = self.imp().edit.borrow_mut();
+            let Some(edit) = edit.as_mut() else { return };
+            let kept = edit.rows.get(edit.highlighted).and_then(|shown| rows.iter().position(|row| row.fill == shown.fill));
+            self.list_rows(&rows);
+            edit.rows = rows;
+            edit.highlighted = kept.unwrap_or(0);
+        }
+        self.show_highlight(false);
+        self.show_list();
+    }
+
+    fn list_rows(&self, rows: &[Suggestion]) {
+        let list = &self.imp().list;
+        list.remove_all();
+        for row in rows {
+            list.append(&suggestion_row(row));
+        }
+    }
+
+    /// Opens the list while the entry has focus and there are rows, and closes it otherwise.
+    fn show_list(&self) {
+        let imp = self.imp();
+        let any = imp.edit.borrow().as_ref().is_some_and(|edit| !edit.rows.is_empty());
+        if any && imp.focused.get() {
             // As wide as the bar. The bar's layout manager allocates it, so there is no
             // allocation to follow.
             imp.popover.set_size_request(self.width(), -1);
@@ -945,6 +982,7 @@ impl AddressBar {
     fn finish_editing(&self) {
         let imp = self.imp();
         imp.edit.take();
+        imp.queries.cancel();
         imp.popover.popdown();
         self.show_security();
         self.align_text();
@@ -1274,16 +1312,19 @@ mod tests {
         assert_eq!(removed, before);
     }
 
-    #[test]
-    fn the_highlight_stops_at_both_ends() {
-        let row = |fill: &str| Suggestion {
+    fn row(fill: &str) -> Suggestion {
+        Suggestion {
             title: String::new(),
             subtitle: String::new(),
             icon_name: "",
             fill: fill.to_owned(),
             activate: Rc::new(|| {}),
             forget: None,
-        };
+        }
+    }
+
+    #[test]
+    fn the_highlight_stops_at_both_ends() {
         let mut edit = Edit::new("gi".to_owned());
         edit.rows = vec![row("github.com"), row("gi"), row("gitlab.com")];
         edit.inline = Some("thub.com".to_owned());
@@ -1468,6 +1509,33 @@ mod tests {
         assert_eq!(first, ["github.com"], "Enter opens the first row");
         assert_eq!(chosen, ["github.com", "gitlab.com"], "Enter opens the highlighted row");
         assert_eq!(submitted, 0, "rows open by themselves, not by resolving the text");
+    }
+
+    #[gtk::test]
+    fn a_refill_keeps_the_highlighted_row_and_the_entry_as_they_are() {
+        let (window, bar, _) = bar_in_window();
+        let omnibox = connect_omnibox(&bar);
+        typing_in(&bar);
+        let refill = |fills: &[&str]| bar.refill_suggestions(fills.iter().map(|fill| row(fill)).collect());
+
+        bar.type_text("git");
+        let queries = omnibox.queries.borrow().len();
+        refill(&["github.com", "git", "git one", "git two", "gitlab.com"]);
+        let first = (seen(&bar), bar.observe().fills.len());
+        bar.press(gdk::Key::Down, NONE);
+        bar.press(gdk::Key::Down, NONE);
+        let caret = bar.imp().entry.position();
+        refill(&["github.com", "git", "git zero", "git one", "gitlab.com"]);
+        let moved = (seen(&bar), bar.imp().entry.position());
+        refill(&["github.com", "git", "gitlab.com"]);
+        let gone = seen(&bar);
+        let refills_queried = omnibox.queries.borrow().len() - queries;
+        window.destroy();
+
+        assert_eq!(first, (shows("github.com", Some((3, 10)), 0), 5), "the typed text and its completion stay");
+        assert_eq!(moved, (shows("git one", None, 3), caret), "the highlighted row stays highlighted where it went");
+        assert_eq!(gone, shows("github.com", Some((3, 10)), 0), "without it, the first row is highlighted");
+        assert_eq!(refills_queried, 0);
     }
 
     #[gtk::test]

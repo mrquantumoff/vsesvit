@@ -641,10 +641,27 @@ impl Browser {
     // Omnibox.
 
     /// Every edit in the address bar: core's suggestions (search, typed URL, bookmarks,
-    /// history) followed by matching open tabs, and the inline completion when allowed.
+    /// history) followed by matching open tabs, and the inline completion when allowed. The
+    /// search engine's suggestions are fetched on a worker thread and join the rows when they
+    /// arrive, unless the user typed again or stopped editing first.
     pub(crate) fn omnibox_changed(&self, window: &BrowserWindow, text: &str, allow_inline: bool) {
-        let suggestions = omnibox::suggestions(self, window, text, allow_inline);
-        window.address_bar().set_suggestions(suggestions);
+        let address = window.address_bar();
+        address.set_suggestions(omnibox::suggestions(self, window, text, allow_inline, None));
+        let request = match self.core().borrow_mut().omnibox().suggest_request(text, address.queries(), false) {
+            Ok(Some(request)) => request,
+            Ok(None) => return,
+            Err(e) => {
+                log::warn!("search suggestions: {e}");
+                return;
+            }
+        };
+        let (window, text) = (window.downgrade(), text.to_owned());
+        glib::spawn_future_local(async move {
+            let Ok(Some(found)) = gio::spawn_blocking(move || request.run()).await else { return };
+            let Some(window) = window.upgrade().filter(|_| found.is_current()) else { return };
+            let rows = omnibox::suggestions(window.browser(), &window, &text, allow_inline, Some(&found)).rows;
+            window.address_bar().refill_suggestions(rows);
+        });
     }
 
     /// Enter in the address bar: core decides between a URL and a search.

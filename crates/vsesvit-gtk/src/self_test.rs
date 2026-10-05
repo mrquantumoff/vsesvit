@@ -22,6 +22,7 @@ use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
 use vsesvit_core::search::{EngineForm, NavTarget, SearchEngineId};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
+use vsesvit_core::suggest::DEBOUNCE;
 use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::trackers::{self, Category, TrackerList, TrackingProtection};
@@ -86,6 +87,7 @@ const CHECKS: [&str; 39] = [
     "context_menus",
     "omnibox",
     "address_completion",
+    "search_suggestions",
     "selection_search",
     "session",
     "download",
@@ -160,7 +162,7 @@ pub(crate) fn run(out_dir: &Path, network: bool) -> ExitCode {
     let report = Rc::new(RefCell::new(Report::new("linux", expected(network))));
 
     let started = Instant::now();
-    let profile = match Profile::open(&profile_dir, OpenOptions::default()) {
+    let mut profile = match Profile::open(&profile_dir, OpenOptions::default()) {
         Ok(profile) => {
             record(&report, "profile_open", true, started, format!("root={}", profile_dir.display()));
             profile
@@ -170,6 +172,11 @@ pub(crate) fn run(out_dir: &Path, network: bool) -> ExitCode {
             return finish(out_dir, &report);
         }
     };
+    // Typed searches must not reach the real engine; `search_suggestions` uses a fixture one.
+    if let Err(e) = profile.prefs().set(&keys::SEARCH_SUGGESTIONS, &false) {
+        record(&report, "search_suggestions_off", false, started, e.to_string());
+        return finish(out_dir, &report);
+    }
     let server = match FixtureServer::start() {
         Ok(server) => {
             // `favicon_preload` has core fetch a bookmark's icon from the loopback server.
@@ -792,6 +799,90 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             "typing {typed:?} read {completed:?} with {:?} selected on row 0; Down showed row 1's {:?}; Escape brought the completion back; Enter opened {root}; address-completion.png",
             &completed[typed.len()..],
             down.text
+        ))
+    })
+    .await;
+
+    ctx.check("search_suggestions", CHECK_TIMEOUT, |last| async move {
+        let form = EngineForm { name: "Fixture Search".into(), keyword: "fixture".into(), url: format!("{}/search?q=%s", ctx.server.origin()) };
+        let engine = browser.core().borrow_mut().search_engines().save(None, &form).map_err(|e| e.to_string())?;
+        let _engine = Cleanup(|| {
+            let mut profile = browser.core().borrow_mut();
+            let mut engines = profile.search_engines();
+            let reset = engines.set_default(&SearchEngineId::builtin_default()).and_then(|()| engines.remove(&engine));
+            if let Err(e) = reset.and_then(|()| profile.prefs().set(&keys::SEARCH_SUGGESTIONS, &false)) {
+                log::warn!("self-test: removing the fixture engine: {e}");
+            }
+        });
+        {
+            let mut profile = browser.core().borrow_mut();
+            let mut engines = profile.search_engines();
+            let suggest_url = format!("{}/suggest?q={{searchTerms}}", ctx.server.origin());
+            engines.set_suggest_url(&engine, Some(&suggest_url)).and_then(|()| engines.set_default(&engine)).map_err(|e| e.to_string())?;
+            profile.prefs().set(&keys::SEARCH_SUGGESTIONS, &true).map_err(|e| e.to_string())?;
+        }
+        let address = window.address_bar();
+        let none = gdk::ModifierType::empty();
+        let asked = || ctx.server.hits().iter().filter(|path| *path == "/suggest").count();
+        let shows_suggestions = |fills: &[String], typed: &str| fills.iter().any(|fill| *fill == format!("{typed} one"));
+        let wanted = ["vsesvit", "vsesvit one", "vsesvit two"];
+        let before = asked();
+        address.focus_for_typing();
+        address.type_text("vsesvit");
+        let shown = wait_for(&last, || {
+            let seen = address.observe();
+            if seen.open && seen.text == "vsesvit" && seen.highlighted == Some(0) && seen.fills.iter().take(wanted.len()).eq(&wanted) {
+                Ok(seen.fills)
+            } else {
+                Err(format!("after typing \"vsesvit\": {seen:?}"))
+            }
+        })
+        .await;
+        if asked() - before != 1 {
+            return Err(format!("the engine was asked {} times for {shown:?}", asked() - before));
+        }
+        glib::timeout_future(POPOVER_SETTLE).await;
+        let list = address.suggestions_popover();
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), std::slice::from_ref(&list), &ctx.out_dir.join("search-suggestions.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        address.press(gdk::Key::Down, none);
+        let down = address.observe();
+        if down.text != "vsesvit one" || down.highlighted != Some(1) {
+            return Err(format!("after Down: {down:?}"));
+        }
+        address.press(gdk::Key::Return, none);
+        let searched = ctx.server.url("/search?q=vsesvit+one");
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        wait_for(&last, || {
+            let uri = tab.committed_uri().unwrap_or_default();
+            if uri == searched.as_str() { Ok(()) } else { Err(format!("after Enter the tab shows {uri:?}")) }
+        })
+        .await;
+        address.submit_text(index_url.as_str());
+        wait_for(&last, || {
+            let uri = tab.committed_uri().unwrap_or_default();
+            if uri == index_url.as_str() { Ok(()) } else { Err(format!("back to the fixture page: {uri:?}")) }
+        })
+        .await;
+
+        let typed_url = format!("127.0.0.1:{}/page2.html", ctx.server.port());
+        address.focus_for_typing();
+        address.type_text(&typed_url);
+        glib::timeout_future(DEBOUNCE + POPOVER_SETTLE).await;
+        let url = address.observe();
+        browser.core().borrow_mut().prefs().set(&keys::SEARCH_SUGGESTIONS, &false).map_err(|e| e.to_string())?;
+        address.focus_for_typing();
+        address.type_text("vsesvit off");
+        glib::timeout_future(DEBOUNCE + POPOVER_SETTLE).await;
+        let off = address.observe();
+        address.press(gdk::Key::Escape, none);
+        let asked_since = asked() - before - 1;
+        if asked_since != 0 || shows_suggestions(&url.fills, &typed_url) || shows_suggestions(&off.fills, "vsesvit off") {
+            return Err(format!("asked the engine {asked_since} more times; typing {typed_url:?} listed {:?}; \"vsesvit off\" listed {:?}", url.fills, off.fills));
+        }
+        Ok(format!(
+            "typing \"vsesvit\" asked the engine once and listed {shown:?} (search-suggestions.png); Down read \"vsesvit one\" and Enter opened {searched}; typing {typed_url:?}, and \"vsesvit off\" with the setting off, asked nothing"
         ))
     })
     .await;

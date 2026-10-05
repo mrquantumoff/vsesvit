@@ -1,11 +1,13 @@
-//! Address-bar suggestions: core's omnibox (search, typed URL, bookmarks, history, and the
-//! inline completion) first, then matching open tabs, which only the shell knows about.
+//! Address-bar suggestions: core's omnibox (search, the search engine's suggestions, typed
+//! URL, bookmarks, history, and the inline completion) first, then matching open tabs, which
+//! only the shell knows about.
 
 use std::rc::Rc;
 
 use adw::prelude::*;
 use vsesvit_core::history::Transition;
 use vsesvit_core::search::{NavTarget, SuggestionSource};
+use vsesvit_core::suggest::SearchSuggestions;
 
 use crate::address_bar::{Suggestion, Suggestions};
 use crate::browser::Browser;
@@ -15,16 +17,20 @@ use crate::window::BrowserWindow;
 const MAX_CORE_SUGGESTIONS: usize = 8;
 const MAX_TAB_SUGGESTIONS: usize = 4;
 
-pub(crate) fn suggestions(browser: &Browser, window: &BrowserWindow, text: &str, allow_inline: bool) -> Suggestions {
+/// The rows for `text`, with the search engine's suggestions for it once they are `found`.
+pub(crate) fn suggestions(browser: &Browser, window: &BrowserWindow, text: &str, allow_inline: bool, found: Option<&SearchSuggestions>) -> Suggestions {
     let needle = text.trim();
     if needle.is_empty() {
         return Suggestions::default();
     }
     let from_core = browser.core().borrow_mut().omnibox().suggest(needle, MAX_CORE_SUGGESTIONS, allow_inline);
-    let from_core = from_core.unwrap_or_else(|e| {
+    let mut from_core = from_core.unwrap_or_else(|e| {
         log::warn!("omnibox: {e}");
         Default::default()
     });
+    if let Some(found) = found {
+        from_core.add_search_suggestions(found);
+    }
     let mut rows: Vec<Suggestion> = from_core.items.into_iter().map(|s| row(window, s)).collect();
     rows.extend(open_tab_suggestions(browser, window, &needle.to_lowercase()));
     Suggestions { rows, inline: from_core.inline }
