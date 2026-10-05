@@ -93,6 +93,13 @@ Tabs are vertical by default, in a sidebar on the left. A setting moves the side
 - **Linux.** An `AdwOverlaySplitView` holds a tab list bound to `AdwTabView`'s page model. Its `sidebar-position` places the list at the start or end, and it collapses to an overlay on narrow windows. The top layout uses `AdwTabBar`.
 - **Windows.** A collapsible pane holds a reorderable `ListView` of tabs (favicon, title, close button), on either side of the web content. When collapsed, the pane shows only favicons. The top layout uses the `TabView` strip in the title bar. With vertical tabs, the title bar holds the toolbar instead.
 
+## Page commands
+
+Print, Developer tools, the JavaScript console and View page source are rows in core's shortcut table, with Chrome's keys. Like every other shortcut they can be reassigned. View page source opens `view-source:<page>` in a new tab next to the page, for http, https and file pages.
+
+- **Windows.** While the page has focus, WebView2 handles Ctrl+P, F12, Ctrl+Shift+I and Ctrl+Shift+J itself. The menus and the window's accelerators call `ShowPrintUI` and `OpenDevToolsWindow`. WebView2 has no API that picks the console panel. WebView2 renders `view-source:` pages natively but reports the address of the page inside, so the tab keeps the `view-source:` address the shell loaded.
+- **Linux.** Print uses WebKit's print dialog, and Developer tools toggles WebKit's inspector. WebKitGTK has no view-source, so the shell serves the `view-source` scheme itself. It renders the page's main resource with core's `view_source::source_page`. That resource comes from a tab already showing the page, or else from a hidden view with scripts off. The scheme is registered as local, so web pages can neither open nor embed it.
+
 ## Extensions in detail
 
 Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (a bare slug is not accepted, because it cannot be told apart from a relative path), local `.crx`/`.xpi` files, and unpacked developer directories. Each install records how it was verified.
