@@ -13,10 +13,16 @@ pub(super) fn main_menu() -> (gtk::MenuButton, gtk::Button) {
     zoom_row.set_attribute_value("custom", Some(&"zoom".to_variant()));
     zoom.append_item(&zoom_row);
 
+    let tools = gio::Menu::new();
+    tools.append(Some("_Developer Tools"), Some("win.developer-tools"));
+    tools.append(Some("View Page _Source"), Some("win.view-source"));
+
     let page = gio::Menu::new();
+    page.append(Some("_Print…"), Some("win.print"));
     page.append(Some("_Save Page As…"), Some("win.save-page"));
     page.append(Some("_Find…"), Some("win.find"));
     page.append(Some("_Fullscreen"), Some("win.fullscreen"));
+    page.append_submenu(Some("More _Tools"), &tools);
 
     let library = gio::Menu::new();
     library.append(Some("_Bookmarks"), Some("win.show-bookmarks"));

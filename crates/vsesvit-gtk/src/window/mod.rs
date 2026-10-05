@@ -1087,6 +1087,7 @@ impl BrowserWindow {
         let address = &self.ui().address;
         address.show_uri(tab.committed_uri().as_deref());
         address.set_security(tab.security());
+        self.set_action_enabled("view-source", tab.source_url().is_some());
     }
 
     fn sync_history(&self, tab: &Tab) {

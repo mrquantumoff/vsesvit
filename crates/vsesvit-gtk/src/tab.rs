@@ -13,6 +13,7 @@ use gtk::{gdk, glib};
 use vsesvit_core::history::Transition;
 use vsesvit_core::permissions::{Capturing, Origin};
 use vsesvit_core::session::TabId as SessionTabId;
+use vsesvit_core::view_source;
 use vsesvit_webext::{Gate, Runtime, TabId};
 use webkit::prelude::*;
 
@@ -285,6 +286,44 @@ impl Tab {
         self.imp().pending_transition.take();
         self.imp().gate.borrow_mut().stop();
         self.web_view().stop_loading();
+    }
+
+    /// WebKit's print dialog for the page, over the tab's window.
+    pub(crate) fn print(&self) {
+        webkit::PrintOperation::new(self.web_view()).run_dialog(self.window().as_ref());
+    }
+
+    /// The `view-source:` address of the page on screen, when it has a source to show.
+    pub(crate) fn source_url(&self) -> Option<String> {
+        self.committed_uri().as_deref().and_then(view_source::source_url)
+    }
+
+    /// The page's source in a new tab next to this one.
+    pub(crate) fn view_source(&self) {
+        if let (Some(url), Some(window)) = (self.source_url(), self.window()) {
+            window.open_tab(Some(&url), Some(self), Focus::Foreground);
+        }
+    }
+
+    /// WebKit's inspector, closed when it is open: Chrome's F12.
+    pub(crate) fn toggle_inspector(&self) {
+        let Some(inspector) = self.web_view().inspector() else { return };
+        if is_open(&inspector) {
+            inspector.close();
+        } else {
+            inspector.show();
+        }
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn inspector_open(&self) -> bool {
+        self.web_view().inspector().is_some_and(|inspector| is_open(&inspector))
+    }
+
+    pub(crate) fn show_inspector(&self) {
+        if let Some(inspector) = self.web_view().inspector() {
+            inspector.show();
+        }
     }
 
     /// The URI of the document on screen, as opposed to one still being requested.
@@ -773,6 +812,16 @@ fn decode_session_state(bytes: &[u8]) -> Option<webkit::WebViewSessionState> {
         let state = webkit::ffi::webkit_web_view_session_state_new(bytes.to_glib_none().0);
         (!state.is_null()).then(|| webkit::WebViewSessionState::from_glib_full(state))
     }
+}
+
+/// Whether the inspector has a view, which it has from opening until it closes. The binding's
+/// `WebInspector::web_view` would sink that view while it is still floating (before WebKit puts
+/// it in a window or attaches it), and dropping the reference then destroys it, closing the
+/// inspector.
+fn is_open(inspector: &webkit::WebInspector) -> bool {
+    use glib::translate::ToGlibPtr;
+    // SAFETY: the pointer is borrowed and only compared with NULL.
+    unsafe { !webkit::ffi::webkit_web_inspector_get_web_view(inspector.to_glib_none().0).is_null() }
 }
 
 /// Middle click, or Ctrl+click, on a link opens it in a new tab; Shift also switches to it.

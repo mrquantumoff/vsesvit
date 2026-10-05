@@ -1,6 +1,6 @@
 //! The page's context menu. With text selected, Chrome's item for it follows Copy: it
 //! searches the default engine for the text, or goes to it when it is an address, in a new tab
-//! next to the page.
+//! next to the page. On the page itself, Print and View Page Source come before Inspect Element.
 //!
 //! WebKit hands over no selected text with the menu, so a script in a world of its own tells
 //! the tab whenever the selection changes, in any frame.
@@ -45,6 +45,8 @@ pub(crate) fn attach(tab: &Tab) {
         move |_, menu, hit| {
             if hit.context_is_selection() {
                 add_selection_item(&tab, menu);
+            } else if is_page(hit) {
+                add_page_items(&tab, menu);
             }
             false
         }
@@ -78,4 +80,45 @@ pub(crate) fn add_selection_item(tab: &Tab, menu: &webkit::ContextMenu) -> Optio
         None => menu.append(&item),
     }
     Some(item)
+}
+
+/// A click on the page itself, not on a link, an image, media, a field or a scrollbar.
+fn is_page(hit: &webkit::HitTestResult) -> bool {
+    !(hit.context_is_link()
+        || hit.context_is_image()
+        || hit.context_is_media()
+        || hit.context_is_editable()
+        || hit.context_is_scrollbar()
+        || hit.context_is_selection())
+}
+
+/// Adds Print and View Page Source for `tab` right before Inspect Element, or last when the
+/// menu has no Inspect Element. View Page Source is disabled for a page with no source.
+pub(crate) fn add_page_items(tab: &Tab, menu: &webkit::ContextMenu) -> [webkit::ContextMenuItem; 2] {
+    let print = gio::SimpleAction::new("print", None);
+    print.connect_activate(glib::clone!(
+        #[weak]
+        tab,
+        move |_, _| tab.print()
+    ));
+    let view_source = gio::SimpleAction::new("view-source", None);
+    view_source.set_enabled(tab.source_url().is_some());
+    view_source.connect_activate(glib::clone!(
+        #[weak]
+        tab,
+        move |_, _| tab.view_source()
+    ));
+    let items = [
+        webkit::ContextMenuItem::from_gaction(&print, "_Print…", None),
+        webkit::ContextMenuItem::from_gaction(&view_source, "View Page _Source", None),
+    ];
+    let inspect = menu.items().iter().position(|item| item.stock_action() == webkit::ContextMenuAction::InspectElement);
+    let inspect = inspect.and_then(|at| i32::try_from(at).ok());
+    for (item, offset) in items.iter().zip(0..) {
+        match inspect {
+            Some(at) => menu.insert(item, at + offset),
+            None => menu.append(item),
+        }
+    }
+    items
 }

@@ -37,6 +37,7 @@ mod tab;
 #[cfg(test)]
 mod test_support;
 mod updates;
+mod view_source;
 mod window;
 mod zoom;
 

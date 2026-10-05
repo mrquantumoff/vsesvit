@@ -39,7 +39,11 @@ pub(crate) fn binding(cmd: Command) -> Option<Binding> {
         FindNext => Action("win.find-next"),
         FindPrevious => Action("win.find-previous"),
         BookmarkPage => Action("win.bookmark-page"),
-        CopyCleanLink | CopyLink | Print | ViewSource | DeveloperTools | JavaScriptConsole => return None,
+        CopyCleanLink | CopyLink => return None,
+        Print => Action("win.print"),
+        ViewSource => Action("win.view-source"),
+        DeveloperTools => Action("win.developer-tools"),
+        JavaScriptConsole => Action("win.javascript-console"),
         ZoomIn => Action("win.zoom-in"),
         ZoomOut => Action("win.zoom-out"),
         ZoomReset => Action("win.zoom-reset"),
@@ -265,6 +269,8 @@ mod tests {
         let unique: std::collections::HashSet<&&str> = actions.iter().collect();
         assert_eq!(unique.len(), actions.len());
         assert_eq!(binding(Command::SavePage), Some(Binding::Action("win.save-page")));
+        assert_eq!(binding(Command::ViewSource), Some(Binding::Action("win.view-source")));
+        assert_eq!(binding(Command::DeveloperTools), Some(Binding::Action("win.developer-tools")));
         assert_eq!(binding(Command::NextTab), Some(Binding::BuiltIn("<Control>Tab")));
         assert_eq!(binding(Command::CopyLink), None);
     }

@@ -44,6 +44,7 @@ fn add_appimage_to_sandbox() {
 impl Engine {
     pub(crate) fn new(profile: &mut Profile) -> Self {
         add_appimage_to_sandbox();
+        crate::view_source::register();
         let paths = profile.paths();
         // WebKit takes C strings and silently falls back to its shared default
         // directories when given none, so a non-UTF-8 profile path is refused loudly.

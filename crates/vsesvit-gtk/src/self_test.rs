@@ -4,7 +4,7 @@
 //! drives those widgets, writing `report.json` and `window.png` and exiting non-zero if any
 //! check fails.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -60,7 +60,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 34] = [
+const CHECKS: [&str; 35] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -88,6 +88,7 @@ const CHECKS: [&str; 34] = [
     "ctrl_s_toggles_sidebar",
     "shortcuts",
     "save_page",
+    "page_commands",
     "zoom_indicator",
     "zoom_is_remembered_per_site",
     "connection_info",
@@ -1152,6 +1153,156 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let detail = format!("{} has {} bytes", path.display(), bytes.len());
         if String::from_utf8_lossy(&bytes).contains("Vsesvit fixture") { Ok(format!("{detail}, containing \"Vsesvit fixture\"")) } else { Err(format!("{detail}, none of them \"Vsesvit fixture\"")) }
+    })
+    .await;
+
+    ctx.check("page_commands", CHECK_TIMEOUT, |last| async move {
+        let app = browser.app();
+        let parse = |accels: &[&str]| accels.iter().map(|a| gtk::accelerator_parse(*a)).collect::<Vec<_>>();
+        for (action, want) in [
+            ("win.print", &["<Control>p"][..]),
+            ("win.view-source", &["<Control>u"]),
+            ("win.developer-tools", &["<Control><Shift>i", "F12"]),
+            ("win.javascript-console", &["<Control><Shift>j"]),
+        ] {
+            let held: Vec<String> = app.accels_for_action(action).iter().map(|a| a.to_string()).collect();
+            if parse(&held.iter().map(String::as_str).collect::<Vec<_>>()) != parse(want) {
+                return Err(format!("{action} has {held:?}, not {want:?}"));
+            }
+        }
+
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let _tabs = Cleanup(|| {
+            for other in window.tabs().into_iter().filter(|t| t != &tab) {
+                window.close_tab(&other);
+            }
+            window.select_tab(&tab);
+            if tab.inspector_open() {
+                gio::prelude::ActionGroupExt::activate_action(window, "developer-tools", None);
+            }
+        });
+        let source_url = format!("view-source:{index_url}");
+        let fetches = || ctx.server.hits().iter().filter(|path| *path == "/index.html").count();
+        let shows_source = |source: &crate::tab::Tab| {
+            let (uri, title, loading) = (source.committed_uri().unwrap_or_default(), title_of(source.web_view()), source.web_view().is_loading());
+            if uri == source_url && title == source_url && !loading { Ok(()) } else { Err(format!("committed={uri:?} title={title:?} loading={loading}")) }
+        };
+        let source_text = async |source: &crate::tab::Tab| {
+            let text = eval_js(source.web_view(), "document.body.innerText").await?;
+            if text.contains("<title>Vsesvit fixture</title>") { Ok(()) } else { Err(format!("{source_url} reads {text:?}")) }
+        };
+
+        let before = fetches();
+        gio::prelude::ActionGroupExt::activate_action(window, "view-source", None);
+        let source = wait_for(&last, || {
+            let tabs = window.tabs();
+            let source = window.selected_tab().filter(|t| t != &tab).ok_or_else(|| "no new tab selected".to_owned())?;
+            let next_to = tabs.iter().position(|t| t == &tab).map(|i| i + 1) == tabs.iter().position(|t| t == &source);
+            shows_source(&source).and_then(|()| if next_to { Ok(source) } else { Err("the source tab is not next to the page".to_owned()) })
+        })
+        .await;
+        source_text(&source).await?;
+        let from_tab = fetches() - before;
+        window.close_tab(&source);
+
+        tab.load(page2_url.as_str());
+        wait_for(&last, || {
+            let uri = tab.committed_uri().unwrap_or_default();
+            if uri == page2_url.as_str() && !tab.web_view().is_loading() { Ok(()) } else { Err(format!("the page tab shows {uri:?}")) }
+        })
+        .await;
+        let before = fetches();
+        let fresh = window.open_tab(Some(&source_url), None, Focus::Foreground);
+        wait_for(&last, || shows_source(&fresh)).await;
+        source_text(&fresh).await?;
+        let from_hidden = fetches() - before;
+        window.close_tab(&fresh);
+        if from_tab != 0 || from_hidden != 1 {
+            return Err(format!("the server sent the page {from_tab} time(s) for the open tab's source and {from_hidden} for the hidden view's"));
+        }
+        tab.load(index_url.as_str());
+        wait_for(&last, || {
+            let uri = tab.committed_uri().unwrap_or_default();
+            if uri == index_url.as_str() && !tab.web_view().is_loading() { Ok(()) } else { Err(format!("back on the page: {uri:?}")) }
+        })
+        .await;
+
+        let menu = webkit::ContextMenu::new();
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::Reload));
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::InspectElement));
+        crate::page_menu::add_page_items(&tab, &menu);
+        let listed: Vec<String> = menu
+            .items()
+            .iter()
+            .map(|item| match item.stock_action() {
+                webkit::ContextMenuAction::Custom => item.title().map(String::from).unwrap_or_default(),
+                stock => format!("{stock:?}"),
+            })
+            .collect();
+        if listed != ["Reload", "_Print…", "View Page _Source", "InspectElement"] {
+            return Err(format!("the page's context menu lists {listed:?}"));
+        }
+
+        let inspector = tab.web_view().inspector().ok_or_else(|| "the page has no inspector".to_owned())?;
+        let placed = Rc::new(Cell::new(""));
+        inspector.connect_attach(glib::clone!(
+            #[strong]
+            placed,
+            move |_| {
+                placed.set("attached to the page");
+                false
+            }
+        ));
+        inspector.connect_open_window(glib::clone!(
+            #[strong]
+            placed,
+            move |_| {
+                placed.set("in a window");
+                false
+            }
+        ));
+        gio::prelude::ActionGroupExt::activate_action(window, "developer-tools", None);
+        wait_for(&last, || match (tab.inspector_open(), placed.get()) {
+            (true, placed) if !placed.is_empty() => Ok(()),
+            (open, placed) => Err(format!("after the first win.developer-tools the inspector is open={open}, placed {placed:?}")),
+        })
+        .await;
+        let inspector_placed = placed.get();
+        gio::prelude::ActionGroupExt::activate_action(window, "developer-tools", None);
+        wait_for(&last, || if tab.inspector_open() { Err("the second win.developer-tools left the inspector open".to_owned()) } else { Ok(()) }).await;
+
+        let pdf = ctx.out_dir.join("print.pdf");
+        let _ = std::fs::remove_file(&pdf);
+        let settings = gtk::PrintSettings::new();
+        settings.set_printer("Print to File");
+        settings.set(gtk::PRINT_SETTINGS_OUTPUT_FILE_FORMAT, Some("pdf"));
+        settings.set(gtk::PRINT_SETTINGS_OUTPUT_URI, Some(gio::File::for_path(&pdf).uri().as_str()));
+        let operation = webkit::PrintOperation::new(tab.web_view());
+        operation.set_print_settings(&settings);
+        let outcome: Rc<RefCell<Option<Result<(), String>>>> = Rc::default();
+        operation.connect_failed(glib::clone!(
+            #[strong]
+            outcome,
+            move |_, error| *outcome.borrow_mut() = Some(Err(error.to_string()))
+        ));
+        operation.connect_finished(glib::clone!(
+            #[strong]
+            outcome,
+            move |_| {
+                outcome.borrow_mut().get_or_insert(Ok(()));
+            }
+        ));
+        operation.print();
+        wait_for(&last, || outcome.borrow().clone().ok_or_else(|| "printing has not finished".to_owned())).await?;
+        let bytes = std::fs::read(&pdf).map_err(|e| format!("{}: {e}", pdf.display()))?;
+        if !bytes.starts_with(b"%PDF") {
+            return Err(format!("{} has {} bytes starting {:?}", pdf.display(), bytes.len(), String::from_utf8_lossy(&bytes[..bytes.len().min(8)])));
+        }
+        Ok(format!(
+            "Ctrl+P, Ctrl+U, Ctrl+Shift+I and F12, Ctrl+Shift+J on their actions; win.view-source opened {source_url} next to the page from the open tab ({from_tab} fetches), and a fresh tab showed it through a hidden view ({from_hidden} fetch); the context menu lists {listed:?}; win.developer-tools opened the inspector ({inspector_placed}) and closed it; printing to file wrote {} ({} bytes)",
+            pdf.display(),
+            bytes.len()
+        ))
     })
     .await;
 

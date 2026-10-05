@@ -91,6 +91,11 @@ pub(super) fn install(window: &BrowserWindow) {
         ActionEntry::builder("find-previous")
             .activate(|w: &BrowserWindow, _, _| w.ui().find_bar.step(Direction::Previous))
             .build(),
+        on_tab("print", Tab::print),
+        on_tab("view-source", Tab::view_source),
+        on_tab("developer-tools", Tab::toggle_inspector),
+        // WebKit has no way to open the inspector on a given panel.
+        on_tab("javascript-console", Tab::show_inspector),
         on_tab("zoom-in", |tab| zoom_tab(tab, Some(zoom::Step::In))),
         on_tab("zoom-out", |tab| zoom_tab(tab, Some(zoom::Step::Out))),
         on_tab("zoom-reset", |tab| zoom_tab(tab, None)),
