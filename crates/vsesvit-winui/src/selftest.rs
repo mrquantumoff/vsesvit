@@ -185,6 +185,8 @@ async fn checks(
     report: &mut Report,
 ) -> Result<(), String> {
     let server = FixtureServer::start().map_err(|e| format!("fixture server: {e}"))?;
+    // Text typed into the address box would otherwise go to the default engine, on the internet.
+    browser.write_pref(&keys::SEARCH_SUGGESTIONS, &false);
     let window = browser.windows().into_iter().next().ok_or("no window")?;
     let probe_id = ExtensionId::parse(testkit::PROBE_ID).map_err(|e| e.to_string())?;
     let index = server.url("/index.html");
@@ -587,6 +589,11 @@ async fn checks(
 
     check(report, "address_completion", DEFAULT_TIMEOUT, async |p| {
         omnibox_checks::address_completion(&window, &tab, &server, out_dir, p).await
+    })
+    .await;
+
+    check(report, "search_suggestions", DEFAULT_TIMEOUT, async |p| {
+        omnibox_checks::search_suggestions(browser, &window, &tab, &server, out_dir, p).await
     })
     .await;
 

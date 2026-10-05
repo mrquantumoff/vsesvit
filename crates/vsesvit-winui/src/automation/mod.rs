@@ -17,6 +17,7 @@ use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::extensions::{ExtensionId, InstallSource};
 use vsesvit_core::prefs::{TabsPosition, Theme, keys};
+use vsesvit_core::search::EngineForm;
 use vsesvit_core::testkit::{self, FixtureServer};
 use windows_core::Interface;
 
@@ -51,6 +52,57 @@ const SECOND_TAB: &str = "data:text/html,<title>Second tab</title>\
     <link rel=\"icon\" href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>\
     <circle cx='8' cy='8' r='7' fill='crimson'/></svg>\">\
     <body style='font:24px sans-serif'><h1>Second tab</h1></body>";
+
+/// The default engine's suggestions under the typed search, from an engine on the fixture
+/// server. The default engine and the setting are put back afterwards.
+async fn search_suggestion_steps(
+    browser: &Browser,
+    window: &Rc<BrowserWindow>,
+    server: &FixtureServer,
+    out_dir: &Path,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let origin = server.origin();
+    let (engine, previous) = browser
+        .core(|c| {
+            let previous = c.search_engines().default_engine()?.id;
+            let form = EngineForm {
+                name: "Fixture search".to_owned(),
+                keyword: "fixture".to_owned(),
+                url: format!("{origin}/search?q=%s"),
+            };
+            let engine = c.search_engines().save(None, &form)?;
+            let suggest_url = format!("{origin}/suggest?q={{searchTerms}}");
+            c.search_engines()
+                .set_suggest_url(&engine, Some(&suggest_url))?;
+            c.search_engines().set_default(&engine)?;
+            Ok::<_, vsesvit_core::Error>((engine, previous))
+        })
+        .map_err(|e| e.to_string())?;
+    browser.write_pref(&keys::SEARCH_SUGGESTIONS, &true);
+    window.type_address("vsesvit");
+    let suggested = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        let labels = window.suggestion_labels();
+        (labels.get(1..3) == Some(&["vsesvit one".to_owned(), "vsesvit two".to_owned()][..]))
+            .then_some(())
+    })
+    .await;
+    shoot(window, out_dir, "13b-search-suggestions", steps, |w| {
+        json!({
+            "name": "13b-search-suggestions",
+            "labels": w.suggestion_labels(),
+            "ok": suggested.is_some(),
+        })
+    })
+    .await;
+    window.address_key_down(0x1B, crate::shortcuts::Mods::NONE);
+    browser.write_pref(&keys::SEARCH_SUGGESTIONS, &false);
+    let restored = browser.core(|c| {
+        c.search_engines().set_default(&previous)?;
+        c.search_engines().remove(&engine)
+    });
+    restored.map_err(|e| format!("restoring the default search engine: {e}"))
+}
 
 /// The bookmarks bar: a bookmarked page keeps its favicon, a drag reorders the bookmarks in
 /// core, and a bar with more items than fit shows the rest in the chevron's menu, also after
@@ -395,6 +447,8 @@ pub(crate) async fn ui_smoke(browser: Rc<Browser>, out_dir: PathBuf) {
 
 async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> Result<(), String> {
     let server = FixtureServer::start().map_err(|e| format!("fixture server: {e}"))?;
+    // Text typed into the address box would otherwise go to the default engine, on the internet.
+    browser.write_pref(&keys::SEARCH_SUGGESTIONS, &false);
     let window = browser.windows().into_iter().next().ok_or("no window")?;
     let first = window.active_tab().ok_or("no tab")?;
     wait_loaded(&first).await?;
@@ -703,6 +757,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
         "list_closed_by_escape": !window.suggestions_open(),
         "ok": labels.len() >= 2 && !window.suggestions_open(),
     }));
+    search_suggestion_steps(browser, &window, &server, out_dir, steps).await?;
 
     let page2 = server.url("/page2.html");
     if let Err(e) = dialog_steps::settings(&window, out_dir, &page2, steps).await {

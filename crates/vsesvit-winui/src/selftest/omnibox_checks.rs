@@ -1,6 +1,6 @@
-//! The `address_completion` and `selection_search` checks: Chrome's keys over the address box's list
-//! with a visited fixture page to complete inline, and the page context menu's search for the
-//! selected text.
+//! The `address_completion`, `search_suggestions` and `selection_search` checks: Chrome's keys
+//! over the address box's list with a visited fixture page to complete inline, the default
+//! engine's suggestions in that list, and the page context menu's search for the selected text.
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use serde_json::json;
+use vsesvit_core::prefs::keys;
 use vsesvit_core::search::{EngineForm, SearchEngineId, UrlTemplate};
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
@@ -21,6 +22,8 @@ use crate::tab::Tab;
 use crate::window::BrowserWindow;
 
 const SETTLE: Duration = Duration::from_millis(300);
+/// Long enough for the engine to have been asked, had it been: the debounce and a local fetch.
+const QUIET: Duration = Duration::from_millis(400);
 const DOWN: u16 = 0x28;
 const ESCAPE: u16 = 0x1B;
 const ENTER: u16 = 0x0D;
@@ -174,6 +177,135 @@ async fn keys(
     })
     .await;
     let ok = handled && !window.suggestions_open();
+    let detail = detail.join("; ");
+    ok.then_some(detail.clone()).ok_or(detail)
+}
+
+/// With a default search engine that searches and suggests on the fixture server, and search
+/// suggestions on. The previous default and the setting come back and the box is left, also
+/// on a timeout.
+pub(super) async fn search_suggestions(
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    server: &FixtureServer,
+    out_dir: &Path,
+    p: &Probe,
+) -> Result<String, String> {
+    let origin = server.origin();
+    let (engine, previous) = browser
+        .core(|c| {
+            let previous = c.search_engines().default_engine()?.id;
+            let form = EngineForm {
+                name: SEARCH_ENGINE.to_owned(),
+                keyword: "fixture".to_owned(),
+                url: format!("{origin}/search?q=%s"),
+            };
+            let engine = c.search_engines().save(None, &form)?;
+            let suggest_url = format!("{origin}/suggest?q={{searchTerms}}");
+            c.search_engines()
+                .set_suggest_url(&engine, Some(&suggest_url))?;
+            c.search_engines().set_default(&engine)?;
+            Ok::<_, vsesvit_core::Error>((engine, previous))
+        })
+        .map_err(err)?;
+    browser.write_pref(&keys::SEARCH_SUGGESTIONS, &true);
+    let _restore = OnDrop(|| {
+        window.address_key_down(ESCAPE, Mods::NONE);
+        window.address_key_down(ESCAPE, Mods::NONE);
+        browser.write_pref(&keys::SEARCH_SUGGESTIONS, &false);
+        restore_engine(browser, &engine, &previous);
+    });
+    suggested(browser, window, tab, server, out_dir, p).await
+}
+
+/// How many times the fixture server was asked for suggestions.
+fn suggest_hits(server: &FixtureServer) -> usize {
+    server.hits().iter().filter(|h| *h == "/suggest").count()
+}
+
+/// Whether the list holds the fixture server's suggestions for `typed`.
+fn lists_suggestions(window: &BrowserWindow, typed: &str) -> bool {
+    let fills = window.suggestion_fills();
+    [format!("{typed} one"), format!("{typed} two")]
+        .iter()
+        .any(|s| fills.contains(s))
+}
+
+async fn suggested(
+    browser: &Browser,
+    window: &Rc<BrowserWindow>,
+    tab: &Rc<Tab>,
+    server: &FixtureServer,
+    out_dir: &Path,
+    p: &Probe,
+) -> Result<String, String> {
+    let expected = ["vsesvit", "vsesvit one", "vsesvit two"].map(String::from);
+    window.type_address("vsesvit");
+    let fills = until(p, |p| {
+        let fills = window.suggestion_fills();
+        let asked = suggest_hits(server);
+        p.observe(format!(
+            "typed \"vsesvit\": rows {fills:?}, /suggest asked {asked} times, {}",
+            describe(window)
+        ));
+        (fills.starts_with(&expected) && asked == 1 && window.highlighted_suggestion() == Some(0))
+            .then_some(fills)
+    })
+    .await;
+    let shot = window
+        .capture()
+        .await
+        .map_err(|e| format!("capture: {e}"))?;
+    let path = out_dir.join("search-suggestions.png");
+    std::fs::write(&path, &shot.png).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut detail = vec![format!("typed \"vsesvit\": rows {fills:?}")];
+
+    let handled = window.address_key_down(DOWN, Mods::NONE);
+    detail.push(format!("Down: {}", describe(window)));
+    if !(handled
+        && window.address_text() == "vsesvit one"
+        && window.highlighted_suggestion() == Some(1))
+    {
+        return Err(detail.join("; "));
+    }
+
+    let search = server.url("/search?q=vsesvit+one");
+    window.address_key_down(ENTER, Mods::NONE);
+    let opened = until(p, |p| {
+        let url = tab.state().url;
+        p.observe(format!("after Enter the tab is at {url:?}"));
+        (url == search.as_str()).then_some(url)
+    })
+    .await;
+    detail.push(format!("Enter opened {opened}"));
+    let index = server.url("/index.html");
+    window.address_submitted(index.as_str());
+    until(p, |p| {
+        let s = tab.state();
+        p.observe(format!(
+            "back to the fixture page: at {:?} loading {}",
+            s.url,
+            s.loading()
+        ));
+        (s.url == index.as_str() && s.title == FIXTURE_TITLE && !s.loading()).then_some(())
+    })
+    .await;
+
+    let url = format!("127.0.0.1:{}/page2.html", server.port());
+    window.type_address(&url);
+    exec::sleep(QUIET).await;
+    let url_listed = lists_suggestions(window, &url);
+    browser.write_pref(&keys::SEARCH_SUGGESTIONS, &false);
+    window.type_address("vsesvit off");
+    exec::sleep(QUIET).await;
+    let off_listed = lists_suggestions(window, "vsesvit off");
+    let asked = suggest_hits(server);
+    detail.push(format!(
+        "{url:?} and, with suggestions off, \"vsesvit off\" {QUIET:?} later: suggestions listed \
+         {url_listed} and {off_listed}, /suggest asked {asked} times in all"
+    ));
+    let ok = !url_listed && !off_listed && asked == 1;
     let detail = detail.join("; ");
     ok.then_some(detail.clone()).ok_or(detail)
 }

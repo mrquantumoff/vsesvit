@@ -4,6 +4,7 @@
 
 use vsesvit_core::Url;
 use vsesvit_core::history::Transition;
+use vsesvit_core::suggest::SearchSuggestions;
 use windows_core::{IInspectable, Interface};
 
 use super::BrowserWindow;
@@ -67,10 +68,32 @@ impl BrowserWindow {
             return;
         };
         let list = browser.suggest(&typed, allow_inline);
+        let request = browser.suggest_request(&typed, &self.search_queries);
         self.address
-            .replace(Address::Editing(Edit::new(typed, list)));
+            .replace(Address::Editing(Edit::new(typed.clone(), list)));
         self.fill_list();
         self.show_edit();
+        if let Some(request) = request {
+            let me = self.me.clone();
+            exec::spawn(async move {
+                if let Ok(Some(found)) = exec::background(move || request.run()).await {
+                    with(&me, |w| w.add_search_suggestions(&typed, found));
+                }
+            });
+        }
+    }
+
+    /// Lists what the engine suggested for `typed`, unless the user typed again or left the box
+    /// since. Only the list changes: the box's text, inline completion and selection stay as
+    /// the user has them.
+    fn add_search_suggestions(&self, typed: &str, found: SearchSuggestions) {
+        match &mut *self.address.borrow_mut() {
+            Address::Editing(edit) if found.is_current() && edit.typed() == typed => {
+                edit.add_search_suggestions(found);
+            }
+            _ => return,
+        }
+        self.fill_list();
     }
 
     fn fill_list(&self) {
@@ -142,8 +165,9 @@ impl BrowserWindow {
 
     /// Anything that opens over the address box, or takes the focus from it, closes its list.
     /// The list is emptied too: a focused box with suggestions opens it again by itself, and
-    /// only typing should.
+    /// only typing should. The engine is not asked, or its answer listed, for the text left.
     pub(super) fn close_suggestions(&self) {
+        self.search_queries.cancel();
         let _ = self.ui.address.SetIsSuggestionListOpen(false);
         if let Address::Editing(edit) = &mut *self.address.borrow_mut() {
             edit.clear_rows();

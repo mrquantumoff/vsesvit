@@ -142,6 +142,12 @@ pub(super) const MARKUP: &str = r#"
         </StackPanel>
         <StackPanel Spacing="12">
           <TextBlock Text="Suggest while typing" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+          <StackPanel Spacing="4">
+            <ToggleSwitch x:Name="SearchSuggestions" Header="Search suggestions"/>
+            <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="Sends what you type in the address box to your search engine."/>
+          </StackPanel>
           <ToggleSwitch x:Name="SuggestHistory" Header="Browsing history"/>
           <ToggleSwitch x:Name="SuggestBookmarks" Header="Bookmarks"/>
         </StackPanel>
@@ -303,6 +309,7 @@ const PREF_SWITCHES: [(&str, &Pref<bool>, Written); 8] = [
     ("DownloadsAsk", &keys::DOWNLOADS_ASK, |_| {}),
     ("SmoothScrolling", &keys::SMOOTH_SCROLLING, |_| {}),
     ("HardwareAcceleration", &keys::HARDWARE_ACCELERATION, |_| {}),
+    ("SearchSuggestions", &keys::SEARCH_SUGGESTIONS, |_| {}),
     ("SuggestHistory", &keys::SUGGEST_HISTORY, |_| {}),
     ("SuggestBookmarks", &keys::SUGGEST_BOOKMARKS, |_| {}),
     ("BlockPopups", &keys::BLOCK_POPUPS, |_| {}),

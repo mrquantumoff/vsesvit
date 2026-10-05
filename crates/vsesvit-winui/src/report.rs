@@ -19,6 +19,7 @@ pub(crate) const CHECKS: [&str; 29] = [
     "popup",
     "omnibox",
     "address_completion",
+    "search_suggestions",
     "selection_search",
     "search_engines",
     "session",

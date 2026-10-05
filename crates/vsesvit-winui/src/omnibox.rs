@@ -4,6 +4,7 @@
 
 use vsesvit_core::Url;
 use vsesvit_core::search::{self, Suggestion, SuggestionSource, Suggestions};
+use vsesvit_core::suggest::SearchSuggestions;
 
 use crate::shortcuts::Mods;
 
@@ -79,6 +80,8 @@ pub(crate) struct Edit {
     list: Suggestions,
     /// The highlighted row. Row 0, the default match, is highlighted whenever the list has rows.
     row: usize,
+    /// What the default engine suggested for `typed`, kept in the list when it is suggested again.
+    found: Option<SearchSuggestions>,
 }
 
 /// A key the address box handles itself while the user edits.
@@ -127,6 +130,7 @@ impl Edit {
             typed,
             list,
             row: 0,
+            found: None,
         }
     }
 
@@ -163,11 +167,24 @@ impl Edit {
         }
     }
 
-    /// New suggestions for the same text, after one was deleted: the highlight stays on its
-    /// row where the list still reaches it.
-    pub fn refill(&mut self, list: Suggestions) {
-        self.row = self.row.min(list.items.len().saturating_sub(1));
+    /// New suggestions for the same text, with the engine's suggestions in them. The highlight
+    /// follows its row where the list still has it, and otherwise stays on its index where the
+    /// list still reaches it (the row was deleted).
+    pub fn refill(&mut self, mut list: Suggestions) {
+        if let Some(found) = &self.found {
+            list.add_search_suggestions(found);
+        }
+        let highlighted = self.list.items.get(self.row).map(|s| &s.target);
+        self.row = highlighted
+            .and_then(|target| list.items.iter().position(|s| &s.target == target))
+            .unwrap_or_else(|| self.row.min(list.items.len().saturating_sub(1)));
         self.list = list;
+    }
+
+    /// Lists the default engine's suggestions for `typed`.
+    pub fn add_search_suggestions(&mut self, found: SearchSuggestions) {
+        self.found = Some(found);
+        self.refill(self.list.clone());
     }
 
     /// The list closed: no row is left to open or highlight. The inline completion stays in
@@ -175,6 +192,7 @@ impl Edit {
     pub fn clear_rows(&mut self) {
         self.list.items.clear();
         self.row = 0;
+        self.found = None;
     }
 
     pub fn key(&mut self, key: Key) -> Outcome {
@@ -463,6 +481,42 @@ mod tests {
         assert_eq!(edit.key(Key::ShiftDelete), Outcome::Pass, "a bookmark");
         edit.refill(Suggestions::default());
         assert_eq!(edit.row(), 0);
+    }
+
+    /// The fixture edit's list with an engine's suggestion inserted after its search row.
+    fn with_suggested_search(edit: &Edit) -> Suggestions {
+        let mut list = edit.list.clone();
+        let suggested = Suggestion {
+            source: SuggestionSource::SuggestedSearch,
+            title: "fixture".into(),
+            target: NavTarget::Url(Url::parse("https://search.test/?q=fixture").unwrap()),
+            fill: "fixture".into(),
+        };
+        list.items.insert(2, suggested);
+        list
+    }
+
+    #[test]
+    fn refill_keeps_the_highlight_on_its_row_as_rows_are_inserted_above() {
+        let mut edit = fixture_edit();
+        edit.key(Key::Down);
+        edit.key(Key::Down);
+        let shown = edit.shown();
+        edit.refill(with_suggested_search(&edit));
+        assert_eq!(edit.row(), 3);
+        assert_eq!(edit.shown(), shown);
+        assert_eq!(text(&edit), "fixture.test/page");
+    }
+
+    #[test]
+    fn refill_keeps_row_zero_and_its_inline_completion() {
+        let mut edit = fixture_edit();
+        let shown = edit.shown();
+        edit.refill(with_suggested_search(&edit));
+        assert_eq!(edit.row(), 0);
+        assert_eq!(edit.inline(), Some("ture.test"));
+        assert_eq!(edit.shown(), shown);
+        assert_eq!(edit.items().len(), 5);
     }
 
     #[test]

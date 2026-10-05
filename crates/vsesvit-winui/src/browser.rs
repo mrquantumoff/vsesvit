@@ -21,6 +21,7 @@ use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, homep
 use vsesvit_core::search::{SelectionAction, Suggestions};
 use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::shortcuts::Keymap;
+use vsesvit_core::suggest::{Queries, SuggestRequest};
 use vsesvit_core::sync::Changed;
 use vsesvit_core::trackers::TrackerList;
 use vsesvit_core::{Profile, Url, onboarding};
@@ -903,6 +904,17 @@ impl Browser {
             .unwrap_or_else(|e| {
                 log::warn!("omnibox suggestions: {e}");
                 Suggestions::default()
+            })
+    }
+
+    /// The default engine's suggestions for `text` to fetch, the newest of `queries`, when they
+    /// may be asked for.
+    pub fn suggest_request(&self, text: &str, queries: &Queries) -> Option<SuggestRequest> {
+        // No window is private yet.
+        self.core(|p| p.omnibox().suggest_request(text, queries, false))
+            .unwrap_or_else(|e| {
+                log::warn!("search suggestions: {e}");
+                None
             })
     }
 

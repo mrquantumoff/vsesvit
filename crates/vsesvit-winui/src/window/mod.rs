@@ -28,6 +28,7 @@ use vsesvit_core::bookmarks::BookmarkId;
 use vsesvit_core::extensions::toolbar::Layout;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
+use vsesvit_core::suggest::Queries;
 use vsesvit_core::view_source;
 use windows_core::{IInspectable, Interface, Result};
 
@@ -193,6 +194,8 @@ pub(crate) struct BrowserWindow {
     address: RefCell<Address>,
     /// The last key pressed in the address box deletes text (see `omnibox::deletes`).
     address_deleting: Cell<bool>,
+    /// The address box's queries for the default engine's suggestions.
+    search_queries: Queries,
     /// Keeps the suggestion list highlighting the edit's row (see `watch_suggestion_list`).
     suggestion_list_watch: RefCell<Option<windows_core::EventRevoker>>,
     /// The tab the toolbar currently shows.
@@ -270,6 +273,7 @@ impl BrowserWindow {
             openers: RefCell::new(HashMap::new()),
             address: RefCell::new(Address::Page(String::new())),
             address_deleting: Cell::new(false),
+            search_queries: Queries::default(),
             suggestion_list_watch: RefCell::new(None),
             shown_tab: Cell::new(None),
             reordering: Cell::new(false),
