@@ -67,7 +67,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 42] = [
+const CHECKS: [&str; 43] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
