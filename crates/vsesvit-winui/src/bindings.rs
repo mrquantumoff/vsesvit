@@ -8135,6 +8135,16 @@ impl windows_core::RuntimeType for ICoreWebView2Settings4 {
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
 impl ICoreWebView2Settings4 {
+    pub fn IsPasswordAutosaveEnabled(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsPasswordAutosaveEnabled)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
     pub fn SetIsPasswordAutosaveEnabled(&self, value: bool) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SetIsPasswordAutosaveEnabled)(
@@ -8157,7 +8167,8 @@ impl ICoreWebView2Settings4 {
 #[repr(C)]
 pub struct ICoreWebView2Settings4_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
-    IsPasswordAutosaveEnabled: usize,
+    pub IsPasswordAutosaveEnabled:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
     pub SetIsPasswordAutosaveEnabled:
         unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
     IsGeneralAutofillEnabled: usize,

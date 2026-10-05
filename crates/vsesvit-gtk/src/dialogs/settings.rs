@@ -1,11 +1,11 @@
 //! The Settings dialog, bound to core's preferences: General (startup, downloads, scrolling and
 //! the GPU, updates, the profile folder), Sync (the account, what it syncs and its server),
 //! Appearance (theme, tabs, bars and buttons), Search (the engine, the address bar and what it
-//! suggests), Privacy (pop-ups, site permissions, browsing data) and Shortcuts
+//! suggests), Privacy (pop-ups, passwords, site permissions, browsing data) and Shortcuts
 //! (`shortcut_settings`). Every change applies at once, in every window, and an open dialog
 //! follows what sync changes.
 //!
-//! WebKitGTK keeps no passwords and fills no forms, so `autofill.*` has no rows here.
+//! WebKitGTK fills no forms, so `autofill.forms` has no row here.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -59,6 +59,9 @@ const CHANNELS: [(UpdateChannel, &str); 4] = [
     (UpdateChannel::Weekly, "Weekly"),
     (UpdateChannel::Nightly, "Nightly"),
 ];
+
+/// The Privacy page's row saying passwords are left to a password manager.
+pub(crate) const PASSWORDS_NOTICE: &str = "Vsesvit Doesn't Save Passwords";
 
 pub(crate) fn present(window: &BrowserWindow) {
     // Wide enough that the six page names fit in the header rather than a bar at the bottom.
@@ -528,6 +531,14 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
         Browser::set_engine_switch,
     ));
 
+    let passwords = group("Passwords");
+    let notice = adw::ActionRow::builder()
+        .title(PASSWORDS_NOTICE)
+        .subtitle("Use a password manager such as Bitwarden or Proton Pass, through its extension")
+        .build();
+    notice.add_prefix(&gtk::Image::from_icon_name("dialog-password-symbolic"));
+    passwords.add(&notice);
+
     let clear = adw::ButtonRow::builder()
         .title("Clear Browsing Data…")
         .start_icon_name("user-trash-symbolic")
@@ -592,7 +603,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
     ));
     let permissions = group("Permissions");
     permissions.add(&site_permissions);
-    page("privacy", "Privacy", "security-high-symbolic", &[popups, permissions, data])
+    page("privacy", "Privacy", "security-high-symbolic", &[popups, passwords, permissions, data])
 }
 
 /// Every stored site setting Linux lists ([`permissions::listed`]), by site, each with its

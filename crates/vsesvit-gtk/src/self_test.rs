@@ -26,6 +26,7 @@ use vsesvit_core::{OpenOptions, Profile};
 use webkit::prelude::*;
 
 use crate::browser::Browser;
+use crate::dialogs::settings::PASSWORDS_NOTICE;
 use crate::dialogs::{Windowed, shortcut_settings};
 use crate::keymap;
 use crate::window::{Focus, classify_layout};
@@ -907,6 +908,10 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
                 return Err(format!("Settings has no {name:?} page"));
             }
             glib::timeout_future(Duration::from_millis(500)).await;
+            if name == "privacy" && find::<adw::ActionRow>(dialog.upcast_ref(), |r| r.title() == PASSWORDS_NOTICE && r.is_mapped()).is_none() {
+                dialog.close();
+                return Err(format!("the Privacy page shows no {PASSWORDS_NOTICE:?} row"));
+            }
             let file = format!("settings-{name}.png");
             let shot = crate::screenshot::save_png(window, &ctx.out_dir.join(&file)).await;
             if let Err(e) = shot {
@@ -919,7 +924,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         browser.set_home_button_visible(false);
         browser.core().borrow_mut().prefs().reset(&keys::HOMEPAGE).map_err(|e| e.to_string())?;
         Ok(format!(
-            "engine (pop-ups, smooth, GPU) = {engine:?}; Home opened {page2_url}; home-button.png and {} written",
+            "engine (pop-ups, smooth, GPU) = {engine:?}; Home opened {page2_url}; Privacy shows {PASSWORDS_NOTICE:?}; home-button.png and {} written",
             shots.join(", ")
         ))
     })

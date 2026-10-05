@@ -172,6 +172,25 @@ pub(super) async fn settings(
         "arguments": [defaults, off, arguments()],
         "ok": defaults.is_empty() && off == "--disable-smooth-scrolling --disable-gpu" && arguments().is_empty(),
     }));
+
+    select_category(&preview, "PrivacyPanel")?;
+    settle().await;
+    let notice = xaml::is_visible(&preview.find::<UIElement>("PasswordsNotice")?);
+    let switch = preview.find::<UIElement>("SavePasswords").is_ok();
+    let tab = window.active_tab().ok_or_else(windows_core::Error::empty)?;
+    let autosave = tab
+        .core()
+        .ok_or_else(windows_core::Error::empty)?
+        .Settings()?
+        .cast::<ICoreWebView2Settings4>()?
+        .IsPasswordAutosaveEnabled()?;
+    steps.push(json!({
+        "name": "14g-settings-no-passwords",
+        "notice_shown": notice,
+        "save_passwords_switch": switch,
+        "engine_password_autosave": autosave,
+        "ok": notice && !switch && !autosave,
+    }));
     Ok(())
 }
 

@@ -170,6 +170,11 @@ pub(super) const MARKUP: &str = r#"
           </StackPanel>
           <ToggleSwitch x:Name="AutofillForms" Header="Save and fill form entries such as addresses"/>
         </StackPanel>
+        <StackPanel x:Name="PasswordsNotice" Spacing="4">
+          <TextBlock Text="Passwords" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+          <TextBlock TextWrapping="Wrap"
+                     Text="Vsesvit doesn't save passwords. Use a password manager such as Bitwarden or Proton Pass, through its extension."/>
+        </StackPanel>
         <StackPanel Spacing="8">
           <TextBlock Text="Browsing data" Style="{StaticResource BodyStrongTextBlockStyle}"/>
           <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
