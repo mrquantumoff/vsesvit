@@ -134,6 +134,11 @@ impl TrackerList {
         self
     }
 
+    /// Every tracker domain, for engines that pick the requests to ask [`blocks`](Self::blocks) about.
+    pub fn domains(&self) -> impl Iterator<Item = &str> {
+        self.index.keys().map(String::as_str)
+    }
+
     fn push(&mut self, entity: Entity) {
         for (domain, category) in &entity.trackers {
             self.index.insert(domain.clone(), (self.entities.len(), *category));
@@ -187,6 +192,21 @@ fn suffixes(host: &str) -> impl Iterator<Item = &str> {
 /// Whether `host` is `domain` or one of its subdomains.
 fn covers(domain: &str, host: &str) -> bool {
     host.strip_suffix(domain).is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
+}
+
+/// The title of tracking protection's row in Settings and of its switch in the site-info popup.
+pub const TITLE: &str = "Tracking protection";
+
+/// Under the site-info popup's switch: whether protection is `on` for the site and, where the
+/// engine reports it, how many tracker domains it `blocked` on the page.
+pub fn site_status(on: bool, blocked: Option<usize>) -> String {
+    match (on, blocked) {
+        (false, _) => "Off for this site".to_owned(),
+        (true, None) => "Blocking known trackers on this site".to_owned(),
+        (true, Some(0)) => "No trackers blocked on this page".to_owned(),
+        (true, Some(1)) => "1 tracker blocked on this page".to_owned(),
+        (true, Some(n)) => format!("{n} trackers blocked on this page"),
+    }
 }
 
 /// The protection pages of `origin` get: the user's level, or Off on a site they turned it off

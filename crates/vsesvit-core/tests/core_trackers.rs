@@ -172,3 +172,16 @@ fn dnr_rules_block_each_company_s_trackers_off_its_sites() {
         ]
     );
 }
+
+#[test]
+fn the_popup_says_what_was_blocked() {
+    assert_eq!(trackers::site_status(false, Some(3)), "Off for this site");
+    assert_eq!(trackers::site_status(true, None), "Blocking known trackers on this site");
+    assert_eq!(trackers::site_status(true, Some(0)), "No trackers blocked on this page");
+    assert_eq!(trackers::site_status(true, Some(1)), "1 tracker blocked on this page");
+    assert_eq!(trackers::site_status(true, Some(4)), "4 trackers blocked on this page");
+    let list = TrackerList::parse(r#"{"entities": {"X": {"sites": ["x.example"], "advertising": ["ads.x.example"], "social": ["x.example"]}}}"#).unwrap();
+    let mut domains: Vec<&str> = list.domains().collect();
+    domains.sort_unstable();
+    assert_eq!(domains, ["ads.x.example", "x.example"]);
+}
