@@ -49,6 +49,19 @@ fn fixture_server_serves_the_site_and_records_hits() {
 }
 
 #[test]
+fn fixture_server_sets_a_cookie_only_on_set_cookie() {
+    let server = FixtureServer::start().unwrap();
+    let (head, body) = get(&server, "/set-cookie");
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
+    assert!(head.contains("\r\nSet-Cookie: served=1; Path=/\r\n"), "{head}");
+    assert!(String::from_utf8(body).unwrap().contains("<title>Cookie set</title>"));
+    let (head, body) = get(&server, "/cookies.html");
+    assert!(!head.contains("Set-Cookie"), "{head}");
+    assert_eq!(body, fixture("cookies.html"));
+    assert_eq!(get(&server, "/cookie-frame.html").1, fixture("cookie-frame.html"));
+}
+
+#[test]
 fn an_idle_connection_does_not_block_other_requests() {
     let server = FixtureServer::start().unwrap();
     let _speculative = TcpStream::connect(("127.0.0.1", server.port())).unwrap();

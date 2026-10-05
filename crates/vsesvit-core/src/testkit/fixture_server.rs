@@ -1,5 +1,6 @@
 //! A tiny HTTP/1.1 server for `tests/fixtures/site/`, bound to 127.0.0.1 on a random
-//! port, plus `/suggest?q=<terms>`, a search engine's suggestions for the terms. It records
+//! port, plus `/suggest?q=<terms>`, a search engine's suggestions for the terms, and
+//! `/set-cookie`, a page that sets a cookie in its response header. It records
 //! the path of every request, so a test can prove that a request was made (`/allowed.png`)
 //! or was blocked before it left the engine (`/vsesvit-blocked/pixel.png`).
 
@@ -33,6 +34,10 @@ const SITE: &[(&str, &str, &[u8])] = &[
     // A page that loads an image from `localhost`, a tracker in the self-tests.
     site_file!("trackers.html", "text/html; charset=utf-8"),
     site_file!("tracker/pixel.png", "image/png"),
+    // A page that sets a cookie and embeds a frame from `localhost`, another site, that sets one.
+    site_file!("cookies.html", "text/html; charset=utf-8"),
+    // The frame `cookies.html` embeds.
+    site_file!("cookie-frame.html", "text/html; charset=utf-8"),
     site_file!("download.bin", "application/octet-stream"),
     // A page that declares its icon, for favicon fetching.
     (
@@ -41,6 +46,9 @@ const SITE: &[(&str, &str, &[u8])] = &[
         b"<!doctype html><html><head><title>Icon</title><link rel=\"icon\" href=\"allowed.png\"></head><body></body></html>",
     ),
 ];
+
+/// `/set-cookie`, served with `Set-Cookie: served=1; Path=/`.
+const COOKIE_SET_PAGE: &[u8] = b"<!doctype html><html><head><title>Cookie set</title></head><body></body></html>";
 
 const MAX_REQUEST_HEAD: usize = 16 * 1024;
 /// Engines open speculative connections that never send a request; each connection
@@ -125,13 +133,16 @@ fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>) -> io::Result<()> {
 
     let lookup = if path == "/" { "/index.html" } else { path };
     let get = method == "GET" || method == "HEAD";
+    let set_cookie = get && path == "/set-cookie";
     let (status, content_type, body) = match SITE.iter().find(|(p, _, _)| *p == lookup) {
         Some((_, content_type, body)) if get => ("200 OK", *content_type, Cow::Borrowed(*body)),
         None if get && path == "/suggest" => ("200 OK", "application/x-suggestions+json; charset=utf-8", Cow::Owned(suggestions(target))),
+        None if set_cookie => ("200 OK", "text/html; charset=utf-8", Cow::Borrowed(COOKIE_SET_PAGE)),
         _ => ("404 Not Found", "text/plain; charset=utf-8", Cow::Borrowed(b"not found".as_slice())),
     };
+    let cookie = if set_cookie { "Set-Cookie: served=1; Path=/\r\n" } else { "" };
     let head = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\n{cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes())?;
