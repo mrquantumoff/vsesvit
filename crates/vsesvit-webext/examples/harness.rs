@@ -44,7 +44,13 @@
 //!    click and the tab, from the page menu and the action's; `update` and `remove` work from
 //!    a popup; the items outlive a restart of the worker's extension until `removeAll`; the
 //!    classic's popup makes an item with a generated id whose `onclick` it runs;
-//! 10. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//! 10. keyboard commands (`tests/fixtures/extensions/commands/`, a service worker):
+//!     `commands.getAll` lists every command, the action's too, from the background and a
+//!     popup, with the shortcuts core resolves (none for a key the browser holds or for a
+//!     command without one), and the new one after the user assigns it; a shortcut fires
+//!     `onCommand` with the name and the tab, whose URL `activeTab` now shows; an extension
+//!     without `commands` in its manifest has no `chrome.commands`;
+//! 11. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -76,6 +82,7 @@ mod linux {
     use serde_json::Value;
     use vsesvit_core::ext_storage::Area;
     use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension};
+    use vsesvit_core::shortcuts::Chord;
     use vsesvit_core::testkit::FixtureServer;
     use vsesvit_core::{OpenOptions, Profile};
     use vsesvit_webext::menus::{Entry, ItemId, Target};
@@ -88,6 +95,7 @@ mod linux {
     const PORTS_ID: &str = "ports@vsesvit.test";
     const FRIEND_ID: &str = "friend@vsesvit.test";
     const MENUS_ID: &str = "menus@vsesvit.test";
+    const COMMANDS_ID: &str = "commands@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -137,6 +145,8 @@ mod linux {
         write_xpi(&menus_xpi, &fixture_files("menus"));
         let classic_xpi = out_dir.join("classic.xpi");
         write_xpi(&classic_xpi, &classic_files());
+        let commands_xpi = out_dir.join("commands.xpi");
+        write_xpi(&commands_xpi, &fixture_files("commands"));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -148,7 +158,9 @@ mod linux {
         let menus = install(&profile, &menus_xpi);
         assert_eq!(menus.id.as_str(), MENUS_ID);
         let classic = install(&profile, &classic_xpi);
-        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic] {
+        let commands = install(&profile, &commands_xpi);
+        assert_eq!(commands.id.as_str(), COMMANDS_ID);
+        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -174,6 +186,7 @@ mod linux {
             widget_id: widget.id.clone(),
             menus,
             classic_id: classic.id.clone(),
+            commands_id: commands.id.clone(),
             window: window.clone(),
             results: RefCell::new(Vec::new()),
         };
@@ -216,6 +229,7 @@ mod linux {
         widget_id: ExtensionId,
         menus: InstalledExtension,
         classic_id: ExtensionId,
+        commands_id: ExtensionId,
         window: gtk::Window,
         results: RefCell<Vec<(&'static str, bool)>>,
     }
@@ -274,7 +288,10 @@ mod linux {
             // 7. context menus
             self.menus().await;
 
-            // 8. lifecycle events
+            // 8. keyboard commands
+            self.commands().await;
+
+            // 9. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -722,6 +739,73 @@ mod linux {
             let mut profile = self.profile.borrow_mut();
             let items = profile.ext_storage().get(&self.menus.id, Area::Local, Some(&["log".to_owned()])).unwrap_or_default();
             items.get("log").and_then(Value::as_array).cloned().unwrap_or_default()
+        }
+
+        async fn commands(&self) {
+            let id = self.commands_id.clone();
+            let listed = |shortcuts: [&str; 4]| {
+                serde_json::json!([
+                    { "name": "_execute_action", "description": "", "shortcut": shortcuts[0] },
+                    { "name": "free", "description": "Free key", "shortcut": shortcuts[1] },
+                    { "name": "keyless", "description": "No key", "shortcut": shortcuts[2] },
+                    { "name": "taken", "description": "The browser's key", "shortcut": shortcuts[3] },
+                ])
+            };
+            let resolved = listed(["Alt+Shift+A", "Alt+Shift+F", "", ""]);
+            let from_background = wait_for_value(|| self.commands_storage("all"), TIMEOUT).await;
+            self.note("commands_get_all_background", from_background.as_ref() == Some(&resolved), format!("{from_background:?}"));
+
+            let page2 = self.url("/page2.html");
+            let other = self.host.create_tab(&page2, false).expect("second tab");
+            let other_view = self.host.web_view(other).expect("second tab view");
+            self.wait_for_js(&other_view, "document.readyState", None, |s| s == "complete").await;
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("commands_get_all_popup", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Commands"), TIMEOUT).await;
+            let from_popup = self.eval_async(&popup, "return chrome.commands.getAll();").await;
+            self.note("commands_get_all_popup", from_popup.as_ref() == Some(&resolved), format!("{from_popup:?}"));
+
+            let url_of_other = format!("return (await chrome.tabs.get({})).url ?? null;", other.0);
+            let hidden = self.eval_async(&popup, &url_of_other).await;
+            self.runtime.command(&id, "free", Some(other));
+            let fired = wait_for_value(|| self.commands_storage("command"), TIMEOUT).await;
+            let shown = self.eval_async(&popup, &url_of_other).await;
+            let fired_ok = fired == Some(serde_json::json!({ "name": "free", "tab": other.0, "url": page2 }));
+            let granted = hidden == Some(Value::Null) && shown == Some(Value::String(page2.clone()));
+            self.note("commands_on_command", fired_ok && granted, format!("onCommand got {fired:?}; the tab's URL before = {hidden:?}, after = {shown:?}"));
+
+            let alt_shift_f: Chord = "Alt+Shift+F".parse().expect("a chord");
+            let stored = {
+                let mut profile = self.profile.borrow_mut();
+                profile.extension_shortcuts().and_then(|shortcuts| {
+                    let mut keymap = profile.prefs().keymap();
+                    keymap.assign_extension(&shortcuts, &id, "keyless", Some(alt_shift_f));
+                    profile.prefs().set_keymap(&keymap)
+                })
+            };
+            let reassigned = self.eval_async(&popup, "return chrome.commands.getAll();").await;
+            let moved = listed(["Alt+Shift+A", "", "Alt+Shift+F", ""]);
+            self.note("commands_get_all_assigned", stored.is_ok() && reassigned.as_ref() == Some(&moved), format!("stored: {stored:?}; {reassigned:?}"));
+            self.host.remove_tab(other);
+
+            let Some(classic) = self.popup(&self.classic_id, self.tab).await else {
+                self.note("commands_need_the_manifest_key", false, "no classic popup");
+                return;
+            };
+            let _classic_window = self.park(&classic);
+            wait_until(|| classic.title().as_deref() == Some("classic"), TIMEOUT).await;
+            let api = self.eval_async(&classic, "return typeof chrome.commands;").await;
+            self.note("commands_need_the_manifest_key", api.as_ref().and_then(Value::as_str) == Some("undefined"), format!("typeof chrome.commands without commands = {api:?}"));
+        }
+
+        /// What the commands fixture's background stored under `key` in its `storage.local`.
+        fn commands_storage(&self, key: &str) -> Option<Value> {
+            let mut profile = self.profile.borrow_mut();
+            let items = profile.ext_storage().get(&self.commands_id, Area::Local, Some(&[key.to_owned()])).ok()?;
+            items.get(key).cloned()
         }
 
         async fn lifecycle(&self) {

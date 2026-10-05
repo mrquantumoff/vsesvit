@@ -164,6 +164,7 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         Method::ContextMenusCreate | Method::ContextMenusUpdate | Method::ContextMenusRemove | Method::ContextMenusRemoveAll => {
             reply.finish(context_menus(inner, ext, &call));
         }
+        Method::CommandsGetAll => reply.finish(commands(inner, ext)),
     }
 }
 
@@ -712,6 +713,23 @@ fn context_menus(inner: &Inner, ext: &Extension, call: &Call) -> Result<Option<V
     }
     inner.save_menus(ext);
     Ok(None)
+}
+
+// --- commands ---------------------------------------------------------------------------
+
+/// `commands.getAll()`: each of the extension's commands, the action ones too, with the
+/// shortcut it has now, "" for none.
+fn commands(inner: &Inner, ext: &Extension) -> Result<Option<Value>, String> {
+    let shortcuts = inner.profile.borrow_mut().extension_shortcuts().map_err(|e| e.to_string())?;
+    let commands = shortcuts
+        .iter()
+        .filter(|(command, _)| command.extension == ext.id)
+        .map(|(command, chord)| {
+            let shortcut = chord.map(|chord| chord.to_string()).unwrap_or_default();
+            json!({ "name": command.command.name, "description": command.command.description, "shortcut": shortcut })
+        })
+        .collect();
+    Ok(Some(Value::Array(commands)))
 }
 
 // --- alarms -----------------------------------------------------------------------------

@@ -438,6 +438,10 @@
       // Firefox's name for the same API.
       Object.assign(api, { contextMenus, menus: contextMenus });
     }
+    // Chrome gives the API only to an extension whose manifest declares commands.
+    if (config.manifest && config.manifest.commands) {
+      api.commands = { getAll: bridged("commands.getAll"), onCommand: new ExtensionEvent("commands.onCommand") };
+    }
     const currentWindow = () => ({ id: 1, focused: true, incognito: false, type: "normal", state: "normal", alwaysOnTop: false });
     const windows = {
       WINDOW_ID_NONE: -1,

@@ -74,6 +74,11 @@
 //! let entries: Vec<menus::Entry> = runtime.action_menu(&id);
 //! runtime.menu_clicked(&id, &item, Some(tab_id), Some(&target));   // None for the action's menu
 //!
+//! // Extensions' keyboard shortcuts (`commands`): the shell binds the chords core resolves
+//! // (`Profile::extension_shortcuts`) and reports a named command's; an action command
+//! // (`_execute_action`) is the shell's `activate_action`.
+//! runtime.command(&id, "toggle-feature", Some(tab_id));
+//!
 //! // Remote storage.sync changes (from a future sync engine's ApplyReport):
 //! runtime.storage_sync_changed(&ext_id, &changes);
 //! ```
@@ -102,7 +107,7 @@
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
 //!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
 //!   `permissions.contains/getAll`, `contextMenus` (also as Firefox's `menus`, see [`menus`]),
-//!   `extension.getURL`,
+//!   `commands.getAll/onCommand` when the manifest declares `commands`, `extension.getURL`,
 //!   `runtime.openOptionsPage`, `runtime.reload` (the whole extension starts over, its
 //!   pages in tabs reload), and `runtime.onInstalled` on the first load of an install
 //!   or version (`runtime.onStartup` on later startups), `tabs.connect`, and
@@ -117,11 +122,12 @@
 //!   `externally_connectable.ids` leave that extension out.
 //! - Chrome's permission model for those APIs: `scripting.*` needs the `scripting`
 //!   permission and host access to the target tab (a host permission, or `activeTab`
-//!   after the user invoked the action on that tab); tab URLs and titles are visible
-//!   only with the `tabs` permission or host access to the tab's URL. No host permission,
-//!   `<all_urls>` included, reaches `file:` pages: Chrome needs the user's "Allow access to
-//!   file URLs" grant for that, which Vsesvit does not offer. `tabs.create/update` resolve
-//!   relative URLs against the calling page and refuse `javascript:` and `file:`.
+//!   after the user invoked the action or one of its shortcuts on that tab); tab URLs and
+//!   titles are visible only with the `tabs` permission or host access to the tab's URL. No
+//!   host permission, `<all_urls>` included, reaches `file:` pages: Chrome needs the user's
+//!   "Allow access to file URLs" grant for that, which Vsesvit does not offer.
+//!   `tabs.create/update` resolve relative URLs against the calling page and refuse
+//!   `javascript:` and `file:`.
 //! - declarativeNetRequest static rulesets as one WebKit content blocker per extension,
 //!   attached to every tab. Rules WebKit cannot express are logged and skipped. As in
 //!   Chrome, rulesets need the `declarativeNetRequest` permission, and redirect and

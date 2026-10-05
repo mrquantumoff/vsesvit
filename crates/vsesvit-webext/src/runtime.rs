@@ -320,6 +320,24 @@ impl Runtime {
         ext.when_background_loaded(move || bridge::emit_to_pages(&inner, &target, "contextMenus.onClicked", &args));
     }
 
+    /// The user pressed the shortcut of `id`'s command `name` with `tab` selected. As in
+    /// Chrome, that grants `activeTab` on the tab and fires `commands.onCommand` with the name
+    /// and the tab. The action commands (`_execute_action` and its MV2 names) are the shell's:
+    /// it activates the action ([`Runtime::activate_action`]) instead.
+    pub fn command(&self, id: &ExtensionId, name: &str, tab: Option<TabId>) {
+        let Some(ext) = self.0.extension(id) else { return };
+        if !ext.manifest.commands.iter().any(|c| c.name == name && !c.activates_action()) {
+            return;
+        }
+        if let Some(tab) = tab {
+            ext.grant_active_tab(tab);
+        }
+        let mut args = vec![json!(name)];
+        args.extend(tab.and_then(|t| self.0.tab_info(t)).map(|t| ext.tab_json(&t)));
+        let (inner, target) = (self.0.clone(), ext.clone());
+        ext.when_background_loaded(move || bridge::emit_to_pages(&inner, &target, "commands.onCommand", &args));
+    }
+
     /// `storage.sync` changed remotely (a sync engine's `ApplyReport`): fire
     /// `storage.onChanged` in every context of that extension.
     pub fn storage_sync_changed(&self, ext: &ExtensionId, changes: &[StorageChange]) {
