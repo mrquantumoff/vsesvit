@@ -16,6 +16,7 @@ use webkit::prelude::*;
 use crate::bridge::{self, Origin, PortContext, Reply};
 use crate::extension::Extension;
 use crate::lifecycle::{self, InstallEvent, LoadReason};
+use crate::menus::{Entry, ItemId, Target};
 use crate::messaging::Ports;
 use crate::protocol::Sender;
 use crate::tabs::{TabHost, TabId, TabInfo};
@@ -75,7 +76,7 @@ impl Runtime {
     /// Registers the `chrome-extension` scheme on the default `WebContext`. One per process.
     pub fn new(profile: Rc<RefCell<Profile>>, session: &webkit::NetworkSession, host: Rc<dyn TabHost>) -> Runtime {
         let state_dir = profile.borrow().paths().root.join("webext");
-        for sub in ["filters", "installed"] {
+        for sub in ["filters", "installed", "menus"] {
             if let Err(e) = std::fs::create_dir_all(state_dir.join(sub)) {
                 log::warn!("{}: {e}", state_dir.join(sub).display());
             }
@@ -132,6 +133,7 @@ impl Runtime {
         }
         filters::compile(&self.0, &ext);
         let event = self.0.install_event(&ext, reason);
+        self.0.restore_menus(&ext, &event);
         views::start_background(&self.0, &ext, event);
         self.0.notify_actions_changed();
         log::info!("{} {}: loaded from {}", ext.id.as_str(), ext.version, ext.dir.display());
@@ -282,6 +284,42 @@ impl Runtime {
         views::open_popup(&self.0, &ext, ext.url(&state.popup), Box::new(show));
     }
 
+    /// What the loaded extensions add to a page's context menu for a click on `target`: one
+    /// entry each (see [`crate::menus::Menus::page_entry`]), ordered by extension name as in
+    /// Chrome.
+    pub fn page_menu(&self, target: &Target) -> Vec<(ExtensionId, Entry)> {
+        let mut found: Vec<(String, ExtensionId, Entry)> = self
+            .0
+            .loaded_extensions()
+            .iter()
+            .filter_map(|ext| Some((ext.manifest.name.to_lowercase(), ext.id.clone(), ext.menus.borrow().page_entry(&ext.manifest.name, target)?)))
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found.into_iter().map(|(_, id, entry)| (id, entry)).collect()
+    }
+
+    /// The items `id` adds to its toolbar action's menu.
+    pub fn action_menu(&self, id: &ExtensionId) -> Vec<Entry> {
+        self.0.extension(id).map(|ext| ext.menus.borrow().action_entries()).unwrap_or_default()
+    }
+
+    /// The user chose `item`, one of `id`'s, in `tab`'s context menu, opened on `target`, or
+    /// in its action's menu (no `target`; `tab` is the selected one). As in Chrome, that
+    /// grants `activeTab` on the tab and fires `contextMenus.onClicked` with the click and the
+    /// tab.
+    pub fn menu_clicked(&self, id: &ExtensionId, item: &ItemId, tab: Option<TabId>, target: Option<&Target>) {
+        let Some(ext) = self.0.extension(id) else { return };
+        let Some(info) = ext.menus.borrow_mut().click(item, target) else { return };
+        self.0.save_menus(&ext);
+        if let Some(tab) = tab {
+            ext.grant_active_tab(tab);
+        }
+        let mut args = vec![info];
+        args.extend(tab.and_then(|t| self.0.tab_info(t)).map(|t| ext.tab_json(&t)));
+        let (inner, target) = (self.0.clone(), ext.clone());
+        ext.when_background_loaded(move || bridge::emit_to_pages(&inner, &target, "contextMenus.onClicked", &args));
+    }
+
     /// `storage.sync` changed remotely (a sync engine's `ApplyReport`): fire
     /// `storage.onChanged` in every context of that extension.
     pub fn storage_sync_changed(&self, ext: &ExtensionId, changes: &[StorageChange]) {
@@ -426,6 +464,45 @@ impl Inner {
         let listeners: Vec<Rc<dyn Fn()>> = self.actions_changed.borrow().clone();
         for f in listeners {
             f();
+        }
+    }
+
+    fn menus_file(&self, ext: &Extension) -> PathBuf {
+        self.state_dir.join("menus").join(format!("{}.json", ext.host))
+    }
+
+    /// Chrome keeps the context menu items of a lazy background (which runs again only for
+    /// events) across restarts, and drops them on an install or update, whose
+    /// `runtime.onInstalled` makes them again.
+    fn restore_menus(&self, ext: &Extension, event: &InstallEvent) {
+        let file = self.menus_file(ext);
+        if matches!(event, InstallEvent::Installed | InstallEvent::Updated { .. }) {
+            if let Err(e) = std::fs::remove_file(&file)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                log::warn!("{}: {e}", file.display());
+            }
+            return;
+        }
+        if !ext.lazy_background() {
+            return;
+        }
+        match std::fs::read_to_string(&file).map(|text| serde_json::from_str(&text)) {
+            Ok(Ok(menus)) => *ext.menus.borrow_mut() = menus,
+            Ok(Err(e)) => log::warn!("{}: {e}", file.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log::warn!("{}: {e}", file.display()),
+        }
+    }
+
+    pub(crate) fn save_menus(&self, ext: &Extension) {
+        if !ext.lazy_background() {
+            return;
+        }
+        let file = self.menus_file(ext);
+        let written = serde_json::to_string(&*ext.menus.borrow()).map_err(std::io::Error::other).and_then(|json| std::fs::write(&file, json));
+        if let Err(e) = written {
+            log::warn!("{}: {e}", file.display());
         }
     }
 

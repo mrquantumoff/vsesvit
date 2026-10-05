@@ -7,12 +7,15 @@ use std::fmt;
 use vsesvit_core::extensions::manifest::Manifest;
 
 /// API permissions the runtime implements (see the crate docs). `activeTab` and
-/// `unlimitedStorage` change no behaviour here, so they count as honoured.
+/// `unlimitedStorage` change no behaviour here, so they count as honoured; `menus` is
+/// Firefox's name for `contextMenus`.
 pub const SUPPORTED_PERMISSIONS: &[&str] = &[
     "activeTab",
     "alarms",
+    "contextMenus",
     "declarativeNetRequest",
     "declarativeNetRequestWithHostAccess",
+    "menus",
     "scripting",
     "storage",
     "tabs",
@@ -127,8 +130,8 @@ mod tests {
         let m = manifest(
             r#"{
                 "manifest_version": 3, "name": "x", "version": "1",
-                "permissions": ["webRequest", "storage", "nativeMessaging", "webRequest", "cookies", "<all_urls>", "*://example.com/*"],
-                "optional_permissions": ["bookmarks", "tabs"],
+                "permissions": ["webRequest", "storage", "nativeMessaging", "webRequest", "cookies", "contextMenus", "<all_urls>", "*://example.com/*"],
+                "optional_permissions": ["bookmarks", "tabs", "menus"],
                 "host_permissions": ["https://*/*"]
             }"#,
         );

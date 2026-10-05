@@ -296,6 +296,10 @@
   };
 
   const api = { runtime, storage, i18n, permissions };
+  // The `onclick` functions this page gave contextMenus, by item id: Chrome calls one only
+  // in the page that made the item.
+  const menuClicks = new Map();
+  const menuKey = (id) => typeof id + ":" + id;
 
   // --- extension pages only -----------------------------------------------------------
   if (isPage) {
@@ -395,6 +399,45 @@
       clearAll: bridged("alarms.clearAll"),
       onAlarm: new ExtensionEvent("alarms.onAlarm"),
     };
+    if (grantedPermissions.has("contextMenus") || grantedPermissions.has("menus")) {
+      // Chrome returns a new item's id at once, so the shim makes the ids an extension leaves
+      // out: from 1 in the background page, which makes nearly all of them, and from a random
+      // base in other pages so that two pages' ids do not collide.
+      let nextMenuId = isBackgroundPage(g) ? 1 : 1e6 + Math.floor(Math.random() * 1e9);
+      const uncheckedError = (e) => console.error("Unchecked runtime.lastError: " + (e && e.message ? e.message : String(e)));
+      const contextMenus = {
+        ACTION_MENU_TOP_LEVEL_LIMIT: 6,
+        ContextType: { ALL: "all", PAGE: "page", FRAME: "frame", SELECTION: "selection", LINK: "link", EDITABLE: "editable", IMAGE: "image", VIDEO: "video", AUDIO: "audio", LAUNCHER: "launcher", BROWSER_ACTION: "browser_action", PAGE_ACTION: "page_action", ACTION: "action" },
+        ItemType: { NORMAL: "normal", CHECKBOX: "checkbox", RADIO: "radio", SEPARATOR: "separator" },
+        create(props, callback) {
+          const p = Object.assign({}, props);
+          const onclick = typeof p.onclick === "function" ? p.onclick : null;
+          delete p.onclick;
+          const generated = p.id == null;
+          if (generated) p.id = nextMenuId++;
+          const id = p.id;
+          const done = post("contextMenus.create", [p, generated, !!onclick]).then(() => { if (onclick) menuClicks.set(menuKey(id), onclick); });
+          if (typeof callback === "function") settle(done, callback);
+          else done.catch(uncheckedError);
+          return id;
+        },
+        update(id, props, callback) {
+          const p = Object.assign({}, props);
+          const onclick = typeof p.onclick === "function" ? p.onclick : null;
+          delete p.onclick;
+          return settle(post("contextMenus.update", [id, p, !!onclick]).then(() => { if (onclick) menuClicks.set(menuKey(id), onclick); }), callback);
+        },
+        remove(id, callback) {
+          return settle(post("contextMenus.remove", [id]).then(() => { menuClicks.delete(menuKey(id)); }), callback);
+        },
+        removeAll(callback) {
+          return settle(post("contextMenus.removeAll", []).then(() => { menuClicks.clear(); }), callback);
+        },
+        onClicked: new ExtensionEvent("contextMenus.onClicked"),
+      };
+      // Firefox's name for the same API.
+      Object.assign(api, { contextMenus, menus: contextMenus });
+    }
     const currentWindow = () => ({ id: 1, focused: true, incognito: false, type: "normal", state: "normal", alwaysOnTop: false });
     const windows = {
       WINDOW_ID_NONE: -1,
@@ -443,6 +486,10 @@
     const ev = events.get(name);
     if (ev) ev.dispatch(...args);
     if (name === "storage.onChanged" && storage[args[1]]) storage[args[1]].onChanged.dispatch(args[0]);
+    const onclick = name === "contextMenus.onClicked" && menuClicks.get(menuKey(args[0].menuItemId));
+    if (onclick) {
+      try { onclick(...args); } catch (e) { console.error("Vsesvit: contextMenus onclick threw", e); }
+    }
   }
 
   Object.defineProperty(g, "__vsesvit", { value: Object.freeze({ dispatchMessage, dispatchConnect, emit, id: config.id, kind: config.kind }), configurable: false, enumerable: false });

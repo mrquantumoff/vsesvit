@@ -12,6 +12,7 @@ use webkit::glib;
 
 use crate::content;
 use crate::i18n;
+use crate::menus::Menus;
 use crate::patterns;
 use crate::protocol;
 use crate::runtime::LoadError;
@@ -108,6 +109,7 @@ pub(crate) struct Extension {
     pub alarms: RefCell<BTreeMap<String, Alarm>>,
     /// Tabs the user invoked the action on, while the `activeTab` permission applies.
     pub active_tabs: RefCell<BTreeSet<TabId>>,
+    pub menus: RefCell<Menus>,
 }
 
 impl Extension {
@@ -184,6 +186,7 @@ impl Extension {
             filter: RefCell::new(None),
             alarms: RefCell::new(BTreeMap::new()),
             active_tabs: RefCell::new(BTreeSet::new()),
+            menus: RefCell::new(Menus::default()),
         })
     }
 
@@ -256,6 +259,15 @@ impl Extension {
     /// `runtime.getBackgroundPage` returns, rather than a service worker.
     pub fn background_is_page(&self) -> bool {
         matches!(self.manifest.background, Some(Background::Page { .. } | Background::Scripts { .. }))
+    }
+
+    /// Whether the background is a service worker or an event page, whose context menu
+    /// items Chrome keeps across restarts and which must name every item it creates.
+    pub fn lazy_background(&self) -> bool {
+        matches!(
+            self.manifest.background,
+            Some(Background::ServiceWorker { .. } | Background::Scripts { persistent: false, .. } | Background::Page { persistent: false, .. })
+        )
     }
 
     /// The page that hosts `background.scripts` or the MV3 service worker.

@@ -21,6 +21,7 @@ use webkit::{gio, glib};
 use vsesvit_core::extensions::ExtensionId;
 
 use crate::extension::{Alarm, Extension, ViewId};
+use crate::menus::ItemId;
 use crate::messaging::{self, PortEvent, Wake};
 use crate::protocol::{self, Call, Dispatch, Dispatched, Method, NO_RECEIVER, Replies, Sender};
 use crate::runtime::Inner;
@@ -159,6 +160,9 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         | Method::ActionNoop => reply.finish(action(inner, ext, &call)),
         Method::AlarmsCreate | Method::AlarmsGet | Method::AlarmsGetAll | Method::AlarmsClear | Method::AlarmsClearAll => {
             reply.finish(alarms(inner, ext, &call));
+        }
+        Method::ContextMenusCreate | Method::ContextMenusUpdate | Method::ContextMenusRemove | Method::ContextMenusRemoveAll => {
+            reply.finish(context_menus(inner, ext, &call));
         }
     }
 }
@@ -682,6 +686,32 @@ fn action(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<
     };
     inner.notify_actions_changed();
     Ok(result)
+}
+
+// --- contextMenus -----------------------------------------------------------------------
+
+/// `contextMenus.create(props, generated, onclick)`, `update(id, props, onclick)`,
+/// `remove(id)` and `removeAll()`. The shim keeps `onclick` functions and generates the ids
+/// Chrome returns synchronously, so it says whether it did.
+fn context_menus(inner: &Inner, ext: &Extension, call: &Call) -> Result<Option<Value>, String> {
+    if !ext.has_permission("contextMenus") && !ext.has_permission("menus") {
+        return Err(format!("{} requires the \"contextMenus\" permission", call.method));
+    }
+    let id = || ItemId::from_json(call.arg(0)).ok_or_else(|| format!("{}: the id must be a string or an integer", call.method));
+    let flag = |i: usize| call.arg(i).as_bool().unwrap_or(false);
+    let lazy = ext.lazy_background();
+    {
+        let mut menus = ext.menus.borrow_mut();
+        match call.method {
+            Method::ContextMenusCreate => menus.create(call.arg(0), flag(1), lazy, flag(2))?,
+            Method::ContextMenusUpdate => menus.update(&id()?, call.arg(1), lazy, flag(2))?,
+            Method::ContextMenusRemove => menus.remove(&id()?)?,
+            Method::ContextMenusRemoveAll => menus.remove_all(),
+            _ => unreachable!("not a contextMenus method"),
+        }
+    }
+    inner.save_menus(ext);
+    Ok(None)
 }
 
 // --- alarms -----------------------------------------------------------------------------

@@ -138,6 +138,7 @@ pub mod dnr;
 pub mod gate;
 pub mod i18n;
 pub mod lifecycle;
+pub mod menus;
 pub mod messaging;
 pub mod mime;
 pub mod patterns;
