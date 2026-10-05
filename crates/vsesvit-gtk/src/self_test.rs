@@ -32,7 +32,7 @@ use crate::dialogs::settings::{PASSWORDS_NOTICE, TRACKING_PROTECTION_ROW};
 use crate::dialogs::{Windowed, shortcut_settings};
 use crate::keymap;
 use crate::tab::Tab;
-use crate::window::{Focus, classify_layout};
+use crate::window::{BrowserWindow, Focus, classify_layout};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 /// The Web Store install downloads about 10 MB; it gets longer than the default.
@@ -88,6 +88,7 @@ const CHECKS: [&str; 37] = [
     "new_tab_page",
     "address_progress",
     "settings",
+    "search_engines",
     "bookmarks_bar_menus",
     "ctrl_s_toggles_sidebar",
     "shortcuts",
@@ -945,6 +946,85 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         Ok(format!(
             "engine (pop-ups, smooth, GPU) = {engine:?}; Home opened {page2_url}; Privacy shows {PASSWORDS_NOTICE:?}; home-button.png and {} written",
             shots.join(", ")
+        ))
+    })
+    .await;
+
+    ctx.check("search_engines", CHECK_TIMEOUT, |last| async move {
+        let engine_named = |name: &str| browser.core().borrow_mut().search_engines().list().ok().and_then(|list| list.into_iter().find(|e| e.name == name));
+        let _engine = Cleanup(|| {
+            if let Some(engine) = engine_named("Fixture Engine")
+                && let Err(e) = browser.core().borrow_mut().search_engines().remove(&engine.id)
+            {
+                log::warn!("self-test: removing the fixture engine: {e}");
+            }
+        });
+        let (settings, add) = open_search_engines(window, &last).await?;
+        let settings_open = Cleanup(|| {
+            settings.close();
+        });
+        let row_titled = |title: &str| find::<adw::ActionRow>(settings.upcast_ref(), |r| r.title() == title && r.is_mapped());
+        let default_row = row_titled("DuckDuckGo (Default)").ok_or_else(|| "the list has no \"DuckDuckGo (Default)\"".to_owned())?;
+        if WidgetExt::activate_action(&default_row, "engine.remove", None).is_ok() {
+            return Err("the default engine's menu offers Remove".to_owned());
+        }
+
+        add.emit_clicked();
+        let editor = wait_for(&last, || window.visible_dialog().and_downcast::<adw::AlertDialog>().ok_or_else(|| "Add opened no editor".to_owned())).await;
+        let fill = |title: &str, text: &str| {
+            find::<adw::EntryRow>(editor.upcast_ref(), |r| r.title() == title).map(|row| row.set_text(text)).ok_or_else(|| format!("the editor has no {title:?} box"))
+        };
+        fill("Name", "Fixture Engine")?;
+        fill("Shortcut", "w")?;
+        let taken = find::<gtk::Label>(editor.upcast_ref(), |l| l.has_css_class("error") && l.is_visible()).map(|l| l.label().to_string());
+        let refused = !editor.is_response_enabled("save");
+        fill("Shortcut", "fx")?;
+        fill("URL with %s in Place of Query", &format!("{}/search?q=%s", ctx.server.origin()))?;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("search-engine-editor.png")).await.map_err(|e| e.to_string())?;
+        if taken.as_deref() != Some("Another search engine has this shortcut") || !refused || !editor.is_response_enabled("save") {
+            editor.close();
+            return Err(format!("the shortcut w said {taken:?} with Add enabled={}; filled in, Add enabled={}", !refused, editor.is_response_enabled("save")));
+        }
+        button_labelled(editor.upcast_ref(), "_Add").ok_or_else(|| "the editor has no Add button".to_owned())?.emit_clicked();
+        let added = wait_for(&last, || engine_named("Fixture Engine").ok_or_else(|| "core has no Fixture Engine".to_owned())).await;
+        wait_for(&last, || row_titled("Fixture Engine").ok_or_else(|| "the list shows no Fixture Engine".to_owned())).await;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("settings-search-engines.png")).await.map_err(|e| e.to_string())?;
+        drop(settings_open);
+
+        let address = window.address_bar();
+        address.focus_for_typing();
+        address.type_text("fx vsesvit fixture");
+        address.press(gdk::Key::Return, gdk::ModifierType::empty());
+        let searched = ctx.server.url("/search?q=vsesvit+fixture");
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        wait_for(&last, || {
+            let uri = tab.committed_uri().unwrap_or_default();
+            if uri == searched.as_str() { Ok(()) } else { Err(format!("\"fx vsesvit fixture\" opened {uri:?}")) }
+        })
+        .await;
+
+        let (settings, _) = open_search_engines(window, &last).await?;
+        let _settings_open = Cleanup(|| {
+            settings.close();
+        });
+        let fixture_row = find::<adw::ActionRow>(settings.upcast_ref(), |r| r.title() == "Fixture Engine").ok_or_else(|| "Settings opened again lists no Fixture Engine".to_owned())?;
+        WidgetExt::activate_action(&fixture_row, "engine.remove", None).map_err(|e| e.to_string())?;
+        wait_for(&last, || {
+            let listed = find::<adw::ActionRow>(settings.upcast_ref(), |r| r.title() == "Fixture Engine").is_some();
+            if engine_named("Fixture Engine").is_none() && !listed { Ok(()) } else { Err(format!("after Remove, core has it={}, the list shows it={listed}", engine_named("Fixture Engine").is_some())) }
+        })
+        .await;
+        address.submit_text(index_url.as_str());
+        wait_for(&last, || {
+            let uri = tab.committed_uri().unwrap_or_default();
+            if uri == index_url.as_str() { Ok(()) } else { Err(format!("back to the fixture page: {uri:?}")) }
+        })
+        .await;
+        Ok(format!(
+            "the default's menu has no Remove; the shortcut w was refused ({taken:?}); Add saved {} with {}; \"fx vsesvit fixture\" opened {searched}; Remove in Settings opened again deleted it; search-engine-editor.png, settings-search-engines.png",
+            added.name, added.search_url.0
         ))
     })
     .await;
@@ -1945,6 +2025,29 @@ impl<F: FnMut()> Drop for Cleanup<F> {
     fn drop(&mut self) {
         (self.0)();
     }
+}
+
+/// Settings over `window`, on the Search page's Search Engines subpage, and the subpage's Add button.
+async fn open_search_engines(window: &BrowserWindow, last: &Last) -> Result<(adw::PreferencesDialog, gtk::Button), String> {
+    gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+    let settings = window
+        .visible_dialog()
+        .and_downcast::<adw::PreferencesDialog>()
+        .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+    settings.set_visible_page_name("search");
+    let manage = find::<adw::ActionRow>(settings.upcast_ref(), |r| r.title() == "Manage Search Engines");
+    let Some(manage) = manage else {
+        settings.close();
+        return Err("the Search page has no Manage Search Engines row".to_owned());
+    };
+    ActionRowExt::activate(&manage);
+    let add = wait_for(last, || {
+        find::<adw::ButtonContent>(settings.upcast_ref(), |c| c.label() == "_Add" && c.is_mapped())
+            .and_then(|content| content.parent().and_downcast::<gtk::Button>())
+            .ok_or_else(|| "the Search Engines subpage shows no Add button".to_owned())
+    })
+    .await;
+    Ok((settings, add))
 }
 
 /// Every widget of type `W` under `root`, in order.

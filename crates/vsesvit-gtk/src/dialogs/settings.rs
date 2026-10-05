@@ -1,9 +1,9 @@
 //! The Settings dialog, bound to core's preferences: General (startup, downloads, scrolling and
 //! the GPU, updates, the profile folder), Sync (the account, what it syncs and its server),
-//! Appearance (theme, tabs, bars and buttons), Search (the engine, the address bar and what it
-//! suggests), Privacy (tracking protection, pop-ups, passwords, site permissions, browsing
-//! data) and Shortcuts (`shortcut_settings`). Every change applies at once, in every window,
-//! and an open dialog follows what sync changes.
+//! Appearance (theme, tabs, bars and buttons), Search (the engines in `search_engines`, the
+//! address bar and what it suggests), Privacy (tracking protection, pop-ups, passwords, site
+//! permissions, browsing data) and Shortcuts (`shortcut_settings`). Every change applies at once,
+//! in every window, and an open dialog follows what sync changes.
 //!
 //! WebKitGTK fills no forms, so `autofill.forms` has no row here.
 
@@ -16,7 +16,6 @@ use vsesvit_core::permissions::{Origin, Permission, Setting};
 use vsesvit_core::prefs::{
     DEFAULT_SYNC_SERVER, HomepageValue, Pref, Startup, TabsPosition, Theme, UpdateChannel, homepage_input, keys,
 };
-use vsesvit_core::search::SearchEngine;
 use vsesvit_core::sync::DataType;
 use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
@@ -488,8 +487,7 @@ fn appearance_page(browser: &Browser) -> adw::PreferencesPage {
 }
 
 fn search_page(browser: &Browser) -> adw::PreferencesPage {
-    let engine = group("");
-    engine.add(&search_engine_row(browser));
+    let engine = super::search_engines::group(browser);
 
     let address_bar = group("Address Bar");
     address_bar.add(&pref_switch_row(
@@ -774,55 +772,6 @@ fn homepage_row(browser: &Browser) -> adw::EntryRow {
             let homepage = browser.core().borrow_mut().prefs().get(&keys::HOMEPAGE);
             if row.text() != homepage {
                 row.set_text(&homepage);
-            }
-            true
-        }
-    ));
-    row
-}
-
-fn search_engine_row(browser: &Browser) -> adw::ComboRow {
-    let (engines, default): (Vec<SearchEngine>, _) = {
-        let mut profile = browser.core().borrow_mut();
-        let mut engines = profile.search_engines();
-        let list = engines.list().unwrap_or_default();
-        let default = engines.default_engine().ok().map(|e| e.id);
-        (list, default)
-    };
-    let names: Vec<&str> = engines.iter().map(|e| e.name.as_str()).collect();
-    let selected = default
-        .and_then(|id| engines.iter().position(|e| e.id == id))
-        .unwrap_or(0);
-    let row = adw::ComboRow::builder()
-        .title("Search Engine")
-        .subtitle("Used for words typed in the address bar")
-        .model(&gtk::StringList::new(&names))
-        .selected(u32::try_from(selected).unwrap_or(0))
-        .build();
-    let ids: Vec<_> = engines.iter().map(|e| e.id.clone()).collect();
-    let default_id = |browser: &Browser| browser.core().borrow_mut().search_engines().default_engine().ok().map(|e| e.id);
-    row.connect_selected_notify(glib::clone!(
-        #[strong]
-        browser,
-        move |row| {
-            if let Some(engine) = engines.get(row.selected() as usize)
-                && default_id(&browser).as_ref() != Some(&engine.id)
-            {
-                let set = browser.core().borrow_mut().search_engines().set_default(&engine.id);
-                if let Err(e) = set {
-                    log::warn!("search engines: {e}");
-                }
-            }
-        }
-    ));
-    browser.watch_prefs(glib::clone!(
-        #[weak]
-        row,
-        #[upgrade_or]
-        false,
-        move |browser: &Browser| {
-            if let Some(index) = default_id(browser).and_then(|id| ids.iter().position(|i| *i == id)) {
-                row.set_selected(u32::try_from(index).unwrap_or(0));
             }
             true
         }
