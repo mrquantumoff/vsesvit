@@ -13,6 +13,7 @@ mod bookmarks_bar;
 mod browser;
 mod cli;
 mod closed_tabs;
+mod cookies;
 mod dialogs;
 mod downloads;
 mod engine;

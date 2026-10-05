@@ -3,7 +3,8 @@
 //! certificate WebKit checked (who it was issued to and by, when it is valid, the names it
 //! covers, its SHA-256 fingerprint) with the chain up to the root. WebKit hands over the
 //! certificates as `GTlsCertificate`s; core parses their DER. Tracking protection's switch for
-//! the site ([`crate::trackers::site_info_section`]) and what the site may use
+//! the site ([`crate::trackers::site_info_section`]), its cookie rule
+//! ([`crate::cookies::site_info_section`]) and what the site may use
 //! ([`crate::permissions::site_info_section`]) come between the summary and the certificate.
 
 use adw::prelude::*;
@@ -135,9 +136,9 @@ fn certificate_groups(cert: &Certificate) -> Vec<(&'static str, Vec<(&'static st
     ]
 }
 
-/// `trackers` and `permissions` are the page's tracking protection and Permissions sections,
-/// when it has them.
-pub(crate) fn popover(connection: &Connection, trackers: Option<&gtk::ListBox>, permissions: Option<&gtk::Box>) -> gtk::Popover {
+/// `sections` are those of the page's tracking protection, cookies and Permissions sections it
+/// has, in order.
+pub(crate) fn popover(connection: &Connection, sections: &[gtk::Widget]) -> gtk::Popover {
     let (title, icon, explanation) = summary(connection);
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -156,13 +157,9 @@ pub(crate) fn popover(connection: &Connection, trackers: Option<&gtk::ListBox>, 
         content.append(&text(&connection.host, &["dim-label"]));
     }
     content.append(&text(explanation, &[]));
-    if let Some(trackers) = trackers {
+    for section in sections {
         content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        content.append(trackers);
-    }
-    if let Some(permissions) = permissions {
-        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        content.append(permissions);
+        content.append(section);
     }
     if let Some(tls) = &connection.tls {
         content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));

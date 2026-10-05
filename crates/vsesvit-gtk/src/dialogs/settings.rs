@@ -1,9 +1,10 @@
 //! The Settings dialog, bound to core's preferences: General (startup, downloads, scrolling and
 //! the GPU, updates, the profile folder), Sync (the account, what it syncs and its server),
 //! Appearance (theme, tabs, bars and buttons), Search (the engines in `search_engines`, the
-//! address bar and what it suggests), Privacy (tracking protection, secure connections and DNS,
-//! pop-ups, passwords, site permissions, browsing data) and Shortcuts (`shortcut_settings`).
-//! Every change applies at once, in every window, and an open dialog follows what sync changes.
+//! address bar and what it suggests), Privacy (tracking protection, cookies and site data in
+//! `site_data`, secure connections and DNS, pop-ups, passwords, site permissions, browsing data)
+//! and Shortcuts (`shortcut_settings`). Every change applies at once, in every window, and an open
+//! dialog follows what sync changes.
 //!
 //! WebKitGTK fills no forms, so `autofill.forms` has no row here.
 
@@ -12,6 +13,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+use vsesvit_core::cookies::ThirdPartyCookies;
 use vsesvit_core::permissions::{Origin, Permission, Setting};
 use vsesvit_core::prefs::{
     DEFAULT_SYNC_SERVER, HomepageValue, Pref, Startup, TabsPosition, Theme, UpdateChannel, homepage_input, keys,
@@ -542,6 +544,10 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
     let tracking = group("Trackers");
     tracking.add(&tracking_protection_row(window.browser()));
 
+    let cookies = group("Cookies");
+    add_third_party_cookies_rows(window.browser(), &cookies);
+    cookies.add(&super::site_data::row(window.browser()));
+
     let security = group("Security");
     security.add(&pref_switch_row(
         window.browser(),
@@ -638,7 +644,7 @@ fn privacy_page(window: &BrowserWindow) -> adw::PreferencesPage {
     ));
     let permissions = group("Permissions");
     permissions.add(&site_permissions);
-    page("privacy", "Privacy", "security-high-symbolic", &[tracking, security, popups, passwords, permissions, data])
+    page("privacy", "Privacy", "security-high-symbolic", &[tracking, cookies, security, popups, passwords, permissions, data])
 }
 
 /// Off, Standard or Strict, with what the chosen level blocks under it. Sites it is off for are
@@ -676,6 +682,39 @@ fn tracking_protection_row(browser: &Browser) -> adw::ComboRow {
         }
     ));
     row
+}
+
+/// Allowed, blocked in private windows, or blocked: a radio row for each, saying what it does, as
+/// GNOME Web lists its cookie choices; core's labels are too long for a combo row. WebKitGTK sets
+/// one policy for every site, so a site's Allow does not lift it.
+fn add_third_party_cookies_rows(browser: &Browser, group: &adw::PreferencesGroup) {
+    let mut first: Option<gtk::CheckButton> = None;
+    let checks = ThirdPartyCookies::ALL.map(|choice| {
+        let check = gtk::CheckButton::builder().valign(gtk::Align::Center).build();
+        match &first {
+            Some(first) => check.set_group(Some(first)),
+            None => first = Some(check.clone()),
+        }
+        let row = adw::ActionRow::builder().title(choice.label()).subtitle(choice.description()).activatable_widget(&check).build();
+        row.add_prefix(&check);
+        group.add(&row);
+        check.connect_toggled(glib::clone!(
+            #[strong]
+            browser,
+            move |check| {
+                if check.is_active() && browser.pref(&keys::THIRD_PARTY_COOKIES) != choice {
+                    browser.set_third_party_cookies(choice);
+                }
+            }
+        ));
+        (choice, check.downgrade())
+    });
+    let show = move |browser: &Browser| {
+        let current = browser.pref(&keys::THIRD_PARTY_COOKIES);
+        checks.iter().all(|(choice, check)| check.upgrade().inspect(|check| check.set_active(*choice == current)).is_some())
+    };
+    show(browser);
+    browser.watch_prefs(show);
 }
 
 /// Every stored site setting Linux lists ([`permissions::listed`]), by site, each with its
@@ -749,15 +788,18 @@ fn site_setting_row(content: &adw::Bin, browser: &Browser, origin: &Origin, perm
     row
 }
 
-/// `None` removes the setting, so the site asks again, or for Trackers is protected again. The
-/// list is rebuilt once the row that changed has finished emitting.
+/// `None` removes the setting, so the site asks again, for Trackers is protected again, or for
+/// Cookies follows Settings again. The list is rebuilt once the row that changed has finished
+/// emitting.
 fn change_site_setting(content: &adw::Bin, browser: &Browser, origin: &Origin, permission: Permission, setting: Option<Setting>) {
     if let Err(e) = browser.core().borrow_mut().site_permissions().set(origin, permission, setting) {
         log::warn!("site permissions: {e}");
     }
     permissions::enforce(browser);
-    if permission == Permission::Trackers {
-        browser.trackers().apply();
+    match permission {
+        Permission::Trackers => browser.trackers().apply(),
+        Permission::Cookies => browser.cookies().apply(),
+        _ => {}
     }
     glib::idle_add_local_once(glib::clone!(
         #[weak]

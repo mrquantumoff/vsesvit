@@ -18,6 +18,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::extensions::commands::{self, ExtensionShortcuts};
+use vsesvit_core::cookies::ThirdPartyCookies;
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::extensions::{ExtensionId, toolbar};
 use vsesvit_core::history::Transition;
@@ -32,6 +33,7 @@ use vsesvit_webext::{ActionInfo, Runtime, TabHost, TabId, TabInfo};
 use webkit::prelude::*;
 
 use crate::closed_tabs::ClosedTabs;
+use crate::cookies::Cookies;
 use crate::dialogs::Windowed;
 use crate::downloads::Downloads;
 use crate::engine::Engine;
@@ -61,6 +63,7 @@ pub(crate) struct Inner {
     engine: Engine,
     runtime: Runtime,
     trackers: Trackers,
+    cookies: Cookies,
     /// Which http URLs HTTPS-only upgrades (the self-test adds its local server).
     https_reach: Cell<Reach>,
     downloads: Rc<Downloads>,
@@ -113,6 +116,7 @@ impl Browser {
         let core: Core = Rc::new(RefCell::new(profile));
         let engine = Engine::new(&mut core.borrow_mut());
         let trackers = Trackers::new(core.clone());
+        let cookies = Cookies::new(core.clone(), engine.session());
         let downloads = Downloads::new(app, core.clone(), engine.session(), profile::downloads_dir());
         let updates_automatic = core.borrow_mut().prefs().get(&keys::UPDATES_AUTOMATIC);
         let updates_channel = core.borrow_mut().prefs().get(&keys::UPDATES_CHANNEL);
@@ -127,6 +131,7 @@ impl Browser {
                 engine,
                 runtime,
                 trackers,
+                cookies,
                 https_reach: Cell::new(Reach::Public),
                 downloads,
                 closed_tabs: RefCell::new(ClosedTabs::new(CLOSED_TABS_KEPT)),
@@ -158,14 +163,17 @@ impl Browser {
         browser
     }
 
-    /// Applies the profile's preferences, starts compiling tracking protection's blocker, and
-    /// brings the extension runtime in line with the profile: loads every enabled extension,
-    /// then reconciles against the synced desired state (installs missing store extensions,
-    /// unloads ones removed elsewhere).
+    /// Applies the profile's preferences, starts compiling tracking protection's and the cookie
+    /// rules' blockers, deletes the data of sites to clear on exit, and brings the extension
+    /// runtime in line with the profile: loads every enabled extension, then reconciles against
+    /// the synced desired state (installs missing store extensions, unloads ones removed
+    /// elsewhere).
     pub(crate) fn start(&self) {
         self.apply_theme();
         self.apply_keymap();
         self.trackers().apply();
+        self.cookies().apply();
+        self.cookies().clear_at_start();
         let installed = self.core().borrow_mut().extensions().list();
         match installed {
             Ok(list) => {
@@ -198,6 +206,17 @@ impl Browser {
 
     pub(crate) fn trackers(&self) -> &Trackers {
         &self.0.trackers
+    }
+
+    pub(crate) fn cookies(&self) -> &Cookies {
+        &self.0.cookies
+    }
+
+    /// Runs `f` once tracking protection and the cookie rules are on every tab and the data of
+    /// sites to clear is gone, so no page loads before them.
+    pub(crate) fn when_blockers_applied(&self, f: impl FnOnce() + 'static) {
+        let cookies = self.cookies().clone();
+        self.trackers().when_applied(move || cookies.when_applied(f));
     }
 
     /// The https URL a navigation to `url` loads instead, under HTTPS-only.
@@ -356,12 +375,13 @@ impl Browser {
         windowed.push((kind, window.downgrade()));
     }
 
-    /// Called from the application's `shutdown`: the last session write, then the final sync.
-    /// Nothing writes the session afterwards, so tearing the windows down for a restart cannot
-    /// overwrite it.
+    /// Called from the application's `shutdown`: the last session write, deleting the data of
+    /// sites to clear on exit, then the final sync. Nothing writes the session afterwards, so
+    /// tearing the windows down for a restart cannot overwrite it.
     pub(crate) fn shutdown(&self) {
         self.save_session_now();
         self.0.shut_down.set(true);
+        self.cookies().clear_at_exit();
         self.0.sync.final_sync();
     }
 
@@ -777,6 +797,13 @@ impl Browser {
         self.trackers().apply();
     }
 
+    /// The Settings choice of third-party cookies: writes the synced preference and sets the
+    /// session's policy for it.
+    pub(crate) fn set_third_party_cookies(&self, choice: ThirdPartyCookies) {
+        self.set_pref(&keys::THIRD_PARTY_COOKIES, &choice);
+        self.cookies().apply();
+    }
+
     pub(crate) fn theme(&self) -> Theme {
         self.pref(&keys::THEME)
     }
@@ -868,6 +895,9 @@ impl Browser {
         }
         if changed.site_permissions || changed.prefs.iter().any(|key| key == keys::TRACKING_PROTECTION.key) {
             self.trackers().apply();
+        }
+        if changed.site_permissions || changed.prefs.iter().any(|key| key == keys::THIRD_PARTY_COOKIES.key) {
+            self.cookies().apply();
         }
         if changed.prefs.iter().any(|key| key == keys::SHORTCUTS.key) {
             self.apply_keymap();

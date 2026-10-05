@@ -135,12 +135,13 @@ glib::wrapper! {
 }
 
 impl Tab {
-    /// A tab whose view carries the extension runtime's content for its id and tracking
-    /// protection's blocker.
+    /// A tab whose view carries the extension runtime's content for its id, tracking
+    /// protection's blocker and the cookie rules.
     pub(crate) fn new(browser: &Browser) -> Self {
         let id = browser.allocate_tab_id();
         let content = browser.runtime().user_content_manager(id);
         browser.trackers().attach(&content);
+        browser.cookies().attach(&content);
         Self::wrap(browser.engine().web_view(&content), id, browser)
     }
 
@@ -148,6 +149,7 @@ impl Tab {
         let id = browser.allocate_tab_id();
         let content = browser.runtime().user_content_manager(id);
         browser.trackers().attach(&content);
+        browser.cookies().attach(&content);
         let popup = Self::wrap(
             browser.engine().related_web_view(opener.web_view(), &content),
             id,

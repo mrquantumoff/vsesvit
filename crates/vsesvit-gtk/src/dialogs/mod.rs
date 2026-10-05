@@ -11,6 +11,7 @@ pub(crate) mod search_engines;
 pub(crate) mod settings;
 pub(crate) mod shortcut_settings;
 pub(crate) mod shortcuts;
+pub(crate) mod site_data;
 pub(crate) mod welcome;
 
 use adw::prelude::*;
