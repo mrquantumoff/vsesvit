@@ -217,6 +217,7 @@ pub mod patterns;
 pub mod protocol;
 pub mod support;
 pub mod tabs;
+pub mod web_navigation;
 pub mod windows;
 
 pub use lifecycle::LoadReason;
