@@ -1216,7 +1216,7 @@ impl BrowserWindow {
             browser.show_dialog_window(dialog, &self.me());
             return;
         }
-        if self.dialog_open.replace(true) {
+        if !self.begin_dialog() {
             return;
         }
         self.close_suggestions();
@@ -1225,8 +1225,24 @@ impl BrowserWindow {
             if let Err(e) = dialogs::show(&me, dialog).await {
                 log::error!("{dialog:?} dialog: {e}");
             }
-            me.dialog_open.set(false);
+            me.end_dialog();
+            if let Some(browser) = me.browser() {
+                dialogs::sync_prompt::update(&browser);
+            }
         });
+    }
+
+    /// Takes the window's one modal dialog; false while another is open.
+    pub fn begin_dialog(&self) -> bool {
+        !self.dialog_open.replace(true)
+    }
+
+    pub fn end_dialog(&self) {
+        self.dialog_open.set(false);
+    }
+
+    pub fn has_dialog(&self) -> bool {
+        self.dialog_open.get()
     }
 
     /// A scripted run never shows the modal dialog (see `dialogs`): its content goes over the

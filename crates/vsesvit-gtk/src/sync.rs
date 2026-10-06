@@ -2,7 +2,7 @@
 //! the profile in and out, and syncs 10 seconds after the first window opens, then every minute,
 //! soon after a local change, when asked, and once more as the browser quits. What touches the
 //! profile runs on the UI thread; the network steps run on worker threads. Settings watches the
-//! [`State`].
+//! [`State`], and what it asks of the sync passphrase is prompted for over the browser window.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -15,10 +15,11 @@ use gtk::{gio, glib};
 use vsesvit_core::Profile;
 use vsesvit_core::crdt::Seq;
 use vsesvit_core::prefs::keys;
-use vsesvit_sync::status::{Action, State};
+use vsesvit_sync::status::{self, Action, Prompt, State};
 use vsesvit_sync::{Account, Encryption, Error, Http, MAX_ROUNDS, Passphrase, PassphraseJob, Round, SignIn};
 
 use crate::browser::{self, Browser};
+use crate::dialogs::passphrase;
 use crate::window::Focus;
 
 const FIRST_SYNC_DELAY_SECS: u32 = 10;
@@ -57,6 +58,10 @@ struct Inner {
     watchers: RefCell<Vec<Watcher>>,
     window_seen: Cell<bool>,
     timer: Repeating,
+    /// A prompt shows, or the passphrase step it started runs.
+    prompting: Cell<bool>,
+    /// Welcomes open, which hold prompts back.
+    welcomes: Cell<u32>,
 }
 
 impl Syncer {
@@ -74,6 +79,8 @@ impl Syncer {
             watchers: RefCell::default(),
             window_seen: Cell::new(false),
             timer: Repeating::default(),
+            prompting: Cell::new(false),
+            welcomes: Cell::new(0),
         }))
     }
 
@@ -85,23 +92,30 @@ impl Syncer {
         }
     }
 
-    /// The first window starts the syncs of an account signed in at startup.
+    /// The first window starts the syncs of an account signed in at startup, and shows what it
+    /// asks of the passphrase.
     pub(crate) fn window_opened(&self) {
-        if !self.0.window_seen.replace(true) && matches!(*self.0.state.borrow(), State::SignedIn { .. }) {
+        if self.0.window_seen.replace(true) {
+            return;
+        }
+        if matches!(*self.0.state.borrow(), State::SignedIn { .. }) {
             self.schedule(FIRST_SYNC_DELAY_SECS);
         }
+        self.prompt_later();
     }
 
-    /// A button from [`vsesvit_sync::status::Status::actions`]. The passphrase actions and
-    /// [`Action::DeleteServerData`] ask first, so Settings calls [`Syncer::passphrase`] and
-    /// [`Syncer::delete_server_data`] itself.
+    /// A button from [`vsesvit_sync::status::Status::actions`]. [`Action::EnterPassphrase`] shows
+    /// the prompt for it. Setting or changing the passphrase and [`Action::DeleteServerData`] ask
+    /// first, so Settings asks and calls [`Syncer::passphrase`] and [`Syncer::delete_server_data`]
+    /// itself.
     pub(crate) fn act(&self, action: Action) {
         match action {
             Action::SignIn => self.sign_in(),
             Action::Cancel => self.cancel(),
             Action::SyncNow => self.sync_now(),
+            Action::EnterPassphrase => self.prompt(true),
             Action::SignOut => self.sign_out(),
-            Action::SetPassphrase | Action::EnterPassphrase | Action::ChangePassphrase | Action::DeleteServerData => {}
+            Action::SetPassphrase | Action::ChangePassphrase | Action::DeleteServerData => {}
         }
     }
 
@@ -109,12 +123,13 @@ impl Syncer {
         matches!(*self.0.state.borrow(), State::SignedIn { .. })
     }
 
+    pub(crate) fn state(&self) -> State {
+        self.0.state.borrow().clone()
+    }
+
     /// What the signed-in account asks of the sync passphrase, as last seen.
     pub(crate) fn encryption(&self) -> Option<Encryption> {
-        match *self.0.state.borrow() {
-            State::SignedIn { encryption, .. } => Some(encryption),
-            _ => None,
-        }
+        encryption(&self.0.state.borrow())
     }
 
     /// Shows the account the profile stores now, which the self-test stores itself.
@@ -154,6 +169,52 @@ impl Syncer {
     fn notify(&self) {
         let state = self.0.state.borrow().clone();
         self.0.watchers.borrow_mut().retain(|show| show(&state));
+        self.prompt_later();
+    }
+
+    // Prompting.
+
+    /// Holds prompts back while `welcome` is open, and shows the one due once it closes.
+    pub(crate) fn hold_prompts(&self, welcome: &adw::Dialog) {
+        self.0.welcomes.set(self.0.welcomes.get() + 1);
+        let weak = Rc::downgrade(&self.0);
+        welcome.connect_closed(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                inner.welcomes.set(inner.welcomes.get() - 1);
+                Syncer(inner).prompt_later();
+            }
+        });
+    }
+
+    /// [`Syncer::prompt`] once what runs now returns, so the welcome a new window opens comes
+    /// first.
+    fn prompt_later(&self) {
+        let weak = Rc::downgrade(&self.0);
+        glib::idle_add_local_once(move || {
+            if let Some(inner) = weak.upgrade() {
+                Syncer(inner).prompt(false);
+            }
+        });
+    }
+
+    /// Shows the prompt the state asks for over the active browser window and runs it to its
+    /// end, then the next one. `asked` (Settings' Enter Passphrase…) shows it while a welcome is
+    /// open too.
+    fn prompt(&self, asked: bool) {
+        let Some(browser) = self.browser() else { return };
+        let offered = browser.pref(&keys::SYNC_PASSPHRASE_OFFERED);
+        let welcome = !asked && self.0.welcomes.get() > 0;
+        let Some(prompt) = prompt_due(&self.0.state.borrow(), offered, self.0.prompting.get(), welcome) else { return };
+        let Some(window) = browser.windows().into_iter().next() else { return };
+        self.0.prompting.set(true);
+        let syncer = self.clone();
+        glib::spawn_future_local(async move {
+            if let Err(e) = passphrase::prompt(&window, &syncer, prompt).await {
+                log::warn!("sync passphrase: {e}");
+            }
+            syncer.0.prompting.set(false);
+            syncer.prompt(false);
+        });
     }
 
     fn schedule(&self, first_secs: u32) {
@@ -456,6 +517,19 @@ fn stored_state(profile: &mut Profile, error: Option<String>, after_sign_in: boo
     }
 }
 
+/// What the signed-in account asks of the sync passphrase, unless signing in again comes first.
+pub(crate) fn encryption(state: &State) -> Option<Encryption> {
+    match *state {
+        State::SignedIn { encryption, needs_sign_in: false, .. } => Some(encryption),
+        _ => None,
+    }
+}
+
+/// The prompt to show now: one at a time, and none while a welcome is open.
+fn prompt_due(state: &State, offered: bool, prompting: bool, welcome: bool) -> Option<Prompt> {
+    status::prompt(state, offered).filter(|_| !prompting && !welcome)
+}
+
 fn should_sync(state: &State, running: bool) -> bool {
     !running && matches!(state, State::SignedIn { needs_sign_in: false, syncing: false, .. })
 }
@@ -672,6 +746,25 @@ mod tests {
                 assert!(!syncer.0.running.get(), "the deletion lets syncs run again");
             })
             .expect("a main context of its own");
+    }
+
+    #[test]
+    fn a_prompt_waits_for_the_one_showing_and_for_the_welcome() {
+        let asking = |encryption, needs_sign_in| {
+            let mut state = with(100, false, None, needs_sign_in);
+            refresh(&mut state, encryption);
+            state
+        };
+        let off = |needs_sign_in| asking(Encryption::Off, needs_sign_in);
+        assert_eq!(prompt_due(&off(false), false, false, false), Some(Prompt::Offer));
+        assert_eq!(prompt_due(&off(false), false, true, false), None, "one at a time");
+        assert_eq!(prompt_due(&off(false), false, false, true), None, "the welcome comes first");
+        assert_eq!(prompt_due(&off(false), true, false, false), None, "offered once");
+        let entering = asking(Encryption::Enter, false);
+        assert_eq!(prompt_due(&entering, true, false, false), Some(Prompt::Enter));
+        assert_eq!(prompt_due(&entering, true, false, true), None);
+        assert_eq!(prompt_due(&State::SignedOut { error: None }, false, false, false), None);
+        assert_eq!(encryption(&off(true)), None, "signing in again comes first");
     }
 
     #[test]

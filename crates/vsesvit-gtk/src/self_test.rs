@@ -28,7 +28,7 @@ use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::trackers::{self, Category, TrackerList, TrackingProtection};
 use vsesvit_core::{OpenOptions, Profile};
-use vsesvit_sync::status::{Action, passphrase_dialog};
+use vsesvit_sync::status::{Action, OFFER, passphrase_dialog};
 use vsesvit_sync::{Account, Encryption};
 use vsesvit_webext::menus::Target;
 use vsesvit_webext::notifications::{self, Activation};
@@ -2760,6 +2760,9 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
 
     ctx.check("sync_passphrase", CHECK_TIMEOUT, |last| async move {
         let syncer = browser.sync();
+        let offered = browser.pref(&keys::SYNC_PASSPHRASE_OFFERED);
+        browser.set_pref(&keys::SYNC_PASSPHRASE_OFFERED, &false);
+        let _offered = Cleanup(|| browser.set_pref(&keys::SYNC_PASSPHRASE_OFFERED, &offered));
         let account: Account = serde_json::from_value(serde_json::json!({
             "sign_in": "self-test", "server": "http://127.0.0.1:9", "name": "Self-Test",
             "limits": { "max_batch": 100, "max_record_bytes": 1_048_576, "max_request_bytes": 4_194_304 },
@@ -2772,6 +2775,33 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         browser.core().borrow_mut().sync().set_secret_state("account.session", b"x").map_err(|e| e.to_string())?;
         syncer.reload();
 
+        let shown_alert = |heading: &str| window.visible_dialog().and_downcast::<adw::AlertDialog>().filter(|d| d.heading().as_deref() == Some(heading));
+        let (offer_title, offer_body, offer_accept, offer_decline) = OFFER;
+        let offer = wait_for(&last, || shown_alert(offer_title).ok_or_else(|| format!("no {offer_title:?} prompt came up"))).await;
+        let offer_buttons = [offer_accept, offer_decline].map(|label| button_labelled(offer.upcast_ref(), label).is_some());
+        if offer.body() != offer_body || offer_buttons != [true, true] {
+            offer.close();
+            return Err(format!("the offer says {:?} with {offer_accept:?} and {offer_decline:?} shown: {offer_buttons:?}", offer.body()));
+        }
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("sync-passphrase-offer.png")).await.map_err(|e| e.to_string())?;
+        button_labelled(offer.upcast_ref(), offer_decline).ok_or("the offer lost its decline button")?.emit_clicked();
+        wait_for(&last, || {
+            if !browser.pref(&keys::SYNC_PASSPHRASE_OFFERED) {
+                Err(format!("{offer_decline:?} did not record the answer"))
+            } else if window.visible_dialog().is_some() {
+                Err(format!("{offer_decline:?} left a dialog open"))
+            } else {
+                Ok(())
+            }
+        })
+        .await;
+        syncer.reload();
+        glib::timeout_future(POPOVER_SETTLE).await;
+        if window.visible_dialog().is_some() {
+            return Err("the offer came back once answered".to_owned());
+        }
+
         gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
         let settings = window
             .visible_dialog()
@@ -2782,9 +2812,13 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         });
         settings.set_visible_page_name("sync");
         let shown = |action: Action| button_labelled(settings.upcast_ref(), action.label()).filter(|b| b.is_mapped());
-        let set = wait_for(&last, || shown(Action::SetPassphrase).ok_or_else(|| "Settings > Sync shows no Set Passphrase… button".to_owned())).await;
+        let set = wait_for(&last, || shown(Action::SetPassphrase).ok_or_else(|| format!("Settings > Sync shows no {:?} button", Action::SetPassphrase.label()))).await;
+        let unencrypted = find::<adw::ActionRow>(settings.upcast_ref(), |r| r.subtitle().is_some_and(|s| s.contains("Not encrypted"))).and_then(|r| r.subtitle());
+        if shown(Action::SyncNow).is_none() || unencrypted.is_none() {
+            return Err(format!("Settings > Sync shows Sync Now: {}, and an unencrypted account: {unencrypted:?}", shown(Action::SyncNow).is_some()));
+        }
         set.emit_clicked();
-        let dialog = wait_for(&last, || window.visible_dialog().and_downcast::<adw::AlertDialog>().ok_or_else(|| "Set Passphrase… opened no dialog".to_owned())).await;
+        let dialog = wait_for(&last, || window.visible_dialog().and_downcast::<adw::AlertDialog>().ok_or_else(|| format!("{:?} opened no dialog", Action::SetPassphrase.label()))).await;
         let words = passphrase_dialog(Encryption::Off).ok_or_else(|| "core has no dialog for setting a passphrase".to_owned())?;
         let fields = all::<adw::PasswordEntryRow>(dialog.upcast_ref());
         let titles: Vec<String> = fields.iter().map(|f| f.title().to_string()).collect();
@@ -2834,32 +2868,64 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
 
         browser.core().borrow_mut().sync().set_secret_state("account.keyring", b"").map_err(|e| e.to_string())?;
         syncer.reload();
-        let enter = wait_for(&last, || shown(Action::EnterPassphrase).ok_or_else(|| "without its keys the account offers no Enter Passphrase…".to_owned())).await;
-        enter.emit_clicked();
         let entering = passphrase_dialog(Encryption::Enter).ok_or_else(|| "core has no dialog for entering the passphrase".to_owned())?;
         let asked = |previous: Option<adw::AlertDialog>| {
             wait_for(&last, move || {
-                let dialog = window.visible_dialog().and_downcast::<adw::AlertDialog>().filter(|d| Some(d) != previous.as_ref());
+                let dialog = shown_alert(entering.title).filter(|d| Some(d) != previous.as_ref());
                 let field = dialog.as_ref().and_then(|d| find::<adw::PasswordEntryRow>(d.upcast_ref(), |_| true));
                 let accept = dialog.as_ref().and_then(|d| button_labelled(d.upcast_ref(), entering.accept));
-                dialog.zip(field).zip(accept).map(|((d, f), a)| (d, f, a)).ok_or_else(|| format!("no dialog with a password field and {:?}", entering.accept))
+                dialog.zip(field).zip(accept).map(|((d, f), a)| (d, f, a)).ok_or_else(|| {
+                    format!("no {:?} prompt with a password field and {:?}", entering.title, entering.accept)
+                })
             })
         };
         let (wrong, field, accept) = asked(None).await;
+        let signs_out = button_labelled(wrong.upcast_ref(), entering.dismiss).is_some();
+        let closed = wrong.close();
+        glib::timeout_future(POPOVER_SETTLE).await;
+        let stays = window.visible_dialog().as_ref() == Some(wrong.upcast_ref());
+        if !signs_out || closed || wrong.can_close() || !stays {
+            wrong.force_close();
+            return Err(format!(
+                "the prompt has {:?}: {signs_out}; closing it as Escape does closed it: {closed}, can-close {}, still shown {stays}",
+                entering.dismiss,
+                wrong.can_close()
+            ));
+        }
         field.set_text("wrong horse");
         accept.emit_clicked();
         let (again, field, accept) = asked(Some(wrong)).await;
         let said = find::<gtk::Label>(again.upcast_ref(), |l| l.has_css_class("error") && l.is_visible()).map(|l| l.label().to_string());
         if said.as_deref() != Some("The passphrase is wrong") {
-            again.close();
+            again.force_close();
             return Err(format!("a wrong passphrase asked again, saying {said:?}"));
         }
         field.set_text("correct horse");
         accept.emit_clicked();
         wait_for(&last, ready).await;
+        let only_settings = || match window.visible_dialog() {
+            Some(shown) if shown == *settings.upcast_ref::<adw::Dialog>() => Ok(()),
+            shown => Err(format!("once answered the prompts left {:?} over Settings", shown.map(|d| d.type_().name()))),
+        };
+        wait_for(&last, only_settings).await;
+
+        browser.core().borrow_mut().sync().set_secret_state("account.keyring", b"").map_err(|e| e.to_string())?;
+        syncer.reload();
+        let (prompt, ..) = asked(None).await;
+        button_labelled(prompt.upcast_ref(), entering.dismiss).ok_or_else(|| format!("the prompt lost {:?}", entering.dismiss))?.emit_clicked();
+        wait_for(&last, || if syncer.is_signed_in() { Err(format!("{:?} left the profile signed in", entering.dismiss)) } else { Ok(()) }).await;
+        wait_for(&last, only_settings).await;
         Ok(format!(
-            "Set Passphrase… opened {heading:?} with {titles:?}; {:?} was off when empty, mismatched ({:?}) and short ({:?}), on for a valid one; accepting stored a Ready account and Settings offers Change Passphrase… (sync-passphrase.png); without its keys Enter Passphrase… took a wrong one, asked again saying {said:?}, and took the right one",
-            words.accept, mismatched.1, short.1
+            "the account synced unencrypted, with Sync Now and {:?} in Settings ({unencrypted:?}); the offer came by itself (sync-passphrase-offer.png), {offer_decline:?} recorded it and it did not come back; {:?} opened {heading:?} with {titles:?}, {:?} off when empty, mismatched ({:?}) and short ({:?}), on for a valid one; accepting stored a Ready account and Settings offers Change Passphrase… (sync-passphrase.png); without its keys the {:?} prompt came by itself with {:?} and {:?}, did not close as Escape closes it, asked again saying {said:?} for a wrong passphrase, and took the right one, closing; asked again, its {:?} signed out and closed it",
+            Action::SetPassphrase.label(),
+            Action::SetPassphrase.label(),
+            words.accept,
+            mismatched.1,
+            short.1,
+            entering.title,
+            entering.dismiss,
+            entering.accept,
+            entering.dismiss
         ))
     })
     .await;

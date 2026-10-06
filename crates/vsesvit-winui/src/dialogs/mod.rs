@@ -1,11 +1,12 @@
 //! The Bookmarks, History, Downloads, Extensions, Settings and About dialogs and the welcome,
-//! all on vsesvit-core data.
+//! all on vsesvit-core data, and the prompts sync shows of its own accord (`sync_prompt`).
 //!
 //! Each dialog's content is built from markup, filled and wired by its module. Bookmarks,
 //! History, Downloads and Settings show it in a window of their own (`windowed`); the others in
 //! a `ContentDialog` over the browser window. Scripted runs show neither (showing them moves
 //! keyboard focus); `preview` puts the same wired content over the browser window instead, so it
-//! can be captured without taking focus.
+//! can be captured without taking focus. The sync prompts show in scripted runs too: that they
+//! appear by themselves is what the runs check.
 
 mod about;
 mod bookmarks;
@@ -19,6 +20,7 @@ mod settings;
 mod shortcut_settings;
 mod site_data;
 mod site_permissions;
+pub(crate) mod sync_prompt;
 mod sync_settings;
 mod welcome;
 mod windowed;
@@ -35,6 +37,7 @@ use crate::window::{Backdrop, BrowserWindow};
 use crate::xaml;
 
 pub(crate) use settings::CATEGORIES as SETTINGS_CATEGORIES;
+pub(crate) use sync_prompt::SyncPrompt;
 pub(crate) use windowed::DialogWindow;
 #[cfg(feature = "self-test")]
 pub(crate) use {

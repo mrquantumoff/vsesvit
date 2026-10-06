@@ -22,7 +22,7 @@ use vsesvit_core::sync::DataType;
 use vsesvit_core::https_only;
 use vsesvit_core::spellcheck;
 use vsesvit_core::trackers::TrackingProtection;
-use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State, passphrase_dialog};
+use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
 
 use super::{confirm, passphrase, plain_toast};
 use crate::browser::Browser;
@@ -58,9 +58,9 @@ pub(crate) const SYNC_ICON: &str = "view-refresh-symbolic";
 const SYNC_ACTIONS: [Action; 7] = [
     Action::SignIn,
     Action::Cancel,
-    Action::SetPassphrase,
     Action::EnterPassphrase,
     Action::SyncNow,
+    Action::SetPassphrase,
     Action::ChangePassphrase,
     Action::SignOut,
 ];
@@ -286,7 +286,7 @@ fn sync_account_row(syncer: &Syncer) -> adw::ActionRow {
                 #[weak]
                 busy,
                 move |_| match action {
-                    Action::SetPassphrase | Action::EnterPassphrase | Action::ChangePassphrase => {
+                    Action::SetPassphrase | Action::ChangePassphrase => {
                         glib::spawn_future_local(ask_for_passphrase(row, busy, syncer.clone()));
                     }
                     _ => syncer.act(action),
@@ -322,22 +322,13 @@ fn sync_account_row(syncer: &Syncer) -> adw::ActionRow {
 }
 
 /// The passphrase dialog for what the account asks, then the passphrase step, with `row` busy
-/// meanwhile. A step that fails asks again, saying why, while the account still asks.
+/// meanwhile.
 async fn ask_for_passphrase(row: adw::ActionRow, busy: adw::Spinner, syncer: Syncer) {
-    let mut failed = None;
-    while let Some(words) = syncer.encryption().and_then(passphrase_dialog) {
-        let Some(passphrase) = passphrase::ask(&row, words, failed.as_deref()).await else { return };
-        row.set_sensitive(false);
-        busy.set_visible(true);
-        let taken = syncer.passphrase(passphrase).await;
-        row.set_sensitive(true);
-        busy.set_visible(false);
-        match taken {
-            Ok(()) => return,
-            Err(e) => failed = Some(e),
-        }
-    }
-    if let Some(e) = failed
+    let set_busy = |running: bool| {
+        row.set_sensitive(!running);
+        busy.set_visible(running);
+    };
+    if let Err(e) = passphrase::take(&row, &syncer, set_busy).await
         && let Some(dialog) = row.ancestor(adw::PreferencesDialog::static_type()).and_downcast::<adw::PreferencesDialog>()
     {
         dialog.add_toast(plain_toast(&format!("Could not use the sync passphrase: {e}")));

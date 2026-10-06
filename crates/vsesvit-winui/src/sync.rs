@@ -879,10 +879,18 @@ mod tests {
             [Action::SignOut, Action::DeleteServerData]
         );
         let syncing = next(checking, Event::Sync(Progress::Started));
-        let set = next(syncing, Event::Encryption(Encryption::Off));
-        assert_eq!(fields(&set), (None, true, None, false));
-        assert_eq!(set.status(0).actions[0], Action::SetPassphrase);
-        let ready = next(set, Event::Encryption(Encryption::Ready));
+        let off = next(syncing, Event::Encryption(Encryption::Off));
+        assert_eq!(fields(&off), (None, true, None, false));
+        assert_eq!(
+            off.status(0).actions,
+            [
+                Action::SyncNow,
+                Action::SetPassphrase,
+                Action::SignOut,
+                Action::DeleteServerData
+            ]
+        );
+        let ready = next(off, Event::Encryption(Encryption::Ready));
         let synced = next(ready, Event::Sync(Progress::Synced(Some(200))));
         assert_eq!(fields(&synced), (Some(200), false, None, false));
         assert_eq!(

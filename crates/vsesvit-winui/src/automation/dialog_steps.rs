@@ -17,15 +17,18 @@ use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::FormField;
 use vsesvit_core::testkit;
 use vsesvit_core::trackers::TrackingProtection;
+use vsesvit_sync::status::OFFER;
 use windows_core::{IInspectable, Interface, Result};
 
 use super::{shoot, wait_layout};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::dialogs::search_engines::Engines;
+use crate::dialogs::sync_prompt::{self, Asks};
 use crate::dialogs::{self, Dialog, Preview, SETTINGS_CATEGORIES, SyncPage};
+use crate::selftest::{self, WithoutPassphrase};
 use crate::window::{Backdrop, BrowserWindow};
-use crate::{engine, exec, selftest, sync, xaml};
+use crate::{engine, exec, xaml};
 
 const WAIT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
@@ -280,22 +283,25 @@ pub(super) async fn settings(
     }));
 
     let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
-    let passphrase = sync_passphrase(window, out_dir, &preview, &browser, steps).await;
-    sync::sign_out(&browser);
-    passphrase
+    sync_passphrase(window, out_dir, &preview, &browser, steps).await?;
+    drop(preview);
+    sync_offer(window, out_dir, &browser, steps).await
 }
 
-/// Settings, Sync: an account with no sync passphrase offers Set Passphrase…, whose flyout
-/// asks for it twice and cannot be accepted yet. The caller signs out again.
+fn seed(browser: &Rc<Browser>, offered: bool) -> Result<WithoutPassphrase> {
+    WithoutPassphrase::sign_in(browser, offered).map_err(|e| windows_core::Error::new(E_FAIL, e))
+}
+
+/// Settings, Sync: an account with no sync passphrase, which was offered one already, offers
+/// Encrypt with a Passphrase…, whose flyout asks for it twice and cannot be accepted yet.
 async fn sync_passphrase(
     window: &Rc<BrowserWindow>,
     out_dir: &Path,
     preview: &Preview,
-    browser: &Browser,
+    browser: &Rc<Browser>,
     steps: &mut Vec<Value>,
 ) -> Result<()> {
-    selftest::sign_in_without_passphrase(browser)
-        .map_err(|e| windows_core::Error::new(E_FAIL, e))?;
+    let _signed_in = seed(browser, true)?;
     select_category(preview, "SyncPanel")?;
     settle().await;
     let page = preview
@@ -305,18 +311,64 @@ async fn sync_passphrase(
     let flyout = until(|| page.passphrase()).await;
     settle().await;
     let shown = flyout.as_ref().map(|f| f.shown());
+    let prompted = sync_prompt::shown(browser).map(|p| p.asks());
     shoot(
         window,
         out_dir,
         "14l-settings-sync-passphrase",
         steps,
-        |_| json!({ "fields_problem_accept": shown, "ok": shown == Some((2, None, false)) }),
+        |_| {
+            json!({
+                "fields_problem_accept": shown,
+                "prompt": format!("{prompted:?}"),
+                "ok": shown == Some((2, None, false)) && prompted.is_none(),
+            })
+        },
     )
     .await;
     if let Some(flyout) = flyout {
         flyout.close();
     }
     settle().await;
+    Ok(())
+}
+
+/// The offer to encrypt sync shows by itself over the window of an account that syncs
+/// unencrypted, and Not Now closes it for good.
+async fn sync_offer(
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    browser: &Rc<Browser>,
+    steps: &mut Vec<Value>,
+) -> Result<()> {
+    let _signed_in = seed(browser, false)?;
+    let prompt = until(|| sync_prompt::shown(browser).filter(|p| p.asks() == Asks::Offer)).await;
+    settle().await;
+    let words = prompt.as_ref().map(|p| p.words());
+    let (_, body, accept, decline) = OFFER;
+    shoot(window, out_dir, "14m-sync-passphrase-offer", steps, |_| {
+        json!({
+            "words": words,
+            "ok": words.as_ref().is_some_and(|(b, a, d)| (b.as_str(), a.as_str(), d.as_str()) == (body, accept, decline)),
+        })
+    })
+    .await;
+    let not_now = prompt.as_ref().and_then(|p| p.button("CloseButton"));
+    if let Some(button) = &not_now {
+        invoke(button)?;
+    }
+    let answered = until(|| {
+        let offered = browser.core(|p| p.prefs().get(&keys::SYNC_PASSPHRASE_OFFERED));
+        (offered && prompt.as_ref().is_some_and(|p| !p.is_open())).then_some(())
+    })
+    .await
+    .is_some();
+    if let Some(step) = steps.last_mut() {
+        step["not_now_closed_it_and_answered_it"] = json!(answered);
+        if !answered {
+            step["ok"] = json!(false);
+        }
+    }
     Ok(())
 }
 

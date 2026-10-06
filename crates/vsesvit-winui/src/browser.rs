@@ -34,7 +34,7 @@ use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
 use crate::bookmarks_bar::{self, BarItem};
 use crate::config::{Config, Mode};
 use crate::cookies::ExitClearing;
-use crate::dialogs::{Dialog, DialogWindow};
+use crate::dialogs::{Dialog, DialogWindow, SyncPrompt, sync_prompt};
 use crate::downloads::Downloads;
 use crate::engine::{self, Engine};
 use crate::extensions::ExtensionHost;
@@ -155,6 +155,7 @@ pub(crate) struct Browser {
     profile_open_ms: u128,
     updates: Updates,
     sync: SyncController,
+    sync_prompt: SyncPrompt,
     pub(crate) site_mirror: crate::permissions::EngineMirror,
     me: Weak<Browser>,
 }
@@ -243,6 +244,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         profile_open_ms,
         updates,
         sync,
+        sync_prompt: SyncPrompt::default(),
         site_mirror: crate::permissions::EngineMirror::default(),
         me: me.clone(),
     });
@@ -264,6 +266,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
     if welcome && let Some(window) = browser.windows().into_iter().next() {
         exec::spawn(show_welcome(window));
     }
+    sync_prompt::follow(&browser);
     exec::spawn(browser.clone().start_extensions());
     if !browser.core(|p| p.prefs().get(&PASSWORDS_PURGED)) {
         exec::spawn(browser.clone().purge_saved_passwords());
@@ -543,6 +546,7 @@ impl Browser {
             }
         } else {
             self.session_changed();
+            sync_prompt::update(self);
         }
     }
 
@@ -1365,6 +1369,10 @@ impl Browser {
 
     pub fn sync(&self) -> &SyncController {
         &self.sync
+    }
+
+    pub fn sync_prompt(&self) -> &SyncPrompt {
+        &self.sync_prompt
     }
 
     // ---- extensions ----

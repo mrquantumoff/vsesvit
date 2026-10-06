@@ -156,7 +156,9 @@ Microsoft.UI.Xaml.Controls.IImageIcon::put_Source
 Microsoft.UI.Xaml.Controls.FontIcon::CreateInstance
 Microsoft.UI.Xaml.Controls.MenuFlyoutItemBase
 Microsoft.UI.Xaml.Controls.IButton::{put_Flyout, get_Flyout}
-Microsoft.UI.Xaml.Controls.IContentDialog::{ShowAsync, Hide}
+Microsoft.UI.Xaml.Controls.IContentDialog::{ShowAsync, Hide, Closing, put_IsPrimaryButtonEnabled, get_PrimaryButtonText, get_SecondaryButtonText, get_CloseButtonText}
+Microsoft.UI.Xaml.Controls.ContentDialogClosingEventArgs
+Microsoft.UI.Xaml.Controls.IContentDialogClosingEventArgs::{get_Result, put_Cancel}
 Microsoft.UI.Xaml.Controls.ContentDialogResult
 Microsoft.UI.Xaml.Controls.IToggleSwitch::{get_IsOn, put_IsOn, Toggled}
 Microsoft.UI.Xaml.Controls.IInfoBar::{put_IsOpen, put_Title, put_Message, put_Severity}

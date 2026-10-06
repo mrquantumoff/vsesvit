@@ -47,7 +47,7 @@ use crate::tab::{Tab, TabId};
 use crate::window::BrowserWindow;
 use crate::{app, engine, exec, xaml, zoom};
 
-pub(crate) use sync_checks::sign_in_without_passphrase;
+pub(crate) use sync_checks::WithoutPassphrase;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// WebView2 validates and registers an extension on first load.
@@ -912,7 +912,7 @@ async fn checks(
     .await;
     restore_shortcuts(&window, browser);
 
-    check(report, "sync_passphrase", Duration::from_secs(30), async |p| {
+    check(report, "sync_passphrase", Duration::from_secs(60), async |p| {
         sync_checks::sync_passphrase(&window, p)
             .await
             .map_err(|e| format!("{e} (at: {})", p.last()))

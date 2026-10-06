@@ -1180,6 +1180,34 @@ impl windows_core::RuntimeName for ContentDialog {
 unsafe impl Send for ContentDialog {}
 unsafe impl Sync for ContentDialog {}
 #[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContentDialogClosingEventArgs(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    ContentDialogClosingEventArgs,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for ContentDialogClosingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IContentDialogClosingEventArgs>();
+}
+unsafe impl windows_core::Interface for ContentDialogClosingEventArgs {
+    type Vtable = <IContentDialogClosingEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <IContentDialogClosingEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for ContentDialogClosingEventArgs {
+    type Target = IContentDialogClosingEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for ContentDialogClosingEventArgs {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Controls.ContentDialogClosingEventArgs";
+}
+unsafe impl Send for ContentDialogClosingEventArgs {}
+unsafe impl Sync for ContentDialogClosingEventArgs {}
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ContentDialogResult(pub i32);
 impl ContentDialogResult {
@@ -5689,6 +5717,84 @@ impl windows_core::RuntimeType for IContentDialog {
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
 impl IContentDialog {
+    pub fn PrimaryButtonText(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).PrimaryButtonText)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn SecondaryButtonText(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).SecondaryButtonText)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn CloseButtonText(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CloseButtonText)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
+    pub fn SetIsPrimaryButtonEnabled(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetIsPrimaryButtonEnabled)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub fn Closing<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<ContentDialog>, windows_core::Ref<ContentDialogClosingEventArgs>)
+            + 'static,
+    {
+        let handler: TypedEventHandler<ContentDialog, ContentDialogClosingEventArgs> = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<ContentDialog, ContentDialogClosingEventArgs>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<ContentDialog, ContentDialogClosingEventArgs, F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).Closing)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveClosing,
+            ))
+        }
+    }
     pub fn Hide(&self) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).Hide)(windows_core::Interface::as_raw(self)).ok()
@@ -5716,11 +5822,20 @@ pub struct IContentDialog_Vtbl {
     SetTitleTemplate: usize,
     FullSizeDesired: usize,
     SetFullSizeDesired: usize,
-    PrimaryButtonText: usize,
+    pub PrimaryButtonText: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     SetPrimaryButtonText: usize,
-    SecondaryButtonText: usize,
+    pub SecondaryButtonText: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     SetSecondaryButtonText: usize,
-    CloseButtonText: usize,
+    pub CloseButtonText: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     SetCloseButtonText: usize,
     PrimaryButtonCommand: usize,
     SetPrimaryButtonCommand: usize,
@@ -5735,7 +5850,8 @@ pub struct IContentDialog_Vtbl {
     CloseButtonCommandParameter: usize,
     SetCloseButtonCommandParameter: usize,
     IsPrimaryButtonEnabled: usize,
-    SetIsPrimaryButtonEnabled: usize,
+    pub SetIsPrimaryButtonEnabled:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
     IsSecondaryButtonEnabled: usize,
     SetIsSecondaryButtonEnabled: usize,
     PrimaryButtonStyle: usize,
@@ -5746,8 +5862,13 @@ pub struct IContentDialog_Vtbl {
     SetCloseButtonStyle: usize,
     DefaultButton: usize,
     SetDefaultButton: usize,
-    Closing: usize,
-    RemoveClosing: usize,
+    pub Closing: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveClosing:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     Closed: usize,
     RemoveClosed: usize,
     Opened: usize,
@@ -5763,6 +5884,46 @@ pub struct IContentDialog_Vtbl {
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IContentDialogClosingEventArgs,
+    IContentDialogClosingEventArgs_Vtbl,
+    0x12782103_3b80_511c_9128_12cb8cdac444
+);
+impl windows_core::RuntimeType for IContentDialogClosingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl IContentDialogClosingEventArgs {
+    pub fn Result(&self) -> windows_core::Result<ContentDialogResult> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Result)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn SetCancel(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetCancel)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct IContentDialogClosingEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Result: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut ContentDialogResult,
+    ) -> windows_core::HRESULT,
+    Cancel: usize,
+    pub SetCancel: unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IControl,

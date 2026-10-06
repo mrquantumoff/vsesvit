@@ -2,7 +2,7 @@
 //! Back and Next, to choose the search engine, import bookmarks, add the recommended
 //! extensions, make Vsesvit the default browser and sign in to sync. Every choice takes effect
 //! when it is made and none is required, so Next only moves on. Closing the dialog at any page
-//! ends the first run.
+//! ends the first run. Sync's prompts wait for it to close.
 //!
 //! Like the library dialogs, it holds the window weakly, so an open welcome does not keep
 //! the profile open.
@@ -168,6 +168,7 @@ pub(crate) fn present(window: &BrowserWindow) -> adw::Dialog {
             log::warn!("onboarding: {e}");
         }
     });
+    window.browser().sync().hold_prompts(&dialog);
     dialog.present(Some(window));
     dialog
 }
