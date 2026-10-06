@@ -41,6 +41,9 @@ const SITE: &[(&str, &str, &[u8])] = &[
     // A page whose images say which of the extension harness's declarativeNetRequest rules
     // blocked them.
     site_file!("dnr.html", "text/html; charset=utf-8"),
+    // A page with a frame of its own origin and one of another, for the extension harness's
+    // webNavigation checks.
+    site_file!("frames.html", "text/html; charset=utf-8"),
     site_file!("download.bin", "application/octet-stream"),
     // A page that declares its icon, for favicon fetching.
     (

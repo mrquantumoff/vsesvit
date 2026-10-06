@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Vsesvit frames</title></head>
+<body>
+<iframe src="page2.html"></iframe>
+<iframe id="other"></iframe>
+<script>
+  // The same server under another name is another origin.
+  document.getElementById("other").src = "http://localhost:" + location.port + "/page2.html";
+</script>
+</body>
+</html>

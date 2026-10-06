@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Vsesvit Navigation",
+  "version": "1.0.0",
+  "description": "Test extension for webNavigation's events, filters and frames.",
+  "browser_specific_settings": { "gecko": { "id": "navigation@vsesvit.test" } },
+  "permissions": ["webNavigation"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Vsesvit Navigation", "default_popup": "popup.html" }
+}

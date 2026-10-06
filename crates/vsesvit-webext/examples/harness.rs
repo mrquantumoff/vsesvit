@@ -84,7 +84,14 @@
 //!     a private window and an unknown window; the events come in Chrome's order, a tab going
 //!     with its window says so; a page in a tab has that tab's window as its current one,
 //!     not the focused one;
-//! 15. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//! 15. webNavigation (`tests/fixtures/extensions/navigation/`, the `webNavigation`
+//!     permission): a page with a frame of its own origin and one of another fires every
+//!     frame's events in Chrome's order, with their parents and documents; URL filters
+//!     choose what a listener hears; `getFrame` and `getAllFrames` list the frames, refusing
+//!     with Chrome's errors; fragment and History API navigations, a subframe's too, and a
+//!     window the page opens fire their events; a failed load reports its error; an extension
+//!     without the permission has no `chrome.webNavigation`;
+//! 16. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -115,6 +122,7 @@ mod linux {
 
     use serde_json::Value;
     use vsesvit_core::ext_storage::Area;
+    use vsesvit_core::history::Transition;
     use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension};
     use vsesvit_core::shortcuts::Chord;
     use vsesvit_core::private::Browsing;
@@ -122,6 +130,7 @@ mod linux {
     use vsesvit_core::{OpenOptions, Profile};
     use vsesvit_webext::menus::{Entry, ItemId, Target};
     use vsesvit_webext::notifications::{Activation, Priority, Shown};
+    use vsesvit_webext::web_navigation::{Load, NetError};
     use vsesvit_webext::{Gate, LoadReason, NewTab, NewWindow, Runtime, TabHost, TabId, TabInfo, WindowId, WindowInfo, WindowState, WindowUpdate};
     use webkit::prelude::*;
     use webkit::{gio, glib};
@@ -136,6 +145,7 @@ mod linux {
     const DNR_ID: &str = "dnr@vsesvit.test";
     const SCRIPTS_ID: &str = "scripts@vsesvit.test";
     const WINDOWS_ID: &str = "windows@vsesvit.test";
+    const NAVIGATION_ID: &str = "navigation@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -197,6 +207,8 @@ mod linux {
         write_xpi(&scripts_xpi, &fixture_files("scripts"));
         let windows_xpi = out_dir.join("windows.xpi");
         write_xpi(&windows_xpi, &fixture_files("windows"));
+        let navigation_xpi = out_dir.join("navigation.xpi");
+        write_xpi(&navigation_xpi, &fixture_files("navigation"));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -218,7 +230,9 @@ mod linux {
         assert_eq!(scripts.id.as_str(), SCRIPTS_ID);
         let windows = install(&profile, &windows_xpi);
         assert_eq!(windows.id.as_str(), WINDOWS_ID);
-        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr, &scripts, &windows] {
+        let navigation = install(&profile, &navigation_xpi);
+        assert_eq!(navigation.id.as_str(), NAVIGATION_ID);
+        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr, &scripts, &windows, &navigation] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -249,6 +263,7 @@ mod linux {
             dnr,
             scripts,
             windows_id: windows.id.clone(),
+            navigation_id: navigation.id.clone(),
             out_dir: out_dir.clone(),
             window: window.clone(),
             results: RefCell::new(Vec::new()),
@@ -297,6 +312,7 @@ mod linux {
         dnr: InstalledExtension,
         scripts: InstalledExtension,
         windows_id: ExtensionId,
+        navigation_id: ExtensionId,
         out_dir: PathBuf,
         window: gtk::Window,
         results: RefCell<Vec<(&'static str, bool)>>,
@@ -372,7 +388,10 @@ mod linux {
             self.windows().await;
             self.private_windows().await;
 
-            // 13. lifecycle events
+            // 13. webNavigation
+            self.web_navigation().await;
+
+            // 14. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -1576,6 +1595,153 @@ mod linux {
             events().await;
         }
 
+        /// The navigation fixture's events, taken from its background until `done` holds for
+        /// all taken so far: every event as `[name, details]`, and what its listeners filtered
+        /// on `pathSuffix: "page2.html"` and on `hostEquals: "localhost"` heard.
+        async fn navigation_events(&self, popup: &webkit::WebView, done: impl Fn(&[Value]) -> bool) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
+            let (mut events, mut page2, mut localhost) = (Vec::new(), Vec::new(), Vec::new());
+            let deadline = Instant::now() + TIMEOUT;
+            loop {
+                let taken = self.eval_async(popup, r#"return chrome.runtime.sendMessage("events");"#).await.unwrap_or(Value::Null);
+                let list = |key: &str| taken[key].as_array().cloned().unwrap_or_default();
+                events.extend(list("events"));
+                page2.extend(list("page2"));
+                localhost.extend(list("localhost"));
+                if done(&events) || Instant::now() >= deadline {
+                    return (events, page2, localhost);
+                }
+                glib::timeout_future(Duration::from_millis(100)).await;
+            }
+        }
+
+        async fn web_navigation(&self) {
+            let Some(popup) = self.popup(&self.navigation_id, self.tab).await else {
+                self.note("web_navigation_frames", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Navigation"), TIMEOUT).await;
+            self.navigation_events(&popup, |_| true).await;
+
+            // A page with a frame of its own origin and one of another, which starts empty.
+            let page = self.url("/frames.html");
+            let (same_url, other_url) = (self.url("/page2.html"), format!("http://localhost:{}/page2.html", self.server.port()));
+            let tab = self.host.open(&page, false).expect("frames tab");
+            let view = self.host.web_view(tab).expect("frames tab view");
+            let in_tab = |e: &Value, name: &str, frame: u64| e[0] == name && e[1]["tabId"] == tab.0 && e[1]["frameId"] == frame;
+            let (events, page2, localhost) = self.navigation_events(&popup, |all| all.iter().any(|e| in_tab(e, "onCompleted", 0))).await;
+            let mine: Vec<&Value> = events.iter().filter(|e| e[1]["tabId"] == tab.0).collect();
+            let frame_at = |url: &str| mine.iter().find(|e| e[1]["url"] == url).and_then(|e| e[1]["frameId"].as_u64()).unwrap_or(u64::MAX);
+            let (same, other) = (frame_at(&same_url), frame_at(&other_url));
+            let of_frame = |frame: u64| mine.iter().filter(move |e| e[1]["frameId"] == frame);
+            let committed = |frame: u64| of_frame(frame).find(|e| e[0] == "onCommitted").map(|e| e[1].clone()).unwrap_or(Value::Null);
+            let summary = |frame: u64| {
+                let c = committed(frame);
+                let one_document = of_frame(frame).filter(|e| e[0] != "onBeforeNavigate").all(|e| e[1]["documentId"] == c["documentId"]);
+                let names: Vec<&Value> = of_frame(frame).map(|e| &e[0]).collect();
+                let parent_document = c.get("parentDocumentId").map(|d| *d == committed(0)["documentId"]);
+                serde_json::json!([names, c["url"], c["parentFrameId"], c["frameType"], c["transitionType"], one_document, parent_document])
+            };
+            let observed = serde_json::json!({
+                "top": summary(0), "same": summary(same), "other": summary(other),
+                "last": mine.last().map(|e| [e[0].clone(), e[1]["frameId"].clone()]),
+            });
+            let lifecycle = ["onBeforeNavigate", "onCommitted", "onDOMContentLoaded", "onCompleted"];
+            let expected = serde_json::json!({
+                "top": [lifecycle, page, -1, "outermost_frame", "link", true, null],
+                "same": [lifecycle, same_url, 0, "sub_frame", "auto_subframe", true, true],
+                "other": [lifecycle, other_url, 0, "sub_frame", "auto_subframe", true, true],
+                "last": ["onCompleted", 0],
+            });
+            self.note("web_navigation_frames", observed == expected, format!("frames {same} (same origin) and {other} (other origin): {observed}"));
+
+            let mut heard = page2.clone();
+            heard.sort_by_key(|e| e[0].as_u64());
+            let expected = serde_json::json!({ "page2": [[same.min(other), if same < other { &same_url } else { &other_url }], [same.max(other), if same < other { &other_url } else { &same_url }]], "localhost": [[other, other_url]] });
+            let filtered = serde_json::json!({ "page2": heard, "localhost": localhost });
+            self.note("web_navigation_url_filters", filtered == expected, format!("{filtered}"));
+
+            let script = format!(
+                r#"const all = await chrome.webNavigation.getAllFrames({{ tabId: {tab} }});
+                const top = await chrome.webNavigation.getFrame({{ tabId: {tab}, frameId: 0 }});
+                const other = all.find((f) => f.url.startsWith("http://localhost"));
+                const byDocument = await chrome.webNavigation.getFrame({{ documentId: other.documentId }});
+                const refused = [];
+                for (const call of [
+                    () => chrome.webNavigation.getFrame({{ tabId: {tab} }}),
+                    () => chrome.webNavigation.getFrame({{ documentId: "x" }}),
+                    () => chrome.webNavigation.getFrame({{ documentId: other.documentId, tabId: {tab}, frameId: 0 }}),
+                ]) refused.push(await call().then(() => null, (e) => e.message));
+                let thrown = null;
+                try {{ chrome.webNavigation.onCompleted.addListener(() => {{}}, {{ url: "x" }}); }} catch (e) {{ thrown = e.name; }}
+                return {{
+                    all: all.map((f) => [f.frameId, f.parentFrameId, f.url, f.frameType, f.errorOccurred, f.processId]),
+                    top: [top.url, top.parentFrameId, top.documentId === all[0].documentId, "frameId" in top],
+                    byDocument: byDocument.url,
+                    missing: [await chrome.webNavigation.getFrame({{ tabId: 99999, frameId: 0 }}), await chrome.webNavigation.getAllFrames({{ tabId: 99999 }}), await chrome.webNavigation.getFrame({{ tabId: {tab}, frameId: 77 }})],
+                    refused, thrown, transition: chrome.webNavigation.TransitionType.AUTO_SUBFRAME,
+                }};"#,
+                tab = tab.0
+            );
+            let frames = self.eval_async(&popup, &script).await.unwrap_or(Value::Null);
+            let mut all = vec![serde_json::json!([0, -1, page, "outermost_frame", false, -1]), serde_json::json!([same, 0, same_url, "sub_frame", false, -1]), serde_json::json!([other, 0, other_url, "sub_frame", false, -1])];
+            all.sort_by_key(|f| f[0].as_u64());
+            let expected = serde_json::json!({
+                "all": all, "top": [page, -1, true, false], "byDocument": other_url, "missing": [null, null, null],
+                "refused": ["Either documentId or both tabId and frameId must be specified.", "Invalid documentId.", "tabId and frameId mismatch with documentId."],
+                "thrown": "TypeError", "transition": "auto_subframe",
+            });
+            self.note("web_navigation_get_frames", frames == expected, format!("{frames}"));
+
+            // Same-document navigations, the subframe's through the back/forward list too.
+            for script in ["location.hash = 'x'", "history.pushState({}, '', 'state')", "frames[0].history.pushState({}, '', 'inner')", "history.back()"] {
+                self.eval(&view, &format!("{script}; 0"), None).await;
+                glib::timeout_future(Duration::from_millis(200)).await;
+            }
+            let same_document = |e: &Value| e[1]["tabId"] == tab.0 && (e[0] == "onReferenceFragmentUpdated" || e[0] == "onHistoryStateUpdated");
+            let (events, ..) = self.navigation_events(&popup, |all| all.iter().filter(|e| same_document(e)).count() >= 4).await;
+            let seen: Vec<Value> = events.iter().filter(|e| same_document(e)).map(|e| serde_json::json!([e[0], e[1]["frameId"], e[1]["url"], e[1]["transitionQualifiers"]])).collect();
+            let expected = serde_json::json!([
+                ["onReferenceFragmentUpdated", 0, format!("{page}#x"), []],
+                ["onHistoryStateUpdated", 0, self.url("/state"), []],
+                ["onHistoryStateUpdated", same, self.url("/inner"), []],
+                ["onHistoryStateUpdated", same, same_url, ["forward_back"]],
+            ]);
+            self.note("web_navigation_same_document", serde_json::json!(seen) == expected, format!("{seen:?}"));
+
+            // A window the page opens.
+            if let Some(settings) = WebViewExt::settings(&view) {
+                settings.set_javascript_can_open_windows_automatically(true);
+            }
+            self.eval(&view, &format!("window.open({}); 0", Value::String(same_url.clone())), None).await;
+            let target = |e: &Value| e[0] == "onCreatedNavigationTarget";
+            let (events, ..) = self.navigation_events(&popup, |all| all.iter().any(target) && all.iter().filter(|e| e[0] == "onBeforeNavigate").count() >= 1).await;
+            let opened = events.iter().find(|e| target(e)).map(|e| e[1]["tabId"].clone()).unwrap_or(Value::Null);
+            let seen: Vec<Value> = events.iter().filter(|e| e[1]["tabId"] == opened).map(|e| serde_json::json!([e[0], e[1].get("sourceTabId"), e[1].get("sourceFrameId"), e[1].get("url")])).collect();
+            let expected = serde_json::json!([["tabs.onCreated", null, null, null], ["onCreatedNavigationTarget", tab.0, 0, same_url], ["onBeforeNavigate", null, null, same_url]]);
+            self.note("web_navigation_created_target", seen.get(..3).is_some_and(|first| serde_json::json!(first) == expected), format!("tab {opened} opened by tab {}: {seen:?}", tab.0));
+            if let Some(opened) = opened.as_u64() {
+                self.host.remove_tab(TabId(opened as u32));
+            }
+
+            // A navigation that fails.
+            let refused = std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).map(|a| format!("http://{a}/")).expect("a free port");
+            self.host.update_tab(tab, Some(&refused), None);
+            let (events, ..) = self.navigation_events(&popup, |all| all.iter().any(|e| in_tab(e, "onErrorOccurred", 0))).await;
+            let seen: Vec<Value> = events.iter().filter(|e| e[1]["tabId"] == tab.0).map(|e| serde_json::json!([e[0], e[1]["url"], e[1].get("error")])).collect();
+            let top = self.eval_async(&popup, &format!("return (await chrome.webNavigation.getFrame({{ tabId: {}, frameId: 0 }})).errorOccurred;", tab.0)).await;
+            let expected = serde_json::json!([["onBeforeNavigate", refused, null], ["onErrorOccurred", refused, "net::ERR_CONNECTION_REFUSED"]]);
+            self.note("web_navigation_error", serde_json::json!(seen) == expected && top == Some(Value::Bool(true)), format!("{seen:?}; errorOccurred = {top:?}"));
+            self.host.remove_tab(tab);
+
+            let Some(other) = self.popup(&self.windows_id, self.tab).await else { return };
+            let _other_window = self.park(&other);
+            wait_until(|| other.title().as_deref() == Some("Vsesvit Windows"), TIMEOUT).await;
+            let api = self.eval_async(&other, "return typeof chrome.webNavigation;").await;
+            self.note("web_navigation_needs_permission", api == Some(serde_json::json!("undefined")), format!("typeof chrome.webNavigation without the permission = {api:?}"));
+            self.navigation_events(&popup, |_| true).await;
+        }
+
         async fn lifecycle(&self) {
             let id = self.twin.borrow().id.clone();
             let lives = wait_for_value(|| {
@@ -1883,11 +2049,26 @@ mod linux {
             view.connect_load_changed({
                 let (gate, runtime, committed) = (gate.clone(), runtime.clone(), committed.clone());
                 move |view, event| {
-                    if event == webkit::LoadEvent::Committed {
-                        let uri = view.uri().map(String::from).unwrap_or_default();
-                        gate.borrow_mut().committed(&runtime, &uri);
-                        *committed.borrow_mut() = uri;
+                    let uri = view.uri().map(String::from).unwrap_or_default();
+                    match event {
+                        webkit::LoadEvent::Started => runtime.tab_load(id, Load::Started(&uri)),
+                        webkit::LoadEvent::Redirected => runtime.tab_load(id, Load::Redirected(&uri)),
+                        webkit::LoadEvent::Committed => {
+                            gate.borrow_mut().committed(&runtime, &uri);
+                            runtime.tab_load(id, Load::Committed(&uri, Transition::Link));
+                            *committed.borrow_mut() = uri;
+                        }
+                        webkit::LoadEvent::Finished => runtime.tab_load(id, Load::Finished),
+                        _ => {}
                     }
+                }
+            });
+            view.connect_load_failed({
+                let runtime = runtime.clone();
+                // Handled, as the GTK tab handles it with its own error page.
+                move |_, _, uri, error| {
+                    runtime.tab_load(id, Load::Failed(uri, NetError::of(error)));
+                    true
                 }
             });
             vsesvit_webext::connect_create(view, {
@@ -1902,6 +2083,7 @@ mod linux {
                     }
                     let popup_id = host.next_id();
                     let popup = webkit::WebView::builder().related_view(view).user_content_manager(&runtime.user_content_manager(popup_id, Browsing::Normal)).build();
+                    runtime.tab_opened_by(popup_id, id);
                     let opened = Gate::opened_by(&gate.borrow());
                     let window = host.tabs.borrow().iter().find(|t| t.id == id).map_or(FIRST_WINDOW, |t| t.window.get());
                     host.add(&runtime, popup_id, &popup, opened, window, None);
