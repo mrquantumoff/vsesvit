@@ -28,6 +28,7 @@
 //! | [`history`]      | page records (grow-only visit sets) + deletion directives             |
 //! | [`https_only`]   | HTTPS-only: http upgrades, the warning page, site exceptions          |
 //! | [`import`]       | bookmarks from other browsers: HTML export, Chromium, Firefox         |
+//! | [`memory_saver`] | Memory Saver: which background tabs sleep, and when                  |
 //! | [`new_tab`]      | the new tab page: search box + most visited sites, as HTML            |
 //! | [`onboarding`]   | the first-run welcome: when to show it, recommended extensions        |
 //! | [`permissions`]  | site permissions: stored choices, one-time grants, the prompt         |
@@ -66,6 +67,7 @@ pub mod history;
 pub mod html;
 pub mod https_only;
 pub mod import;
+pub mod memory_saver;
 pub mod new_tab;
 pub mod onboarding;
 pub mod permissions;

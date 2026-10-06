@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::crdt::{JsonText, Lattice, Lww, Seq, Stamp};
 use crate::db::{opt_json_col, seq_col, stamp_col};
+use crate::memory_saver::MemorySaverMode;
 use crate::search::{SearchEngineId, classify_url};
 use crate::shortcuts::Overrides;
 use crate::sync::{Kind, SyncTable, changed_rows};
@@ -156,6 +157,12 @@ pub mod keys {
     pub const SMOOTH_SCROLLING: Pref<bool> = Pref { key: "scrolling.smooth", scope: Scope::Synced, default: || true };
     /// Local: whether the GPU works well is a property of this device.
     pub const HARDWARE_ACCELERATION: Pref<bool> = Pref { key: "system.hardware_acceleration", scope: Scope::Local, default: || true };
+    /// Local, as Chrome's: how much memory to free is a property of this device. See
+    /// [`crate::memory_saver`].
+    pub const MEMORY_SAVER: Pref<bool> = Pref { key: "performance.memory_saver", scope: Scope::Local, default: || true };
+    /// Local, like [`MEMORY_SAVER`].
+    pub const MEMORY_SAVER_MODE: Pref<MemorySaverMode> =
+        Pref { key: "performance.memory_saver.mode", scope: Scope::Local, default: || MemorySaverMode::Balanced };
     pub const DEVICE_NAME: Pref<String> = Pref { key: "device.name", scope: Scope::Local, default: || String::new() };
     /// Local: whether an installation checks for and downloads updates is a property of that
     /// installation, not of the user's other devices.
@@ -191,6 +198,8 @@ pub mod keys {
     /// Every Local pref above, which sync refuses to write (see [`super::remote_may_write`]).
     pub(crate) const LOCAL_KEYS: &[&str] = &[
         local(&HARDWARE_ACCELERATION),
+        local(&MEMORY_SAVER),
+        local(&MEMORY_SAVER_MODE),
         local(&DEVICE_NAME),
         local(&UPDATES_AUTOMATIC),
         local(&UPDATES_CHANNEL),
