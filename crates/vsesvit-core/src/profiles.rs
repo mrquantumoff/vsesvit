@@ -314,11 +314,16 @@ impl ProfilesDir {
         self.path.join(id.as_str())
     }
 
-    /// The profile `root` is, when it is a directory directly inside this one. Compares
-    /// canonical paths where they exist, so two spellings of one directory agree.
+    /// The profile `root` is, when it is a directory directly inside this one, whether or not
+    /// it exists yet. Compares canonical paths where they exist, so two spellings of one
+    /// directory agree.
     pub fn locate(&self, root: &Path) -> Option<ProfileId> {
         let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
-        let root = canonical(root);
+        let root = std::path::absolute(root).ok()?;
+        let root = match fs::canonicalize(&root) {
+            Ok(root) => root,
+            Err(_) => canonical(root.parent()?).join(root.file_name()?),
+        };
         if root.parent()? != canonical(&self.path) {
             return None;
         }
@@ -764,6 +769,7 @@ mod tests {
         assert_eq!(dir.locate(&dir.path().join("./Profile 1")), Some(id("Profile 1")));
         assert_eq!(dir.locate(&root.join("nested")), None);
         assert_eq!(dir.locate(dir.path()), None);
+        assert_eq!(dir.locate(&dir.path().join("Profile 2")), Some(id("Profile 2")), "not made yet");
     }
 
     #[test]

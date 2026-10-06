@@ -17,7 +17,7 @@ use vsesvit_core::sync::Changed;
 use vsesvit_core::trackers::TrackingProtection;
 use windows_core::{Interface, Result};
 
-use super::{Category, Wired, on_click, side_list};
+use super::{Category, Dialog, Wired, on_click, side_list};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::sync::Applied;
@@ -41,6 +41,16 @@ pub(super) const MARKUP: &str = r#"
           <TextBlock Text="On startup" Style="{StaticResource BodyStrongTextBlockStyle}"/>
           <ComboBox x:Name="Startup" MinWidth="320" AutomationProperties.Name="On startup"/>
           <TextBox x:Name="Homepage" Header="Home page" PlaceholderText="https://"/>
+        </StackPanel>
+        <StackPanel x:Name="ProfilesSection" Spacing="8">
+          <TextBlock Text="Profiles" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+          <StackPanel Spacing="4">
+            <ToggleSwitch x:Name="ProfilePicker" Header="Show the profile picker at startup"/>
+            <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="When there is more than one profile, Vsesvit asks which one to open."/>
+          </StackPanel>
+          <Button x:Name="ManageProfiles" Content="Manage profiles"/>
         </StackPanel>
         <StackPanel Spacing="8">
           <TextBlock Text="Downloads" Style="{StaticResource BodyStrongTextBlockStyle}"/>
@@ -415,6 +425,8 @@ pub(super) fn wire(
     let sync = super::sync_settings::wire(root, browser, window)?;
     let mut follow: Follow = Vec::new();
 
+    wire_profiles(root, browser, window)?;
+
     let tabs: ComboBox = xaml::find(root, "TabsPosition")?;
     let w = weak.clone();
     let show = choices(
@@ -565,6 +577,21 @@ pub(super) fn wire(
 }
 
 /// Sets the switch `name` to `on`, and calls `toggled` when the user flips it.
+/// The picker switch is the install's, as in Chrome, so it writes the profile list rather than
+/// this profile's preferences. A profile outside the list has neither row.
+fn wire_profiles(root: &FrameworkElement, browser: &Rc<Browser>, window: &Rc<BrowserWindow>) -> Result<()> {
+    if browser.home().is_none() {
+        return xaml::set_visible(&xaml::find::<UIElement>(root, "ProfilesSection")?, false);
+    }
+    switch(root, browser, "ProfilePicker", browser.profiles().show_picker(), Browser::set_show_profile_picker)?;
+    let w = Rc::downgrade(window);
+    on_click(&xaml::find::<Button>(root, "ManageProfiles")?, move || {
+        if let Some(window) = w.upgrade() {
+            window.show_dialog(Dialog::Profiles);
+        }
+    })
+}
+
 fn switch(
     root: &FrameworkElement,
     browser: &Rc<Browser>,

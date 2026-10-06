@@ -7,7 +7,7 @@ use windows_core::{Array, HSTRING, Interface, Ref, Result, implement};
 
 use crate::bindings::*;
 use crate::browser::{self, Launch};
-use crate::exec;
+use crate::{exec, profiles};
 
 thread_local! {
     static EXIT_CODE: Cell<u8> = const { Cell::new(0) };
@@ -15,8 +15,14 @@ thread_local! {
     static APPLICATION: RefCell<Option<Application>> = const { RefCell::new(None) };
 }
 
+/// What the application shows.
+pub(crate) enum Start {
+    Browser(Box<Launch>),
+    Picker(vsesvit_core::profiles::ProfilesDir),
+}
+
 /// Runs XAML on the calling thread until the last window closes or `exit` is called.
-pub(crate) fn run(launch: Launch) -> ExitCode {
+pub(crate) fn run(launch: Start) -> ExitCode {
     let launch = RefCell::new(Some(launch));
     let started = Application::Start(&ApplicationInitializationCallback::new(move |_| {
         let app = App {
@@ -56,7 +62,7 @@ pub(crate) fn exit(code: u8) {
 #[implement(IApplicationOverrides, IXamlMetadataProvider)]
 struct App {
     provider: RefCell<Option<XamlControlsXamlMetaDataProvider>>,
-    launch: RefCell<Option<Launch>>,
+    launch: RefCell<Option<Start>>,
 }
 
 impl App_Impl {
@@ -95,7 +101,10 @@ impl App_Impl {
             .borrow_mut()
             .take()
             .ok_or_else(windows_core::Error::empty)?;
-        browser::launch(launch);
+        match launch {
+            Start::Browser(launch) => browser::launch(*launch),
+            Start::Picker(dir) => profiles::show_picker(dir)?,
+        }
         Ok(())
     }
 }

@@ -198,6 +198,11 @@ impl BrowserWindow {
         xaml::find::<FlyoutBase>(&ui.root, "MainMenu")?
             .Opening(move |_, _| with(&w, BrowserWindow::menu_opening))?
             .forget();
+        let w = me();
+        ui.profile_menu
+            .cast::<FlyoutBase>()?
+            .Opening(move |_, _| with(&w, BrowserWindow::profile_menu_opening))?
+            .forget();
 
         let w = me();
         self.window

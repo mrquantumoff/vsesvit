@@ -1,5 +1,6 @@
-//! The Bookmarks, History, Downloads, Extensions, Settings and About dialogs and the welcome,
-//! all on vsesvit-core data, and the prompts sync shows of its own accord (`sync_prompt`).
+//! The Bookmarks, History, Downloads, Extensions, Settings, Manage profiles and About dialogs and
+//! the welcome, all on vsesvit-core data, and the prompts sync shows of its own accord
+//! (`sync_prompt`).
 //!
 //! Each dialog's content is built from markup, filled and wired by its module. Bookmarks,
 //! History, Downloads and Settings show it in a window of their own (`windowed`); the others in
@@ -61,6 +62,7 @@ pub(crate) enum Dialog {
     Settings,
     About,
     Welcome,
+    Profiles,
 }
 
 impl Dialog {
@@ -76,7 +78,7 @@ impl Dialog {
             Self::History => Some((1000.0, 680.0)),
             Self::Downloads => Some((720.0, 600.0)),
             Self::Settings => Some((960.0, 720.0)),
-            Self::Extensions | Self::About | Self::Welcome => None,
+            Self::Extensions | Self::About | Self::Welcome | Self::Profiles => None,
         }
     }
 
@@ -89,6 +91,7 @@ impl Dialog {
             Self::Extensions => Some("Extensions"),
             Self::Settings => Some("Settings"),
             Self::About => Some("About Vsesvit"),
+            Self::Profiles => Some("Manage profiles"),
             Self::Welcome => None,
         }
     }
@@ -112,6 +115,7 @@ impl Dialog {
                 .into(),
             Self::About => about::MARKUP.into(),
             Self::Welcome => welcome::MARKUP.into(),
+            Self::Profiles => crate::profiles::MANAGE_MARKUP.into(),
         }
     }
 
@@ -208,6 +212,7 @@ fn wire(
         Dialog::Settings => settings::wire(root, browser, window, host),
         Dialog::About => about::fill(root, browser),
         Dialog::Welcome => welcome::wire(root, browser, window),
+        Dialog::Profiles => crate::profiles::wire_manage(root, browser, window),
     }
 }
 

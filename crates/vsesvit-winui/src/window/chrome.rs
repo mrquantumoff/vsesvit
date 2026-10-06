@@ -92,6 +92,7 @@ const WINDOW_XAML: &str = r#"
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <Button x:Name="Back" Style="{StaticResource ToolbarButton}" IsEnabled="False"
             ToolTipService.ToolTip="Back" AutomationProperties.Name="Back">
@@ -248,7 +249,16 @@ const WINDOW_XAML: &str = r#"
         <TextBlock Text="Private" VerticalAlignment="Center"/>
       </StackPanel>
     </Border>
-    <Button x:Name="More" Grid.Column="7" Margin="0,0,6,0" Style="{StaticResource ToolbarButton}"
+    <!-- The profile's avatar and its menu, filled as it opens; hidden for a profile outside the
+         profile list. -->
+    <Button x:Name="Profile" Grid.Column="7" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
+            AutomationProperties.Name="Profile">
+      <Grid x:Name="ProfileAvatar"/>
+      <Button.Flyout>
+        <MenuFlyout x:Name="ProfileMenu" Placement="BottomEdgeAlignedRight">{acrylic_menu}</MenuFlyout>
+      </Button.Flyout>
+    </Button>
+    <Button x:Name="More" Grid.Column="8" Margin="0,0,6,0" Style="{StaticResource ToolbarButton}"
             ToolTipService.ToolTip="Settings and more" AutomationProperties.Name="Settings and more">
       <FontIcon Glyph="&#xE712;" FontSize="16"/>
       <Button.Flyout>
@@ -305,7 +315,7 @@ const WINDOW_XAML: &str = r#"
         </MenuFlyout>
       </Button.Flyout>
     </Button>
-    <Grid x:Name="ToolbarDrag" Grid.Column="8" Width="196" Background="Transparent" Visibility="Collapsed"/>
+    <Grid x:Name="ToolbarDrag" Grid.Column="9" Width="196" Background="Transparent" Visibility="Collapsed"/>
   </Grid>
 
   <Grid x:Name="BookmarksBar" Grid.Row="2" Height="30" Padding="8,0,8,2" Background="Transparent">
@@ -434,6 +444,9 @@ pub(super) struct Chrome {
     pub(super) downloads: Button,
     pub(super) downloads_busy: ProgressRing,
     pub(super) private_pill: FrameworkElement,
+    pub(super) profile: Button,
+    pub(super) profile_avatar: Panel,
+    pub(super) profile_menu: MenuFlyout,
     pub(super) bookmarks_bar: FrameworkElement,
     pub(super) bookmark_items: ListView,
     pub(super) bookmarks_overflow: Button,
@@ -492,6 +505,9 @@ impl Chrome {
             downloads: xaml::find(&root, "Downloads")?,
             downloads_busy: xaml::find(&root, "DownloadsBusy")?,
             private_pill: xaml::find(&root, "PrivatePill")?,
+            profile: xaml::find(&root, "Profile")?,
+            profile_avatar: xaml::find(&root, "ProfileAvatar")?,
+            profile_menu: xaml::find(&root, "ProfileMenu")?,
             bookmarks_bar: xaml::find(&root, "BookmarksBar")?,
             bookmark_items: xaml::find(&root, "BookmarkItems")?,
             bookmarks_overflow: xaml::find(&root, "BookmarksOverflow")?,

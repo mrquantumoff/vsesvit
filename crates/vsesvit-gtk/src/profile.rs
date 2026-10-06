@@ -12,6 +12,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::Profile;
 use vsesvit_core::profiles::{Home, ProfileId, ProfilesDir, Startup};
+use vsesvit_update::Installation;
 
 use crate::APP_ID;
 use crate::cli::PROFILE_DIR;
@@ -90,8 +91,7 @@ fn hashed_app_id(dir: &Path) -> String {
 /// running one. It is launched through the display, so on Wayland it carries an activation
 /// token that lets whichever process shows the window take the focus.
 pub(crate) fn launch(widget: &impl IsA<gtk::Widget>, root: &Path) -> Result<(), glib::Error> {
-    let program = std::env::current_exe()
-        .map_err(|e| glib::Error::new(gio::IOErrorEnum::Failed, &e.to_string()))?;
+    let program = program().map_err(|e| glib::Error::new(gio::IOErrorEnum::Failed, &e.to_string()))?;
     let command = [program.as_os_str(), PROFILE_DIR.as_ref(), root.as_os_str()]
         .map(|arg| glib::shell_quote(arg).to_string_lossy().into_owned())
         .join(" ");
@@ -104,11 +104,20 @@ pub(crate) fn launch(widget: &impl IsA<gtk::Widget>, root: &Path) -> Result<(), 
     info.launch(&[], Some(&context))
 }
 
+/// The program another profile's process runs: for an AppImage the image itself, whose mount
+/// goes away with this process.
+fn program() -> io::Result<PathBuf> {
+    match Installation::detect() {
+        Installation::AppImage { image } => Ok(image),
+        _ => std::env::current_exe(),
+    }
+}
+
 /// Has the process running `root`'s profile look at the profile list again: a second process
 /// on the profile hands it an empty command line. Without an activation token, as the point
 /// is not to bring it forward.
 pub(crate) fn notify(root: &Path) {
-    let spawned = std::env::current_exe().and_then(|program| {
+    let spawned = program().and_then(|program| {
         std::process::Command::new(program)
             .arg(PROFILE_DIR)
             .arg(root)

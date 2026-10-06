@@ -28,6 +28,7 @@ mod dialog_steps;
 mod motion_steps;
 mod permission_steps;
 mod pip_steps;
+mod profile_steps;
 mod sync_live;
 mod progress_steps;
 mod tab_search_steps;
@@ -423,6 +424,7 @@ pub(crate) fn prepare(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()>
     selftest::absent(std::fs::remove_file(out_dir.join("smoke.json")))?;
     if profile_dir == out_dir.join("profile") {
         selftest::absent(std::fs::remove_dir_all(profile_dir))?;
+        selftest::absent(std::fs::remove_file(out_dir.join("profiles.json")))?;
     }
     Ok(())
 }
@@ -864,6 +866,9 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     exec::sleep(Duration::from_millis(300)).await;
 
     private_window(browser, &window, out_dir, steps).await?;
+    if let Err(e) = profile_steps::run(browser, &window, out_dir, steps).await {
+        steps.push(json!({ "name": "21b-profile-menu", "error": e, "ok": false }));
+    }
 
     // Last: it clears the site data every step above may rely on.
     let result = dialog_steps::clear_browsing_data(browser, &window, out_dir, &page2, steps).await;

@@ -36,6 +36,7 @@ use vsesvit_core::extensions::toolbar::Layout;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
 use vsesvit_core::private::Browsing;
+use vsesvit_core::profiles::ProfileColor;
 use vsesvit_core::suggest::Queries;
 use vsesvit_core::view_source;
 use windows_core::{IInspectable, Interface, Result};
@@ -160,18 +161,18 @@ pub(crate) struct WindowPrefs {
 /// The compact address bar's widest.
 const COMPACT_ADDRESS_WIDTH: f64 = 720.0;
 
-/// The window's title for a page titled `page` (empty for none), which names a private window
-/// as Chrome's names an incognito one.
-fn window_title(page: &str, browsing: Browsing) -> String {
+/// The window's title for a page titled `page` (empty for none) in `profile`, named when there
+/// is more than one, which names a private window as Chrome's names an incognito one.
+fn window_title(page: &str, profile: Option<&str>, browsing: Browsing) -> String {
     let app = match browsing {
         Browsing::Normal => "Vsesvit",
         Browsing::Private => "Vsesvit (Private)",
     };
-    if page.is_empty() {
-        app.to_owned()
-    } else {
-        format!("{page} - {app}")
-    }
+    [page, profile.unwrap_or_default(), app]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" - ")
 }
 
 /// Whether the star shows the page at `url` bookmarked: never a blank tab or the new tab page,
@@ -270,7 +271,7 @@ impl BrowserWindow {
         let ui = Chrome::load()?;
         xaml::set_visible(&ui.private_pill, browsing == Browsing::Private)?;
         let window = Window::new()?;
-        window.SetTitle(&window_title("", browsing))?;
+        window.SetTitle(&window_title("", browser.profile_title().as_deref(), browsing))?;
         window.SetContent(&ui.root)?;
         window.SetExtendsContentIntoTitleBar(true)?;
         platform::set_window_icon(platform::window_handle(&window)?);
@@ -346,6 +347,7 @@ impl BrowserWindow {
         this.set_bookmarks_bar_visible(prefs.bookmarks_bar);
         this.set_home_button_visible(prefs.home_button);
         this.set_media_switches(prefs.media_player, prefs.pip);
+        this.sync_profile();
         this.wire()?;
         this.wire_permissions()?;
         this.install_accelerators()?;
@@ -442,6 +444,9 @@ impl BrowserWindow {
     pub(super) fn window_activated(&self) {
         if let Some(tab) = self.active_tab() {
             self.mark_used(&tab);
+        }
+        if let Some(browser) = self.browser() {
+            browser.profile_used();
         }
     }
 
@@ -769,12 +774,93 @@ impl BrowserWindow {
         self.show_permissions_state();
         self.show_tracking_status();
         let _ = xaml::set_visible(&self.ui.copy_link, omnibox::has_link(&state.url));
-        let title = if state.url.is_empty() {
-            ""
-        } else {
-            state.title.as_str()
-        };
-        let _ = self.window.SetTitle(&window_title(title, self.browsing));
+        self.show_title(&state.title, &state.url);
+    }
+
+    /// The page's title, the profile's when there is more than one profile and the app's (see
+    /// [`window_title`]).
+    fn show_title(&self, title: &str, url: &str) {
+        let _ = self.window.SetTitle(&self.title_text(title, url));
+    }
+
+    fn title_text(&self, title: &str, url: &str) -> String {
+        let profile = self.browser().and_then(|b| b.profile_title());
+        let page = if url.is_empty() { "" } else { title };
+        window_title(page, profile.as_deref(), self.browsing)
+    }
+
+    /// The profile list changed: the avatar and the title follow.
+    pub fn profiles_changed(&self) {
+        self.sync_profile();
+        let state = self.active_tab().map(|t| t.state()).unwrap_or_default();
+        self.show_title(&state.title, &state.url);
+    }
+
+    pub(super) fn sync_profile(&self) {
+        let Some(browser) = self.browser() else { return };
+        let Some(home) = browser.home() else { return };
+        let registry = browser.profiles();
+        let (name, color) = registry
+            .get(&home.id)
+            .map_or((home.id.as_str(), ProfileColor::Slate), |p| (p.name.as_str(), p.color));
+        let shown = crate::profiles::avatar(name, color, 22).and_then(|avatar| {
+            let children = self.ui.profile_avatar.Children()?;
+            children.Clear()?;
+            children.Append(&avatar)?;
+            xaml::set_tip(&self.ui.profile, name)?;
+            AutomationProperties::SetName(&self.ui.profile, &format!("Profile: {name}"))?;
+            xaml::set_visible(&self.ui.profile, true)
+        });
+        if let Err(e) = shown {
+            log::warn!("the profile button: {e}");
+        }
+    }
+
+    /// Every profile, then adding and managing them, read afresh as the menu opens.
+    pub(super) fn profile_menu_opening(&self) {
+        let Some(browser) = self.browser() else { return };
+        browser.profile_used();
+        let Some(home) = browser.home() else { return };
+        let anchor = self.ui.profile.cast::<FrameworkElement>();
+        let filled = anchor.and_then(|anchor| {
+            crate::profiles::fill_menu(&self.ui.profile_menu, &browser.profiles(), &home.id, &self.me(), &anchor)
+        });
+        if let Err(e) = filled {
+            log::warn!("the profile menu: {e}");
+        }
+    }
+
+    /// The profile menu's items as it opens: each label, and whether it is checked.
+    #[cfg(feature = "self-test")]
+    pub fn profile_menu_lines(&self) -> Result<Vec<(String, bool)>> {
+        self.profile_menu_opening();
+        let mut lines = Vec::new();
+        for item in &self.ui.profile_menu.Items()? {
+            if let Ok(toggle) = item.cast::<ToggleMenuFlyoutItem>() {
+                let text = toggle.cast::<MenuFlyoutItem>()?.Text()?.to_string();
+                lines.push((text, toggle.IsChecked()?));
+            }
+        }
+        Ok(lines)
+    }
+
+    /// Opens the profile menu, as a click on the profile button does.
+    #[cfg(feature = "self-test")]
+    pub fn show_profile_menu(&self) -> Result<MenuFlyout> {
+        let options = FlyoutShowOptions::new()?;
+        options.SetPlacement(FlyoutPlacementMode::BottomEdgeAlignedRight)?;
+        self.ui
+            .profile_menu
+            .cast::<FlyoutBase>()?
+            .ShowAtWithOptions(&self.ui.profile.cast::<FrameworkElement>()?, &options)?;
+        Ok(self.ui.profile_menu.clone())
+    }
+
+    /// The window's title, as `show_title` last set it.
+    #[cfg(feature = "self-test")]
+    pub fn title(&self) -> String {
+        let state = self.active_tab().map(|t| t.state()).unwrap_or_default();
+        self.title_text(&state.title, &state.url)
     }
 
     /// The URL in readable form: whole while the user works in the address box or asked for
@@ -1993,13 +2079,21 @@ mod tests {
     }
 
     #[test]
-    fn a_private_window_says_so_in_its_title() {
-        assert_eq!(window_title("", Browsing::Normal), "Vsesvit");
-        assert_eq!(window_title("Page", Browsing::Normal), "Page - Vsesvit");
-        assert_eq!(window_title("", Browsing::Private), "Vsesvit (Private)");
+    fn a_window_title_names_the_profile_and_a_private_window() {
+        assert_eq!(window_title("", None, Browsing::Normal), "Vsesvit");
+        assert_eq!(window_title("Page", None, Browsing::Normal), "Page - Vsesvit");
+        assert_eq!(window_title("", None, Browsing::Private), "Vsesvit (Private)");
         assert_eq!(
-            window_title("Page", Browsing::Private),
+            window_title("Page", None, Browsing::Private),
             "Page - Vsesvit (Private)"
+        );
+        assert_eq!(
+            window_title("Page", Some("Work"), Browsing::Normal),
+            "Page - Work - Vsesvit"
+        );
+        assert_eq!(
+            window_title("Page", Some("Work"), Browsing::Private),
+            "Page - Work - Vsesvit (Private)"
         );
     }
 

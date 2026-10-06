@@ -11,6 +11,7 @@ mod memory_saver_checks;
 mod omnibox_checks;
 mod page_checks;
 mod private_checks;
+mod profile_checks;
 mod search_engine_checks;
 mod download_checks;
 mod shortcut_checks;
@@ -91,6 +92,9 @@ pub(crate) fn prepare(out_dir: &Path) -> std::io::Result<()> {
         "bookmarks.html",
         "probe.crx",
         "vsesvit.log",
+        "profiles.json",
+        "profile-menu.png",
+        "profiles-manage.png",
     ] {
         absent(std::fs::remove_file(out_dir.join(file)))?;
     }
@@ -930,6 +934,13 @@ async fn checks(
 
     check(report, "sync_passphrase", Duration::from_secs(60), async |p| {
         sync_checks::sync_passphrase(&window, p)
+            .await
+            .map_err(|e| format!("{e} (at: {})", p.last()))
+    })
+    .await;
+
+    check(report, "profiles", DEFAULT_TIMEOUT, async |p| {
+        profile_checks::profiles(browser, &window, out_dir, p)
             .await
             .map_err(|e| format!("{e} (at: {})", p.last()))
     })

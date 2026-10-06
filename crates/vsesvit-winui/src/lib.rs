@@ -29,6 +29,7 @@
 //! | `selftest`, `automation` | `--self-test` and `--ui-smoke` (feature `self-test`)         |
 //! | `updates`         | the self-update state machine, its schedule, the update commands    |
 //! | `sync`            | signing in to a sync server, the sync rounds and their schedule     |
+//! | `profiles`        | the profile menu, Manage profiles, the picker, starting a profile   |
 //! | `bindings`        | generated; regenerate with `tools/bindgen` (see `bindings.txt`)     |
 #![cfg(windows)]
 #![cfg_attr(
@@ -78,6 +79,7 @@ mod permissions;
 mod pickers;
 mod platform;
 mod player;
+mod profiles;
 mod popup;
 #[cfg(feature = "self-test")]
 mod report;
@@ -99,7 +101,7 @@ mod zoom;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use config::{Config, Mode};
+use config::{Config, Mode, Start};
 use vsesvit_core::{OpenError, OpenOptions, Profile};
 
 pub fn run() -> ExitCode {
@@ -126,7 +128,8 @@ pub fn run() -> ExitCode {
         }
     };
     let config = match Config::resolve(args) {
-        Ok(config) => config,
+        Ok(Start::Browse(config)) => config,
+        Ok(Start::Picker(profiles)) => return run_picker(profiles),
         Err(e) => {
             eprintln!("vsesvit: {e}");
             return ExitCode::FAILURE;
@@ -170,14 +173,33 @@ pub fn run() -> ExitCode {
         }
         return ExitCode::FAILURE;
     }
+    let home = config.home.clone();
     match open_profile(config) {
         Ok(launch) => {
-            let code = app::run(launch);
+            let code = app::run(app::Start::Browser(Box::new(launch)));
+            // Removed while it ran: its data can go now that its lock is free.
+            if let Some(home) = home
+                && home.dir.load().is_removed(&home.id)
+            {
+                home.dir.sweep();
+            }
             updates::install_on_exit();
             code
         }
         Err(code) => code,
     }
+}
+
+/// The profile picker, before any profile is open. Its log goes next to the profiles.
+fn run_picker(profiles: vsesvit_core::profiles::ProfilesDir) -> ExitCode {
+    logging::init(&profiles.path().join("picker.log"));
+    logging::open_file(logging::FileMode::Truncate);
+    if let Err(e) = platform::init() {
+        log::error!("{e}");
+        platform::report_startup_failure(&e);
+        return ExitCode::FAILURE;
+    }
+    app::run(app::Start::Picker(profiles))
 }
 
 /// Opens the profile before any window exists. When another Vsesvit process has it open, this
@@ -200,6 +222,15 @@ fn open_profile(config: Config) -> Result<browser::Launch, ExitCode> {
         Ok(profile) => {
             let profile_open_ms = started.elapsed().as_millis();
             logging::open_file(logging::FileMode::Truncate);
+            if let Some(home) = &config.home
+                && home.dir.load().is_removed(&home.id)
+            {
+                // Removed while it ran; nothing opens it again, and its data can go now.
+                log::info!("the profile was removed; deleting it");
+                drop(profile);
+                home.dir.sweep();
+                return Err(ExitCode::SUCCESS);
+            }
             if let Some(instance) = instance::register(&config.profile_dir) {
                 instance::listen(&instance);
             }

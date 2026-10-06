@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use vsesvit_core::Profile;
+use vsesvit_core::profiles::{Home, ProfileId, ProfilesDir, Startup};
 
 use crate::cli::{Args, RunKind};
 
@@ -11,6 +11,9 @@ use crate::cli::{Args, RunKind};
 pub(crate) struct Config {
     /// Absolute. The vsesvit-core profile root; WebView2 keeps its data in its `engine` folder.
     pub profile_dir: PathBuf,
+    /// Its place in the profile list; none for a `--profile-dir` outside it. The scripted runs
+    /// keep their list next to their profile, never in the user's.
+    pub home: Option<Home>,
     pub start_urls: Vec<String>,
     pub mode: Mode,
     /// Unpacked extension folders installed through the normal pipeline at startup.
@@ -42,24 +45,41 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// What this launch runs.
+#[derive(Debug)]
+pub(crate) enum Start {
+    Browse(Config),
+    /// Several profiles, none running, and the picker switched on: the picker opens first.
+    Picker(ProfilesDir),
+}
+
 impl Config {
-    pub fn resolve(args: Args) -> Result<Self, ConfigError> {
-        Self::resolve_with(args, || Profile::default_root("Default"))
+    pub fn resolve(args: Args) -> Result<Start, ConfigError> {
+        let profiles = ProfilesDir::standard();
+        Self::resolve_with(args, &profiles, |has_urls| {
+            profiles.sweep();
+            profiles.startup(has_urls)
+        })
     }
 
+    /// `startup` decides a launch that names no profile, given whether it has URLs.
     fn resolve_with(
         args: Args,
-        default_root: impl FnOnce() -> PathBuf,
-    ) -> Result<Self, ConfigError> {
-        let (mode, profile_dir) = match args.run {
+        profiles: &ProfilesDir,
+        startup: impl FnOnce(bool) -> Startup,
+    ) -> Result<Start, ConfigError> {
+        let (mode, profile_dir, home) = match args.run {
             RunKind::SelfTest(out_dir) => {
                 let out_dir = absolute(&out_dir)?;
-                let profile = out_dir.join("profile");
+                let home = Home {
+                    dir: ProfilesDir::at(out_dir.clone()),
+                    id: ProfileId::parse("profile").expect("a plain directory name"),
+                };
                 let mode = Mode::SelfTest {
                     out_dir,
                     network: args.network,
                 };
-                (mode, profile)
+                (mode, home.root(), Some(home))
             }
             RunKind::UiSmoke(out_dir) => {
                 let out_dir = absolute(&out_dir)?;
@@ -67,27 +87,42 @@ impl Config {
                     Some(dir) => absolute(&dir)?,
                     None => out_dir.join("profile"),
                 };
-                (Mode::UiSmoke { out_dir }, profile)
+                let home = scripted_home(&profile);
+                (Mode::UiSmoke { out_dir }, profile, home)
             }
-            RunKind::Browse => {
-                let profile = match args.profile_dir {
-                    Some(dir) => absolute(&dir)?,
-                    None => default_root(),
-                };
-                (Mode::Browse, profile)
-            }
+            RunKind::Browse => match args.profile_dir {
+                Some(dir) => {
+                    let profile = absolute(&dir)?;
+                    let home = profiles.locate(&profile).map(|id| Home {
+                        dir: profiles.clone(),
+                        id,
+                    });
+                    (Mode::Browse, profile, home)
+                }
+                None => match startup(!args.urls.is_empty()) {
+                    Startup::Open(id) => {
+                        let home = Home {
+                            dir: profiles.clone(),
+                            id,
+                        };
+                        (Mode::Browse, home.root(), Some(home))
+                    }
+                    Startup::Picker => return Ok(Start::Picker(profiles.clone())),
+                },
+            },
         };
         let load_extensions = args
             .load_extensions
             .iter()
             .map(|dir| absolute(dir))
             .collect::<Result<_, _>>()?;
-        Ok(Self {
+        Ok(Start::Browse(Self {
             profile_dir,
+            home,
             start_urls: args.urls,
             mode,
             load_extensions,
-        })
+        }))
     }
 
     /// The self-test replaces its profile on every run, so its log lives next to the report.
@@ -97,6 +132,13 @@ impl Config {
             _ => self.profile_dir.join("vsesvit.log"),
         }
     }
+}
+
+/// A scripted run's profile list is the directory its profile is in.
+fn scripted_home(profile: &Path) -> Option<Home> {
+    let id = ProfileId::parse(profile.file_name()?.to_str()?)?;
+    let dir = ProfilesDir::at(profile.parent()?.to_owned());
+    Some(Home { dir, id })
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, ConfigError> {
@@ -117,12 +159,20 @@ mod tests {
         }
     }
 
+    fn profiles() -> ProfilesDir {
+        ProfilesDir::at(PathBuf::from(r"C:\L\Vsesvit\data\profiles"))
+    }
+
+    fn resolve(args: Args, startup: Startup) -> Config {
+        match Config::resolve_with(args, &profiles(), |_| startup).unwrap() {
+            Start::Browse(config) => config,
+            Start::Picker(_) => panic!("the picker instead of a profile"),
+        }
+    }
+
     #[test]
-    fn default_profile_is_cores_default_root() {
-        let config = Config::resolve_with(args(RunKind::Browse, None), || {
-            PathBuf::from(r"C:\L\Vsesvit\data\profiles\Default")
-        })
-        .unwrap();
+    fn a_launch_naming_no_profile_opens_what_the_profile_list_chooses() {
+        let config = resolve(args(RunKind::Browse, None), Startup::Open(ProfileId::default_profile()));
         assert_eq!(
             config.profile_dir,
             PathBuf::from(r"C:\L\Vsesvit\data\profiles\Default")
@@ -134,22 +184,52 @@ mod tests {
         assert_eq!(config.start_urls, ["https://example.test/"]);
         assert!(config.load_extensions[0].is_absolute());
         assert!(config.mode.is_interactive());
+        assert_eq!(
+            config.home,
+            Some(Home {
+                dir: profiles(),
+                id: ProfileId::default_profile()
+            })
+        );
+
+        let mut no_urls = args(RunKind::Browse, None);
+        no_urls.urls.clear();
+        let picker = Config::resolve_with(no_urls, &profiles(), |has_urls| {
+            assert!(!has_urls);
+            Startup::Picker
+        });
+        assert!(matches!(picker, Ok(Start::Picker(dir)) if dir == profiles()));
     }
 
     #[test]
     fn profile_dir_is_made_absolute() {
-        let config =
-            Config::resolve_with(args(RunKind::Browse, Some("rel")), || unreachable!()).unwrap();
+        let config = resolve(args(RunKind::Browse, Some("rel")), Startup::Picker);
         assert!(config.profile_dir.is_absolute());
         assert!(config.profile_dir.ends_with("rel"));
+        assert_eq!(config.home, None, "outside the profile list");
+        let listed = resolve(
+            args(
+                RunKind::Browse,
+                Some(r"C:\L\Vsesvit\data\profiles\Profile 1"),
+            ),
+            Startup::Picker,
+        );
+        assert_eq!(
+            listed.home.map(|home| home.id),
+            ProfileId::parse("Profile 1")
+        );
     }
 
     #[test]
     fn self_test_uses_a_profile_inside_out_dir() {
         let mut a = args(RunKind::SelfTest(PathBuf::from(r"C:\out")), None);
         a.network = true;
-        let config = Config::resolve_with(a, || unreachable!()).unwrap();
+        let config = resolve(a, Startup::Picker);
         assert_eq!(config.profile_dir, PathBuf::from(r"C:\out\profile"));
+        assert_eq!(
+            config.home.as_ref().map(|home| &home.dir),
+            Some(&ProfilesDir::at(PathBuf::from(r"C:\out")))
+        );
         assert_eq!(config.log_file(), PathBuf::from(r"C:\out\vsesvit.log"));
         assert_eq!(
             config.mode,
