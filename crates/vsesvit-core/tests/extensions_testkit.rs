@@ -95,7 +95,7 @@ fn probe_crx_carries_the_probe_files_under_probe_id() {
     let parsed = crx::parse(&bytes).unwrap();
     assert_eq!(crx::verify(&parsed, &VerifyPolicy::AnyDeveloperKey).unwrap().id.as_str(), testkit::PROBE_ID);
     let names: Vec<&str> = testkit::PROBE_FILES.iter().map(|(n, _)| *n).collect();
-    assert_eq!(names, ["manifest.json", "background.js", "content.js", "popup.html", "popup.js", "rules.json"]);
+    assert_eq!(names, ["manifest.json", "background.js", "content.js", "dynamic.js", "popup.html", "popup.js", "rules.json"]);
     for (name, bytes) in testkit::PROBE_FILES {
         let on_disk = std::fs::read(format!("{}/../../tests/fixtures/extensions/probe/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap();
         assert_eq!(*bytes, on_disk.as_slice(), "{name}");

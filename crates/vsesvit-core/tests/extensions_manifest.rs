@@ -242,7 +242,7 @@ fn the_probe_manifest_parses() {
     assert_eq!(m.content_scripts[0].run_at, RunAt::DocumentEnd);
     assert_eq!(m.action.unwrap().default_popup.unwrap().as_str(), "popup.html");
     assert_eq!(m.dnr_rulesets[0].path.as_str(), "rules.json");
-    assert_eq!(m.permissions, strs(["storage", "declarativeNetRequest", "contextMenus", "notifications"]));
+    assert_eq!(m.permissions, strs(["storage", "declarativeNetRequest", "contextMenus", "notifications", "scripting"]));
     assert_eq!(m.host_permissions[0].as_str(), "<all_urls>");
     assert_eq!(m.key, None);
 }
