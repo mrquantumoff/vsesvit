@@ -5,8 +5,7 @@
   "use strict";
   const g = globalThis;
   const handler = g.webkit && g.webkit.messageHandlers && g.webkit.messageHandlers.vsesvitFrames;
-  if (!handler || g.__vsesvitFrames) return;
-  g.__vsesvitFrames = true;
+  if (!handler) return;
   const token = Array.from(g.crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
   // The frame's index among its parent's frames at each level, from the top. Windows of
   // other origins still compare and list their frames.
@@ -21,9 +20,7 @@
     return indices;
   }
   function report(k, extra) {
-    try {
-      handler.postMessage(Object.assign({ k, d: token, path: path(), url: String(g.location.href) }, extra));
-    } catch (_) {}
+    handler.postMessage(Object.assign({ k, d: token, path: path(), url: String(g.location.href) }, extra));
   }
   report("start");
   g.document.addEventListener("DOMContentLoaded", (e) => { if (e.isTrusted) report("ready"); });
