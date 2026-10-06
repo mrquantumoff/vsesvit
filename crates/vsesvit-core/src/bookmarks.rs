@@ -38,6 +38,7 @@ use uuid::Uuid;
 
 use crate::crdt::{Extra, Lattice, Lww, Seq, Stamp, extra_max_stamp, join_extra};
 use crate::db::{extra_col, extra_text, opt_stamp_col, seq_col, stamp_col, uuid_col};
+use crate::search::text_rank;
 use crate::sync::{Kind, SyncTable, changed_rows};
 use crate::{Error, Profile, Url};
 
@@ -738,9 +739,8 @@ impl Bookmarks<'_> {
         self.model().tree.ids_for_url(url).iter().filter_map(|&id| self.get(id)).collect()
     }
 
-    /// Case-insensitive substring match on title and url, used by the omnibox. A linear
-    /// scan of about 10^4 nodes costs under a millisecond. Title prefix matches rank
-    /// first, then title substrings, then url substrings.
+    /// Case-insensitive substring match on title and url, used by the omnibox, ranked by
+    /// [`text_rank`]. A linear scan of about 10^4 nodes costs under a millisecond.
     pub fn search(&self, text: &str, limit: usize) -> Vec<BookmarkNode> {
         let needle = text.trim().to_lowercase();
         if needle.is_empty() || limit == 0 {
@@ -754,16 +754,7 @@ impl Bookmarks<'_> {
             .filter_map(|r| {
                 let title = r.title().map(|t| t.v.to_lowercase()).unwrap_or_default();
                 let url = r.url().map(|u| u.v.as_str().to_lowercase()).unwrap_or_default();
-                let rank = if title.starts_with(&needle) {
-                    0
-                } else if title.contains(&needle) {
-                    1
-                } else if url.contains(&needle) {
-                    2
-                } else {
-                    return None;
-                };
-                Some((rank, title, r.id))
+                Some((text_rank(&needle, &title, &url)?, title, r.id))
             })
             .collect();
         hits.sort();

@@ -240,6 +240,7 @@ commands! {
         NewTab = "new-tab", "New tab", [ctrl(T)];
         CloseTab = "close-tab", "Close tab", [ctrl(W), ctrl(F4)];
         ReopenClosedTab = "reopen-closed-tab", "Reopen closed tab", [ctrl_shift(T)];
+        SearchTabs = "search-tabs", "Search tabs", [ctrl_shift(A)];
         NextTab = "next-tab", "Next tab", [ctrl(Tab)];
         PreviousTab = "previous-tab", "Previous tab", [ctrl_shift(Tab)];
         SelectTab1 = "select-tab-1", "Go to tab 1", [ctrl(Digit1)];

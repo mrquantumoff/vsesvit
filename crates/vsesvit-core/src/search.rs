@@ -886,6 +886,20 @@ fn fill(url: &Url, typed: &str) -> String {
     format!("{scheme}{rest}")
 }
 
+/// Where lowercase `needle` is in a lowercase title and address, best first: 0 when the title
+/// starts with it, 1 when the title has it, 2 when the address has it, None when neither does.
+pub(crate) fn text_rank(needle: &str, title: &str, url: &str) -> Option<u8> {
+    if title.starts_with(needle) {
+        Some(0)
+    } else if title.contains(needle) {
+        Some(1)
+    } else if url.contains(needle) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
 /// A bookmark or history row in rank order; `prefix` is whether its url starts with the typed text.
 struct Candidate {
     prefix: bool,

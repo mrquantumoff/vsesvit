@@ -114,6 +114,9 @@ fn the_default_table() {
     assert_eq!(Command::DeveloperTools.defaults(), [c("Ctrl+Shift+I"), c("F12")]);
     assert_eq!(Command::JavaScriptConsole.id(), "javascript-console");
     assert_eq!(Command::JavaScriptConsole.defaults(), [c("Ctrl+Shift+J")]);
+    assert_eq!(Command::SearchTabs.id(), "search-tabs");
+    assert_eq!(Command::SearchTabs.defaults(), [c("Ctrl+Shift+A")]);
+    assert_eq!(Command::SearchTabs.section(), Section::TabsAndWindows);
     assert_eq!(
         [Command::Print, Command::ViewSource, Command::DeveloperTools, Command::JavaScriptConsole].map(Command::section),
         [Section::Page, Section::Page, Section::General, Section::General]

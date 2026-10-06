@@ -76,6 +76,7 @@ pub mod spellcheck;
 pub mod suggest;
 pub mod sync;
 pub mod tab_place;
+pub mod tab_search;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod trackers;
