@@ -77,6 +77,9 @@
 //! runtime.tab_load(tab_id, Load::Failed(&uri, NetError::of(&error)));
 //! runtime.tab_opened_by(new_tab_id, tab_id);
 //!
+//! // `chrome.cookies` works on `session`'s cookie manager; `TabHost::cookies_blocked` says
+//! // which sites the user blocked, for which extensions may set no cookie.
+//!
 //! // Toolbar actions. `activate_action` hands the popup WebView to put in a popover to its
 //! // callback, possibly later (the shell owns it; drop it to close, which closes its
 //! // ports), or fires action.onClicked when the action has no popup.
@@ -139,7 +142,9 @@
 //!   `onCreated/onRemoved/onFocusChanged/onBoundsChanged` over the shell's windows (see
 //!   [`windows`]; a page in a tab is in that tab's window, any other page in the last focused
 //!   one), `webNavigation.getFrame/getAllFrames` and its events with URL filters for every
-//!   frame of every tab (see [`web_navigation`]), `scripting.executeScript/insertCSS/removeCSS` and
+//!   frame of every tab (see [`web_navigation`]), `cookies.get/getAll/set/remove/getAllCookieStores`
+//!   with `onChanged` over the session's cookie store (see [`cookies`]; store `"0"`, and no
+//!   cookie set for a site the user blocked), `scripting.executeScript/insertCSS/removeCSS` and
 //!   `registerContentScripts/getRegisteredContentScripts/updateContentScripts/unregisterContentScripts`,
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
 //!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
@@ -193,7 +198,10 @@
 //! ids name frames to nothing else (no `frameId` targets a subframe); WebKit reports no
 //! subframe loads, so a subframe's `onBeforeNavigate` comes as its document arrives, one
 //! whose load fails reports nothing, and `onCreatedNavigationTarget` names the opener's top
-//! frame; web pages cannot
+//! frame; `cookies.onChanged` comes from reading the store again whenever WebKit says it
+//! changed, so a change undone before the reading is never reported, a cookie gone is never
+//! `evicted` and setting an expired one reports `explicit` rather than `expired_overwrite`;
+//! web pages cannot
 //! message an extension (`externally_connectable.matches`: WebKitGTK does not say which
 //! document posted a message, so the sender could not be told apart from a frame
 //! claiming its URL); `getBackgroundPage` cannot reach the background from an extension
