@@ -125,6 +125,17 @@ Ctrl+Shift+N, Chrome's key, opens a private window; so do New private window in 
 
 When the last private window closes, its running downloads are cancelled, its closed tabs and what core kept are forgotten, and the engine data goes. Downloads started in a private window are listed with the others until then.
 
+## Memory Saver
+
+Chrome's Memory Saver, on by default: a background tab left alone for the delay goes to sleep, and wakes when it is shown again. Settings > General > Memory has the switch and the choice of Moderate, Balanced or Maximum, which sleep tabs after 6, 4 or 2 hours, Chrome's delays. Both are local preferences (`performance.memory_saver`, `performance.memory_saver.mode`), as in Chrome: how much memory to free is a property of the device.
+
+The policy is `vsesvit-core`'s `memory_saver`. Each shell keeps an idle clock per tab and sweeps its tabs every minute; the sweep says which tabs sleep. What keeps a tab awake restarts its clock, as Chrome's discard eligibility does: being on screen (selected, in a split view or in picture-in-picture), being pinned, playing sound or being the media player's tab, capturing, a site allowed to notify, a page outside the web (a new tab, an extension's page, a file), and a `window.opener` link to another tab. Before a tab sleeps, the shell runs core's script that compares the page's form fields with what it loaded, and a page with unsent input stays awake.
+
+- **Linux.** A tab sleeps by ending its web process (`webkit_web_view_terminate_web_process`). WebKit keeps the back/forward list and the icon, and forgets the title, so the tab keeps that. Its icon shows faded in the tab list and on the tab bar. Selecting it reloads the page in a new web process at the same place in its history.
+- **Windows.** A tab sleeps with WebView2's own sleeping tabs (`TrySuspendAsync`), which keeps the page and its state and resumes it when it is shown or navigates; its icon shows faded in both tab lists.
+
+A sleeping tab keeps its address, title and history, so the session, tab search and the open tabs sync publishes list it as before.
+
 ## Page commands
 
 Print, Developer tools, the JavaScript console and View page source are rows in core's shortcut table, with Chrome's keys. Like every other shortcut they can be reassigned. View page source opens `view-source:<page>` in a new tab next to the page, for http, https and file pages.
