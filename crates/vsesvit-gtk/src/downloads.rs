@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::downloads::{
-    Download, DownloadId, State, is_dangerous, sanitize, unconfirmed_path, unique_destination,
+    Download, DownloadId, State, is_dangerous, sanitize, status_line, unconfirmed_path, unique_destination,
 };
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
@@ -511,7 +511,7 @@ pub(crate) fn warning(downloads: &Rc<Downloads>, download: &Download) -> gtk::Po
         .css_classes(["heading"])
         .build();
     let text = gtk::Label::builder()
-        .label(vsesvit_core::downloads::status_line(download, None, false))
+        .label(status_line(download, None, false))
         .xalign(0.0)
         .wrap(true)
         .build();
@@ -603,8 +603,6 @@ pub(crate) fn show_in_folder(window: &impl IsA<gtk::Window>, path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use vsesvit_core::downloads::status_line;
-
     use super::*;
     use crate::test_support::{
         Reply, STALLED_FILE_SENT, STALLED_FILE_SIZE, Server, browser, scratch_dir, wait_until,

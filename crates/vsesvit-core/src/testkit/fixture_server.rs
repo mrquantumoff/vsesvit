@@ -1,9 +1,9 @@
 //! A tiny HTTP/1.1 server for `tests/fixtures/site/`, bound to 127.0.0.1 on a random
-//! port, plus `/suggest?q=<terms>`, a search engine's suggestions for the terms, and
+//! port, plus `/suggest?q=<terms>`, a search engine's suggestions for the terms,
 //! `/set-cookie`, a page that sets a cookie in its response header, and `/stalled.bin`, a
-//! download that never finishes. It records
-//! the path of every request, so a test can prove that a request was made (`/allowed.png`)
-//! or was blocked before it left the engine (`/vsesvit-blocked/pixel.png`).
+//! download that never finishes. It records the path of every request, so a test can prove
+//! that a request was made (`/allowed.png`) or was blocked before it left the engine
+//! (`/vsesvit-blocked/pixel.png`).
 
 use std::borrow::Cow;
 use std::io::{self, Read, Write};

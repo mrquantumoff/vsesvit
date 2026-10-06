@@ -40,10 +40,7 @@ pub(super) async fn download_pause(
     .await;
     browser.pause_download(id);
     reaches(browser, id, State::Paused, p).await;
-    let paused = (
-        browser.downloads_indicator(),
-        browser.download_progress(id),
-    );
+    let paused = (browser.downloads_indicator(), browser.download_progress(id));
     browser.resume_download(id);
     reaches(browser, id, State::InProgress, p).await;
     let resumed = browser.downloads_indicator();
@@ -54,7 +51,9 @@ pub(super) async fn download_pause(
         paused.0, paused.1
     );
     let ok = paused.0 == Indicator::Idle
-        && paused.1.is_some_and(|(received, _)| received >= STALLED_SENT as u64)
+        && paused
+            .1
+            .is_some_and(|(received, _)| received >= STALLED_SENT as u64)
         && resumed == Indicator::Busy;
     ok.then_some(detail.clone()).ok_or(detail)
 }
@@ -70,7 +69,8 @@ pub(super) async fn download_safety(
     tab.navigate(script.as_str());
     let first = unconfirmed(browser, script, None, p).await;
     let waiting = unconfirmed_path(&first.path);
-    let held = std::fs::read_to_string(&waiting).map_err(|e| format!("{}: {e}", waiting.display()))?;
+    let held =
+        std::fs::read_to_string(&waiting).map_err(|e| format!("{}: {e}", waiting.display()))?;
     let held_at_name = first.path.exists();
     let warning = until(p, |p| {
         p.observe("waiting for the warning under the downloads button");
@@ -80,7 +80,8 @@ pub(super) async fn download_safety(
     let keep = xaml::find::<Button>(&warning, "WarningKeep").map_err(|e| format!("Keep: {e}"))?;
     invoke(&keep).map_err(|e| format!("Keep: {e}"))?;
     reaches(browser, first.id, State::Completed, p).await;
-    let kept = std::fs::read_to_string(&first.path).map_err(|e| format!("{}: {e}", first.path.display()))?;
+    let kept = std::fs::read_to_string(&first.path)
+        .map_err(|e| format!("{}: {e}", first.path.display()))?;
     let mark = std::fs::read_to_string(format!("{}:Zone.Identifier", first.path.display()))
         .map_err(|e| format!("the kept file's Zone.Identifier: {e}"))?;
 
@@ -144,7 +145,10 @@ async fn reaches(browser: &Browser, id: DownloadId, state: State, p: &Probe) {
             .into_iter()
             .find(|d| d.id == id)
             .map(|d| d.state);
-        p.observe(format!("download {} is {now:?}, waiting for {state:?}", id.0));
+        p.observe(format!(
+            "download {} is {now:?}, waiting for {state:?}",
+            id.0
+        ));
         (now == Some(state)).then_some(())
     })
     .await;

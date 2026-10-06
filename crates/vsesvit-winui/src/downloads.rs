@@ -133,7 +133,12 @@ impl Browser {
 
     pub fn downloads_indicator(&self) -> Indicator {
         let downloads = &self.downloads;
-        if downloads.live.borrow().values().any(|l| l.state == State::InProgress) {
+        if downloads
+            .live
+            .borrow()
+            .values()
+            .any(|l| l.state == State::InProgress)
+        {
             Indicator::Busy
         } else if downloads.started.get() {
             Indicator::Idle
@@ -446,8 +451,10 @@ impl Browser {
 
 /// The file name a row shows, or the whole path if it has none.
 pub(crate) fn file_name(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// Logs a download that could not be sent to its path or recorded, and cancels it: the engine
@@ -516,14 +523,62 @@ mod tests {
         use CoreWebView2DownloadInterruptReason as Reason;
         use CoreWebView2DownloadState as Engine;
         let cases = [
-            (Engine::InProgress, Reason::None, false, false, State::InProgress),
-            (Engine::Completed, Reason::None, false, false, State::Completed),
-            (Engine::Completed, Reason::None, false, true, State::Unconfirmed),
-            (Engine::Interrupted, Reason::UserPaused, true, false, State::Paused),
-            (Engine::Interrupted, Reason::UserCanceled, false, false, State::Cancelled),
-            (Engine::Interrupted, Reason::NetworkFailed, true, false, State::Interrupted),
-            (Engine::Interrupted, Reason::NetworkFailed, false, false, State::Failed),
-            (Engine::Interrupted, Reason::FileMalicious, false, true, State::Failed),
+            (
+                Engine::InProgress,
+                Reason::None,
+                false,
+                false,
+                State::InProgress,
+            ),
+            (
+                Engine::Completed,
+                Reason::None,
+                false,
+                false,
+                State::Completed,
+            ),
+            (
+                Engine::Completed,
+                Reason::None,
+                false,
+                true,
+                State::Unconfirmed,
+            ),
+            (
+                Engine::Interrupted,
+                Reason::UserPaused,
+                true,
+                false,
+                State::Paused,
+            ),
+            (
+                Engine::Interrupted,
+                Reason::UserCanceled,
+                false,
+                false,
+                State::Cancelled,
+            ),
+            (
+                Engine::Interrupted,
+                Reason::NetworkFailed,
+                true,
+                false,
+                State::Interrupted,
+            ),
+            (
+                Engine::Interrupted,
+                Reason::NetworkFailed,
+                false,
+                false,
+                State::Failed,
+            ),
+            (
+                Engine::Interrupted,
+                Reason::FileMalicious,
+                false,
+                true,
+                State::Failed,
+            ),
         ];
         for (engine, reason, can_resume, dangerous, state) in cases {
             assert_eq!(
