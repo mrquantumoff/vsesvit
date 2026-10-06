@@ -509,6 +509,66 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("extension_windows", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let view = tab.web_view();
+        let ask = async |want: &str| {
+            let request = format!("delete document.documentElement.dataset.vsesvitProbeWindows; document.documentElement.dataset.vsesvitWindows = '{want}'");
+            eval_js(view, &request).await?;
+            let answer = wait_js(&last, view, "String(document.documentElement.dataset.vsesvitProbeWindows)", |seen| seen != "undefined").await;
+            serde_json::from_str::<serde_json::Value>(&answer).map_err(|e| format!("asked to {want}, the probe answered {answer}: {e}"))
+        };
+        let browser_window = |id: u64| browser.windows().into_iter().find(|w| u64::from(w.id()) == id);
+        let main = u64::from(window.id());
+
+        let opened = ask("open").await?;
+        let new = opened["window"].as_u64().ok_or_else(|| format!("windows.create answered {opened}"))?;
+        let shown = wait_for(&last, || {
+            let tabs = browser_window(new).map(|w| w.tabs()).unwrap_or_default();
+            match tabs.as_slice() {
+                [tab] if tab.committed_uri().as_deref() == Some(index_url.as_str()) => Ok(tab.id()),
+                _ => Err(format!("window {new} holds {:?}", tabs.iter().map(|t| t.committed_uri()).collect::<Vec<_>>())),
+            }
+        })
+        .await;
+
+        let moved = ask("move").await?;
+        let last_index = wait_for(&last, || match (browser_window(new), window.tabs().iter().position(|t| t.id() == shown)) {
+            (None, Some(index)) => Ok(index),
+            (open, index) => Err(format!("after tabs.move ({moved}), window {new} is open: {}, the tab is at {index:?} of window {main}", open.is_some())),
+        })
+        .await;
+        if moved != serde_json::json!({ "tab": shown.0, "window": main, "index": last_index }) {
+            return Err(format!("tabs.move answered {moved}, the tab is at {last_index} of window {main}"));
+        }
+
+        let closed = ask("close").await?;
+        let other = closed["window"].as_u64().ok_or_else(|| format!("windows.create with the tab answered {closed}"))?;
+        wait_for(&last, || match (browser_window(other), browser.find_tab(shown)) {
+            (None, None) => Ok(()),
+            (open, tab) => Err(format!("after windows.remove ({closed}), window {other} is open: {}, the tab exists: {}", open.is_some(), tab.is_some())),
+        })
+        .await;
+        window.select_tab(&tab);
+        let mut windows: Vec<u32> = browser.windows().iter().map(|w| w.id()).collect();
+        windows.sort_unstable();
+        let expected = serde_json::json!([
+            ["windows.onCreated", new],
+            ["tabs.onDetached", shown.0, { "oldWindowId": new, "oldPosition": 0 }],
+            ["tabs.onAttached", shown.0, { "newWindowId": main, "newPosition": last_index }],
+            ["windows.onRemoved", new],
+            ["windows.onCreated", other],
+            ["tabs.onDetached", shown.0, { "oldWindowId": main, "oldPosition": last_index }],
+            ["tabs.onAttached", shown.0, { "newWindowId": other, "newPosition": 0 }],
+            ["windows.onRemoved", other],
+        ]);
+        if closed["windows"] != serde_json::json!(windows) || closed["events"] != expected {
+            return Err(format!("the probe answered {closed}; the browser's windows are {windows:?}, the events expected {expected}"));
+        }
+        Ok(format!("windows.create opened window {new} at the page; tabs.move took its tab {} to the end of window {main} and the empty window closed; windows.create with the tab and windows.remove closed it with window {other}; the probe heard {}", shown.0, closed["events"]))
+    })
+    .await;
+
     ctx.check("bookmark", CHECK_TIMEOUT, |last| async move {
         gio::prelude::ActionGroupExt::activate_action(window, "bookmark-page", None);
         wait_for(&last, || {

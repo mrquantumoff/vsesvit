@@ -85,6 +85,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// Windows the self-test asks for: "open" one at the page, "move" its tab back beside the
+// page, then "close" that tab in a window of its own, answering with the events heard.
+let probeTab = null;
+const windowEvents = [];
+for (const name of ["onCreated", "onRemoved"]) chrome.windows?.[name]?.addListener((w) => windowEvents.push(["windows." + name, w?.id ?? w]));
+for (const name of ["onDetached", "onAttached"]) chrome.tabs?.[name]?.addListener((tab, info) => windowEvents.push(["tabs." + name, tab, info]));
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "windows") return false;
+  (async () => {
+    if (message.want === "open") {
+      windowEvents.length = 0;
+      const w = await chrome.windows.create({ url: sender.url });
+      probeTab = w.tabs[0].id;
+      return { window: w.id, tabs: w.tabs.length };
+    }
+    if (message.want === "move") {
+      const moved = await chrome.tabs.move(probeTab, { windowId: sender.tab.windowId, index: -1 });
+      return { tab: moved.id, window: moved.windowId, index: moved.index };
+    }
+    const w = await chrome.windows.create({ tabId: probeTab });
+    await chrome.windows.remove(w.id);
+    return { window: w.id, windows: (await chrome.windows.getAll()).map((w) => w.id), events: windowEvents.splice(0) };
+  })().then(sendResponse, (e) => sendResponse({ error: String(e?.message ?? e) }));
+  return true;
+});
+
 if (chrome.notifications) {
   const notified = (event) => chrome.storage.local.set({ notification: { ...event, at: Date.now() } });
   chrome.notifications.onClicked.addListener((id) => notified({ event: "clicked", id }));
