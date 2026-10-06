@@ -3,7 +3,8 @@
 //! switches (at the next start), tracking protection, third-party cookies and HTTPS-only (from
 //! each page's next load), the home page (written when the dialog closes) and the sync server
 //! (written when its box loses focus). Secure DNS is only described: WebView2 takes no setting
-//! for it.
+//! for it. Spell checking has no row: WebView2 checks spelling itself and takes no setting for it
+//! either.
 
 use std::rc::Rc;
 

@@ -111,6 +111,13 @@ Print, Developer tools, the JavaScript console and View page source are rows in 
 - **Linux.** Print uses WebKit's print dialog, and Developer tools toggles WebKit's inspector. WebKitGTK has no view-source, so the shell serves the `view-source` scheme itself. It renders the page's main resource with core's `view_source::source_page`. That resource comes from a tab already showing the page, or else from a hidden view with scripts off. The scheme is registered as local, so web pages can neither open nor embed it.
 
 
+## Spell check
+
+Spell checking is on by default, as in Chrome, and underlines misspelled words in a page's text fields. The context menu on a misspelled word lists the engine's corrections and Add to Dictionary, which adds the word to the system's personal dictionary; Vsesvit keeps no dictionary of its own. Whether it is on (`spellcheck.enabled`) and its languages (`spellcheck.languages`) are synced settings.
+
+- **Linux.** WebKitGTK checks spelling through Enchant. Settings > General > Spell Check lists the Hunspell dictionaries installed where Enchant looks (`~/.config/enchant/hunspell`, `/usr/share/hunspell`, `/usr/share/myspell`), each with a switch and named as Chrome names languages. Until the user picks some, it checks the dictionaries for the system's languages (`LANGUAGE`, then `LC_ALL`, `LC_MESSAGES` or `LANG`): the locale's own, else its language's (`fr` for `fr_CA`), else the one for the region the language most likely means (`en_US` for `en`). A choice synced from another device keeps the languages this one has no dictionary for and checks the rest. Core's `spellcheck::Dictionaries` makes these choices. With no language left, checking is off, because WebKit given none checks the system's. WebKit's Learn Spelling item is renamed Add to Dictionary, Chrome's name for it.
+- **Windows.** WebView2 checks spelling itself and has no API to turn it off or choose its languages, so Settings has no row for it. The synced settings stay for the user's Linux devices.
+
 ## Search engines
 
 Settings > Search lists every engine with its name, shortcut and URL, as Chrome's "Manage search engines" does. You can add an engine, edit one, make one the default or remove one. Built-in engines can be removed too, but the default can't. The editor asks for a name, a shortcut and a URL with `%s` where the search terms go. Core checks the form (`SearchEngines::check`): every field is filled in, the shortcut is one word that no other engine has, and the URL is an http or https address. A URL typed without a scheme gets `https://`. Engines sync as part of Settings. The address bar reads the engine list each time it classifies what was typed, so a new shortcut works at once (`fx rust` searches the engine whose shortcut is `fx`).
