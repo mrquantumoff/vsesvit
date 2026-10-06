@@ -10,7 +10,8 @@
 //! [`protocol`] (the JS/Rust wire format), [`messaging`] (port channels), [`menus`] (context
 //! menu items), [`notifications`] (what an extension notification shows), [`patterns`],
 //! [`mime`], [`i18n`], the tab
-//! types in [`tabs`], the window types and events in [`windows`] and [`support`] (which of a manifest's requests this runtime lacks).
+//! types in [`tabs`], the window types and events in [`windows`], a tab's frames and their
+//! navigation events in [`web_navigation`] and [`support`] (which of a manifest's requests this runtime lacks).
 //! The WebKit glue ([`Runtime`]) is Linux only.
 //!
 //! # API for the GTK shell (Linux)
@@ -66,6 +67,14 @@
 //! runtime.tab_activated(tab_id);    // on tab switch
 //! runtime.tab_closed(tab_id, window_closing);   // also closes the ports of its documents
 //! runtime.windows_changed();        // a window opened, closed, took or lost focus, or resized
+//!
+//! // Every load of a tab's top frame, from WebKit's load events (an error page the shell
+//! // shows instead of a failed load is none), and the tab a page opened, before the shell
+//! // puts it in a window: `chrome.webNavigation`'s events come from these, and from a script
+//! // the runtime puts in every frame.
+//! runtime.tab_load(tab_id, Load::Started(&uri));    // also Redirected, Committed(uri, transition), Finished
+//! runtime.tab_load(tab_id, Load::Failed(&uri, NetError::of(&error)));
+//! runtime.tab_opened_by(new_tab_id, tab_id);
 //!
 //! // Toolbar actions. `activate_action` hands the popup WebView to put in a popover to its
 //! // callback, possibly later (the shell owns it; drop it to close, which closes its
@@ -128,7 +137,8 @@
 //!   `windows.get/getCurrent/getLastFocused/getAll/create/update/remove` with
 //!   `onCreated/onRemoved/onFocusChanged/onBoundsChanged` over the shell's windows (see
 //!   [`windows`]; a page in a tab is in that tab's window, any other page in the last focused
-//!   one), `scripting.executeScript/insertCSS/removeCSS` and
+//!   one), `webNavigation.getFrame/getAllFrames` and its events with URL filters for every
+//!   frame of every tab (see [`web_navigation`]), `scripting.executeScript/insertCSS/removeCSS` and
 //!   `registerContentScripts/getRegisteredContentScripts/updateContentScripts/unregisterContentScripts`,
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
 //!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
@@ -178,7 +188,11 @@
 //!   extension has host permissions for.
 //!
 //! Known limits: events reach a tab's top frame only (`tabs.sendMessage`, `tabs.connect`,
-//! `storage.onChanged` in subframes; a subframe's own ports work); web pages cannot
+//! `storage.onChanged` in subframes; a subframe's own ports work), and webNavigation's frame
+//! ids name frames to nothing else (no `frameId` targets a subframe); WebKit reports no
+//! subframe loads, so a subframe's `onBeforeNavigate` comes as its document arrives, one
+//! whose load fails reports nothing, and `onCreatedNavigationTarget` names the opener's top
+//! frame; web pages cannot
 //! message an extension (`externally_connectable.matches`: WebKitGTK does not say which
 //! document posted a message, so the sender could not be told apart from a frame
 //! claiming its URL); `getBackgroundPage` cannot reach the background from an extension
