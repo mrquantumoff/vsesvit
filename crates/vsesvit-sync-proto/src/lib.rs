@@ -21,7 +21,8 @@
 //! client id or secret: it talks to the sync server only.
 //!
 //! The server is the dumbest one `vsesvit_core::sync` is designed for: it keeps the last uploaded
-//! body per `(account, kind, id)` and never merges or reads it. Every stored write takes the
+//! body per `(account, kind, id)` and never merges or reads it. Vsesvit's bodies are ciphertext, and
+//! its ids opaque (`vsesvit-sync`'s `crypto.rs`). Every stored write takes the
 //! account's next sequence number, and a download lists records by it, so a client that stores
 //! [`Page::cursor`] sees each later write exactly once. Its own uploads come back too, and
 //! `apply` counts them unchanged.

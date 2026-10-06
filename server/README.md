@@ -4,7 +4,7 @@ Stores Vsesvit's bookmarks, history, open tabs, extensions, settings, search eng
 
 Browsers talk to this server only. It signs people in with its provider itself, as that provider's client, and gives each browser a session of its own, so Vsesvit needs no client id, secret or provider address: any server works with any copy of the browser.
 
-The server never reads or merges what it stores. It keeps the last upload of each record, and every browser merges on its own side (`crates/vsesvit-core/src/sync.rs`). The API is in `crates/vsesvit-sync-proto`.
+The server never reads or merges what it stores, and cannot: Vsesvit encrypts every record end to end with a sync passphrase the person sets, and stores it under an opaque id (see [End-to-end encryption](#end-to-end-encryption)). The server keeps the last upload of each record, and every browser merges on its own side (`crates/vsesvit-core/src/sync.rs`). The API is in `crates/vsesvit-sync-proto`.
 
 ## Run it
 
@@ -34,7 +34,7 @@ docker build -f server/Dockerfile -t vsesvit-sync-server .
 
 Put the server behind HTTPS. Vsesvit only talks plain HTTP to a server on `localhost`. `nginx.conf` is a reverse proxy for that: TLS, the request size limit, and a rate limit per address. Both commands above publish the server on `127.0.0.1` only, so the proxy is the one way in.
 
-Then, in Vsesvit, go to Settings, then Sync, enter the server's address and sign in.
+Then, in Vsesvit, go to Settings, then Sync, enter the server's address, sign in, and set a sync passphrase (or enter it, on every device after the first).
 
 ## Configuration
 
@@ -90,6 +90,21 @@ The provider sees one request per sign-in and no others: requests for records us
 `DELETE /v1/account` deletes an account's records and ends all its sessions, so every device signs in again and then uploads everything it holds. The account stays, so its sequence numbers keep counting.
 
 The database can be restored from a backup. After restoring one, raise `EPOCH` (by one is enough) and restart the server: every device then uploads everything it holds and downloads everything again, so what the backup lacks comes back from the devices that have it. Without that, the server notices a restore only when a device syncs while its cursor is still past every write the backup holds for its account. It answers that device `409`, before an upload stores anything, and then every device of the account syncs everything again. Once other devices' writes have passed those cursors, nothing shows the restore, and what the backup lacks stays lost.
+
+## End-to-end encryption
+
+Vsesvit seals each record with XChaCha20-Poly1305 before uploading it, under a key only the person's devices hold, and names it by an HMAC of its kind and id, so the server stores ciphertext under opaque ids (kind 201). One more record, kind 200 with id `keys`, holds those keys wrapped by a key derived from the sync passphrase with Argon2id. A device syncs nothing until the passphrase is set or entered on it. The design, and why, is in `docs/design/sync-encryption.md`; the server needs nothing for it.
+
+What the server, or someone with its database, can still do:
+
+- See metadata: how many records an account has, their rough sizes, when they change and from which session, how many times the passphrase changed, and who the account is at the provider.
+- Try to guess the passphrase offline from the key record. Argon2id makes each guess slow; a long passphrase is the defense.
+- Withhold, delete, reorder or replay records, or serve an old copy of the account. Devices keep the newer versions they hold and send them again, but a newly signed-in device can be shown stale or missing data.
+- Deny service: refuse requests, or show a device a key record that no passphrase it knows opens.
+- Keep copies. Changing the passphrase does not take back ciphertext the server copied earlier, which the old passphrase still opens, and with the old passphrase the record ids can be tested against guesses, such as whether a URL is in the history.
+- Read what was never encrypted: records uploaded before an account set its passphrase, and anything a Vsesvit without encryption uploads, stay readable under their real ids. Deleting the data on the server (`DELETE /v1/account`) removes them.
+
+It cannot read the contents or ids of sealed records, change one unnoticed, or move one to another slot.
 
 ## Develop
 

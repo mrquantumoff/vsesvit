@@ -66,7 +66,8 @@ pub enum Kind {
     Prefs = 7,
     SearchEngines = 8,
     // Retired: 9 = ReadingList (dropped before release); 10 = Passwords and 11 = Autofill (reserved
-    // by the first design, dropped when Vsesvit left passwords to password managers).
+    // by the first design, dropped when Vsesvit left passwords to password managers). Taken on the
+    // wire by `vsesvit-sync`: 200, its key record, and 201, every sealed record.
     SitePermissions = 12,
 }
 
@@ -148,7 +149,7 @@ impl DataType {
 }
 
 /// One record in transit. `body` is the kind's record type as UTF-8 JSON. The engine
-/// treats it as opaque bytes (it will encrypt them end-to-end). `id` is the record's
+/// treats it as opaque bytes, and encrypts them end to end. `id` is the record's
 /// server key: stable, unique within the kind, never reused with a different meaning.
 ///
 /// | kind             | id                                  | body type                               |
