@@ -41,9 +41,17 @@ fn cookie_controls(blocked: bool) -> String {
     json!({ "enableThirdPartyCookieRestriction": blocked }).to_string()
 }
 
-/// Each DevTools session of a tab (`""` for the page's own) and the identifier of the block
-/// script its documents run, if any.
-type Scripts = Rc<RefCell<HashMap<String, Option<String>>>>;
+/// Each DevTools session of a tab (`""` for the page's own) and its block script.
+type Scripts = Rc<RefCell<HashMap<String, Script>>>;
+
+/// The block script a session's documents run (`cookies::block_script`).
+#[derive(Default)]
+struct Script {
+    /// Counts replacements, so an add answered after a later one knows it is out of date.
+    generation: u64,
+    /// The engine's identifier of the script, once its add has answered; `None` for none.
+    identifier: Option<String>,
+}
 
 /// Cookie controls in one tab's DevTools sessions.
 #[derive(Default)]
@@ -62,14 +70,13 @@ impl Sessions {
         session: &str,
         script: Option<&str>,
     ) -> Result<()> {
-        self.scripts.borrow_mut().insert(session.to_owned(), None);
+        self.scripts
+            .borrow_mut()
+            .insert(session.to_owned(), Script::default());
         devtools_in(core, session, "Network.enable", NETWORK_ENABLE).await?;
         let controls = cookie_controls(self.blocked.get());
         devtools_in(core, session, "Network.setCookieControls", &controls).await?;
-        let added = script
-            .map(|source| add_script(core, session, source))
-            .transpose()?;
-        replace_script(&self.scripts, core, session, added).await
+        replace_script(&self.scripts, core, session, script)?.await
     }
 
     pub fn detached(&self, session: &str) {
@@ -80,7 +87,7 @@ impl Sessions {
     /// The calls go out before the engine's event returns, ahead of the page's requests.
     pub fn navigation_starting(&self, core: &CoreWebView2, blocked: bool) {
         if self.blocked.get() != blocked {
-            self.apply(core, blocked, None, false);
+            self.apply(core, blocked, None);
         }
     }
 
@@ -88,36 +95,29 @@ impl Sessions {
     /// cookies `blocked` or not, and `script` as the block script. The calls go out at once,
     /// ahead of a reload that follows.
     pub fn apply_all(&self, core: &CoreWebView2, blocked: bool, script: Option<&str>) {
-        self.apply(core, blocked, script, true);
+        self.apply(core, blocked, Some(script));
     }
 
-    /// Tells every session whether third-party cookies are `blocked`, and gives it `script` as
-    /// its block script when `replace_scripts`.
-    fn apply(
-        &self,
-        core: &CoreWebView2,
-        blocked: bool,
-        script: Option<&str>,
-        replace_scripts: bool,
-    ) {
+    /// Tells every session whether third-party cookies are `blocked`, and replaces its block
+    /// script with `script` when that is `Some`.
+    fn apply(&self, core: &CoreWebView2, blocked: bool, script: Option<Option<&str>>) {
         self.blocked.set(blocked);
         let controls = cookie_controls(blocked);
         let sessions: Vec<String> = self.scripts.borrow().keys().cloned().collect();
         for session in sessions {
             let calls =
                 call_in(core, &session, "Network.setCookieControls", &controls).and_then(|sent| {
-                    let added = script
-                        .filter(|_| replace_scripts)
-                        .map(|source| add_script(core, &session, source));
-                    Ok((sent, added.transpose()?))
+                    let replaced = script
+                        .map(|source| replace_script(&self.scripts, core, &session, source))
+                        .transpose()?;
+                    Ok((sent, replaced))
                 });
-            let (all, core) = (self.scripts.clone(), core.clone());
             exec::spawn(async move {
                 let applied = async {
-                    let (sent, added) = calls?;
+                    let (sent, replaced) = calls?;
                     sent.await?;
-                    if replace_scripts {
-                        replace_script(&all, &core, &session, added).await?;
+                    if let Some(replaced) = replaced {
+                        replaced.await?;
                     }
                     Ok::<_, windows_core::Error>(())
                 }
@@ -131,50 +131,78 @@ impl Sessions {
     }
 }
 
-fn add_script(
-    core: &CoreWebView2,
-    session: &str,
-    source: &str,
-) -> Result<IAsyncOperation<HSTRING>> {
-    let params = json!({ "source": source }).to_string();
-    call_in(
-        core,
-        session,
-        "Page.addScriptToEvaluateOnNewDocument",
-        &params,
-    )
-}
-
-/// Records the script the call `added` added (or none) as the block script of `session`, and
-/// removes the one it replaces: the new one is in before the old one goes, as the shortcut
-/// world's keys are.
-async fn replace_script(
+/// Replaces the block script of `session` with `source`, if any. The add and the old script's
+/// removal go out at once, in that order, so the next document runs exactly the new one; the
+/// returned future records the new script's identifier, or removes the script again if a later
+/// replacement or the session's end came first.
+fn replace_script(
     scripts: &Scripts,
     core: &CoreWebView2,
     session: &str,
-    added: Option<IAsyncOperation<HSTRING>>,
-) -> Result<()> {
-    let identifier = match added {
-        Some(call) => serde_json::from_str::<Value>(&call.await?.to_string_lossy())
-            .ok()
-            .and_then(|v| v["identifier"].as_str().map(str::to_owned)),
-        None => None,
+    source: Option<&str>,
+) -> Result<impl Future<Output = Result<()>> + 'static> {
+    let added = source
+        .map(|source| {
+            let params = json!({ "source": source }).to_string();
+            call_in(
+                core,
+                session,
+                "Page.addScriptToEvaluateOnNewDocument",
+                &params,
+            )
+        })
+        .transpose()?;
+    let (generation, old) = match scripts.borrow_mut().get_mut(session) {
+        Some(slot) => {
+            slot.generation += 1;
+            (slot.generation, slot.identifier.take())
+        }
+        None => (0, None),
     };
-    let replaced = scripts
-        .borrow_mut()
-        .get_mut(session)
-        .and_then(|slot| std::mem::replace(slot, identifier));
-    if let Some(old) = replaced {
-        let params = json!({ "identifier": old }).to_string();
-        devtools_in(
-            core,
-            session,
-            "Page.removeScriptToEvaluateOnNewDocument",
-            &params,
-        )
-        .await?;
-    }
-    Ok(())
+    let removed = old
+        .map(|old| remove_script(core, session, &old))
+        .transpose()?;
+    let (scripts, core, session) = (scripts.clone(), core.clone(), session.to_owned());
+    Ok(async move {
+        if let Some(removed) = removed {
+            removed.await?;
+        }
+        let Some(added) = added else {
+            return Ok(());
+        };
+        let Some(identifier) = serde_json::from_str::<Value>(&added.await?.to_string_lossy())
+            .ok()
+            .and_then(|v| v["identifier"].as_str().map(str::to_owned))
+        else {
+            return Ok(());
+        };
+        let stale = match scripts.borrow_mut().get_mut(&session) {
+            Some(slot) if slot.generation == generation => {
+                slot.identifier = Some(identifier.clone());
+                false
+            }
+            Some(_) => true,
+            None => false,
+        };
+        if stale {
+            remove_script(&core, &session, &identifier)?.await?;
+        }
+        Ok(())
+    })
+}
+
+fn remove_script(
+    core: &CoreWebView2,
+    session: &str,
+    identifier: &str,
+) -> Result<IAsyncOperation<HSTRING>> {
+    let params = json!({ "identifier": identifier }).to_string();
+    call_in(
+        core,
+        session,
+        "Page.removeScriptToEvaluateOnNewDocument",
+        &params,
+    )
 }
 
 /// Whether third-party cookies are blocked on a page of `top`.
