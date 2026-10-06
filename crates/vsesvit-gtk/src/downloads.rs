@@ -3,6 +3,10 @@
 //! each file goes (the download folder, never overwriting a file, or a save dialog when
 //! the user asked for one), shows a toast when a download starts and ends, and tells the
 //! Downloads view and the windows' header buttons what changed.
+//!
+//! A file of a type that can run code is written under its unconfirmed name and waits for the
+//! user to keep or discard it, in the Downloads view or in the warning the window shows under
+//! its downloads button. WebKitGTK cannot pause a download, so nothing offers to.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -12,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use vsesvit_core::downloads::{Download, DownloadId, State, sanitize, unique_destination};
+use vsesvit_core::downloads::{
+    Download, DownloadId, State, is_dangerous, sanitize, unconfirmed_path, unique_destination,
+};
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
 use webkit::prelude::*;
@@ -45,10 +51,16 @@ pub(crate) struct Subscription(u64);
 /// An engine download that has a destination and a row in core's list.
 struct Live {
     handle: webkit::Download,
+    /// Written under its unconfirmed name, to wait for the user once it is complete.
+    dangerous: bool,
     received: u64,
     total: Option<u64>,
     notified: Instant,
 }
+
+/// The destination of a download being placed, while the engine writes a file that can run
+/// code under its unconfirmed name.
+type Held = Rc<RefCell<Option<PathBuf>>>;
 
 /// Where one engine download is, from the controller's point of view.
 #[derive(Clone, Copy)]
@@ -173,7 +185,24 @@ impl Downloads {
         self.notify(Change::List);
     }
 
-    /// Takes every entry that is not in progress off the list; the files stay.
+    /// Moves a file that can run code, which the user chose to keep, to its own name.
+    pub(crate) fn keep(&self, download: &Download) {
+        match self.core.borrow_mut().downloads().keep(download) {
+            Ok(path) => log::info!("kept {}", path.display()),
+            Err(e) => log::warn!("downloads: keeping {}: {e}", download.path.display()),
+        }
+        self.notify(Change::List);
+    }
+
+    /// Deletes a file that can run code, which the user chose not to keep, and its entry.
+    pub(crate) fn discard(&self, download: &Download) {
+        if let Err(e) = self.core.borrow_mut().downloads().discard(download) {
+            log::warn!("downloads: discarding {}: {e}", download.path.display());
+        }
+        self.notify(Change::List);
+    }
+
+    /// Takes every entry nothing is left to happen to off the list; the files stay.
     pub(crate) fn clear(&self) {
         let cleared = self.core.borrow_mut().downloads().clear();
         if let Err(e) = cleared {
@@ -209,6 +238,7 @@ impl Downloads {
             self.private.borrow_mut().push(download.clone());
         }
         let phase = Rc::new(Cell::new(Phase::Deciding));
+        let held = Held::default();
         let weak = Rc::downgrade(self);
         let uri = download.request().and_then(|r| r.uri());
         let chosen = self.chosen.borrow_mut().take_if(|(wanted, _)| uri.as_deref() == Some(wanted.as_str())).map(|(_, path)| path);
@@ -216,16 +246,18 @@ impl Downloads {
         download.connect_decide_destination(glib::clone!(
             #[strong]
             weak,
+            #[strong]
+            held,
             move |download, suggested| {
                 match (weak.upgrade(), chosen.take()) {
                     (Some(downloads), Some(path)) => {
                         download.set_allow_overwrite(true);
-                        match path.to_str() {
+                        match written(download, &path, &held).to_str() {
                             Some(path) => download.set_destination(path),
                             None => refuse(downloads.window_for(download), download, NOT_UTF8),
                         }
                     }
-                    (Some(downloads), None) => downloads.decide_destination(download, suggested),
+                    (Some(downloads), None) => downloads.decide_destination(download, suggested, &held),
                     (None, _) => download.cancel(),
                 }
                 true
@@ -239,7 +271,7 @@ impl Downloads {
             move |download, destination| {
                 let Some(downloads) = weak.upgrade() else { return };
                 downloads.reserved.borrow_mut().remove(Path::new(destination));
-                if let Some(id) = downloads.started(download, Path::new(destination), browsing) {
+                if let Some(id) = downloads.started(download, Path::new(destination), held.take(), browsing) {
                     phase.set(Phase::Running(id));
                 }
             }
@@ -287,15 +319,17 @@ impl Downloads {
                 let Some(downloads) = weak.upgrade() else { return };
                 downloads.private.borrow_mut().retain(|d| d != download);
                 let Phase::Running(id) = phase.replace(Phase::Ended) else { return };
-                downloads.ended(id, State::Completed, download);
-                downloads.completed_toast(download);
+                match downloads.ended(id, State::Completed, download) {
+                    State::Unconfirmed => downloads.warn(id, download),
+                    _ => downloads.completed_toast(download),
+                }
             }
         ));
     }
 
     /// Straight into the download folder under a free name, or wherever the save dialog
     /// says. Cancelling the dialog cancels the download.
-    fn decide_destination(&self, download: &webkit::Download, suggested: &str) {
+    fn decide_destination(&self, download: &webkit::Download, suggested: &str, held: &Held) {
         let dir = self.directory();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             refuse(self.window_for(download), download, &format!("Cannot save to {}: {e}", dir.display()));
@@ -304,6 +338,7 @@ impl Downloads {
         let ask = self.core.borrow_mut().prefs().get(&keys::DOWNLOADS_ASK);
         if !ask {
             let destination = unique_destination(&dir, suggested, |p| p.exists() || self.reserved.borrow().contains(p));
+            let destination = written(download, &destination, held);
             match destination.to_str() {
                 Some(path) => {
                     download.set_destination(path);
@@ -321,8 +356,10 @@ impl Downloads {
             .build();
         let window = self.window_for(download);
         let download = download.clone();
+        let held = held.clone();
         glib::spawn_future_local(async move {
             let chosen = dialog.save_future(window.as_ref()).await.ok().and_then(|file| file.path());
+            let chosen = chosen.map(|path| written(&download, &path, &held));
             match chosen.as_deref().map(Path::to_str) {
                 Some(Some(path)) => {
                     // The dialog already asked before replacing a file.
@@ -336,11 +373,19 @@ impl Downloads {
     }
 
     /// The download has its file: it goes on the list, and every window shows the
-    /// downloads button from now on.
-    fn started(&self, download: &webkit::Download, destination: &Path, browsing: Browsing) -> Option<DownloadId> {
+    /// downloads button from now on. `held` is where a file that can run code goes once kept.
+    fn started(
+        &self,
+        download: &webkit::Download,
+        destination: &Path,
+        held: Option<PathBuf>,
+        browsing: Browsing,
+    ) -> Option<DownloadId> {
         let url = download.request().and_then(|r| r.uri()).map(String::from).unwrap_or_default();
         let total = total_of(download);
         let now = u64::try_from(now_ms()).unwrap_or(0);
+        let dangerous = held.is_some();
+        let destination = held.as_deref().unwrap_or(destination);
         let started = self.core.borrow_mut().downloads().start(&url, destination, total, now, browsing);
         let record = match started {
             Ok(record) => record,
@@ -351,7 +396,7 @@ impl Downloads {
         };
         self.live.borrow_mut().insert(
             record.id,
-            Live { handle: download.clone(), received: 0, total, notified: Instant::now() },
+            Live { handle: download.clone(), dangerous, received: 0, total, notified: Instant::now() },
         );
         self.started_this_session.set(true);
         for window in self.windows() {
@@ -384,15 +429,27 @@ impl Downloads {
         self.notify(Change::Progress(id));
     }
 
-    fn ended(&self, id: DownloadId, state: State, download: &webkit::Download) {
-        self.live.borrow_mut().remove(&id);
+    /// Stores how the download ended and returns it: a complete file that can run code waits
+    /// for the user, unconfirmed.
+    fn ended(&self, id: DownloadId, state: State, download: &webkit::Download) -> State {
+        let dangerous = self.live.borrow_mut().remove(&id).is_some_and(|live| live.dangerous);
+        let state = if state == State::Completed && dangerous { State::Unconfirmed } else { state };
         let received = download.received_data_length();
-        let total = total_of(download).or((state == State::Completed).then_some(received));
+        let total = total_of(download).or(matches!(state, State::Completed | State::Unconfirmed).then_some(received));
         let finished = self.core.borrow_mut().downloads().update(id, state, received, total);
         if let Err(e) = finished {
             log::warn!("downloads: {e}");
         }
         self.notify(Change::List);
+        state
+    }
+
+    /// Warns about an unconfirmed file in the window it came from.
+    fn warn(&self, id: DownloadId, download: &webkit::Download) {
+        let entry = self.list().into_iter().find(|d| d.id == id);
+        if let (Some(window), Some(entry)) = (self.window_for(download), entry) {
+            window.warn_about_download(&entry);
+        }
     }
 
     fn completed_toast(&self, download: &webkit::Download) {
@@ -431,6 +488,68 @@ impl Downloads {
 }
 
 const NOT_UTF8: &str = "Cannot save the download: its path is not valid UTF-8";
+
+/// Where the engine writes a download going to `path`: there, or beside it under its
+/// unconfirmed name if the file can run code, keeping `path` in `held` until it has started.
+fn written(download: &webkit::Download, path: &Path, held: &Held) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let mime = download.response().and_then(|r| r.mime_type());
+    if !is_dangerous(&name, mime.as_deref()) {
+        return path.to_owned();
+    }
+    held.replace(Some(path.to_owned()));
+    unconfirmed_path(path)
+}
+
+/// Chrome's warning about a downloaded file that can run code, with Keep and Discard, for the
+/// window to show under its downloads button.
+pub(crate) fn warning(downloads: &Rc<Downloads>, download: &Download) -> gtk::Popover {
+    let name = gtk::Label::builder()
+        .label(file_name(&download.path))
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .css_classes(["heading"])
+        .build();
+    let text = gtk::Label::builder()
+        .label(vsesvit_core::downloads::status_line(download, None, false))
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    let keep = gtk::Button::with_mnemonic("_Keep");
+    let discard = gtk::Button::builder().use_underline(true).label("_Discard").css_classes(["suggested-action"]).build();
+    let buttons = gtk::Box::builder().spacing(8).halign(gtk::Align::End).build();
+    buttons.append(&keep);
+    buttons.append(&discard);
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
+        .width_request(300)
+        .build();
+    content.append(&name);
+    content.append(&text);
+    content.append(&buttons);
+    let popover = gtk::Popover::builder().child(&content).position(gtk::PositionType::Bottom).build();
+    popover.add_css_class("download-warning");
+    popover.set_default_widget(Some(&discard));
+    for (button, kept) in [(keep, true), (discard, false)] {
+        let (downloads, download, popover) = (Rc::downgrade(downloads), download.clone(), popover.downgrade());
+        button.connect_clicked(move |_| {
+            if let Some(popover) = popover.upgrade() {
+                popover.popdown();
+            }
+            match downloads.upgrade() {
+                Some(downloads) if kept => downloads.keep(&download),
+                Some(downloads) => downloads.discard(&download),
+                None => {}
+            }
+        });
+    }
+    popover
+}
 
 /// Cancels a download the shell cannot place, saying why: WebKit reports the cancel as the
 /// user's, which shows nothing.
@@ -570,6 +689,59 @@ mod tests {
             downloads.cancel(entry.id);
         }
         wait_until("both to end", || in_folder().iter().all(|d| d.state == State::Cancelled));
+        window.destroy();
+        let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);
+        reset.expect("the folder preference is reset");
+    }
+
+    fn button_labelled(widget: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+        let own = widget.downcast_ref::<gtk::Button>().filter(|b| b.label().as_deref() == Some(label)).cloned();
+        own.or_else(|| std::iter::successors(widget.first_child(), |child| child.next_sibling()).find_map(|child| button_labelled(&child, label)))
+    }
+
+    #[gtk::test]
+    fn a_script_waits_under_its_unconfirmed_name_until_kept_or_discarded() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/run.sh" => Reply::Body("application/octet-stream", b"#!/bin/sh\n".to_vec()),
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let dir = scratch_dir("downloads-dangerous");
+        let set = browser.core().borrow_mut().prefs().set(&keys::DOWNLOADS_DIR, &Some(dir.clone()));
+        set.expect("the folder preference is written");
+        let downloads = browser.downloads().clone();
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        let tab = window.open_tab(None, None, Focus::Foreground);
+        let waiting = |seen: Option<DownloadId>| {
+            downloads
+                .list()
+                .into_iter()
+                .find(|d| d.path.parent() == Some(dir.as_path()) && d.state == State::Unconfirmed && Some(d.id) != seen)
+        };
+
+        tab.web_view().download_uri(&server.url("/run.sh"));
+        wait_until("the script to wait for the user", || waiting(None).is_some());
+        let first = waiting(None).expect("the entry");
+        assert_eq!(first.path, dir.join("run.sh"));
+        assert!(!first.path.exists(), "nothing at its name yet");
+        assert_eq!(std::fs::read(unconfirmed_path(&first.path)).expect("the unconfirmed file"), b"#!/bin/sh\n");
+        wait_until("the warning under the downloads button", || window.download_warning().is_some());
+        let warning = window.download_warning().expect("the warning");
+        button_labelled(warning.upcast_ref(), "_Keep").expect("Keep").emit_clicked();
+        let listed = downloads.list().into_iter().find(|d| d.id == first.id).map(|d| d.state);
+        assert_eq!(listed, Some(State::Completed));
+        assert_eq!(std::fs::read(&first.path).expect("the kept file"), b"#!/bin/sh\n");
+        assert!(!unconfirmed_path(&first.path).exists());
+
+        tab.web_view().download_uri(&server.url("/run.sh"));
+        wait_until("the second to wait for the user", || waiting(Some(first.id)).is_some());
+        let second = waiting(Some(first.id)).expect("the second entry");
+        assert_eq!(second.path, dir.join("run (1).sh"), "the kept file has the name");
+        downloads.discard(&second);
+        assert!(!unconfirmed_path(&second.path).exists() && !second.path.exists(), "discarded");
+        assert!(downloads.list().iter().all(|d| d.id != second.id), "off the list");
+
         window.destroy();
         let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);
         reset.expect("the folder preference is reset");

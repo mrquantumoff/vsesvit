@@ -1,6 +1,6 @@
 //! The Downloads window: core's list, newest first, following the downloads in progress
-//! while it is open. A finished file can be opened or shown in its folder; an entry can
-//! leave the list without its file.
+//! while it is open. A finished file can be opened or shown in its folder, and a file that can
+//! run code kept or discarded; an entry can leave the list without its file.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -156,7 +156,7 @@ impl State {
         let (content_type, _) = gio::content_type_guess(Some(&path), None);
         widget.add_prefix(&gtk::Image::from_gicon(&gio::content_type_get_symbolic_icon(&content_type)));
 
-        let in_progress = download.state == DownloadState::InProgress;
+        let in_progress = download.state.is_live();
         let bar = in_progress.then(|| {
             let bar = gtk::ProgressBar::builder().valign(gtk::Align::Center).width_request(120).build();
             show_progress(&bar, live);
@@ -170,6 +170,33 @@ impl State {
                     downloads.cancel(id);
                 }
             }));
+        }
+        if download.state == DownloadState::Unconfirmed {
+            let keep = gtk::Button::builder()
+                .label("_Keep")
+                .use_underline(true)
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .build();
+            let discard = gtk::Button::builder()
+                .label("_Discard")
+                .use_underline(true)
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .build();
+            for (button, kept) in [(&keep, true), (&discard, false)] {
+                let entry = download.clone();
+                button.connect_clicked(glib::clone!(
+                    #[strong(rename_to = state)]
+                    self,
+                    move |_| match state.downloads.upgrade() {
+                        Some(downloads) if kept => downloads.keep(&entry),
+                        Some(downloads) => downloads.discard(&entry),
+                        None => {}
+                    }
+                ));
+                widget.add_suffix(button);
+            }
         }
         if download.state == DownloadState::Completed && exists {
             let open = gtk::Button::builder()
@@ -188,13 +215,13 @@ impl State {
             widget.add_suffix(&open);
             widget.set_activatable_widget(Some(&open));
         }
-        if exists {
+        if exists && download.state != DownloadState::Unconfirmed {
             widget.add_suffix(&self.button("folder-open-symbolic", "Show in Folder", {
                 let path = path.clone();
                 move |state| state.with_window(|window| downloads::show_in_folder(window, &path))
             }));
         }
-        if !in_progress {
+        if download.state.is_final() {
             widget.add_suffix(&self.button("window-close-symbolic", "Remove from List", move |state| {
                 if let Some(downloads) = state.downloads.upgrade() {
                     downloads.remove(id);

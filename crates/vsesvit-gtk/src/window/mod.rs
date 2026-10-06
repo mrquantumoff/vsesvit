@@ -26,6 +26,7 @@ use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 use vsesvit_core::bookmarks::BookmarkNode;
 use vsesvit_core::clean_url;
+use vsesvit_core::downloads::Download;
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::extensions::manifest::ACTION_COMMANDS;
 use vsesvit_core::history::Transition;
@@ -251,6 +252,22 @@ impl BrowserWindow {
     #[cfg(feature = "self-test")]
     pub(crate) fn shows_downloads_button(&self) -> bool {
         self.ui().downloads_button.is_visible()
+    }
+
+    /// Shows Chrome's warning about `download`, an unconfirmed file, under the downloads button.
+    pub(crate) fn warn_about_download(&self, download: &Download) {
+        let popover = crate::downloads::warning(self.browser().downloads(), download);
+        crate::popup(&popover, &self.ui().downloads_button);
+        popover.popup();
+    }
+
+    /// The warning about a downloaded file while it is open.
+    #[cfg(any(test, feature = "self-test"))]
+    pub(crate) fn download_warning(&self) -> Option<gtk::Popover> {
+        let button = &self.ui().downloads_button;
+        std::iter::successors(button.first_child(), |child| child.next_sibling())
+            .filter_map(|child| child.downcast::<gtk::Popover>().ok())
+            .find(|popover| popover.is_visible())
     }
 
     pub(crate) fn set_update_banner(&self, banner: Option<&Banner>) {

@@ -16,7 +16,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use vsesvit_core::bookmarks::{BookmarkId, ImportItem, InsertAt};
 use vsesvit_core::cookies::{self, ThirdPartyCookies};
-use vsesvit_core::downloads::{State, status_line};
+use vsesvit_core::downloads::{DownloadId, State, status_line, unconfirmed_path};
 use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Verification};
 use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::memory_saver::{self, MemorySaverMode};
@@ -77,7 +77,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 55] = [
+const CHECKS: [&str; 56] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -112,6 +112,7 @@ const CHECKS: [&str; 55] = [
     "session",
     "download",
     "private_window",
+    "download_safety",
     "new_tab_page",
     "address_progress",
     "settings",
@@ -1918,6 +1919,60 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         }
         details.push(format!("closing the window ended the session: no engine session, closed tab, zoom or download row left; {} kept", row.path.display()));
         Ok(format!("{}; private-window.png", details.join("; ")))
+    ctx.check("download_safety", CHECK_TIMEOUT, |last| async move {
+        let dir = ctx.out_dir.join("downloads");
+        let url = ctx.server.url("/dangerous.sh");
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let waiting = |seen: Option<DownloadId>| {
+            let url = url.clone();
+            move || {
+                let entry = browser.downloads().list().into_iter().find(|d| d.url == url.as_str() && Some(d.id) != seen);
+                match entry {
+                    Some(entry) if entry.state == State::Unconfirmed => Ok(entry),
+                    Some(entry) => Err(format!("the list entry is {:?}", entry.state)),
+                    None => Err(format!("no list entry for {url}")),
+                }
+            }
+        };
+        let warning = || window.download_warning().ok_or_else(|| "no warning under the downloads button".to_owned());
+
+        tab.load(url.as_str());
+        let first = wait_for(&last, waiting(None)).await;
+        let held = std::fs::read_to_string(unconfirmed_path(&first.path)).map_err(|e| format!("the unconfirmed file: {e}"))?;
+        let at_name = first.path.exists();
+        let keep = button_labelled(wait_for(&last, warning).await.upcast_ref(), "_Keep").ok_or_else(|| "the warning has no Keep".to_owned())?;
+        keep.emit_clicked();
+        wait_for(&last, || match browser.downloads().list().into_iter().find(|d| d.id == first.id) {
+            Some(d) if d.state == State::Completed => Ok(()),
+            other => Err(format!("the kept entry is {:?}", other.map(|d| d.state))),
+        })
+        .await;
+        let kept = std::fs::read_to_string(&first.path).map_err(|e| format!("{}: {e}", first.path.display()))?;
+
+        tab.load(url.as_str());
+        let second = wait_for(&last, waiting(Some(first.id))).await;
+        let discard = button_labelled(wait_for(&last, warning).await.upcast_ref(), "_Discard").ok_or_else(|| "the warning has no Discard".to_owned())?;
+        discard.emit_clicked();
+        wait_for(&last, || match browser.downloads().list().iter().any(|d| d.id == second.id) {
+            true => Err("the discarded entry is still listed".to_owned()),
+            false => Ok(()),
+        })
+        .await;
+        let gone = !unconfirmed_path(&second.path).exists() && !second.path.exists();
+
+        let detail = format!(
+            "{} waited unconfirmed ({held:?}, at its name: {at_name}); Keep made it {kept:?}; the second, {}, was discarded (files gone: {gone})",
+            first.path.display(),
+            second.path.display()
+        );
+        let script = "#!/bin/sh\necho Vsesvit fixture\n";
+        let ok = first.path == dir.join("dangerous.sh")
+            && held == script
+            && !at_name
+            && kept == script
+            && second.path == dir.join("dangerous (1).sh")
+            && gone;
+        if ok { Ok(detail) } else { Err(detail) }
     })
     .await;
 
