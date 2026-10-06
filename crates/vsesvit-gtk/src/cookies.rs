@@ -233,11 +233,11 @@ pub(crate) fn site_info_section(browser: &Browser, tab: &Tab) -> Option<gtk::Lis
         tab,
         move |row| {
             let Some(&chosen) = choices.get(row.selected() as usize) else { return };
-            row.set_subtitle(cookies::site_status(blocked, chosen));
             if let Err(e) = cookies::set(&mut browser.core().borrow_mut(), &origin, chosen) {
                 log::warn!("cookies: {e}");
                 return;
             }
+            row.set_subtitle(cookies::site_status(blocked, chosen));
             browser.cookies().apply();
             // A reload would send the request again as the old rules shaped it.
             browser.cookies().when_applied(glib::clone!(

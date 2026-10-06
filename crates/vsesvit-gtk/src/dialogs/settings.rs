@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use vsesvit_core::cookies::ThirdPartyCookies;
+use vsesvit_core::cookies::{self, ThirdPartyCookies};
 use vsesvit_core::permissions::{Origin, Permission, Setting};
 use vsesvit_core::prefs::{
     DEFAULT_SYNC_SERVER, HomepageValue, Pref, Startup, TabsPosition, Theme, UpdateChannel, homepage_input, keys,
@@ -755,7 +755,11 @@ fn fill_site_permissions(content: &adw::Bin, browser: &Browser) {
 }
 
 fn site_setting_row(content: &adw::Bin, browser: &Browser, origin: &Origin, permission: Permission, setting: Setting) -> adw::ComboRow {
-    let choices = permission.settings();
+    // Allow means the same as no rule for cookies here (see `crate::cookies`).
+    let choices: Vec<Setting> = match permission {
+        Permission::Cookies => cookies::site_choices(Some(setting), false).into_iter().flatten().collect(),
+        _ => permission.settings().to_vec(),
+    };
     let names: Vec<&str> = choices.iter().map(|s| s.label()).collect();
     let row = adw::ComboRow::builder()
         .title(permission.label())
