@@ -337,13 +337,21 @@ no row references.
 
 ### Downloads (`downloads.rs`)
 
-`downloads` is LOCAL (schema v3): each row names a file on this device's disk, so there is nothing to sync. A row is
-`{url, path, started_ms, state, received, total}`, and `State` (`InProgress`, `Completed`, `Failed`, `Cancelled`, stored
-as text) is the only lifecycle field. The shell owns the engine download and its live byte counts. Core stores the start
-and the outcome, never per-tick progress, so a download costs two writes. No engine download outlives its process, so
-the shells call `interrupt_stale` once at startup, which turns every leftover `InProgress` row into `Failed`. Running it
-twice changes nothing. File naming (`sanitize`, `unique_destination`) and the row's status text (`status_line`,
-`describe_size`) are pure functions here, so both shells show the same names and the same words.
+`downloads` is LOCAL (schema v3, its state CHECK widened in v10): each row names a file on this device's disk, so
+there is nothing to sync. A row is `{url, path, started_ms, state, received, total}`, and `State` (`InProgress`,
+`Paused`, `Interrupted`, `Unconfirmed`, `Completed`, `Failed`, `Cancelled`, stored as text) is the only lifecycle
+field. The shell owns the engine download and its live byte counts. Core stores the start, each pause, resume or
+interruption, and the outcome (`update`), never per-tick progress. No engine download outlives its process, so the
+shells call `interrupt_stale` once at startup, which turns every leftover row the engine held (`State::is_live`) into
+`Failed`. Running it twice changes nothing. File naming (`sanitize`, `unique_destination`) and the row's status text
+(`status_line`, `describe_size`) are pure functions here, so both shells show the same names and the same words.
+
+A file that can run code (`is_dangerous`, by extension and MIME type, per system) is written at
+`unconfirmed_path(path)` and its row waits as `Unconfirmed`, which `interrupt_stale` and `clear` leave alone.
+`keep` renames the file to `path`, or to a numbered name if a file took `path` meanwhile, and stores the row as
+`Completed` with the path it got; `discard` deletes the file and the row. `unique_destination` counts a name as taken
+while its unconfirmed file exists, so a second download of the same file never claims it. `zone_identifier(url)` is the
+Mark of the Web text the Windows shell writes to a finished file's `Zone.Identifier` stream.
 
 Two prefs go with it. `downloads.directory` is `Scope::Local` and holds `Option<PathBuf>`: a folder is a path on one
 device, and `None` means the platform's Downloads folder, which only the shell can resolve. `downloads.ask` is

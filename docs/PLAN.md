@@ -169,6 +169,15 @@ Export bookmarks writes every bookmark to a bookmarks HTML file, the Netscape fo
 - **Linux.** The Bookmarks window's main menu holds Import Bookmarks… and Export Bookmarks…, like the menu in Chrome's bookmark manager.
 - **Windows.** The Bookmarks dialog has an Export bookmarks… button under Import.
 
+## Downloads
+
+Core keeps the downloads list (`vsesvit_core::downloads`, local to the device) and the states both shells show: in progress, paused, interrupted (a network or server error the engine can resume from), unconfirmed, completed, failed and cancelled. A download the engine still held when the browser exited reads as failed at the next start.
+
+A file of a type that runs code when opened is held back, as in Chrome. `downloads::is_dangerous` decides by extension and MIME type from a table modelled on Chrome's dangerous download types, one set for Windows (`.exe`, `.msi`, `.bat`, `.ps1`, `.lnk`, ...) and one for Linux (`.sh`, `.deb`, `.rpm`, `.desktop`, `.AppImage`, ...), with `.jar` on both. The shell has the engine write such a file beside its destination under its unconfirmed name (`setup.exe.unconfirmed`), which no program opens, and when it is complete the entry waits as unconfirmed. The window it came from shows Chrome's warning under the downloads button, with Keep and Discard, and the Downloads list offers both too. Keep moves the file to its name (numbered if a file took that name meanwhile) and Discard deletes it and its entry. An unconfirmed file still waits after a restart.
+
+- **Windows.** The Downloads dialog pauses and resumes a download (`CoreWebView2DownloadOperation.Pause` and `Resume`), and resumes one an error interrupted when WebView2 says it can. Every finished file gets the Mark of the Web, a `Zone.Identifier` stream naming the Internet zone and the source address as Chrome writes it, unless WebView2 already wrote one; a kept file takes it along, so SmartScreen checks the file when it is opened. WebView2's own SmartScreen check of downloads stays on.
+- **Linux.** WebKitGTK has no way to pause a download, so nothing offers to, and a failed download cannot be resumed.
+
 ## Extensions in detail
 
 Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (a bare slug is not accepted, because it cannot be told apart from a relative path), local `.crx`/`.xpi` files, and unpacked developer directories. Each install records how it was verified.
