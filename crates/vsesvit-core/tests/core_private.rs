@@ -203,7 +203,7 @@ fn private_downloads_are_listed_with_the_others_until_the_session_ends() {
 }
 
 #[test]
-fn a_private_file_waiting_to_be_kept_is_kept_or_discarded_in_its_session() {
+fn a_private_file_waiting_to_be_kept_is_kept_or_discarded_in_the_session_and_deleted_when_it_ends() {
     let (mut p, dir) = open();
     let wait = |p: &mut Profile, name: &str| {
         let path = dir.0.join(name);
@@ -214,6 +214,7 @@ fn a_private_file_waiting_to_be_kept_is_kept_or_discarded_in_its_session() {
     };
     let (kept, kept_path) = wait(&mut p, "kept.sh");
     let (discarded, discarded_path) = wait(&mut p, "discarded.sh");
+    let (left, left_path) = wait(&mut p, "left.sh");
 
     assert_eq!(p.downloads().keep(kept).unwrap(), Some(kept_path.clone()));
     p.downloads().discard(discarded).unwrap();
@@ -224,4 +225,9 @@ fn a_private_file_waiting_to_be_kept_is_kept_or_discarded_in_its_session() {
     assert_eq!(std::fs::read_to_string(&kept_path).unwrap(), "held");
     assert!(!unconfirmed_path(&discarded_path).exists());
     assert_eq!(p.downloads().keep(kept).unwrap(), None, "kept already");
+
+    p.end_private_session();
+    assert!(!unconfirmed_path(&left_path).exists() && !left_path.exists(), "nothing can keep it any more");
+    assert!(kept_path.is_file(), "a kept file stays");
+    assert_eq!(p.downloads().keep(left).unwrap(), None);
 }

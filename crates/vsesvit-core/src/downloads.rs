@@ -12,7 +12,8 @@
 //! LOCAL: files on this device's disk, so never synced.
 //!
 //! A download started in a private window has its row in the private session instead
-//! ([`crate::private`]): listed with the others until the session ends. Its file stays on disk.
+//! ([`crate::private`]): listed with the others until the session ends. Its file stays on disk,
+//! unless it still waits to be kept: nothing could keep it once the row is gone.
 
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
@@ -151,8 +152,15 @@ pub(crate) struct PrivateDownloads {
 }
 
 impl PrivateDownloads {
+    /// Forgets the rows and deletes the files still waiting to be kept, which nothing could
+    /// keep or discard afterwards.
     pub(crate) fn forget(&mut self) {
-        self.rows.clear();
+        for d in self.rows.drain(..).filter(|d| d.state == State::Unconfirmed) {
+            match std::fs::remove_file(unconfirmed_path(&d.path)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => log::warn!("private download {}: {e}", d.path.display()),
+                _ => {}
+            }
+        }
     }
 }
 
