@@ -91,7 +91,16 @@
 //!     with Chrome's errors; fragment and History API navigations, a subframe's too, and a
 //!     window the page opens fire their events; a failed load reports its error; an extension
 //!     without the permission has no `chrome.webNavigation`;
-//! 16. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//! 16. cookies (`tests/fixtures/extensions/cookies/`, the `cookies` permission and host
+//!     permissions for the fixture server's `127.0.0.1`, `open.test` and `blocked.test`, a
+//!     site the host says the user blocked): `set` stores a cookie with Chrome's defaults that
+//!     a page then sends, `get`, `getAll` with its filters, `remove` and `getAllCookieStores`
+//!     answer as Chrome does; a host without permission, a malformed URL or cookie, the
+//!     private store and the blocked site are refused with Chrome's errors; `onChanged` reports each
+//!     change, an overwrite as a removal and an addition, and only for hosts the extension
+//!     has permission for, a page's own cookies included; an extension without the
+//!     permission has no `chrome.cookies`;
+//! 17. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -146,6 +155,7 @@ mod linux {
     const SCRIPTS_ID: &str = "scripts@vsesvit.test";
     const WINDOWS_ID: &str = "windows@vsesvit.test";
     const NAVIGATION_ID: &str = "navigation@vsesvit.test";
+    const COOKIES_ID: &str = "cookies@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -209,6 +219,8 @@ mod linux {
         write_xpi(&windows_xpi, &fixture_files("windows"));
         let navigation_xpi = out_dir.join("navigation.xpi");
         write_xpi(&navigation_xpi, &fixture_files("navigation"));
+        let cookies_xpi = out_dir.join("cookies.xpi");
+        write_xpi(&cookies_xpi, &fixture_files("cookies"));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -232,7 +244,9 @@ mod linux {
         assert_eq!(windows.id.as_str(), WINDOWS_ID);
         let navigation = install(&profile, &navigation_xpi);
         assert_eq!(navigation.id.as_str(), NAVIGATION_ID);
-        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr, &scripts, &windows, &navigation] {
+        let cookies = install(&profile, &cookies_xpi);
+        assert_eq!(cookies.id.as_str(), COOKIES_ID);
+        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr, &scripts, &windows, &navigation, &cookies] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -264,6 +278,7 @@ mod linux {
             scripts,
             windows_id: windows.id.clone(),
             navigation_id: navigation.id.clone(),
+            cookies_id: cookies.id.clone(),
             out_dir: out_dir.clone(),
             window: window.clone(),
             results: RefCell::new(Vec::new()),
@@ -313,6 +328,7 @@ mod linux {
         scripts: InstalledExtension,
         windows_id: ExtensionId,
         navigation_id: ExtensionId,
+        cookies_id: ExtensionId,
         out_dir: PathBuf,
         window: gtk::Window,
         results: RefCell<Vec<(&'static str, bool)>>,
@@ -391,7 +407,10 @@ mod linux {
             // 13. webNavigation
             self.web_navigation().await;
 
-            // 14. lifecycle events
+            // 14. cookies
+            self.cookies().await;
+
+            // 15. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -1742,6 +1761,152 @@ mod linux {
             self.navigation_events(&popup, |_| true).await;
         }
 
+        /// The cookies fixture's onChanged events once at least `count` have come, and any that
+        /// follow within 300 ms, each as `[removed, cause, name, value, domain, storeId]`.
+        async fn cookie_events(&self, popup: &webkit::WebView, count: usize) -> Vec<Value> {
+            let take = async || self.eval_async(popup, r#"return chrome.runtime.sendMessage("events");"#).await.and_then(|t| t.as_array().cloned()).unwrap_or_default();
+            let mut events = Vec::new();
+            let deadline = Instant::now() + TIMEOUT;
+            while events.len() < count && Instant::now() < deadline {
+                glib::timeout_future(Duration::from_millis(100)).await;
+                events.extend(take().await);
+            }
+            glib::timeout_future(Duration::from_millis(300)).await;
+            events.extend(take().await);
+            events
+        }
+
+        async fn cookies(&self) {
+            let Some(popup) = self.popup(&self.cookies_id, self.tab).await else {
+                self.note("cookies_set_get", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Cookies"), TIMEOUT).await;
+            let base = self.url("/");
+            let other = format!("http://localhost:{}/", self.server.port());
+            let prelude = format!("const url = {}; const other = {};\n", Value::String(base.clone()), Value::String(other.clone()));
+            let call = async |script: &str| self.eval_async(&popup, &format!("{prelude}{script}")).await.unwrap_or(Value::Null);
+            let host = "127.0.0.1";
+
+            let set = call(
+                r#"const expiry = Math.floor(Date.now() / 1000) + 3600;
+                const a = await chrome.cookies.set({ url, name: "a", value: "1" });
+                const b = await chrome.cookies.set({ url: url + "dir/page.html", name: "b", value: "2", expirationDate: expiry, httpOnly: true, sameSite: "strict" });
+                const c = await chrome.cookies.set({ url, name: "c", value: "3", domain: "127.0.0.1", path: "/dir" });
+                return {
+                    a, b: [b.path, b.expirationDate === expiry, b.session, b.httpOnly, b.sameSite, b.hostOnly], c: [c.domain, c.hostOnly, c.path],
+                    get: await chrome.cookies.get({ url, name: "a" }), missing: await chrome.cookies.get({ url, name: "zzz" }),
+                    deeper: (await chrome.cookies.get({ url: url + "dir/x", name: "c" })).path,
+                };"#,
+            )
+            .await;
+            let a = serde_json::json!({ "name": "a", "value": "1", "domain": host, "hostOnly": true, "path": "/", "secure": false, "httpOnly": false, "sameSite": "lax", "session": true, "storeId": "0" });
+            let expected = serde_json::json!({ "a": a, "b": ["/dir", true, false, true, "strict", true], "c": [host, true, "/dir"], "get": a, "missing": null, "deeper": "/dir" });
+            self.note("cookies_set_get", set == expected, format!("{set}"));
+
+            let tab = self.host.open(&self.url("/dir/page.html"), false).expect("cookie tab");
+            let view = self.host.web_view(tab).expect("cookie tab view");
+            let sent = self.wait_for_js(&view, "document.readyState === 'complete' ? document.cookie : ''", None, |c| c.contains("a=1")).await.unwrap_or_default();
+            self.host.remove_tab(tab);
+            self.note("cookies_reach_the_page", sent.contains("a=1") && sent.contains("c=3") && !sent.contains("b=2"), format!("document.cookie at /dir/page.html = {sent:?} (b is httpOnly)"));
+
+            let all = call(
+                r#"const names = (list) => list.map((c) => c.name).filter((n) => "abc".includes(n)).sort();
+                return {
+                    all: names(await chrome.cookies.getAll({})), named: names(await chrome.cookies.getAll({ name: "b" })),
+                    byUrl: names(await chrome.cookies.getAll({ url })), byPath: names(await chrome.cookies.getAll({ path: "/dir" })),
+                    session: names(await chrome.cookies.getAll({ session: true })), domain: names(await chrome.cookies.getAll({ domain: "localhost" })),
+                    partitioned: names(await chrome.cookies.getAll({ partitionKey: { topLevelSite: "https://x.test" } })),
+                    stores: await chrome.cookies.getAllCookieStores(),
+                };"#,
+            )
+            .await;
+            let tabs: Vec<u32> = self.host.tabs().iter().map(|t| t.id.0).collect();
+            let expected = serde_json::json!({
+                "all": ["a", "b", "c"], "named": ["b"], "byUrl": ["a"], "byPath": ["b", "c"], "session": ["a", "c"], "domain": [], "partitioned": [],
+                "stores": [{ "id": "0", "tabIds": tabs }],
+            });
+            self.note("cookies_get_all", all == expected, format!("{all}"));
+
+            let refused = call(
+                r#"const refused = [];
+                for (const attempt of [
+                    () => chrome.cookies.set({ url: other, name: "x", value: "1" }),
+                    () => chrome.cookies.get({ url: other, name: "x" }),
+                    () => chrome.cookies.get({ url: "nope", name: "a" }),
+                    () => chrome.cookies.get({ url, name: "a", storeId: "1" }),
+                    () => chrome.cookies.getAll({ storeId: "7" }),
+                    () => chrome.cookies.set({ url, name: "a;b" }),
+                    () => chrome.cookies.set({ url, name: "s", secure: true }),
+                    () => chrome.cookies.getAll({ partitionKey: { hasCrossSiteAncestor: true } }),
+                ]) refused.push(await attempt().then(() => null, (e) => e.message));
+                return refused;"#,
+            )
+            .await;
+            let expected = serde_json::json!([
+                format!("No host permissions for cookies at url: \"{other}\"."),
+                format!("No host permissions for cookies at url: \"{other}\"."),
+                "Invalid url: \"nope\".",
+                "Invalid cookie store id: \"1\".",
+                "Invalid cookie store id: \"7\".",
+                "Failed to parse or set cookie named \"a;b\".",
+                "Failed to parse or set cookie named \"s\".",
+                "CookiePartitionKey.topLevelSite unexpectedly not present.",
+            ]);
+            self.note("cookies_refused", refused == expected, format!("{refused}"));
+
+            let mut events = self.cookie_events(&popup, 3).await;
+            events.sort_by_key(|e| e[2].as_str().map(str::to_owned));
+            let sets_heard = serde_json::json!(events) == serde_json::json!([[false, "explicit", "a", "1", host, "0"], [false, "explicit", "b", "2", host, "0"], [false, "explicit", "c", "3", host, "0"]]);
+            call(r#"await chrome.cookies.set({ url, name: "a", value: "9" }); return 0;"#).await;
+            let overwrite = self.cookie_events(&popup, 2).await;
+            let removed = call(
+                r#"return [
+                    await chrome.cookies.remove({ url, name: "a" }), await chrome.cookies.get({ url, name: "a" }),
+                    await chrome.cookies.set({ url, name: "c", path: "/dir", domain: "127.0.0.1", expirationDate: 1 }), await chrome.cookies.get({ url: url + "dir/", name: "c" }),
+                ];"#,
+            )
+            .await;
+            let removals = self.cookie_events(&popup, 2).await;
+            let observed = serde_json::json!({ "overwrite": overwrite, "remove": removed, "removals": removals });
+            let expected = serde_json::json!({
+                "overwrite": [[true, "overwrite", "a", "1", host, "0"], [false, "explicit", "a", "9", host, "0"]],
+                "remove": [{ "name": "a", "url": base, "storeId": "0" }, null, null, null],
+                "removals": [[true, "explicit", "a", "9", host, "0"], [true, "explicit", "c", "3", host, "0"]],
+            });
+            self.note("cookies_on_changed", sets_heard && observed == expected, format!("after the sets {events:?}; then {observed}"));
+
+            // A page's own cookie, on a host the extension has permission for and on one it has not.
+            for page in [self.url("/page2.html"), format!("{other}page2.html")] {
+                let tab = self.host.open(&page, false).expect("page tab");
+                let view = self.host.web_view(tab).expect("page tab view");
+                self.wait_for_js(&view, &format!("location.href === {} && document.readyState", Value::String(page.clone())), None, |s| s == "complete").await;
+                self.eval(&view, "document.cookie = 'p=4; path=/'; 0", None).await;
+                self.host.remove_tab(tab);
+            }
+            let heard = self.cookie_events(&popup, 1).await;
+            self.note("cookies_page_changes", serde_json::json!(heard) == serde_json::json!([[false, "explicit", "p", "4", host, "0"]]), format!("{heard:?}"));
+
+            let blocked = call(
+                r#"const attempt = (at, extra) => chrome.cookies.set({ url: at, name: "t", value: "1", ...extra }).then((c) => c.domain, (e) => e.message);
+                const results = [await attempt("http://blocked.test/"), await attempt("http://www.blocked.test/", { domain: "blocked.test" }), await attempt("http://open.test/")];
+                await chrome.cookies.remove({ url: "http://open.test/", name: "t" });
+                for (const name of ["b", "p"]) await chrome.cookies.remove({ url: url + "dir/", name });
+                return results;"#,
+            )
+            .await;
+            let expected = serde_json::json!(["Failed to parse or set cookie named \"t\".", "Failed to parse or set cookie named \"t\".", "open.test"]);
+            self.note("cookies_blocked_site", blocked == expected, format!("blocked.test, a domain cookie for it and open.test: {blocked}"));
+            self.cookie_events(&popup, 4).await;
+
+            let Some(other) = self.popup(&self.windows_id, self.tab).await else { return };
+            let _other_window = self.park(&other);
+            wait_until(|| other.title().as_deref() == Some("Vsesvit Windows"), TIMEOUT).await;
+            let api = self.eval_async(&other, "return typeof chrome.cookies;").await;
+            self.note("cookies_need_permission", api == Some(serde_json::json!("undefined")), format!("typeof chrome.cookies without the permission = {api:?}"));
+        }
+
         async fn lifecycle(&self) {
             let id = self.twin.borrow().id.clone();
             let lives = wait_for_value(|| {
@@ -2233,6 +2398,11 @@ mod linux {
             }
             self.runtime().windows_changed();
             true
+        }
+
+        fn cookies_blocked(&self, domain: &str) -> bool {
+            let host = domain.trim_start_matches('.');
+            host == "blocked.test" || host.ends_with(".blocked.test")
         }
 
         fn remove_window(&self, window: WindowId) -> bool {

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Vsesvit Cookies",
+  "version": "1.0.0",
+  "description": "Test extension for the cookies API, its events and its host permissions.",
+  "browser_specific_settings": { "gecko": { "id": "cookies@vsesvit.test" } },
+  "permissions": ["cookies"],
+  "host_permissions": ["http://127.0.0.1/*", "http://*.blocked.test/*", "http://open.test/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Vsesvit Cookies", "default_popup": "popup.html" }
+}
