@@ -832,7 +832,8 @@ mod linux {
 
             // runtime.reload() from a page restarts the whole extension: a new background
             // life (no lifecycle event, as for a packed extension in Chrome), its alarms
-            // gone, and the page reloaded with a working API.
+            // gone, and the page reloaded with a working API. The page counts its alarms
+            // and answers before it reloads, since a reload can tear it down mid-call.
             let Some(options_url) = self.host.tabs().into_iter().map(|t| t.url).find(|u| u.ends_with("/options.html")) else {
                 self.note("runtime_reload", false, "no options tab to reload from");
                 return;
@@ -841,7 +842,7 @@ mod linux {
             let view = self.host.web_view(page).expect("options tab view");
             self.wait_for_js(&view, "JSON.stringify(window.__twinOptions || null)", None, |v| v.contains("\"done\":true")).await;
             let before = self.twin_lives().len();
-            let armed = self.eval_async(&view, "await chrome.alarms.create('before-reload', { delayInMinutes: 5 }); window.__beforeReload = true; chrome.runtime.reload(); return (await chrome.alarms.getAll()).length;").await;
+            let armed = self.eval_async(&view, "await chrome.alarms.create('before-reload', { delayInMinutes: 5 }); const armed = (await chrome.alarms.getAll()).length; window.__beforeReload = true; setTimeout(() => chrome.runtime.reload()); return armed;").await;
             let lives = wait_for_value(|| {
                 let lives = self.twin_lives();
                 (lives.len() > before).then_some(lives)
