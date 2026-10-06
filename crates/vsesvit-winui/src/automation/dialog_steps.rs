@@ -209,7 +209,7 @@ pub(super) async fn settings(
     saver.SetIsOn(true)?;
     let on = (stored(), mode_enabled());
     steps.push(json!({
-        "name": "14l-settings-memory-saver",
+        "name": "14n-settings-memory-saver",
         "defaults": defaults,
         "mode": format!("{shown:?}"),
         "off": off,
