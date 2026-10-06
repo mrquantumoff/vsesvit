@@ -2,6 +2,10 @@
 //! per network session, so Settings' third-party cookies choice blocks them on every site or
 //! none, and a site's Allow cannot lift it: site info offers Allow only when sync brought it.
 //!
+//! A private session's engine session gets the accept policy Settings' choice gives private
+//! windows. A site's rule is not offered there: core keeps a private window's site choices in
+//! memory, but this rule would have to go into the blocker compiled on disk.
+//!
 //! A site set to Block gets a content-blocker rule that keeps requests to it from sending or
 //! storing cookies, attached to every tab's `UserContentManager` beside tracking protection's,
 //! and core's script that hides `document.cookie` from its documents. The data of sites set to
@@ -34,6 +38,8 @@ pub(crate) struct Cookies(Rc<Inner>);
 struct Inner {
     core: Core,
     session: webkit::NetworkSession,
+    /// The private session's engine session, while one lasts.
+    private_session: RefCell<Option<webkit::NetworkSession>>,
     blocker: Blocker,
     script: RefCell<Option<webkit::UserScript>>,
     /// The deletion [`Cookies::clear_at_start`] began is still running.
@@ -41,9 +47,8 @@ struct Inner {
     waiters: RefCell<Vec<Box<dyn FnOnce()>>>,
 }
 
-/// The accept policy for a network session of `browsing` windows. Private windows' ephemeral
-/// session passes [`Browsing::Private`].
-pub(crate) fn accept_policy(profile: &mut Profile, browsing: Browsing) -> webkit::CookieAcceptPolicy {
+/// The accept policy for a network session of `browsing` windows.
+fn accept_policy(profile: &mut Profile, browsing: Browsing) -> webkit::CookieAcceptPolicy {
     if cookies::third_party_blocked(profile, browsing, None) {
         webkit::CookieAcceptPolicy::NoThirdParty
     } else {
@@ -58,6 +63,7 @@ impl Cookies {
         Cookies(Rc::new(Inner {
             core,
             session: session.clone(),
+            private_session: RefCell::new(None),
             blocker: Blocker::new(&dir, "vsesvit-cookie-rules"),
             script: RefCell::new(None),
             clearing: Cell::new(false),
@@ -73,17 +79,30 @@ impl Cookies {
         }
     }
 
-    /// Brings the session's accept policy and every tab's rules in line with the profile, and
+    /// The private session's engine session was made, or (`None`) ended: its accept policy
+    /// follows Settings from now on.
+    pub(crate) fn set_private_session(&self, session: Option<&webkit::NetworkSession>) {
+        self.0.private_session.replace(session.cloned());
+        self.apply_policies();
+    }
+
+    /// Sets each engine session's accept policy as Settings' choice says for its kind.
+    fn apply_policies(&self) {
+        let private = self.0.private_session.borrow().clone();
+        let mut profile = self.0.core.borrow_mut();
+        for (browsing, session) in [(Browsing::Normal, Some(self.0.session.clone())), (Browsing::Private, private)] {
+            if let Some(manager) = session.and_then(|s| s.cookie_manager()) {
+                manager.set_accept_policy(accept_policy(&mut profile, browsing));
+            }
+        }
+    }
+
+    /// Brings the sessions' accept policies and every tab's rules in line with the profile, and
     /// deletes the cookies sites set to Block still have. Compiling the rules is asynchronous;
     /// [`Cookies::when_applied`] runs once they are on the tabs.
     pub(crate) fn apply(&self) {
-        let (policy, rules) = {
-            let mut profile = self.0.core.borrow_mut();
-            (accept_policy(&mut profile, Browsing::Normal), cookies::site_rules(&mut profile))
-        };
-        if let Some(manager) = self.0.session.cookie_manager() {
-            manager.set_accept_policy(policy);
-        }
+        self.apply_policies();
+        let rules = cookies::site_rules(&mut self.0.core.borrow_mut());
         self.0.blocker.apply(content_blocker(rules.blocked_hosts()));
         let script = cookies::block_script(rules.blocked_hosts()).map(|source| {
             webkit::UserScript::new(&source, webkit::UserContentInjectedFrames::AllFrames, webkit::UserScriptInjectionTime::Start, &[], &[])
@@ -211,8 +230,12 @@ fn content_blocker(hosts: &[String]) -> Option<String> {
 }
 
 /// The site-info popover's choice of what `tab`'s site may do with cookies, with what it means
-/// on this page under it. `None` for a page that is not from a website.
+/// on this page under it. `None` for a page that is not from a website, and in a private window
+/// (see the module's doc).
 pub(crate) fn site_info_section(browser: &Browser, tab: &Tab) -> Option<gtk::ListBox> {
+    if tab.browsing() == Browsing::Private {
+        return None;
+    }
     let url = tab.committed_uri().and_then(|uri| Url::parse(&uri).ok())?;
     let origin = Origin::of(&url).filter(|_| matches!(url.scheme(), "http" | "https"))?;
     let (current, blocked) = {

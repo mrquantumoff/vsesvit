@@ -297,6 +297,7 @@ impl Browser {
                 let engine = private.get_or_insert_with(|| {
                     let session = Engine::ephemeral_session();
                     let downloads = self.downloads().watch(&session, Browsing::Private);
+                    self.cookies().set_private_session(Some(&session));
                     PrivateEngine { session, downloads }
                 });
                 engine.session.clone()
@@ -311,6 +312,7 @@ impl Browser {
         self.downloads().cancel_private();
         if let Some(engine) = self.0.private.take() {
             engine.session.disconnect(engine.downloads);
+            self.cookies().set_private_session(None);
         }
         self.0.private_closed_tabs.borrow_mut().clear();
         self.core().borrow_mut().end_private_session();

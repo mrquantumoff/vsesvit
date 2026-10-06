@@ -1065,7 +1065,8 @@ impl Tab {
                 });
                 tab.trackers.borrow_mut().navigation_starting(&uri, level);
                 if let (Some(core), Some(browser)) = (tab.core.get(), tab.browser()) {
-                    let blocked = cookies::third_party_blocked(&browser, origin.as_ref());
+                    let blocked =
+                        cookies::third_party_blocked(&browser, tab.browsing, origin.as_ref());
                     tab.cookies.navigation_starting(core, blocked);
                 }
                 *tab.requested.borrow_mut() = uri;

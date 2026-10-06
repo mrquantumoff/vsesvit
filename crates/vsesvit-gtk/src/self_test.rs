@@ -1641,6 +1641,23 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         if !ephemeral(&shown) || ephemeral(&tab) {
             return Err("the private tab's network session is not the ephemeral one".to_owned());
         }
+        let policy = async |tab: &Tab| {
+            let jar = tab.web_view().network_session().and_then(|s| s.cookie_manager()).ok_or_else(|| "a session has no cookie manager".to_owned())?;
+            jar.accept_policy_future().await.map_err(|e| e.to_string())
+        };
+        let choice = browser.pref(&keys::THIRD_PARTY_COOKIES);
+        let (private_policy, normal_policy) = (policy(&shown).await?, policy(&tab).await?);
+        let site_rule = crate::cookies::site_info_section(browser, &shown).is_some();
+        if choice != ThirdPartyCookies::BlockInPrivate
+            || private_policy != webkit::CookieAcceptPolicy::NoThirdParty
+            || normal_policy != webkit::CookieAcceptPolicy::Always
+            || site_rule
+        {
+            return Err(format!(
+                "with {choice:?} the private session's accept policy is {private_policy:?} and the profile's {normal_policy:?}; site info offers a cookie rule {site_rule}"
+            ));
+        }
+        details.push(format!("by default its session's accept policy is {private_policy:?}, the profile's {normal_policy:?}, and its site info offers no cookie rule"));
         let visited = browser.core().borrow_mut().history().search(url.as_str(), 20).map_err(|e| e.to_string())?;
         if visited.iter().any(|e| e.url == url) {
             return Err(format!("history has a visit to {url}"));

@@ -13,6 +13,10 @@
 //! - Clear on exit: the data of the sites to clear goes at startup, before any page loads (see
 //!   `Engine::set_up_profile`), and when the last window closes, as far as the engine gets before
 //!   the process ends.
+//!
+//! A private window's tabs block third-party cookies as Settings' choice says for private
+//! windows, and run the block script of the stored rules. Its site info offers no rule of its
+//! own, and deleting a site's data reaches the normal profile only.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -209,9 +213,13 @@ fn remove_script(
     )
 }
 
-/// Whether third-party cookies are blocked on a page of `top`.
-pub(crate) fn third_party_blocked(browser: &Browser, top: Option<&Origin>) -> bool {
-    browser.core(|p| cookies::third_party_blocked(p, Browsing::Normal, top))
+/// Whether third-party cookies are blocked on a page of `top` in a `browsing` window.
+pub(crate) fn third_party_blocked(
+    browser: &Browser,
+    browsing: Browsing,
+    top: Option<&Origin>,
+) -> bool {
+    browser.core(|p| cookies::third_party_blocked(p, browsing, top))
 }
 
 /// The script the documents of every session run (`cookies::block_script`), if any site is set
@@ -228,7 +236,7 @@ pub(crate) fn changed(browser: &Browser) {
     let script = cookies::block_script(rules.blocked_hosts());
     for tab in browser.windows().iter().flat_map(|w| w.tabs_in_order()) {
         tab.apply_cookies(
-            third_party_blocked(browser, tab.origin().as_ref()),
+            third_party_blocked(browser, tab.browsing(), tab.origin().as_ref()),
             script.as_deref(),
         );
     }
@@ -252,10 +260,10 @@ pub(crate) fn delete_blocked(browser: &Browser, rules: SiteRules) {
     });
 }
 
-/// The engine view of any open tab, for calls that reach the whole profile.
+/// The engine view of any open tab of a normal window, for calls that reach the whole profile.
 pub(crate) fn any_core(browser: &Browser) -> Option<CoreWebView2> {
     browser
-        .windows()
+        .windows_of(Browsing::Normal)
         .iter()
         .flat_map(|w| w.tabs_in_order())
         .find_map(|t| t.core().cloned())

@@ -16,8 +16,12 @@ use crate::{permissions, xaml};
 
 impl BrowserWindow {
     /// The cookie rule of `tab`'s site, and whether third-party cookies are blocked on its page.
-    /// `None` on pages of no web site.
-    pub(super) fn cookies_status(&self, tab: &Tab) -> Option<(Option<Setting>, bool)> {
+    /// `None` on pages of no web site, and in a private window, which offers no rule (see
+    /// `cookies`).
+    pub(crate) fn cookies_status(&self, tab: &Tab) -> Option<(Option<Setting>, bool)> {
+        if self.browsing == Browsing::Private {
+            return None;
+        }
         let origin = tab
             .origin()
             .filter(|o| o.as_str().starts_with("https://") || o.as_str().starts_with("http://"))?;

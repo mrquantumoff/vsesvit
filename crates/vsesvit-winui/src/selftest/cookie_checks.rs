@@ -127,7 +127,7 @@ fn set_rule(browser: &Rc<Browser>, site: &Origin, setting: Option<Setting>) -> R
     Ok(())
 }
 
-fn ready(tab: &Tab, p: &Probe) -> Option<()> {
+pub(super) fn ready(tab: &Tab, p: &Probe) -> Option<()> {
     let s = tab.state();
     p.observe(format!("at {:?}, titled {:?}", s.url, s.title));
     (s.title == READY && !s.loading()).then_some(())
@@ -143,7 +143,7 @@ async fn reload(tab: &Rc<Tab>, p: &Probe) -> Result<(), String> {
 }
 
 /// The cookies the page and its frame read.
-async fn read(tab: &Tab) -> Result<(String, String), String> {
+pub(super) async fn read(tab: &Tab) -> Result<(String, String), String> {
     let json = eval(tab, "[cookieResults.page, cookieResults.frame]").await?;
     serde_json::from_str(&json).map_err(|e| format!("cookieResults {json}: {e}"))
 }

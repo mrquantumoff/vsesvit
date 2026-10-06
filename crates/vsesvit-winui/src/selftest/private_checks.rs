@@ -1,18 +1,21 @@
 //! The `private_window` check: a page in a private window leaves no history, session entry or
-//! zoom behind, runs in WebView2's InPrivate profile without the probe extension, and stays out
-//! of a normal window's tab search; closing the window ends its private session.
+//! zoom behind, runs in WebView2's InPrivate profile without the probe extension, stays out of a
+//! normal window's tab search, and by default gets no third-party cookies and no cookie rule in
+//! site info; closing the window ends its private session.
 
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
 use vsesvit_core::Url;
+use vsesvit_core::cookies::ThirdPartyCookies;
+use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
 use vsesvit_core::tab_search::Hit;
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
 
-use super::{DEFAULT_TIMEOUT, FIXTURE_TITLE, Probe, emulate_zoom, eval, until};
+use super::{DEFAULT_TIMEOUT, FIXTURE_TITLE, Probe, cookie_checks, emulate_zoom, eval, until};
 use crate::bindings::ICoreWebView2_13;
 use crate::browser::Browser;
 use crate::session::{TabPlan, WindowPlan};
@@ -123,6 +126,15 @@ pub(super) async fn private_window(
         "tab search lists it in a normal window {normal_lists}, in the private one {private_lists}"
     ));
 
+    let choice = browser.core(|c| c.prefs().get(&keys::THIRD_PARTY_COOKIES));
+    tab.navigate(server.url("/cookies.html").as_str());
+    until(p, |p| cookie_checks::ready(&tab, p)).await;
+    let (_, frame) = cookie_checks::read(&tab).await?;
+    let site_rule = private.cookies_status(&tab).is_some();
+    detail.push(format!(
+        "with {choice:?} its third-party frame read {frame:?}; a site-info cookie rule {site_rule}"
+    ));
+
     let closed_before = closed_in(browser, Browsing::Normal);
     private.close_tab(tab.id);
     until(p, |p| {
@@ -147,6 +159,9 @@ pub(super) async fn private_window(
         && stored_zoom != 1.25
         && !normal_lists
         && private_lists
+        && choice == ThirdPartyCookies::BlockInPrivate
+        && !frame.contains("third=1")
+        && !site_rule
         && !private_closed
         && closed_after == closed_before
         && zoom_after == stored_zoom;
