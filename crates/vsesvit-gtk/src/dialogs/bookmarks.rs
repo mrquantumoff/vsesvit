@@ -1,18 +1,19 @@
 //! The Bookmarks window: the tree (folders expand in place), a flat search, the edits core
 //! supports (new folder, edit name, URL and folder, move by menu or by dragging rows,
-//! delete) and import from another browser or a bookmarks file. Every edit is one core
-//! call followed by a rebuild of the tree from the merged records, so the window always
-//! shows the tree every device would show.
+//! delete), import from another browser or a bookmarks file and export to one. Every edit
+//! is one core call followed by a rebuild of the tree from the merged records, so the window
+//! always shows the tree every device would show.
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use vsesvit_core::Profile;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, MAX_DEPTH, NodeKind};
+use vsesvit_core::export;
 use vsesvit_core::import::{self, Source};
 
 use super::{LibraryWindow, Windowed, confirm, prompt_choice, prompt_text};
@@ -108,6 +109,17 @@ pub(crate) async fn pick_bookmarks_file(parent: Option<&gtk::Window>) -> Option<
     chooser.open_future(parent).await.ok()?.path()
 }
 
+/// Writes every bookmark to `path` as a bookmarks HTML file. The file is written on a worker
+/// thread.
+pub(crate) async fn export_to(browser: &Browser, path: &Path) -> Result<(), String> {
+    let html = export::html(&browser.core().borrow_mut().bookmarks());
+    let path = path.to_owned();
+    match gio::spawn_blocking(move || std::fs::write(path, html)).await {
+        Ok(written) => written.map_err(|e| e.to_string()),
+        Err(_) => Err("the write stopped".to_owned()),
+    }
+}
+
 fn build(window: &BrowserWindow) -> Rc<State> {
     let root = gio::ListStore::new::<glib::BoxedAnyObject>();
     let tree = gtk::TreeListModel::new(root.clone(), false, false, {
@@ -142,12 +154,20 @@ fn build(window: &BrowserWindow) -> Rc<State> {
     let edit = tool_button("document-edit-symbolic", "Edit…");
     let move_to = tool_button("go-jump-symbolic", "Move To…");
     let delete = tool_button("user-trash-symbolic", "Delete");
-    let import = tool_button("document-open-symbolic", "Import Bookmarks…");
+    let menu = gio::Menu::new();
+    menu.append(Some("_Import Bookmarks…"), Some("bookmarks.import"));
+    menu.append(Some("_Export Bookmarks…"), Some("bookmarks.export"));
+    let primary = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Main Menu")
+        .primary(true)
+        .menu_model(&menu)
+        .build();
     let ui = LibraryWindow::new(
         "Bookmarks",
         "Search bookmarks",
         &[
-            import.upcast_ref(),
+            primary.upcast_ref(),
             delete.upcast_ref(),
             move_to.upcast_ref(),
             edit.upcast_ref(),
@@ -216,11 +236,22 @@ fn build(window: &BrowserWindow) -> Rc<State> {
         state,
         move |_| state.spawn(|s| async move { s.delete().await })
     ));
-    import.connect_clicked(glib::clone!(
+    let import = gio::SimpleAction::new("import", None);
+    import.connect_activate(glib::clone!(
         #[weak]
         state,
-        move |_| state.spawn(|s| async move { s.import().await })
+        move |_, _| state.spawn(|s| async move { s.import().await })
     ));
+    let export = gio::SimpleAction::new("export", None);
+    export.connect_activate(glib::clone!(
+        #[weak]
+        state,
+        move |_, _| state.spawn(|s| async move { s.export().await })
+    ));
+    let actions = gio::SimpleActionGroup::new();
+    actions.add_action(&import);
+    actions.add_action(&export);
+    state.ui.window.insert_action_group("bookmarks", Some(&actions));
     let owner = RefCell::new(Some(state.clone()));
     state.ui.window.connect_unrealize(move |_| drop(owner.take()));
     state
@@ -378,6 +409,21 @@ impl State {
             Ok(0) => self.ui.toast(&format!("No bookmarks found in {from}")),
             Ok(n) => self.ui.toast(&format!("Imported {n} items from {from} into “{folder}”")),
             Err(e) => self.ui.toast(&e),
+        }
+    }
+
+    /// Asks where, offering Chrome's name for today's export, and writes every bookmark there.
+    async fn export(&self) {
+        let dialog = gtk::FileDialog::builder().title("Export Bookmarks").modal(true).build();
+        dialog.set_initial_folder(export::default_folder().map(gio::File::for_path).as_ref());
+        let today = glib::DateTime::now_local().ok();
+        let name = today.map(|d| export::file_name(d.year(), d.month().cast_unsigned(), d.day_of_month().cast_unsigned()));
+        dialog.set_initial_name(name.as_deref());
+        let Some(path) = dialog.save_future(Some(&self.ui.window)).await.ok().and_then(|file| file.path()) else { return };
+        let Some(window) = self.window.upgrade() else { return };
+        match export_to(window.browser(), &path).await {
+            Ok(()) => self.ui.toast(&format!("Exported bookmarks to “{}”", file_name(&path))),
+            Err(e) => self.ui.toast(&format!("Could not export bookmarks: {e}")),
         }
     }
 
@@ -632,7 +678,7 @@ fn tool_button(icon: &str, tooltip: &str) -> gtk::Button {
 
 #[cfg(test)]
 mod tests {
-    use vsesvit_core::bookmarks::BookmarkError;
+    use vsesvit_core::bookmarks::{BookmarkError, ImportItem};
     use vsesvit_core::{OpenOptions, Url};
 
     use super::*;
@@ -647,6 +693,50 @@ mod tests {
             .filter_map(|i| state.tree.row(i))
             .find(|row| row.item().and_then(|item| node_of(&item)).is_some_and(|node| node.id == id))
             .is_some_and(|row| row.is_expanded())
+    }
+
+    /// The menu of the first menu button under `widget`.
+    fn menu_of(widget: &gtk::Widget) -> Option<gio::MenuModel> {
+        if let Some(button) = widget.downcast_ref::<gtk::MenuButton>() {
+            return button.menu_model();
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if let Some(menu) = menu_of(&widget) {
+                return Some(menu);
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    #[gtk::test]
+    fn the_menu_exports_a_file_the_importer_reads_back() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let state = build(&window);
+        let menu = menu_of(state.ui.window.upcast_ref()).expect("the header has a menu");
+        let items: Vec<(String, String)> = (0..menu.n_items())
+            .filter_map(|i| {
+                let text = |key| menu.item_attribute_value(i, key, None)?.get::<String>();
+                Some((text(gio::MENU_ATTRIBUTE_LABEL)?, text(gio::MENU_ATTRIBUTE_ACTION)?))
+            })
+            .collect();
+        let url = Url::parse("https://exported.example/").unwrap();
+        let id = browser.core().borrow_mut().bookmarks().add_url(BookmarkId::OTHER, InsertAt::End, "Exported", &url).unwrap();
+        let path = scratch_dir("bookmark-export").join("bookmarks.html");
+        let written = glib::MainContext::default().block_on(export_to(&browser, &path));
+        let read = std::fs::read_to_string(&path).map(|html| import::parse_html(&html)).unwrap_or_default();
+
+        browser.core().borrow_mut().bookmarks().remove(id).unwrap();
+        window.destroy();
+        let want = [("_Import Bookmarks…", "bookmarks.import"), ("_Export Bookmarks…", "bookmarks.export")];
+        assert_eq!(items, want.map(|(label, action)| (label.to_owned(), action.to_owned())));
+        assert_eq!(written, Ok(()));
+        assert!(
+            read.iter().any(|item| matches!(item, ImportItem::Url { title, url: found, .. } if title == "Exported" && *found == url)),
+            "the export holds the bookmark: {read:?}"
+        );
     }
 
     #[gtk::test]

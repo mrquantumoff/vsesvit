@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
-use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
+use vsesvit_core::bookmarks::{BookmarkId, ImportItem, InsertAt};
 use vsesvit_core::cookies::{self, ThirdPartyCookies};
 use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Verification};
@@ -72,7 +72,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 47] = [
+const CHECKS: [&str; 48] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -85,6 +85,7 @@ const CHECKS: [&str; 47] = [
     "dnr_site_allowed",
     "bookmark",
     "star_bubble",
+    "bookmark_export",
     "tabs",
     "tab_animation",
     "tab_layout",
@@ -521,6 +522,33 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             (true, Some("Edit bookmark")) => Ok("\"Bookmark added\" with the name selected (star-bubble.png); Done saved the new name; the star then opens \"Edit bookmark\"".to_owned()),
             _ => Err(format!("name selected={selected}, second click opened {again:?}")),
         }
+    })
+    .await;
+
+    ctx.check("bookmark_export", CHECK_TIMEOUT, |_| async move {
+        gio::prelude::ActionGroupExt::activate_action(window, "show-bookmarks", None);
+        let bookmarks = browser.windowed(Windowed::Bookmarks).ok_or_else(|| "win.show-bookmarks opened no window".to_owned())?;
+        let _bookmarks = Cleanup(|| bookmarks.close());
+        let menu = find::<gtk::MenuButton>(bookmarks.upcast_ref(), |b| b.icon_name().as_deref() == Some("open-menu-symbolic"))
+            .and_then(|b| b.menu_model())
+            .ok_or_else(|| "the Bookmarks window has no main menu".to_owned())?;
+        let items: Vec<(String, String)> = (0..menu.n_items())
+            .filter_map(|i| {
+                let text = |key| menu.item_attribute_value(i, key, None)?.get::<String>();
+                Some((text(gio::MENU_ATTRIBUTE_LABEL)?, text(gio::MENU_ATTRIBUTE_ACTION)?))
+            })
+            .collect();
+        let want = [("_Import Bookmarks…", "bookmarks.import"), ("_Export Bookmarks…", "bookmarks.export")];
+        if items != want.map(|(label, action)| (label.to_owned(), action.to_owned())) {
+            return Err(format!("the Bookmarks window's menu holds {items:?}"));
+        }
+        let path = ctx.out_dir.join("bookmarks.html");
+        let _ = std::fs::remove_file(&path);
+        crate::dialogs::bookmarks::export_to(browser, &path).await?;
+        let html = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let links = links(&vsesvit_core::import::parse_html(&html));
+        let detail = format!("the menu holds {items:?}; {} has {} bytes, read back as {links:?}", path.display(), html.len());
+        if links.contains(&("Renamed fixture".to_owned(), index_url.to_string())) { Ok(detail) } else { Err(detail) }
     })
     .await;
 
@@ -2808,6 +2836,18 @@ fn popover_of(widget: &gtk::Widget) -> Option<gtk::Popover> {
         child = c.next_sibling();
     }
     None
+}
+
+/// Every link in `items` and their folders, as title and URL.
+fn links(items: &[ImportItem]) -> Vec<(String, String)> {
+    items
+        .iter()
+        .flat_map(|item| match item {
+            ImportItem::Url { title, url, .. } => vec![(title.clone(), url.to_string())],
+            ImportItem::Folder { children, .. } => links(children),
+            ImportItem::Separator => Vec::new(),
+        })
+        .collect()
 }
 
 /// Runs its closure when dropped, so a check's cleanup also runs when it fails or times out.
