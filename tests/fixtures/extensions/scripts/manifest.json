@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Vsesvit Scripts",
+  "version": "1.0.0",
+  "description": "Test extension for dynamic content scripts.",
+  "browser_specific_settings": { "gecko": { "id": "scripts@vsesvit.test" } },
+  "permissions": ["scripting"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "action": { "default_title": "Vsesvit Scripts", "default_popup": "popup.html" }
+}

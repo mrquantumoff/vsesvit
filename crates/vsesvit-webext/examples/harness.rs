@@ -67,7 +67,15 @@
 //!     restart keeps the dynamic rules and chosen rulesets and drops the session rules and
 //!     `storage.session`; a content blocker of the browser's own on the tab blocks
 //!     throughout;
-//! 13. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//! 13. dynamic content scripts (`tests/fixtures/extensions/scripts/`, a host permission for
+//!     the fixture server only): a popup's `registerContentScripts` is refused with Chrome's
+//!     message for each bad script and registers nothing then; registered scripts list as in
+//!     Chrome and run from the next load in the extension's world (with its API, their CSS too)
+//!     or the page's, not where `excludeMatches` or the host permissions leave them out;
+//!     `updateContentScripts` changes what it names; `removeCSS` takes out what `insertCSS`
+//!     added, by text or file; a restart keeps only the scripts that persist across sessions,
+//!     `unregisterContentScripts` removes them, and an update of the extension drops them;
+//! 14. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -116,6 +124,7 @@ mod linux {
     const COMMANDS_ID: &str = "commands@vsesvit.test";
     const NOTIFICATIONS_ID: &str = "notifications@vsesvit.test";
     const DNR_ID: &str = "dnr@vsesvit.test";
+    const SCRIPTS_ID: &str = "scripts@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -171,6 +180,8 @@ mod linux {
         write_xpi(&notifications_xpi, &fixture_files("notifications"));
         let dnr_xpi = out_dir.join("dnr.xpi");
         write_xpi(&dnr_xpi, &fixture_files("dnr"));
+        let scripts_xpi = out_dir.join("scripts.xpi");
+        write_xpi(&scripts_xpi, &fixture_files("scripts"));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -188,7 +199,9 @@ mod linux {
         assert_eq!(notifications.id.as_str(), NOTIFICATIONS_ID);
         let dnr = install(&profile, &dnr_xpi);
         assert_eq!(dnr.id.as_str(), DNR_ID);
-        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr] {
+        let scripts = install(&profile, &scripts_xpi);
+        assert_eq!(scripts.id.as_str(), SCRIPTS_ID);
+        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr, &scripts] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -217,6 +230,7 @@ mod linux {
             commands_id: commands.id.clone(),
             notifications_id: notifications.id.clone(),
             dnr,
+            scripts,
             out_dir: out_dir.clone(),
             window: window.clone(),
             results: RefCell::new(Vec::new()),
@@ -263,6 +277,7 @@ mod linux {
         commands_id: ExtensionId,
         notifications_id: ExtensionId,
         dnr: InstalledExtension,
+        scripts: InstalledExtension,
         out_dir: PathBuf,
         window: gtk::Window,
         results: RefCell<Vec<(&'static str, bool)>>,
@@ -331,7 +346,10 @@ mod linux {
             // 10. declarativeNetRequest dynamic and session rules
             self.declarative_net_request().await;
 
-            // 11. lifecycle events
+            // 11. dynamic content scripts
+            self.dynamic_scripts().await;
+
+            // 12. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -1115,6 +1133,197 @@ mod linux {
             let mut loaded: Vec<String> = self.server.hits().iter().filter_map(|p| p.strip_prefix(&prefix)?.strip_suffix(".png").map(str::to_owned)).collect();
             loaded.sort();
             loaded
+        }
+
+        async fn dynamic_scripts(&self) {
+            let id = self.scripts.id.clone();
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("dynamic_scripts_refused", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Scripts"), TIMEOUT).await;
+            let refused = self
+                .eval_async(
+                    &popup,
+                    r#"const s = chrome.scripting;
+                    const script = (id, more) => Object.assign({ id, matches: ["<all_urls>"], js: ["isolated.js"] }, more);
+                    const attempt = async (scripts) => { try { await s.registerContentScripts(scripts); return "registered"; } catch (e) { return e.message; } };
+                    return [
+                      await attempt([script("")]),
+                      await attempt([script("_x")]),
+                      await attempt([script("a", { matches: undefined })]),
+                      await attempt([script("a", { js: undefined })]),
+                      await attempt([script("a", { matches: ["example.com"] })]),
+                      await attempt([script("a", { js: ["missing.js"] })]),
+                      await attempt([script("a", { runAt: "later" })]),
+                      await attempt([script("a"), script("a")]),
+                      (await s.getRegisteredContentScripts()).length,
+                    ];"#,
+                )
+                .await;
+            let expected = serde_json::json!([
+                "Script's ID must not be empty",
+                "Script's ID '_x' must not start with '_'",
+                "Script with ID 'a' must specify 'matches'.",
+                "Script with ID 'a' must specify at least one js or css file.",
+                "Script with ID 'a' has invalid value for matches[0]: Missing scheme separator.",
+                "Could not load javascript 'missing.js' for script.",
+                "Error at property 'runAt': Value must be one of document_end, document_idle, document_start.",
+                "Duplicate script ID 'a'",
+                0
+            ]);
+            self.note("dynamic_scripts_refused", refused.as_ref() == Some(&expected), format!("{refused:?}"));
+
+            let registered = self
+                .eval_async(
+                    &popup,
+                    r#"const s = chrome.scripting;
+                    await s.registerContentScripts([
+                      { id: "isolated", matches: ["<all_urls>"], excludeMatches: ["*://*/index.html"], js: ["/isolated.js"], css: ["style.css"], runAt: "document_start" },
+                      { id: "main", matches: ["http://127.0.0.1/page2.html"], js: ["main.js"], world: "MAIN", persistAcrossSessions: false },
+                    ]);
+                    let taken;
+                    try { await s.registerContentScripts([{ id: "fresh", matches: ["<all_urls>"], js: ["updated.js"] }, { id: "main", matches: ["<all_urls>"], js: ["main.js"] }]); } catch (e) { taken = e.message; }
+                    return { taken, all: await s.getRegisteredContentScripts(), main: (await s.getRegisteredContentScripts({ ids: ["main"] })).map((x) => x.id) };"#,
+                )
+                .await;
+            let expected = serde_json::json!({
+                "taken": "Duplicate script ID 'main'",
+                "all": [
+                    { "id": "isolated", "matches": ["<all_urls>"], "excludeMatches": ["*://*/index.html"], "js": ["isolated.js"], "css": ["style.css"], "allFrames": false, "matchOriginAsFallback": false, "runAt": "document_start", "world": "ISOLATED", "persistAcrossSessions": true },
+                    { "id": "main", "matches": ["http://127.0.0.1/page2.html"], "js": ["main.js"], "allFrames": false, "matchOriginAsFallback": false, "runAt": "document_idle", "world": "MAIN", "persistAcrossSessions": false }
+                ],
+                "main": ["main"]
+            });
+            self.note("dynamic_scripts_registered", registered.as_ref() == Some(&expected), format!("{registered:?}"));
+
+            let page2 = self.url("/page2.html");
+            let elsewhere = format!("http://localhost:{}/page2.html", self.server.port());
+            let ran = self.scripts_page(&page2).await;
+            let excluded = self.scripts_page(&self.url("/index.html")).await;
+            let unpermitted = self.scripts_page(&elsewhere).await;
+            let nothing = serde_json::json!({ "isolated": null, "updated": null, "main": null, "css": "" });
+            let ran_ok = ran == Some(serde_json::json!({ "isolated": SCRIPTS_ID, "updated": null, "main": "page", "css": "dynamic" }));
+            self.note("dynamic_scripts_run", ran_ok && excluded.as_ref() == Some(&nothing) && unpermitted.as_ref() == Some(&nothing), format!("on page2: {ran:?}; on index.html: {excluded:?}; on {elsewhere}: {unpermitted:?}"));
+
+            let updated = self
+                .eval_async(
+                    &popup,
+                    r#"const s = chrome.scripting;
+                    await s.updateContentScripts([{ id: "isolated", js: ["updated.js"], css: [] }]);
+                    let missing;
+                    try { await s.updateContentScripts([{ id: "nope", js: ["updated.js"] }]); } catch (e) { missing = e.message; }
+                    const [isolated] = await s.getRegisteredContentScripts({ ids: ["isolated"] });
+                    return { missing, js: isolated.js, css: isolated.css ?? null, runAt: isolated.runAt };"#,
+                )
+                .await;
+            let after = self.scripts_page(&page2).await;
+            let updated_ok = updated == Some(serde_json::json!({ "missing": "Script with ID 'nope' does not exist or is not fully registered", "js": ["updated.js"], "css": null, "runAt": "document_start" }))
+                && after == Some(serde_json::json!({ "isolated": null, "updated": "1", "main": "page", "css": "" }));
+            self.note("dynamic_scripts_updated", updated_ok, format!("{updated:?}; then on page2: {after:?}"));
+
+            let css = self
+                .eval_async(
+                    &popup,
+                    &format!(
+                        r#"const s = chrome.scripting;
+                        const target = {{ tabId: {tab} }};
+                        const read = async () => (await s.executeScript({{ target, func: () => getComputedStyle(document.documentElement).getPropertyValue("--vsesvit-inserted").trim() }}))[0].result;
+                        const seen = [];
+                        await s.insertCSS({{ target, css: "html {{ --vsesvit-inserted: text; }}" }});
+                        seen.push(await read());
+                        await s.removeCSS({{ target, css: "html {{ --vsesvit-inserted: text; }}" }});
+                        seen.push(await read());
+                        await s.insertCSS({{ target, files: ["inserted.css"] }});
+                        seen.push(await read());
+                        await s.removeCSS({{ target, files: ["/inserted.css"] }});
+                        seen.push(await read());
+                        let both;
+                        try {{ await s.removeCSS({{ target, css: "x", files: ["inserted.css"] }}); }} catch (e) {{ both = e.message; }}
+                        return {{ seen, both }};"#,
+                        tab = self.tab.0
+                    ),
+                )
+                .await;
+            let css_ok = css == Some(serde_json::json!({ "seen": ["text", "", "file", ""], "both": "Exactly one of 'css' and 'files' must be specified." }));
+            self.note("remove_css", css_ok, format!("{css:?}"));
+
+            // A restart keeps the scripts that persist across sessions.
+            self.runtime.unload(&id);
+            if let Err(e) = self.runtime.load(&self.scripts) {
+                self.note("dynamic_scripts_kept", false, format!("load: {e}"));
+                return;
+            }
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("dynamic_scripts_kept", false, "no popup view after the restart");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Scripts"), TIMEOUT).await;
+            let kept = self.eval_async(&popup, "return (await chrome.scripting.getRegisteredContentScripts()).map((x) => [x.id, x.js]);").await;
+            let restarted = self.scripts_page(&page2).await;
+            let kept_ok = kept == Some(serde_json::json!([["isolated", ["updated.js"]]])) && restarted == Some(serde_json::json!({ "isolated": null, "updated": "1", "main": null, "css": "" }));
+            self.note("dynamic_scripts_kept", kept_ok, format!("after a restart: {kept:?}; on page2: {restarted:?}"));
+
+            let unregistered = self
+                .eval_async(
+                    &popup,
+                    r#"const s = chrome.scripting;
+                    let missing;
+                    try { await s.unregisterContentScripts({ ids: ["isolated", "nope"] }); } catch (e) { missing = e.message; }
+                    const kept = (await s.getRegisteredContentScripts()).length;
+                    await s.unregisterContentScripts();
+                    return { missing, kept, left: await s.getRegisteredContentScripts() };"#,
+                )
+                .await;
+            let gone = self.scripts_page(&page2).await;
+            let unregistered_ok = unregistered == Some(serde_json::json!({ "missing": "Nonexistent script ID 'nope'", "kept": 1, "left": [] })) && gone.as_ref() == Some(&nothing);
+            self.note("dynamic_scripts_unregistered", unregistered_ok, format!("{unregistered:?}; then on page2: {gone:?}"));
+
+            // An update of the extension drops its dynamic scripts.
+            let again = self
+                .eval_async(&popup, r#"await chrome.scripting.registerContentScripts([{ id: "again", matches: ["<all_urls>"], js: ["updated.js"] }]); return (await chrome.scripting.getRegisteredContentScripts()).length;"#)
+                .await;
+            let mut files = fixture_files("scripts");
+            for (name, text) in &mut files {
+                if *name == "manifest.json" {
+                    *text = text.replace("\"version\": \"1.0.0\"", "\"version\": \"1.0.1\"");
+                }
+            }
+            let update_xpi = self.out_dir.join("scripts-1.0.1.xpi");
+            write_xpi(&update_xpi, &files);
+            let update = install(&self.profile, &update_xpi);
+            if let Err(e) = self.runtime.load(&update) {
+                self.note("dynamic_scripts_dropped_on_update", false, format!("load after the update: {e}"));
+                return;
+            }
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("dynamic_scripts_dropped_on_update", false, "no popup view after the update");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Scripts"), TIMEOUT).await;
+            let left = self.eval_async(&popup, "return await chrome.scripting.getRegisteredContentScripts();").await;
+            let dropped = self.scripts_page(&page2).await;
+            let dropped_ok = again == Some(serde_json::json!(1)) && update.version == "1.0.1" && left == Some(serde_json::json!([])) && dropped.as_ref() == Some(&nothing);
+            self.note("dynamic_scripts_dropped_on_update", dropped_ok, format!("registered before = {again:?}; after updating to {}: {left:?}; on page2: {dropped:?}", update.version));
+        }
+
+        /// Loads `url` in the first tab and reports what the scripts fixture's dynamic content
+        /// scripts did there.
+        async fn scripts_page(&self, url: &str) -> Option<Value> {
+            self.eval(&self.view, "window.__stale = true", None).await;
+            self.view.load_uri(url);
+            self.wait_for_js(&self.view, "String(!window.__stale && document.readyState === 'complete')", None, |v| v == "true").await;
+            let report = self
+                .eval(
+                    &self.view,
+                    "JSON.stringify({ isolated: document.documentElement.dataset.scriptsIsolated || null, updated: document.documentElement.dataset.scriptsUpdated || null, main: window.__scriptsMain || null, css: getComputedStyle(document.documentElement).getPropertyValue('--vsesvit-scripts').trim() })",
+                    None,
+                )
+                .await;
+            report.and_then(|r| serde_json::from_str(&r).ok())
         }
 
         async fn lifecycle(&self) {
