@@ -207,12 +207,16 @@ struct Frame {
     document: Option<Document>,
     /// The frame's last navigation failed.
     error: bool,
+    /// The frame has navigated, beyond its initial empty document.
+    navigated: bool,
 }
 
 /// The top frame's navigation between its start and its commit.
 #[derive(Clone, Debug)]
 struct Pending {
-    url: String,
+    /// Where it goes, once WebKit says: it starts loading a window a page opened before it
+    /// does, so that window's `onBeforeNavigate` waits for the URL.
+    url: Option<String>,
     redirected: bool,
 }
 
@@ -228,30 +232,34 @@ pub struct Frames {
 impl Frames {
     /// A tab holds its initial empty document.
     pub fn new(tab: TabId) -> Frames {
-        let top = Frame { parent: None, path: Vec::new(), url: "about:blank".into(), document: Some(Document::new(None, Stage::Complete)), error: false };
+        let top = Frame { parent: None, path: Vec::new(), url: "about:blank".into(), document: Some(Document::new(None, Stage::Complete)), error: false, navigated: false };
         Frames { tab, next: 1, frames: BTreeMap::from([(FrameId::TOP, top)]), pending: None }
     }
 
     pub fn load(&mut self, load: Load) -> Vec<Event> {
         match load {
             Load::Started(url) => {
-                self.pending = Some(Pending { url: url.to_owned(), redirected: false });
-                vec![self.event(EventKind::BeforeNavigate, FrameId::TOP, url)]
+                let url = Some(url.to_owned()).filter(|u| !u.is_empty());
+                let events = url.iter().map(|url| self.event(EventKind::BeforeNavigate, FrameId::TOP, url)).collect();
+                self.pending = Some(Pending { url, redirected: false });
+                events
             }
             Load::Redirected(url) => {
-                if let Some(pending) = &mut self.pending {
-                    *pending = Pending { url: url.to_owned(), redirected: true };
-                }
-                Vec::new()
+                let Some(pending) = &mut self.pending else { return Vec::new() };
+                let announced = pending.url.replace(url.to_owned()).is_some();
+                pending.redirected = true;
+                if announced { Vec::new() } else { vec![self.event(EventKind::BeforeNavigate, FrameId::TOP, url)] }
             }
             Load::Committed(url, transition) => {
                 let pending = self.pending.take();
                 // A load nothing announced, such as a document restored with the session.
-                let mut events = if pending.is_none() { vec![self.event(EventKind::BeforeNavigate, FrameId::TOP, url)] } else { Vec::new() };
+                let announced = pending.as_ref().is_some_and(|p| p.url.is_some());
+                let mut events = if announced { Vec::new() } else { vec![self.event(EventKind::BeforeNavigate, FrameId::TOP, url)] };
                 self.frames.retain(|id, _| *id == FrameId::TOP);
                 let top = self.frame_mut(FrameId::TOP);
                 top.url = url.to_owned();
                 top.error = false;
+                top.navigated = true;
                 top.document = Some(Document::new(None, Stage::Loading));
                 let (kind, mut qualifiers) = chrome_transition(transition);
                 if pending.is_some_and(|p| p.redirected) {
@@ -264,10 +272,13 @@ impl Frames {
             // Before the commit the navigation fails; after it, the document's load ends
             // short, which Chrome reports as nothing.
             Load::Failed(url, error) => match &self.pending {
-                Some(pending) if pending.url == url => {
+                Some(pending) if pending.url.as_deref().is_none_or(|u| u == url) => {
+                    let announced = pending.url.is_some();
                     self.pending = None;
                     self.frame_mut(FrameId::TOP).error = true;
-                    vec![self.event(EventKind::ErrorOccurred, FrameId::TOP, url).with("error", json!(error.name()))]
+                    let mut events = if announced { Vec::new() } else { vec![self.event(EventKind::BeforeNavigate, FrameId::TOP, url)] };
+                    events.push(self.event(EventKind::ErrorOccurred, FrameId::TOP, url).with("error", json!(error.name())));
+                    events
                 }
                 Some(_) => Vec::new(),
                 None => {
@@ -289,7 +300,11 @@ impl Frames {
                 }
                 Vec::new()
             }
-            ReportKind::Start => self.subframe_document(report, true),
+            // A new frame's initial empty document is no navigation, as in Chrome.
+            ReportKind::Start => {
+                let initial = report.url == "about:blank" && self.at_path(&report.path).is_none();
+                self.subframe_document(report, !initial)
+            }
             ReportKind::Shown => self.subframe_document(report, false),
             kind => {
                 let Some(id) = self.by_token(&report.token) else { return Vec::new() };
@@ -348,8 +363,9 @@ impl Frames {
     }
 
     /// A subframe's new document: the frame at its place gets it (a new frame when there
-    /// is none), and loses the frames the previous document held. `announce` is false for
-    /// a document the back/forward cache restores, which Chrome does not navigate to.
+    /// is none), and loses the frames the previous document held. `announce` is false for a
+    /// document that arrived by no navigation: a frame's initial one, or one the back/forward
+    /// cache restores.
     fn subframe_document(&mut self, report: &Report, announce: bool) -> Vec<Event> {
         let Some((_, parent_path)) = report.path.split_last() else { return Vec::new() };
         let Some(parent) = self.at_path(parent_path).filter(|p| self.frames[p].document.is_some()) else { return Vec::new() };
@@ -360,13 +376,16 @@ impl Frames {
             id
         });
         self.remove_descendants(id);
+        let navigated = existing.is_some_and(|id| self.frames[&id].navigated);
         let stage = if announce { Stage::Loading } else { Stage::Complete };
         let document = Some(Document::new(Some(&report.token), stage));
-        self.frames.insert(id, Frame { parent: Some(parent), path: report.path.clone(), url: report.url.clone(), document, error: false });
+        let frame = Frame { parent: Some(parent), path: report.path.clone(), url: report.url.clone(), document, error: false, navigated: navigated || announce };
+        self.frames.insert(id, frame);
         if !announce {
             return Vec::new();
         }
-        let transition = if existing.is_some() { "manual_subframe" } else { "auto_subframe" };
+        // Chrome's names for a frame's first navigation and for the ones after it.
+        let transition = if navigated { "manual_subframe" } else { "auto_subframe" };
         vec![
             self.event(EventKind::BeforeNavigate, id, &report.url),
             self.event(EventKind::Committed, id, &report.url).with("transitionType", json!(transition)).with("transitionQualifiers", json!([])),
@@ -565,6 +584,19 @@ mod tests {
     }
 
     #[test]
+    fn a_load_started_before_webkit_says_where_is_announced_once_it_does() {
+        let mut frames = Frames::new(TAB);
+        assert!(frames.load(Load::Started("")).is_empty());
+        let events = frames.load(Load::Committed("http://a.test/", Transition::Link));
+        assert_eq!(names(&events), [("onBeforeNavigate", 0), ("onCommitted", 0)]);
+        assert_eq!(events[0].details["url"], "http://a.test/");
+        frames.load(Load::Started(""));
+        assert_eq!(names(&frames.load(Load::Redirected("http://b.test/"))), [("onBeforeNavigate", 0)]);
+        frames.load(Load::Started(""));
+        assert_eq!(names(&frames.load(Load::Failed("http://c.test/", NetError::Failed))), [("onBeforeNavigate", 0), ("onErrorOccurred", 0)]);
+    }
+
+    #[test]
     fn a_failed_navigation_reports_its_error_and_completes_nothing() {
         let mut frames = loaded();
         frames.load(Load::Finished);
@@ -634,6 +666,20 @@ mod tests {
         let all = frames.all_frames();
         assert_eq!(all.len(), 2, "the old document's frame went with it: {all:?}");
         assert_eq!(all[1]["url"], "http://b.test/2");
+    }
+
+    #[test]
+    fn a_new_frames_initial_empty_document_is_listed_but_not_announced() {
+        let mut frames = loaded();
+        assert!(frames.report(&report(ReportKind::Start, "blank", &[0], "about:blank")).is_empty());
+        assert!(frames.report(&report(ReportKind::Load, "blank", &[0], "about:blank")).is_empty());
+        assert_eq!(frames.all_frames()[1]["url"], "about:blank");
+        let events = frames.report(&report(ReportKind::Start, "page", &[0], "http://b.test/"));
+        assert_eq!(names(&events), [("onBeforeNavigate", 1), ("onCommitted", 1)]);
+        assert_eq!(events[1].details["transitionType"], "auto_subframe", "its first navigation");
+        let blank = frames.report(&report(ReportKind::Start, "blank-again", &[0], "about:blank"));
+        assert_eq!(names(&blank), [("onBeforeNavigate", 1), ("onCommitted", 1)], "a navigation to about:blank is one");
+        assert_eq!(blank[1].details["transitionType"], "manual_subframe");
     }
 
     #[test]
