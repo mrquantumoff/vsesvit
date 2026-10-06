@@ -72,7 +72,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 48] = [
+const CHECKS: [&str; 49] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -83,6 +83,7 @@ const CHECKS: [&str; 48] = [
     "extension_port",
     "dnr_blocked",
     "dnr_site_allowed",
+    "dynamic_content_script",
     "bookmark",
     "star_bubble",
     "bookmark_export",
@@ -471,6 +472,36 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             return Err(format!("after the probe cleared its rule ({cleared}), a reload requested /vsesvit-blocked/pixel.png again ({seen} -> {after})"));
         }
         Ok(format!("the probe's allowAllRequests rule for the site ({allowed}) let a reload request /vsesvit-blocked/pixel.png ({before} -> {seen}); after it cleared the rule ({cleared}) a reload left it blocked"))
+    })
+    .await;
+
+    ctx.check("dynamic_content_script", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let view = tab.web_view();
+        let ask = async |want: &str, scripts: &str| {
+            eval_js(view, &format!("document.documentElement.dataset.vsesvitScripts = '{want}'")).await?;
+            let answer = wait_js(&last, view, "String(document.documentElement.dataset.vsesvitProbeScripts)", |seen| seen != "undefined").await;
+            if answer == scripts { Ok(answer) } else { Err(format!("asked to {want}, the probe answered {answer}")) }
+        };
+        let reload = async || {
+            eval_js(view, "window.stale = true").await?;
+            view.reload();
+            let ready = "String(!window.stale && document.readyState == 'complete' && document.documentElement.dataset.vsesvitProbe == 'background-replied')";
+            wait_js(&last, view, ready, |s| s == "true").await;
+            eval_js(view, "String(document.documentElement.dataset.vsesvitProbeDynamic)").await
+        };
+
+        let registered = ask("register", r#"{"scripts":["probe-dynamic"]}"#).await?;
+        let ran = reload().await?;
+        if ran != "isolated" {
+            return Err(format!("after the probe registered its script ({registered}), the reloaded page shows data-vsesvit-probe-dynamic = {ran}"));
+        }
+        let unregistered = ask("unregister", r#"{"scripts":[]}"#).await?;
+        let after = reload().await?;
+        if after != "undefined" {
+            return Err(format!("after the probe unregistered its script ({unregistered}), a reload still shows data-vsesvit-probe-dynamic = {after}"));
+        }
+        Ok(format!("the probe registered a content script for the site ({registered}), which ran in its world on the next load; unregistered ({unregistered}), it ran no more"))
     })
     .await;
 

@@ -35,6 +35,17 @@
       root.dataset.vsesvitProbeDnr = JSON.stringify({ error: String(e) });
     }
   }).observe(root, { attributes: true, attributeFilter: ["data-vsesvit-dnr"] });
+  // The self-test sets data-vsesvit-scripts: "register" for the dynamic content script, or "unregister".
+  new MutationObserver(async () => {
+    const want = root.dataset.vsesvitScripts;
+    if (!want) return;
+    delete root.dataset.vsesvitScripts;
+    try {
+      root.dataset.vsesvitProbeScripts = JSON.stringify(await chrome.runtime.sendMessage({ type: "scripts", want }));
+    } catch (e) {
+      root.dataset.vsesvitProbeScripts = JSON.stringify({ error: String(e) });
+    }
+  }).observe(root, { attributes: true, attributeFilter: ["data-vsesvit-scripts"] });
   const port = chrome.runtime.connect({ name: "probe" });
   port.onMessage.addListener((message) => {
     root.dataset.vsesvitProbePort = message;

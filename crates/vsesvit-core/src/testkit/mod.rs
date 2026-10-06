@@ -26,6 +26,7 @@ pub const PROBE_FILES: &[(&str, &[u8])] = &[
     probe_file!("manifest.json"),
     probe_file!("background.js"),
     probe_file!("content.js"),
+    probe_file!("dynamic.js"),
     probe_file!("popup.html"),
     probe_file!("popup.js"),
     probe_file!("rules.json"),

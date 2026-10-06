@@ -65,6 +65,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// A dynamic content script for the page's host, as uBlock Origin Lite registers its cosmetic filters.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "scripts") return false;
+  const scripting = chrome.scripting;
+  if (typeof scripting?.registerContentScripts !== "function") {
+    sendResponse({ api: "undefined" });
+    return false;
+  }
+  (async () => {
+    if (message.want === "register") {
+      const matches = ["*://" + new URL(sender.url).hostname + "/*"];
+      await scripting.registerContentScripts([{ id: "probe-dynamic", matches, js: ["dynamic.js"], persistAcrossSessions: false }]);
+    } else {
+      await scripting.unregisterContentScripts({ ids: ["probe-dynamic"] });
+    }
+    return { scripts: (await scripting.getRegisteredContentScripts()).map((s) => s.id) };
+  })().then(sendResponse, (e) => sendResponse({ error: String(e?.message ?? e) }));
+  return true;
+});
+
 if (chrome.notifications) {
   const notified = (event) => chrome.storage.local.set({ notification: { ...event, at: Date.now() } });
   chrome.notifications.onClicked.addListener((id) => notified({ event: "clicked", id }));

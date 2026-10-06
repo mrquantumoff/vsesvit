@@ -12,10 +12,10 @@
 //!    background; both twin entries run in one world, its `"world": "MAIN"` entry in the
 //!    page's;
 //! 4. the server saw `/allowed.png` and never `/vsesvit-blocked/pixel.png`;
-//! 5. the probe popup shows `visits=N`; page APIs and events work in it; its
-//!    `scripting.executeScript` is refused (no `scripting` permission); its `<all_urls>`
+//! 5. the probe popup shows `visits=N`; page APIs and events work in it; its `<all_urls>`
 //!    reaches no `file:` page (no content script, no tab URL, not in `permissions.contains`);
 //! 6. the widget popup's iframe loads in place instead of being blanked and opened as a tab;
+//!    its `scripting` calls are refused (no `scripting` permission);
 //! 7. the twin popup answers `permissions.contains` by pattern coverage and Chrome's
 //!    predefined `@@` messages, substitutes `getMessage` placeholders in one pass, and
 //!    opens the options page in a tab, where `chrome.*` works
@@ -393,9 +393,6 @@ mod linux {
             self.note("popup_storage_onchanged", onchanged.as_ref().is_some_and(|v| v["area"] == "local" && v["nv"] == 42), format!("{onchanged:?}"));
             let no_receiver = self.eval_async(&popup, "try { await chrome.tabs.sendMessage(1, { ping: 1 }); return 'replied'; } catch (e) { return String(e.message); }").await;
             self.note("popup_no_receiver", no_receiver.as_ref().and_then(Value::as_str).is_some_and(|s| s.contains("Receiving end does not exist")), format!("{no_receiver:?}"));
-            // The probe has host permissions for everything but not `scripting`.
-            let refused = self.eval_async(&popup, "try { await chrome.scripting.executeScript({ target: { tabId: 1 }, func: () => 1 }); return 'ran'; } catch (e) { return String(e.message); }").await;
-            self.note("scripting_permission_required", refused.as_ref().and_then(Value::as_str).is_some_and(|s| s.contains("\"scripting\" permission")), format!("{refused:?}"));
 
             // `<all_urls>` does not reach local files without the user's file-access grant,
             // which Vsesvit does not offer: no content script there, and the URL stays hidden.
@@ -425,6 +422,18 @@ mod linux {
             glib::timeout_future(Duration::from_millis(300)).await;
             let opened: Vec<String> = self.host.created.borrow().iter().filter(|u| u.contains("/page2.html")).cloned().collect();
             self.note("iframe_in_popup", framed && opened.is_empty(), format!("server got the frame = {framed}; tabs opened for it = {opened:?}"));
+            let refused = self
+                .eval_async(
+                    &popup,
+                    r#"const refused = async (call) => { try { await call(); return "ran"; } catch (e) { return e.message; } };
+                    return [
+                      await refused(() => chrome.scripting.executeScript({ target: { tabId: 1 }, func: () => 1 })),
+                      await refused(() => chrome.scripting.registerContentScripts([{ id: "x", matches: ["<all_urls>"], js: ["x.js"] }])),
+                    ];"#,
+                )
+                .await;
+            let expected = serde_json::json!(["scripting.executeScript requires the \"scripting\" permission", "scripting.registerContentScripts requires the \"scripting\" permission"]);
+            self.note("scripting_permission_required", refused == Some(expected), format!("{refused:?}"));
         }
 
         async fn twin_popup(&self) {
