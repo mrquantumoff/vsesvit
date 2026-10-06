@@ -11,6 +11,7 @@ mod omnibox_checks;
 mod page_checks;
 mod search_engine_checks;
 mod shortcut_checks;
+mod tab_menu_checks;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -457,6 +458,13 @@ async fn checks(
             .ok_or(detail)
     })
     .await;
+
+    let windows = browser.windows();
+    check(report, "tab_menu", DEFAULT_TIMEOUT, async |p| {
+        tab_menu_checks::tab_menu(browser, &window, &tab, &server, p).await
+    })
+    .await;
+    tab_menu_checks::tidy(browser, &windows, &window, &tab);
 
     check(report, "zoom_is_remembered_per_site", DEFAULT_TIMEOUT, async |p| {
         let page2 = server.url("/page2.html");
