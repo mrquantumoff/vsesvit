@@ -29,6 +29,7 @@ mod permission_steps;
 mod pip_steps;
 mod sync_live;
 mod progress_steps;
+mod tab_search_steps;
 mod tab_steps;
 mod toolbar_steps;
 mod tracker_steps;
@@ -744,6 +745,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     progress_steps::run(&window, out_dir, steps).await?;
     connection_steps::run(&window, &server, out_dir, steps).await?;
     tab_steps::run(&window, &server, out_dir, steps).await?;
+    tab_search_steps::run(&window, out_dir, steps).await?;
     motion_steps::run(&window, out_dir, steps).await?;
     permission_steps::run(browser, &window, &server, out_dir, steps).await?;
     tracker_steps::run(browser, &window, &server, out_dir, steps).await?;

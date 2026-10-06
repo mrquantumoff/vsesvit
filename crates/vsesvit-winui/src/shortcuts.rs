@@ -41,6 +41,8 @@ pub(crate) enum Command {
     NewWindow,
     CloseTab,
     ReopenClosedTab,
+    /// Chrome's tab search: the open tabs of every window and the recently closed ones.
+    SearchTabs,
     FocusAddress,
     Reload,
     Back,
@@ -93,6 +95,8 @@ const IMPLEMENTED: &[(Core, Command, InPage)] = &[
     (Core::NewTab, Command::NewTab, Reserved),
     (Core::CloseTab, Command::CloseTab, Reserved),
     (Core::ReopenClosedTab, Command::ReopenClosedTab, Reserved),
+    // Not among the keys Chrome keeps from pages.
+    (Core::SearchTabs, Command::SearchTabs, Overridable),
     (Core::NextTab, Command::NextTab, Reserved),
     (Core::PreviousTab, Command::PreviousTab, Reserved),
     (Core::SelectTab1, Command::SelectTab(0), Overridable),
@@ -861,6 +865,10 @@ mod tests {
         assert_eq!(
             find(0x09, CTRL_SHIFT),
             Some((Command::PreviousTab, Reserved))
+        );
+        assert_eq!(
+            find(0x41, CTRL_SHIFT),
+            Some((Command::SearchTabs, Overridable))
         );
         assert_eq!(
             find(0x33, Mods::CTRL),

@@ -24,11 +24,12 @@ use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::suggest::{Queries, SuggestRequest};
 use vsesvit_core::sync::Changed;
+use vsesvit_core::tab_search::{self, Hit, Listed, Row};
 use vsesvit_core::trackers::TrackerList;
 use vsesvit_core::{Profile, Url, onboarding};
 use windows_core::Interface;
 
-use crate::bindings::{CoreWebView2BrowsingDataKinds, ICoreWebView2Profile2};
+use crate::bindings::{CoreWebView2BrowsingDataKinds, ICoreWebView2Profile2, ImageSource};
 use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
 use crate::bookmarks_bar::{self, BarItem};
 use crate::config::{Config, Mode};
@@ -41,6 +42,7 @@ use crate::popup::ExtensionAction;
 use crate::session::{self, TabPlan, WindowPlan};
 use crate::shortcuts::Bindings;
 use crate::sync::{PrefEffect, SyncController};
+use crate::tab::{Tab, TabId};
 use crate::updates::{self, Action, Trigger, Updates};
 use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
 use crate::{app, cli, cookies, exec, instance, omnibox, platform, shortcuts, sync};
@@ -104,7 +106,15 @@ enum Preload {
 pub(crate) struct ClosedTab {
     pub url: String,
     pub title: String,
+    /// The tab's icon when it closed, for tab search.
+    pub favicon: Option<ImageSource>,
+    /// When it closed, on the use clock. No two closed tabs share it, so tab search names the
+    /// tab by it: unlike its place among them, it stays put while other tabs close.
+    pub closed: u64,
 }
+
+/// The tab a tab search row stands for: an open tab, or a closed one by when it closed.
+pub(crate) type TabHit = Hit<TabId, u64>;
 
 /// What `main` hands the UI: the opened profile and how opening it went.
 pub(crate) struct Launch {
@@ -128,6 +138,8 @@ pub(crate) struct Browser {
     dialog_windows: RefCell<Vec<Rc<DialogWindow>>>,
     closed_tabs: RefCell<Vec<ClosedTab>>,
     next_tab_id: Cell<u64>,
+    /// Orders tab search (see `Browser::tick`).
+    use_clock: Cell<u64>,
     prefs: Cell<WindowPrefs>,
     pub(crate) extensions: ExtensionHost,
     pub(crate) downloads: Downloads,
@@ -219,6 +231,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         dialog_windows: RefCell::new(Vec::new()),
         closed_tabs: RefCell::new(Vec::new()),
         next_tab_id: Cell::new(1),
+        use_clock: Cell::new(1),
         prefs: Cell::new(prefs),
         extensions: ExtensionHost::default(),
         downloads,
@@ -381,6 +394,12 @@ impl Browser {
 
     pub fn next_tab_id(&self) -> u64 {
         self.next_tab_id.replace(self.next_tab_id.get() + 1)
+    }
+
+    /// The use clock's next tick: later uses of tabs get larger ticks, which tab search lists
+    /// first.
+    pub fn tick(&self) -> u64 {
+        self.use_clock.replace(self.use_clock.get() + 1)
     }
 
     pub fn windows(&self) -> Vec<Rc<BrowserWindow>> {
@@ -557,10 +576,17 @@ impl Browser {
         drop(closed);
     }
 
-    pub fn remember_closed(&self, tab: ClosedTab) {
-        if !omnibox::has_link(&tab.url) {
+    pub fn remember_closed(&self, tab: &Tab) {
+        let state = tab.state();
+        if !omnibox::has_link(&state.url) {
             return;
         }
+        let tab = ClosedTab {
+            url: state.url,
+            title: state.title,
+            favicon: tab.look().favicon,
+            closed: self.tick(),
+        };
         let mut closed = self.closed_tabs.borrow_mut();
         closed.push(tab);
         let excess = closed.len().saturating_sub(CLOSED_TABS_KEPT);
@@ -569,6 +595,58 @@ impl Browser {
 
     pub fn take_closed(&self) -> Option<ClosedTab> {
         self.closed_tabs.borrow_mut().pop()
+    }
+
+    /// The closed tab that closed at `closed`, taken from wherever it is among them.
+    pub fn take_closed_at(&self, closed: u64) -> Option<ClosedTab> {
+        let mut tabs = self.closed_tabs.borrow_mut();
+        let at = tabs.iter().position(|t| t.closed == closed)?;
+        Some(tabs.remove(at))
+    }
+
+    /// Tab search's rows for `query`: the open tabs of every window, then the closed ones, as
+    /// core lists them, each with its icon.
+    pub fn search_tabs(&self, query: &str) -> Vec<(Row<TabId, u64>, Option<ImageSource>)> {
+        let tabs: Vec<Rc<Tab>> = self
+            .windows()
+            .iter()
+            .flat_map(|w| w.tabs_in_order())
+            .collect();
+        let open = tabs
+            .iter()
+            .map(|t| Listed {
+                key: t.id,
+                title: t.state().title,
+                url: t.session_url(),
+                used: t.used(),
+            })
+            .collect();
+        let closed_tabs = self.closed_tabs.borrow();
+        let closed = closed_tabs
+            .iter()
+            .map(|t| Listed {
+                key: t.closed,
+                title: t.title.clone(),
+                url: t.url.clone(),
+                used: t.closed,
+            })
+            .collect();
+        tab_search::rows(query, open, closed)
+            .into_iter()
+            .map(|row| {
+                let favicon = match row.hit {
+                    Hit::Open(id) => tabs
+                        .iter()
+                        .find(|t| t.id == id)
+                        .and_then(|t| t.look().favicon),
+                    Hit::Closed(at) => closed_tabs
+                        .iter()
+                        .find(|t| t.closed == at)
+                        .and_then(|t| t.favicon.clone()),
+                };
+                (row, favicon)
+            })
+            .collect()
     }
 
     pub fn can_reopen_closed_tab(&self) -> bool {

@@ -22,9 +22,11 @@ Microsoft.UI.Dispatching.DispatcherQueueHandler
 
 // ---- window ----
 Microsoft.UI.Xaml.Window::CreateInstance
-Microsoft.UI.Xaml.IWindow::{Activate, Close, put_Content, put_Title, put_ExtendsContentIntoTitleBar, SetTitleBar, Closed}
+Microsoft.UI.Xaml.IWindow::{Activate, Close, put_Content, put_Title, put_ExtendsContentIntoTitleBar, SetTitleBar, Closed, Activated}
 Microsoft.UI.Xaml.IWindow2::{put_SystemBackdrop, get_AppWindow}
 Microsoft.UI.Xaml.WindowEventArgs
+Microsoft.UI.Xaml.IWindowActivatedEventArgs::get_WindowActivationState
+Microsoft.UI.Xaml.WindowActivationState
 Microsoft.UI.Xaml.Media.MicaBackdrop::CreateInstance
 Microsoft.UI.Xaml.Media.SystemBackdrop
 Microsoft.UI.Windowing.IAppWindow::{ShowWithActivation, Resize, SetPresenterByKind, get_Id, get_Position, get_Size, MoveAndResize, get_Presenter, get_TitleBar}

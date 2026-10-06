@@ -26,6 +26,8 @@ pub(crate) struct StripEvents {
     pub new_tab: Box<dyn Fn()>,
     pub reordered: Box<dyn Fn()>,
     pub toggle_collapsed: Box<dyn Fn()>,
+    /// The pane's tab search button was clicked.
+    pub search_tabs: Box<dyn Fn()>,
     /// The tab's speaker was clicked.
     pub toggle_muted: Box<dyn Fn(TabId)>,
     /// The tab's context menu is opening: fill it.
@@ -322,9 +324,9 @@ impl TopStrip {
 const PINNED_TAB_WIDTH: f64 = 44.0;
 /// `TabView`'s narrowest and widest tabs.
 const TAB_WIDTHS: (f64, f64) = (100.0, 240.0);
-/// The strip's width that is not tabs: its header, the new tab button and the footer that drags
-/// the window.
-const STRIP_CHROME: f64 = 8.0 + 40.0 + 188.0;
+/// The strip's width that is not tabs: its header, the new tab button and the footer, which has
+/// the tab search button and drags the window.
+const STRIP_CHROME: f64 = 8.0 + 40.0 + 40.0 + 188.0;
 
 impl TabStrip for TopStrip {
     fn insert(&self, index: u32, tab: TabId, look: &TabLook) -> Result<()> {
@@ -408,6 +410,10 @@ const PANE_XAML: &str = r#"
           AutomationProperties.Name="Collapse the tab list">
     <FontIcon Glyph="&#xE700;" FontSize="16"/>
   </Button>
+  <Button x:Name="PaneSearch" Width="36" Height="32" Padding="0" HorizontalAlignment="Right"
+          Background="Transparent" BorderThickness="0" AutomationProperties.Name="Search tabs">
+    <FontIcon Glyph="&#xE721;" FontSize="14"/>
+  </Button>
   <Button x:Name="PaneNewTab" Grid.Row="1" Height="36" Padding="10,0" HorizontalAlignment="Stretch"
           HorizontalContentAlignment="Left" Background="Transparent" BorderThickness="0"
           AutomationProperties.Name="New tab">
@@ -472,6 +478,7 @@ pub(crate) struct SidePane {
     width_tween: anim::Tween,
     list: ListView,
     toggle: Button,
+    search: Button,
     new_tab: Button,
     new_tab_text: UIElement,
     media_host: Panel,
@@ -498,6 +505,7 @@ impl SidePane {
             width_tween: anim::Tween::find(&root, "PaneWidth")?,
             list: xaml::find(&root, "TabList")?,
             toggle: xaml::find(&root, "PaneToggle")?,
+            search: xaml::find(&root, "PaneSearch")?,
             new_tab: xaml::find(&root, "PaneNewTab")?,
             new_tab_text: xaml::find(&root, "PaneNewTabText")?,
             media_host: xaml::find(&root, "MediaHost")?,
@@ -515,6 +523,11 @@ impl SidePane {
         this.toggle
             .cast::<ButtonBase>()?
             .Click(move |_, _| (e.toggle_collapsed)())?
+            .forget();
+        let e = events.clone();
+        this.search
+            .cast::<ButtonBase>()?
+            .Click(move |_, _| (e.search_tabs)())?
             .forget();
         let e = events.clone();
         this.new_tab
@@ -668,6 +681,11 @@ impl SidePane {
         self.compact.get()
     }
 
+    /// The tab search button atop the pane, which the collapsed pane has no room for.
+    pub fn search_button(&self) -> &Button {
+        &self.search
+    }
+
     /// Collapsed, the pane is a column of favicons. Once shown, it narrows and widens in place.
     pub fn set_compact(&self, compact: bool) {
         self.compact.set(compact);
@@ -683,6 +701,7 @@ impl SidePane {
         }
         self.show_grip();
         let _ = xaml::set_visible(&self.new_tab_text, !compact);
+        let _ = xaml::set_visible(&self.search, !compact);
         self.show_shortcuts();
         self.rows.each_header(|header| header.set_compact(compact));
     }
@@ -697,6 +716,7 @@ impl SidePane {
         };
         for (button, tip) in [
             (&self.toggle, bindings.tip(toggle, Command::ToggleTabPane)),
+            (&self.search, bindings.tip("Search tabs", Command::SearchTabs)),
             (&self.new_tab, bindings.tip("New tab", Command::NewTab)),
         ] {
             let _ = xaml::set_tip(button, &tip);

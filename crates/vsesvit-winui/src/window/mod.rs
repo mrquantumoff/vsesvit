@@ -17,6 +17,7 @@ mod progress;
 mod tab_actions;
 mod tab_layout;
 mod tab_menu;
+mod tab_search;
 mod trackers;
 mod wiring;
 
@@ -55,6 +56,7 @@ use crate::{capture, connection, exec, platform, xaml, zoom};
 use chrome::Chrome;
 use tab_actions::Split;
 pub(crate) use tab_menu::TabAction;
+pub(crate) use tab_search::TabSearch;
 use wiring::{strip_events, with};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -221,6 +223,8 @@ pub(crate) struct BrowserWindow {
     connection: RefCell<Option<Flyout>>,
     /// The extension popup opened last.
     popup: RefCell<Option<Popup>>,
+    /// Tab search while it is open.
+    tab_search: RefCell<Option<Rc<TabSearch>>>,
     permissions: permissions::PermissionUi,
     dialog_open: Cell<bool>,
     /// What a scripted run's `show_dialog` shows over the window instead of the modal dialog.
@@ -292,6 +296,7 @@ impl BrowserWindow {
             editor: RefCell::new(None),
             connection: RefCell::new(None),
             popup: RefCell::new(None),
+            tab_search: RefCell::new(None),
             permissions: permissions::PermissionUi::default(),
             dialog_open: Cell::new(false),
             scripted_dialog: RefCell::new(None),
@@ -378,10 +383,36 @@ impl BrowserWindow {
             .expect("a window method runs while the window is alive")
     }
 
-    /// Brings the window forward for a launch the user started (a forwarded command line).
+    /// Brings the window forward, restored if it was minimized, for something the user did: a
+    /// forwarded command line, or switching to one of its tabs.
     pub fn activate(&self) {
+        let presenter = self
+            .app_window()
+            .and_then(|w| w.Presenter())
+            .and_then(|p| p.cast::<OverlappedPresenter>());
+        if let Ok(presenter) = presenter
+            && presenter
+                .State()
+                .is_ok_and(|s| s == OverlappedPresenterState::Minimized)
+            && let Err(e) = presenter.Restore()
+        {
+            log::warn!("restore window: {e}");
+        }
         if let Err(e) = self.window.Activate() {
             log::warn!("activate window: {e}");
+        }
+    }
+
+    /// The window came to the front: its selected tab counts as used now.
+    pub(super) fn window_activated(&self) {
+        if let Some(tab) = self.active_tab() {
+            self.mark_used(&tab);
+        }
+    }
+
+    fn mark_used(&self, tab: &Tab) {
+        if let Some(browser) = self.browser() {
+            tab.set_used(browser.tick());
         }
     }
 
@@ -435,6 +466,7 @@ impl BrowserWindow {
             restored.and_then(|p| p.id),
             self.me.clone(),
         )?;
+        tab.set_used(browser.tick());
         if let Initial::Url(url) = &initial {
             tab.set_planned(url, restored.map_or("", |p| p.title.as_str()));
         }
@@ -514,11 +546,7 @@ impl BrowserWindow {
             log::warn!("close tab {id}: {e}");
         }
         if let Some(browser) = self.browser() {
-            let state = tab.state();
-            browser.remember_closed(ClosedTab {
-                url: state.url,
-                title: state.title,
-            });
+            browser.remember_closed(&tab);
             browser.session_changed();
         }
         let last = self.tabs.borrow().is_empty();
@@ -573,6 +601,12 @@ impl BrowserWindow {
         self.strip().selected().and_then(|id| self.tab(id))
     }
 
+    /// Selects the tab `id`, as a click on its row does.
+    pub fn select_tab(&self, id: TabId) {
+        let _ = self.strip().select(id);
+        self.sync_selection();
+    }
+
     fn select_index(&self, index: usize) {
         if let Some(&id) = self.strip().order().get(index) {
             let _ = self.strip().select(id);
@@ -610,6 +644,7 @@ impl BrowserWindow {
             self.address.replace(Address::Page(String::new()));
             if let Some(tab) = &active {
                 tab.mark_active();
+                self.mark_used(tab);
                 self.take_to_site_zoom(tab);
             }
             if let Some(browser) = self.browser() {
@@ -962,12 +997,10 @@ impl BrowserWindow {
             }
             Command::ReopenClosedTab => {
                 if let Some(closed) = self.browser().and_then(|b| b.take_closed()) {
-                    log::info!("reopening {} ({})", closed.url, closed.title);
-                    if let Err(e) = self.open_url_tab(&closed.url, true) {
-                        log::error!("reopen tab: {e}");
-                    }
+                    self.reopen(closed);
                 }
             }
+            Command::SearchTabs => self.toggle_tab_search(),
             Command::FocusAddress => self.focus_address(),
             Command::Reload => {
                 if let Some(tab) = active {
@@ -1072,6 +1105,14 @@ impl BrowserWindow {
         }
     }
 
+    /// Opens a closed tab again, at the end of this window's tabs.
+    fn reopen(&self, closed: ClosedTab) {
+        log::info!("reopening {} ({})", closed.url, closed.title);
+        if let Err(e) = self.open_url_tab(&closed.url, true) {
+            log::error!("reopen tab: {e}");
+        }
+    }
+
     /// Applies the bindings in effect: the accelerators, the shortcuts that menus and tooltips
     /// name, and the pages' key sets.
     pub fn shortcuts_changed(&self) {
@@ -1122,6 +1163,7 @@ impl BrowserWindow {
             ),
             (ui.star.cast(), "Bookmark this page", Command::Bookmark),
             (ui.downloads.cast(), "Downloads", Command::ShowDownloads),
+            (ui.tab_search.cast(), "Search tabs", Command::SearchTabs),
         ];
         for (element, text, command) in tips {
             let tip = bindings.tip(text, command);

@@ -66,7 +66,17 @@ const WINDOW_XAML: &str = r#"
       <Grid Width="8"/>
     </TabView.TabStripHeader>
     <TabView.TabStripFooter>
-      <Grid x:Name="DragRegion" Background="Transparent" MinWidth="188"/>
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Button x:Name="TabSearch" Style="{StaticResource ToolbarButton}" Margin="2,0" VerticalAlignment="Center"
+                AutomationProperties.Name="Search tabs">
+          <FontIcon Glyph="&#xE721;" FontSize="14"/>
+        </Button>
+        <Grid x:Name="DragRegion" Grid.Column="1" Background="Transparent" MinWidth="188"/>
+      </Grid>
     </TabView.TabStripFooter>
   </TabView>
 
@@ -375,6 +385,7 @@ const WINDOW_XAML: &str = r#"
 pub(super) struct Chrome {
     pub(super) root: FrameworkElement,
     pub(super) tab_view: TabView,
+    pub(super) tab_search: Button,
     pub(super) drag_region: UIElement,
     pub(super) toolbar: UIElement,
     pub(super) more: FrameworkElement,
@@ -431,6 +442,7 @@ impl Chrome {
         let root: FrameworkElement = xaml::load(&xaml::with_acrylic_menu(WINDOW_XAML))?;
         Ok(Self {
             tab_view: xaml::find(&root, "Tabs")?,
+            tab_search: xaml::find(&root, "TabSearch")?,
             drag_region: xaml::find(&root, "DragRegion")?,
             toolbar: xaml::find(&root, "Toolbar")?,
             more: xaml::find(&root, "More")?,

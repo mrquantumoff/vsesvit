@@ -96,6 +96,8 @@ impl BrowserWindow {
         on_click(&ui.downloads, move || {
             with(&w, |w| w.show_dialog(Dialog::Downloads));
         })?;
+        let w = me();
+        on_click(&ui.tab_search, move || with(&w, |w| w.run(Command::SearchTabs)))?;
 
         let w = me();
         ui.address
@@ -193,6 +195,15 @@ impl BrowserWindow {
             .Opening(move |_, _| with(&w, BrowserWindow::menu_opening))?
             .forget();
 
+        let w = me();
+        self.window
+            .Activated(move |_, args| {
+                let state = args.as_ref().and_then(|a| a.WindowActivationState().ok());
+                if state != Some(WindowActivationState::Deactivated) {
+                    with(&w, BrowserWindow::window_activated);
+                }
+            })?
+            .forget();
         let w = me();
         self.window
             .Closed(move |_, _| {
@@ -316,6 +327,8 @@ pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
         });
     });
     let w = on(slot);
+    let search_tabs = Box::new(move || w(&|w| w.run(Command::SearchTabs)));
+    let w = on(slot);
     let toggle_muted = Box::new(move |id| {
         w(&|w| {
             if let Some(tab) = w.tab(id) {
@@ -341,6 +354,7 @@ pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
         new_tab,
         reordered,
         toggle_collapsed,
+        search_tabs,
         toggle_muted,
         menu,
         pane_space_changed,

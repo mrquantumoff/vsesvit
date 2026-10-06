@@ -138,6 +138,9 @@ pub(crate) struct Tab {
     /// navigations have none and count as links.
     transition: RefCell<PendingTransition>,
     last_active_ms: Cell<i64>,
+    /// When the tab last opened, was selected or had its window come to the front, on the
+    /// browser's use clock (`Browser::tick`): tab search lists the most recently used first.
+    used: Cell<u64>,
     favicon_generation: Cell<u64>,
     /// The engine's `Security.visibleSecurityStateChanged` reports: the page's TLS connection
     /// and certificate chain, which the lock's popup shows.
@@ -186,6 +189,7 @@ impl Tab {
             view_source: RefCell::new(None),
             transition: RefCell::default(),
             last_active_ms: Cell::new(now_ms()),
+            used: Cell::new(0),
             favicon_generation: Cell::new(0),
             security: RefCell::default(),
             pinned: Cell::new(false),
@@ -254,6 +258,14 @@ impl Tab {
 
     pub fn mark_active(&self) {
         self.last_active_ms.set(now_ms());
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used.get()
+    }
+
+    pub fn set_used(&self, at: u64) {
+        self.used.set(at);
     }
 
     pub fn view(&self) -> &WebView2 {

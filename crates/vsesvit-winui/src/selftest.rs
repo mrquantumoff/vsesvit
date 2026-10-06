@@ -12,6 +12,7 @@ mod page_checks;
 mod search_engine_checks;
 mod shortcut_checks;
 mod tab_menu_checks;
+mod tab_search_checks;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -565,6 +566,12 @@ async fn checks(
     let windows = browser.windows();
     check(report, "tab_menu", DEFAULT_TIMEOUT, async |p| {
         tab_menu_checks::tab_menu(browser, &window, &tab, &server, p).await
+    })
+    .await;
+    tab_menu_checks::tidy(browser, &windows, &window, &tab);
+
+    check(report, "tab_search", DEFAULT_TIMEOUT, async |p| {
+        tab_search_checks::tab_search(browser, &window, &tab, &server, p).await
     })
     .await;
     tab_menu_checks::tidy(browser, &windows, &window, &tab);
