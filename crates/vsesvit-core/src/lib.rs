@@ -57,6 +57,7 @@ pub mod cookies;
 pub mod crdt;
 mod db;
 pub mod downloads;
+pub mod export;
 pub mod ext_storage;
 pub mod extensions;
 pub mod favicons;
