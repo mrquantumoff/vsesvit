@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Vsesvit Windows",
+  "version": "1.0.0",
+  "description": "Test extension for windows and moving tabs between them.",
+  "browser_specific_settings": { "gecko": { "id": "windows@vsesvit.test" } },
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Vsesvit Windows", "default_popup": "popup.html" }
+}

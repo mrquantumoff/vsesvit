@@ -75,7 +75,16 @@
 //!     `updateContentScripts` changes what it names; `removeCSS` takes out what `insertCSS`
 //!     added, by text or file; a restart keeps only the scripts that persist across sessions,
 //!     `unregisterContentScripts` removes them, and an update of the extension drops them;
-//! 14. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//! 14. windows (`tests/fixtures/extensions/windows/`, no permissions): `windows.getAll`,
+//!     `get`, `getCurrent` and `getLastFocused` answer from the shell's windows, populated or
+//!     not; `windows.create` opens a window with its tab, which becomes the current one for a
+//!     popup; `tabs.create` puts a tab at an index of another window; `tabs.move` takes a tab to
+//!     another window, whose last tab it was, so it closes; `create` with a `tabId`, `update`
+//!     and `remove` work, and Chrome's errors refuse a state at odds with the focus or a size,
+//!     a private window and an unknown window; the events come in Chrome's order, a tab going
+//!     with its window says so; a page in a tab's current window is the tab's, not the
+//!     focused one;
+//! 15. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -125,6 +134,7 @@ mod linux {
     const NOTIFICATIONS_ID: &str = "notifications@vsesvit.test";
     const DNR_ID: &str = "dnr@vsesvit.test";
     const SCRIPTS_ID: &str = "scripts@vsesvit.test";
+    const WINDOWS_ID: &str = "windows@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -159,6 +169,8 @@ mod linux {
         *host.me.borrow_mut() = Rc::downgrade(&host);
         let runtime = Runtime::new(profile.clone(), &session, host.clone());
         *host.runtime.borrow_mut() = Some(runtime.clone());
+        // The first window reports itself as the shell's windows do when they open.
+        runtime.windows_changed();
 
         let probe_crx = out_dir.join("probe.crx");
         std::fs::write(&probe_crx, vsesvit_core::testkit::probe_crx()).expect("write probe.crx");
@@ -182,6 +194,8 @@ mod linux {
         write_xpi(&dnr_xpi, &fixture_files("dnr"));
         let scripts_xpi = out_dir.join("scripts.xpi");
         write_xpi(&scripts_xpi, &fixture_files("scripts"));
+        let windows_xpi = out_dir.join("windows.xpi");
+        write_xpi(&windows_xpi, &fixture_files("windows"));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -201,7 +215,9 @@ mod linux {
         assert_eq!(dnr.id.as_str(), DNR_ID);
         let scripts = install(&profile, &scripts_xpi);
         assert_eq!(scripts.id.as_str(), SCRIPTS_ID);
-        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr, &scripts] {
+        let windows = install(&profile, &windows_xpi);
+        assert_eq!(windows.id.as_str(), WINDOWS_ID);
+        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr, &scripts, &windows] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -231,6 +247,7 @@ mod linux {
             notifications_id: notifications.id.clone(),
             dnr,
             scripts,
+            windows_id: windows.id.clone(),
             out_dir: out_dir.clone(),
             window: window.clone(),
             results: RefCell::new(Vec::new()),
@@ -278,6 +295,7 @@ mod linux {
         notifications_id: ExtensionId,
         dnr: InstalledExtension,
         scripts: InstalledExtension,
+        windows_id: ExtensionId,
         out_dir: PathBuf,
         window: gtk::Window,
         results: RefCell<Vec<(&'static str, bool)>>,
@@ -349,7 +367,10 @@ mod linux {
             // 11. dynamic content scripts
             self.dynamic_scripts().await;
 
-            // 12. lifecycle events
+            // 12. windows
+            self.windows().await;
+
+            // 13. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -1333,6 +1354,140 @@ mod linux {
                 )
                 .await;
             report.and_then(|r| serde_json::from_str(&r).ok())
+        }
+
+        async fn windows(&self) {
+            let Some(popup) = self.popup(&self.windows_id, self.tab).await else {
+                self.note("windows_get_all", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Windows"), TIMEOUT).await;
+            let events = async || self.eval_async(&popup, r#"return chrome.runtime.sendMessage("events");"#).await.unwrap_or(Value::Null);
+            events().await;
+            let first = FIRST_WINDOW.0;
+            let count = self.host.tabs().iter().filter(|t| t.window_id == FIRST_WINDOW).count();
+
+            let seen = self
+                .eval_async(
+                    &popup,
+                    r#"const all = await chrome.windows.getAll({ populate: true });
+                    const missing = await chrome.windows.get(99).then(() => null, (e) => e.message);
+                    return {
+                        all: all.map((w) => [w.id, w.type, w.focused, w.incognito, w.tabs.length]),
+                        current: (await chrome.windows.getCurrent()).id,
+                        lastFocused: (await chrome.windows.getLastFocused()).id,
+                        byCurrentId: (await chrome.windows.get(chrome.windows.WINDOW_ID_CURRENT)).id,
+                        unpopulated: "tabs" in (await chrome.windows.get(1)),
+                        missing,
+                    };"#,
+                )
+                .await;
+            let expected = serde_json::json!({
+                "all": [[first, "normal", true, false, count]], "current": first, "lastFocused": first, "byCurrentId": first,
+                "unpopulated": false, "missing": "No window with id: 99.",
+            });
+            self.note("windows_get_all", seen.as_ref() == Some(&expected), format!("{seen:?}"));
+
+            let page2 = self.url("/page2.html");
+            let script = format!(
+                r#"const w = await chrome.windows.create({{ url: {page2:?} }});
+                const created = await chrome.tabs.create({{ windowId: 1, index: 1, active: false, url: "about:blank" }});
+                await chrome.tabs.remove(created.id);
+                return {{
+                    id: w.id, focused: w.focused, tabs: w.tabs.map((t) => [t.windowId, t.index, t.active]), tab: w.tabs[0].id,
+                    created: [created.id, created.windowId, created.index, created.active],
+                    current: (await chrome.windows.getCurrent()).id,
+                    active: (await chrome.tabs.query({{ active: true, currentWindow: true }})).map((t) => t.windowId),
+                    elsewhere: (await chrome.tabs.query({{ currentWindow: false }})).length,
+                    inFirst: (await chrome.tabs.query({{ windowId: 1 }})).length,
+                }};"#
+            );
+            let Some(opened) = self.eval_async(&popup, &script).await else {
+                self.note("windows_create", false, "windows.create failed");
+                return;
+            };
+            let (second, moving, created) = (opened["id"].as_u64().unwrap_or(0), opened["tab"].clone(), opened["created"][0].clone());
+            let expected = serde_json::json!({
+                "id": second, "focused": true, "tabs": [[second, 0, true]], "tab": moving,
+                "created": [created, first, 1, false], "current": second, "active": [second], "elsewhere": count, "inFirst": count,
+            });
+            self.note("windows_create", second > u64::from(first) && opened == expected, format!("{opened}"));
+
+            let script = format!(
+                r#"const moved = await chrome.tabs.move({moving}, {{ windowId: 1, index: -1 }});
+                return {{ moved: [moved.id, moved.windowId, moved.index], windows: (await chrome.windows.getAll()).map((w) => w.id) }};"#
+            );
+            let moved = self.eval_async(&popup, &script).await;
+            let expected = serde_json::json!({ "moved": [moving, first, count], "windows": [first] });
+            self.note("tabs_move_between_windows", moved.as_ref() == Some(&expected), format!("{moved:?}"));
+
+            let expected = serde_json::json!([
+                ["windows.onCreated", second], ["windows.onFocusChanged", second], ["tabs.onCreated", moving],
+                ["tabs.onCreated", created], ["tabs.onRemoved", created, { "windowId": first, "isWindowClosing": false }],
+                ["tabs.onDetached", moving, { "oldWindowId": second, "oldPosition": 0 }],
+                ["tabs.onAttached", moving, { "newWindowId": first, "newPosition": count }],
+                ["windows.onRemoved", second], ["windows.onFocusChanged", first],
+            ]);
+            let heard = wait_for_async(async || Some(events().await).filter(|e| e.as_array().is_some_and(|e| !e.is_empty())), TIMEOUT).await;
+            self.note("windows_events", heard.as_ref() == Some(&expected), format!("{heard:?}"));
+
+            let script = format!(
+                r#"const w = await chrome.windows.create({{ tabId: {moving}, focused: false, width: 500, height: 400 }});
+                const maximized = await chrome.windows.update(w.id, {{ state: "maximized" }});
+                const refused = [];
+                for (const call of [
+                    () => chrome.windows.update(w.id, {{ state: "minimized", focused: true }}),
+                    () => chrome.windows.create({{ state: "fullscreen", width: 300 }}),
+                    () => chrome.windows.create({{ incognito: true }}),
+                    () => chrome.tabs.move({moving}, {{ windowId: 99, index: 0 }}),
+                ]) refused.push(await call().then(() => null, (e) => e.message));
+                const before = (await chrome.windows.getAll()).map((w) => w.id);
+                const lastFocused = (await chrome.windows.getLastFocused()).id;
+                await chrome.windows.remove(w.id);
+                return {{
+                    window: [w.id, w.focused, w.width, w.height, w.tabs.map((t) => t.id)], state: maximized.state, refused, before, lastFocused,
+                    after: (await chrome.windows.getAll()).map((w) => w.id), tab: await chrome.tabs.get({moving}).then(() => null, (e) => e.message),
+                }};"#
+            );
+            let changed = self.eval_async(&popup, &script).await.unwrap_or(Value::Null);
+            let third = changed["window"][0].clone();
+            let expected = serde_json::json!({
+                "window": [third, false, 500, 400, [moving]], "state": "maximized",
+                "refused": ["Invalid value for state", "Invalid value for state", "Incognito mode is disabled.", "No window with id: 99."],
+                "before": [first, third], "lastFocused": first, "after": [first], "tab": format!("No tab with id: {moving}."),
+            });
+            self.note("windows_update_and_remove", changed == expected, format!("{changed}"));
+            let expected = serde_json::json!([
+                ["windows.onCreated", third],
+                ["tabs.onDetached", moving, { "oldWindowId": first, "oldPosition": count }],
+                ["tabs.onAttached", moving, { "newWindowId": third, "newPosition": 0 }],
+                ["tabs.onRemoved", moving, { "windowId": third, "isWindowClosing": true }],
+                ["windows.onRemoved", third],
+            ]);
+            let heard = wait_for_async(async || Some(events().await).filter(|e| e.as_array().is_some_and(|e| !e.is_empty())), TIMEOUT).await;
+            self.note("windows_events_closing", heard.as_ref() == Some(&expected), format!("{heard:?}"));
+
+            // A page in a tab is in that tab's window, even when another has the focus.
+            let opened = self.eval_async(&popup, r#"return (await chrome.windows.create({ url: chrome.runtime.getURL("popup.html"), focused: false })).tabs[0];"#).await.unwrap_or(Value::Null);
+            let (Some(page), Some(window)) = (opened["id"].as_u64().and_then(|id| self.host.web_view(TabId(id as u32))), opened["windowId"].as_u64()) else {
+                self.note("windows_current_in_a_tab", false, format!("windows.create gave {opened}"));
+                return;
+            };
+            wait_until(|| page.title().as_deref() == Some("Vsesvit Windows"), TIMEOUT).await;
+            let seen = self
+                .eval_async(
+                    &page,
+                    r#"return [
+                        (await chrome.windows.getCurrent()).id, (await chrome.windows.getLastFocused()).id,
+                        (await chrome.tabs.query({ active: true, currentWindow: true })).map((t) => t.windowId), (await chrome.tabs.getCurrent()).windowId,
+                    ];"#,
+                )
+                .await;
+            let expected = serde_json::json!([window, first, [window], window]);
+            self.note("windows_current_in_a_tab", seen.as_ref() == Some(&expected), format!("{seen:?}"));
+            self.eval_async(&popup, &format!("await chrome.windows.remove({window});")).await;
+            events().await;
         }
 
         async fn lifecycle(&self) {
