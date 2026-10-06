@@ -11,6 +11,9 @@ use vsesvit_core::html::escape as html_escape;
 use webkit::glib;
 
 use crate::content;
+use crate::dnr::Grants;
+use crate::dnr_rules::{Rules, Saved};
+use crate::filters::Compiles;
 use crate::i18n;
 use crate::menus::Menus;
 use crate::notifications::Notifications;
@@ -95,8 +98,11 @@ pub(crate) struct Extension {
     pub content_bootstrap: String,
     pub csp: String,
     pub host_permissions: Vec<String>,
-    /// Content-blocker JSON for the enabled static rulesets; `None` when there are none.
-    pub dnr_json: Option<String>,
+    /// What the extension's declarativeNetRequest rules may do; `None` without the permission
+    /// for them, when it has none.
+    pub grants: Option<Grants>,
+    pub dnr: RefCell<Rules>,
+    pub compiles: Compiles,
     pub background: RefCell<Option<webkit::WebView>>,
     /// Work waiting for the background to finish loading; `None` once it has, or when there
     /// is none.
@@ -112,6 +118,8 @@ pub(crate) struct Extension {
     pub active_tabs: RefCell<BTreeSet<TabId>>,
     pub menus: RefCell<Menus>,
     pub notifications: RefCell<Notifications>,
+    /// `storage.session`, which lasts as long as this load of the extension.
+    pub session_storage: RefCell<BTreeMap<String, Value>>,
 }
 
 impl Extension {
@@ -138,6 +146,7 @@ impl Extension {
                 "permissions": manifest.permissions,
                 "hostPermissions": host_permissions,
                 "optionsPage": manifest.options_page.as_ref().map(|p| p.as_str()),
+                "dnr": crate::dnr_rules::constants(),
             })
         };
         let content_bootstrap = protocol::bootstrap(&config("content", &handler, None));
@@ -153,7 +162,10 @@ impl Extension {
             &[],
         );
 
-        let dnr_json = content::dnr_json(&installed.dir, manifest, &base_url)?;
+        let grants = Grants::from_manifest(&manifest.permissions, &host_permissions);
+        if grants.is_none() && manifest.dnr_rulesets.iter().any(|r| r.enabled) {
+            log::warn!("{}: declarativeNetRequest rulesets ignored without the declarativeNetRequest permission", manifest.name);
+        }
         let action = manifest.action.as_ref().map(|a| ActionState {
             title: a.default_title.clone().unwrap_or_else(|| manifest.name.clone()),
             icon: largest_icon(&installed.dir, &a.default_icon).or_else(|| largest_icon(&installed.dir, &manifest.icons)),
@@ -178,7 +190,9 @@ impl Extension {
             content_bootstrap,
             csp: content_security_policy(manifest),
             host_permissions,
-            dnr_json,
+            grants,
+            dnr: RefCell::new(Rules::new(&manifest.dnr_rulesets, Saved::default()).0),
+            compiles: Compiles::default(),
             background: RefCell::new(None),
             background_waiting: RefCell::new(None),
             views: RefCell::new(Vec::new()),
@@ -190,6 +204,7 @@ impl Extension {
             active_tabs: RefCell::new(BTreeSet::new()),
             menus: RefCell::new(Menus::default()),
             notifications: RefCell::new(Notifications::default()),
+            session_storage: RefCell::new(BTreeMap::new()),
         })
     }
 

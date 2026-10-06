@@ -20,9 +20,27 @@ pub const MAX_NUMBER_OF_UNSAFE_SESSION_RULES: usize = 5_000;
 /// Across the dynamic and session rules.
 pub const MAX_NUMBER_OF_REGEX_RULES: usize = 1_000;
 pub const MAX_NUMBER_OF_ENABLED_STATIC_RULESETS: usize = 50;
-/// What `getAvailableStaticRuleCount` counts down from: Chrome's guaranteed 30,000 static
-/// rules plus its global pool of 300,000. Vsesvit sets no lower limit of its own.
-pub const STATIC_RULE_BUDGET: usize = 330_000;
+pub const MAX_NUMBER_OF_STATIC_RULESETS: usize = 100;
+pub const GUARANTEED_MINIMUM_STATIC_RULES: usize = 30_000;
+/// What `getAvailableStaticRuleCount` counts down from: Chrome's guaranteed static rules plus
+/// its global pool of 300,000. Vsesvit sets no lower limit of its own.
+pub const STATIC_RULE_BUDGET: usize = GUARANTEED_MINIMUM_STATIC_RULES + 300_000;
+
+/// The API's constants, as `chrome.declarativeNetRequest` has them.
+pub fn constants() -> Value {
+    json!({
+        "MAX_NUMBER_OF_DYNAMIC_RULES": MAX_NUMBER_OF_DYNAMIC_RULES,
+        "MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES": MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES,
+        "MAX_NUMBER_OF_SESSION_RULES": MAX_NUMBER_OF_SESSION_RULES,
+        "MAX_NUMBER_OF_UNSAFE_SESSION_RULES": MAX_NUMBER_OF_UNSAFE_SESSION_RULES,
+        "MAX_NUMBER_OF_REGEX_RULES": MAX_NUMBER_OF_REGEX_RULES,
+        "MAX_NUMBER_OF_STATIC_RULESETS": MAX_NUMBER_OF_STATIC_RULESETS,
+        "MAX_NUMBER_OF_ENABLED_STATIC_RULESETS": MAX_NUMBER_OF_ENABLED_STATIC_RULESETS,
+        "GUARANTEED_MINIMUM_STATIC_RULES": GUARANTEED_MINIMUM_STATIC_RULES,
+        "DYNAMIC_RULESET_ID": "_dynamic",
+        "SESSION_RULESET_ID": "_session",
+    })
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Scope {

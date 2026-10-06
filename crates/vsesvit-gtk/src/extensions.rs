@@ -26,7 +26,7 @@ pub(crate) enum InstallFailure {
     Run(InstallError),
     Commit(vsesvit_core::Error),
     /// Committed to the profile, but the runtime cannot run it (a file the manifest names
-    /// is missing or unreadable, a ruleset does not parse).
+    /// is missing or unreadable).
     Load(Box<InstalledExtension>, LoadError),
     WorkerPanicked,
 }

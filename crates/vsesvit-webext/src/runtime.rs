@@ -14,6 +14,7 @@ use webkit::glib;
 use webkit::prelude::*;
 
 use crate::bridge::{self, Origin, PortContext, Reply};
+use crate::dnr_rules::{Rules, Saved};
 use crate::extension::Extension;
 use crate::lifecycle::{self, InstallEvent, LoadReason};
 use crate::menus::{Entry, ItemId, Target};
@@ -41,8 +42,6 @@ pub enum LoadError {
         #[source]
         source: std::io::Error,
     },
-    #[error("ruleset {path}: {reason}")]
-    Ruleset { path: PathBuf, reason: String },
 }
 
 /// Cheap to clone; every clone is the same runtime.
@@ -77,7 +76,7 @@ impl Runtime {
     /// Registers the `chrome-extension` scheme on the default `WebContext`. One per process.
     pub fn new(profile: Rc<RefCell<Profile>>, session: &webkit::NetworkSession, host: Rc<dyn TabHost>) -> Runtime {
         let state_dir = profile.borrow().paths().root.join("webext");
-        for sub in ["filters", "installed", "menus"] {
+        for sub in ["dnr", "filters", "installed", "menus"] {
             if let Err(e) = std::fs::create_dir_all(state_dir.join(sub)) {
                 log::warn!("{}: {e}", state_dir.join(sub).display());
             }
@@ -132,8 +131,9 @@ impl Runtime {
                 attach(&self.0, &ext, *tab, state);
             }
         }
-        filters::compile(&self.0, &ext);
         let event = self.0.install_event(&ext, reason);
+        self.0.restore_rules(&ext, &event);
+        filters::compile(&self.0, &ext);
         self.0.restore_menus(&ext, &event);
         views::start_background(&self.0, &ext, event);
         self.0.notify_actions_changed();
@@ -389,7 +389,7 @@ impl Runtime {
     /// `storage.onChanged` in every context of that extension.
     pub fn storage_sync_changed(&self, ext: &ExtensionId, changes: &[StorageChange]) {
         if let Some(ext) = self.0.extension(ext) {
-            bridge::storage_changed(&self.0, &ext, Area::Sync, changes);
+            bridge::storage_changed(&self.0, &ext, crate::protocol::area_name(Area::Sync), changes);
         }
     }
 
@@ -467,6 +467,30 @@ fn detach(ext: &Extension, state: &mut TabState) {
     }
 }
 
+/// `file` as JSON; `None` when it does not exist or does not parse, which is logged.
+fn read_json<T: serde::de::DeserializeOwned>(file: &std::path::Path) -> Option<T> {
+    match std::fs::read_to_string(file).map(|text| serde_json::from_str(&text)) {
+        Ok(Ok(value)) => Some(value),
+        Ok(Err(e)) => {
+            log::warn!("{}: {e}", file.display());
+            None
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            log::warn!("{}: {e}", file.display());
+            None
+        }
+    }
+}
+
+fn remove_file(file: &std::path::Path) {
+    if let Err(e) = std::fs::remove_file(file)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        log::warn!("{}: {e}", file.display());
+    }
+}
+
 impl crate::gate::Policy for Runtime {
     fn may_navigate(&self, source: &str, target: &str) -> bool {
         Runtime::may_navigate(self, source, target)
@@ -532,6 +556,37 @@ impl Inner {
         }
     }
 
+    fn rules_file(&self, ext: &Extension) -> PathBuf {
+        self.state_dir.join("dnr").join(format!("{}.json", ext.host))
+    }
+
+    /// As in Chrome, dynamic rules last until the extension is installed afresh, and the
+    /// rulesets it enabled or disabled until its next version.
+    fn restore_rules(&self, ext: &Extension, event: &InstallEvent) {
+        let file = self.rules_file(ext);
+        let saved = match event {
+            InstallEvent::Installed => {
+                remove_file(&file);
+                Saved::default()
+            }
+            InstallEvent::Updated { .. } => Saved { enabled: None, ..read_json(&file).unwrap_or_default() },
+            InstallEvent::Startup | InstallEvent::Nothing => read_json(&file).unwrap_or_default(),
+        };
+        let (rules, skipped) = Rules::new(&ext.manifest.dnr_rulesets, saved);
+        if !skipped.is_empty() {
+            log::warn!("{}: saved declarativeNetRequest rules left out: {}", file.display(), crate::dnr::describe_skipped(&skipped));
+        }
+        *ext.dnr.borrow_mut() = rules;
+    }
+
+    pub(crate) fn save_rules(&self, ext: &Extension) {
+        let file = self.rules_file(ext);
+        let written = serde_json::to_string(&ext.dnr.borrow().saved()).map_err(std::io::Error::other).and_then(|json| std::fs::write(&file, json));
+        if let Err(e) = written {
+            log::warn!("{}: {e}", file.display());
+        }
+    }
+
     fn menus_file(&self, ext: &Extension) -> PathBuf {
         self.state_dir.join("menus").join(format!("{}.json", ext.host))
     }
@@ -542,21 +597,14 @@ impl Inner {
     fn restore_menus(&self, ext: &Extension, event: &InstallEvent) {
         let file = self.menus_file(ext);
         if matches!(event, InstallEvent::Installed | InstallEvent::Updated { .. }) {
-            if let Err(e) = std::fs::remove_file(&file)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                log::warn!("{}: {e}", file.display());
-            }
+            remove_file(&file);
             return;
         }
         if !ext.lazy_background() {
             return;
         }
-        match std::fs::read_to_string(&file).map(|text| serde_json::from_str(&text)) {
-            Ok(Ok(menus)) => *ext.menus.borrow_mut() = menus,
-            Ok(Err(e)) => log::warn!("{}: {e}", file.display()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => log::warn!("{}: {e}", file.display()),
+        if let Some(menus) = read_json(&file) {
+            *ext.menus.borrow_mut() = menus;
         }
     }
 

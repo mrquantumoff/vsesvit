@@ -14,13 +14,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use javascriptcore as jsc;
 use serde_json::{Map, Value, json};
-use vsesvit_core::ext_storage::{Area, StorageChange};
+use vsesvit_core::ext_storage::StorageChange;
 use webkit::prelude::*;
 use webkit::{gio, glib};
 
 use vsesvit_core::extensions::ExtensionId;
 
+use crate::dnr;
+use crate::dnr_rules::{STATIC_RULE_BUDGET, Scope};
 use crate::extension::{Alarm, Extension, ViewId};
+use crate::filters;
 use crate::menus::ItemId;
 use crate::messaging::{self, PortEvent, Wake};
 use crate::notifications::{self, Activation, Priority, Shown};
@@ -171,6 +174,12 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         | Method::NotificationsClear
         | Method::NotificationsGetAll
         | Method::NotificationsGetPermissionLevel => reply.finish(notifications(inner, ext, &call)),
+        Method::DnrUpdateDynamicRules | Method::DnrUpdateSessionRules | Method::DnrUpdateEnabledRulesets => update_rules(inner, ext, &call, reply),
+        Method::DnrGetDynamicRules
+        | Method::DnrGetSessionRules
+        | Method::DnrGetEnabledRulesets
+        | Method::DnrGetAvailableStaticRuleCount
+        | Method::DnrIsRegexSupported => reply.finish(rules(ext, &call)),
     }
 }
 
@@ -209,7 +218,8 @@ pub(crate) fn emit_to_tabs(inner: &Inner, ext: &Extension, event: &str, args: &[
     }
 }
 
-pub(crate) fn storage_changed(inner: &Inner, ext: &Extension, area: Area, changes: &[StorageChange]) {
+/// `area` as the shim names it (see [`protocol::area_name`]).
+pub(crate) fn storage_changed(inner: &Inner, ext: &Extension, area: &str, changes: &[StorageChange]) {
     if changes.is_empty() {
         return;
     }
@@ -224,9 +234,12 @@ pub(crate) fn storage_changed(inner: &Inner, ext: &Extension, area: Area, change
         }
         map.insert(c.key.clone(), Value::Object(entry));
     }
-    let args = [Value::Object(map), json!(protocol::area_name(area))];
+    let args = [Value::Object(map), json!(area)];
     emit_to_pages(inner, ext, "storage.onChanged", &args);
-    emit_to_tabs(inner, ext, "storage.onChanged", &args);
+    // Content scripts have no `storage.session`, as by default in Chrome.
+    if area != "session" {
+        emit_to_tabs(inner, ext, "storage.onChanged", &args);
+    }
 }
 
 // --- messaging --------------------------------------------------------------------------
@@ -430,6 +443,9 @@ fn port_call(inner: &Rc<Inner>, ext: &Extension, origin: Origin, call: &Call, re
 // --- storage ----------------------------------------------------------------------------
 
 fn storage(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<Value>, String> {
+    if call.arg(0).as_str() == Some("session") {
+        return session_storage(inner, ext, call);
+    }
     let area = protocol::storage_area(call.arg(0))?;
     let core_err = |e: vsesvit_core::Error| e.to_string();
     let changes = {
@@ -459,7 +475,39 @@ fn storage(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option
             _ => unreachable!("not a storage method"),
         }
     };
-    storage_changed(inner, ext, area, &changes);
+    storage_changed(inner, ext, protocol::area_name(area), &changes);
+    Ok(None)
+}
+
+/// `storage.session`: the same calls on items kept in memory while the extension is loaded.
+fn session_storage(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<Value>, String> {
+    let changes: Vec<StorageChange> = {
+        let mut items = ext.session_storage.borrow_mut();
+        let selected = |items: &BTreeMap<String, Value>| -> Result<Vec<(String, Value)>, String> {
+            let keys = key_list(call.arg(1))?;
+            Ok(items.iter().filter(|(k, _)| keys.as_ref().is_none_or(|ks| ks.contains(k))).map(|(k, v)| (k.clone(), v.clone())).collect())
+        };
+        match call.method {
+            Method::StorageGet => return Ok(Some(Value::Object(selected(&items)?.into_iter().collect()))),
+            Method::StorageGetBytesInUse => return Ok(Some(json!(selected(&items)?.iter().map(|(k, v)| k.len() + v.to_string().len()).sum::<usize>()))),
+            Method::StorageSet => {
+                let set = call.arg(1).as_object().ok_or("storage.set: items must be an object")?;
+                set.iter()
+                    .filter_map(|(key, value)| {
+                        let old = items.insert(key.clone(), value.clone());
+                        (old.as_ref() != Some(value)).then(|| StorageChange { key: key.clone(), old_value: old, new_value: Some(value.clone()) })
+                    })
+                    .collect()
+            }
+            Method::StorageRemove => {
+                let keys = key_list(call.arg(1))?.ok_or("storage.remove: keys required")?;
+                keys.into_iter().filter_map(|key| items.remove(&key).map(|old| StorageChange { key, old_value: Some(old), new_value: None })).collect()
+            }
+            Method::StorageClear => std::mem::take(&mut *items).into_iter().map(|(key, old)| StorageChange { key, old_value: Some(old), new_value: None }).collect(),
+            _ => unreachable!("not a storage method"),
+        }
+    };
+    storage_changed(inner, ext, "session", &changes);
     Ok(None)
 }
 
@@ -823,6 +871,61 @@ pub(crate) fn withdraw_notification(ext: &Extension, id: &str) {
     if let Some(app) = notifying_application() {
         app.withdraw_notification(&notification_id(ext, id));
     }
+}
+
+// --- declarativeNetRequest --------------------------------------------------------------
+
+fn dnr_permission(ext: &Extension, call: &Call) -> Result<(), String> {
+    match ext.grants {
+        Some(_) => Ok(()),
+        None => Err(format!("{} requires the \"declarativeNetRequest\" permission", call.method)),
+    }
+}
+
+/// `updateDynamicRules`, `updateSessionRules` and `updateEnabledRulesets`, which Chrome answers
+/// once the rules are in effect: here, once the tabs have the content blocker made from them,
+/// so that a page reloaded after the answer sees them.
+fn update_rules(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: Reply) {
+    if let Err(e) = dnr_permission(ext, call) {
+        return reply.err(&e);
+    }
+    let updated = {
+        let mut rules = ext.dnr.borrow_mut();
+        match call.method {
+            Method::DnrUpdateDynamicRules => rules.update(Scope::Dynamic, call.arg(0)),
+            Method::DnrUpdateSessionRules => rules.update(Scope::Session, call.arg(0)),
+            Method::DnrUpdateEnabledRulesets => rules.update_enabled(call.arg(0)),
+            _ => unreachable!("not a rules update"),
+        }
+    };
+    if let Err(e) = updated {
+        return reply.err(&e);
+    }
+    if call.method != Method::DnrUpdateSessionRules {
+        inner.save_rules(ext);
+    }
+    let change = filters::compile(inner, ext);
+    filters::when_compiled(ext, change, move || reply.ok(None));
+}
+
+fn rules(ext: &Extension, call: &Call) -> Result<Option<Value>, String> {
+    dnr_permission(ext, call)?;
+    let rules = ext.dnr.borrow();
+    Ok(Some(match call.method {
+        Method::DnrGetDynamicRules => json!(rules.get(Scope::Dynamic, call.arg(0))?),
+        Method::DnrGetSessionRules => json!(rules.get(Scope::Session, call.arg(0))?),
+        Method::DnrGetEnabledRulesets => json!(rules.enabled()),
+        Method::DnrGetAvailableStaticRuleCount => json!(STATIC_RULE_BUDGET.saturating_sub(ext.compiles.static_rules.get())),
+        // WebKit's regex subset, since a rule WebKit cannot compile blocks nothing.
+        Method::DnrIsRegexSupported => {
+            let regex = call.arg(0)["regex"].as_str().ok_or("isRegexSupported: regex must be a string")?;
+            match dnr::check_webkit_regex(regex) {
+                Ok(()) => json!({ "isSupported": true }),
+                Err(_) => json!({ "isSupported": false, "reason": "syntaxError" }),
+            }
+        }
+        _ => unreachable!("not a rules query"),
+    }))
 }
 
 // --- alarms -----------------------------------------------------------------------------

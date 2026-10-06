@@ -4,7 +4,6 @@ use std::path::Path;
 
 use vsesvit_core::extensions::manifest::{ContentScript, Manifest, RunAt, World};
 
-use crate::dnr;
 use crate::patterns;
 use crate::runtime::LoadError;
 
@@ -75,35 +74,4 @@ fn injection_time(entry: &ContentScript) -> webkit::UserScriptInjectionTime {
         RunAt::DocumentStart => webkit::UserScriptInjectionTime::Start,
         RunAt::DocumentEnd | RunAt::DocumentIdle => webkit::UserScriptInjectionTime::End,
     }
-}
-
-/// The merged content-blocker JSON of every enabled static ruleset, or `None` when the
-/// extension declares none, lacks the permission for them (see [`dnr::Grants`]), or every
-/// rule was inexpressible.
-pub(crate) fn dnr_json(dir: &Path, manifest: &Manifest, base_url: &str) -> Result<Option<String>, LoadError> {
-    let host_permissions: Vec<String> = manifest.host_permissions.iter().map(|p| p.as_str().to_owned()).collect();
-    let Some(grants) = dnr::Grants::from_manifest(&manifest.permissions, &host_permissions) else {
-        if manifest.dnr_rulesets.iter().any(|r| r.enabled) {
-            log::warn!("{}: declarativeNetRequest rulesets ignored without the declarativeNetRequest permission", manifest.name);
-        }
-        return Ok(None);
-    };
-    let mut rules = Vec::new();
-    for ruleset in manifest.dnr_rulesets.iter().filter(|r| r.enabled) {
-        let path = ruleset.path.resolve(dir);
-        let text = std::fs::read_to_string(&path).map_err(|e| LoadError::Io { path: path.clone(), source: e })?;
-        let (parsed, malformed) = dnr::parse_rules(&text).map_err(|e| LoadError::Ruleset { path: path.clone(), reason: e.to_string() })?;
-        if !malformed.is_empty() {
-            log::warn!("{}: skipped malformed rules: {}", path.display(), dnr::describe_skipped(&malformed));
-        }
-        rules.extend(parsed);
-    }
-    if rules.is_empty() {
-        return Ok(None);
-    }
-    let translation = dnr::translate(&rules, base_url.trim_end_matches('/'), &grants);
-    if !translation.skipped.is_empty() {
-        log::warn!("{}: declarativeNetRequest rules WebKit cannot express: {}", manifest.name, dnr::describe_skipped(&translation.skipped));
-    }
-    Ok((!translation.is_empty()).then(|| translation.to_json()))
 }
