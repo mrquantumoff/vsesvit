@@ -103,6 +103,13 @@ Tabs are vertical by default, in a sidebar on the left. A setting moves the side
 
 Which tabs Close Other Tabs and Close Tabs to the Right close (never pinned ones), and when Move to a new window is on, is `vsesvit-core`'s `tab_place`, shared by both shells.
 
+### Tab search
+
+Ctrl+Shift+A, Chrome's key, opens a box over two lists: Open tabs, from every window, and Recently closed. Each row shows the tab's icon, its title and its site. Core's `tab_search::rows` narrows and orders the rows. With nothing typed, every tab is listed, the most recently used first. Typed text keeps the tabs whose title or address has it, ranked as the omnibox ranks bookmarks: title prefix, then title, then address. Open tabs always come before closed ones. "Most recently used" is a counter in the shell that ticks when a tab opens, is selected or its window comes to the front, and when a tab closes. A closed tab keeps its tick as its key in the closed-tab stack, so a row names the same tab however the stack changes. The first row is selected. Up and Down move the selection and wrap around at the ends. Enter or a click selects an open tab and brings its window forward, or reopens a closed one in the current window. Rows have no close button and no match highlighting, and closed tabs show no time.
+
+- **Linux.** A `GtkPopover` holds a `GtkSearchEntry` over a `GtkListBox`, whose header function draws the two headings. It opens from a Search Tabs button at the top of the tab sidebar, or at the end of the `AdwTabBar` with tabs on top. A reopened tab keeps its back/forward history, as Ctrl+Shift+T does.
+- **Windows.** A `Flyout` holds a `TextBox` over a `ListView`, with the headings as items that can't be selected. It opens from a search button next to the pane's collapse button, or after the new tab button on the top strip. The collapsed pane has no room for the button, so the shortcut opens the flyout under the toolbar there. A reopened tab opens its address again.
+
 ## Page commands
 
 Print, Developer tools, the JavaScript console and View page source are rows in core's shortcut table, with Chrome's keys. Like every other shortcut they can be reassigned. View page source opens `view-source:<page>` in a new tab next to the page, for http, https and file pages.
