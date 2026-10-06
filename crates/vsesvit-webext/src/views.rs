@@ -59,7 +59,7 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
             if (uri.starts_with("http://") || uri.starts_with("https://") || inside)
                 && let Some(inner) = weak_inner.upgrade()
             {
-                inner.host.create_tab(uri, true);
+                inner.open_tab(uri);
             }
         };
         match decision_type {

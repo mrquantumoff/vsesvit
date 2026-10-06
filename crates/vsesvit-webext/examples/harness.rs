@@ -112,7 +112,7 @@ mod linux {
     use vsesvit_core::{OpenOptions, Profile};
     use vsesvit_webext::menus::{Entry, ItemId, Target};
     use vsesvit_webext::notifications::{Activation, Priority, Shown};
-    use vsesvit_webext::{Gate, LoadReason, Runtime, TabHost, TabId, TabInfo};
+    use vsesvit_webext::{Gate, LoadReason, NewTab, NewWindow, Runtime, TabHost, TabId, TabInfo, WindowId, WindowInfo, WindowState, WindowUpdate};
     use webkit::prelude::*;
     use webkit::{gio, glib};
 
@@ -209,7 +209,7 @@ mod linux {
         }
         println!("[harness] loaded {:?}; pending filters = {}", runtime.loaded().iter().map(|i| i.as_str()).collect::<Vec<_>>(), runtime.pending_filters());
 
-        let tab = host.create_tab("about:blank", true).expect("first tab");
+        let tab = host.open("about:blank", true).expect("first tab");
         let view = host.web_view(tab).expect("first tab view");
 
         let main_loop = glib::MainLoop::new(None, false);
@@ -398,7 +398,7 @@ mod linux {
             // which Vsesvit does not offer: no content script there, and the URL stays hidden.
             let page = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/site/index.html").canonicalize().expect("fixture page");
             let file_url = format!("file://{}", page.display());
-            let local = self.host.create_tab(&file_url, false).expect("file tab");
+            let local = self.host.open(&file_url, false).expect("file tab");
             let local_view = self.host.web_view(local).expect("file tab view");
             wait_until(|| local_view.title().as_deref() == Some("Vsesvit fixture"), TIMEOUT).await;
             glib::timeout_future(Duration::from_millis(1000)).await;
@@ -499,8 +499,8 @@ mod linux {
             self.note("send_message_reaches_every_page", broadcast.as_ref().is_some_and(|v| v["options"] == "pong"), format!("popup -> runtime.sendMessage(to-options) = {broadcast:?}"));
 
             // More tabs: one the twin may not touch, one it may but has no content script in.
-            let other = self.host.create_tab("data:text/html,<title>Vsesvit other</title>", false).expect("data tab");
-            let plain = self.host.create_tab(&self.url("/page2.html"), false).expect("page2 tab");
+            let other = self.host.open("data:text/html,<title>Vsesvit other</title>", false).expect("data tab");
+            let plain = self.host.open(&self.url("/page2.html"), false).expect("page2 tab");
             let other_view = self.host.web_view(other).expect("data tab view");
             let plain_view = self.host.web_view(plain).expect("page2 tab view");
             let loaded = wait_until(|| other_view.title().as_deref() == Some("Vsesvit other") && plain_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
@@ -530,7 +530,7 @@ mod linux {
 
             // Injection follows the committed document: navigating a tab the twin may not
             // touch to one of its own pages does not let a script into the page still shown.
-            let third = self.host.create_tab("data:text/html,<title>Vsesvit third</title>", false).expect("third tab");
+            let third = self.host.open("data:text/html,<title>Vsesvit third</title>", false).expect("third tab");
             let third_view = self.host.web_view(third).expect("third tab view");
             wait_until(|| third_view.title().as_deref() == Some("Vsesvit third"), TIMEOUT).await;
             let pending = self
@@ -567,7 +567,7 @@ mod linux {
             self.note("tabs_update_defaults_to_the_active_tab", to_active, format!("[active tab, tabs.update({{}}) tab] = {defaulted:?}"));
 
             // A web page cannot drive the options page (not web-accessible) through its URL.
-            let lure = self.host.create_tab(&self.url("/page2.html"), false).expect("lure tab");
+            let lure = self.host.open(&self.url("/page2.html"), false).expect("lure tab");
             let lure_view = self.host.web_view(lure).expect("lure tab view");
             wait_until(|| lure_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
             let target = format!("chrome-extension://{url_host}/options.html?from=web");
@@ -577,7 +577,7 @@ mod linux {
             self.note("web_page_cannot_open_extension_page", ran.is_some() && ran.as_deref() != Some(TWIN_ID), format!("options.js in tab {} after a web page navigated it to {target} = {ran:?}", lure.0));
             // Nor by sending no Referer, which the page's own referrer policy decides, and not
             // when the user then reloads the tab, which the browser starts.
-            let quiet = self.host.create_tab(&self.url("/page2.html"), false).expect("no-referrer lure tab");
+            let quiet = self.host.open(&self.url("/page2.html"), false).expect("no-referrer lure tab");
             let quiet_view = self.host.web_view(quiet).expect("no-referrer lure tab view");
             wait_until(|| quiet_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
             let lure_script = format!("document.head.insertAdjacentHTML('beforeend', '<meta name=\"referrer\" content=\"no-referrer\">'); location.href = {}; 'navigating'", Value::String(target.clone()));
@@ -589,14 +589,14 @@ mod linux {
             self.note("web_page_without_referrer_cannot_open_extension_page", ran.is_some() && ran.as_deref() != Some(TWIN_ID), format!("options.js in tab {} after a no-referrer page navigated it to {target} and it reloaded = {ran:?}", quiet.0));
             // Nor a site that redirects there, even in a load the browser started.
             let bounce = bounce_to(format!("chrome-extension://{url_host}/options.html?bounced"));
-            let bounced = self.host.create_tab(&bounce, false).expect("bounced tab");
+            let bounced = self.host.open(&bounce, false).expect("bounced tab");
             let bounced_view = self.host.web_view(bounced).expect("bounced tab view");
             glib::timeout_future(Duration::from_millis(1500)).await;
             let title = bounced_view.title().map(String::from);
             self.note("redirect_cannot_open_extension_page", title.as_deref() != Some(format!("options:{TWIN_ID}").as_str()), format!("tab {} title after {bounce} redirected it to the options page = {title:?}", bounced.0));
             // The browser's own navigations still reach the extension's pages: back to the
             // options page from a site it linked to.
-            let back = self.host.create_tab(&format!("chrome-extension://{url_host}/options.html"), false).expect("options tab");
+            let back = self.host.open(&format!("chrome-extension://{url_host}/options.html"), false).expect("options tab");
             let back_view = self.host.web_view(back).expect("options tab view");
             let options_title = format!("options:{TWIN_ID}");
             wait_until(|| back_view.title().as_deref() == Some(options_title.as_str()), TIMEOUT).await;
@@ -606,7 +606,7 @@ mod linux {
             let returned = wait_until(|| back_view.title().as_deref() == Some(options_title.as_str()), TIMEOUT).await;
             self.note("browser_navigates_back_to_extension_page", returned, format!("tab {} title after going back = {:?}", back.0, back_view.title()));
             // Nor through a window a web page opened at the twin's web-accessible page and keeps.
-            let opener = self.host.create_tab(&self.url("/page2.html"), false).expect("opener tab");
+            let opener = self.host.open(&self.url("/page2.html"), false).expect("opener tab");
             let opener_view = self.host.web_view(opener).expect("opener tab view");
             if let Some(settings) = WebViewExt::settings(&opener_view) {
                 settings.set_javascript_can_open_windows_automatically(true);
@@ -625,7 +625,7 @@ mod linux {
 
         async fn ports(&self) {
             let ports_id = ExtensionId::parse(PORTS_ID).expect("ports id");
-            let tab = self.host.create_tab(&self.url("/index.html"), false).expect("ports tab");
+            let tab = self.host.open(&self.url("/index.html"), false).expect("ports tab");
             let view = self.host.web_view(tab).expect("ports tab view");
             let world = Some(PORTS_ID);
             let reply = self.wait_for_js(&view, "String(document.documentElement.dataset.portsReply)", world, |v| v == "pong").await;
@@ -656,7 +656,7 @@ mod linux {
                 .await;
             self.note("tabs_connect", to_tab.as_ref().is_some_and(|v| v["echo"] == "hi" && v["name"] == "to-tab"), format!("tabs.connect -> content script echo = {to_tab:?}"));
 
-            let other = self.host.create_tab(&self.url("/page2.html"), false).expect("page2 tab");
+            let other = self.host.open(&self.url("/page2.html"), false).expect("page2 tab");
             let other_view = self.host.web_view(other).expect("page2 tab view");
             wait_until(|| other_view.title().as_deref() == Some("Vsesvit fixture 2"), TIMEOUT).await;
             let nobody = self
@@ -823,7 +823,7 @@ mod linux {
             self.note("commands_get_all_background", from_background.as_ref() == Some(&resolved), format!("{from_background:?}"));
 
             let page2 = self.url("/page2.html");
-            let other = self.host.create_tab(&page2, false).expect("second tab");
+            let other = self.host.open(&page2, false).expect("second tab");
             let other_view = self.host.web_view(other).expect("second tab view");
             self.wait_for_js(&other_view, "document.readyState", None, |s| s == "complete").await;
             let Some(popup) = self.popup(&id, self.tab).await else {
@@ -1365,7 +1365,7 @@ mod linux {
                 self.note("runtime_reload", false, "no options tab to reload from");
                 return;
             };
-            let page = self.host.create_tab(&options_url, false).expect("options tab");
+            let page = self.host.open(&options_url, false).expect("options tab");
             let view = self.host.web_view(page).expect("options tab view");
             self.wait_for_js(&view, "JSON.stringify(window.__twinOptions || null)", None, |v| v.contains("\"done\":true")).await;
             let before = self.twin_lives().len();
@@ -1513,10 +1513,11 @@ mod linux {
         fn flush(&self) {}
     }
 
-    // --- the shell side: one window, tabs stacked in a box ---------------------------------
+    // --- the shell side: windows of tabs, every tab's view stacked in one box --------------
 
     struct Tab {
         id: TabId,
+        window: Cell<WindowId>,
         view: webkit::WebView,
         /// The document on screen, as the GTK shell reports it: set on commit, never the
         /// URL still loading.
@@ -1525,18 +1526,34 @@ mod linux {
         gate: Rc<RefCell<Gate>>,
     }
 
+    /// A window as the GTK shell's windows report themselves, without a GTK window of its
+    /// own: the views all live in the harness window.
+    struct HostWindow {
+        id: WindowId,
+        state: WindowState,
+        width: u32,
+        height: u32,
+    }
+
+    const FIRST_WINDOW: WindowId = WindowId(1);
+
     /// Builds every tab the way the GTK shell does: a WebView on the runtime's
-    /// `UserContentManager` for that tab id.
+    /// `UserContentManager` for that tab id. Reports every change to the tabs' places and to
+    /// the windows as the shell does.
     struct Host {
         session: webkit::NetworkSession,
         container: gtk::Box,
+        /// Each window's tabs in order; a window's first tab is its selected one.
         tabs: RefCell<Vec<Tab>>,
+        /// Most recently focused first; the first one has the focus.
+        windows: RefCell<Vec<HostWindow>>,
         runtime: RefCell<Option<Runtime>>,
         /// Every URL `create_tab` was asked to open, for checks that expect none.
         created: RefCell<Vec<String>>,
         /// Every target a gate refused, for checks that wait on one.
         refused: Rc<RefCell<Vec<String>>>,
         next_id: Cell<u32>,
+        next_window: Cell<u32>,
         me: RefCell<std::rc::Weak<Host>>,
     }
 
@@ -1546,10 +1563,12 @@ mod linux {
                 session,
                 container,
                 tabs: RefCell::new(Vec::new()),
+                windows: RefCell::new(vec![HostWindow { id: FIRST_WINDOW, state: WindowState::Normal, width: 800, height: 600 }]),
                 runtime: RefCell::new(None),
                 created: RefCell::new(Vec::new()),
                 refused: Rc::new(RefCell::new(Vec::new())),
                 next_id: Cell::new(1),
+                next_window: Cell::new(FIRST_WINDOW.0 + 1),
                 me: RefCell::new(std::rc::Weak::new()),
             }
         }
@@ -1560,10 +1579,43 @@ mod linux {
             id
         }
 
-        /// Adds `view` as tab `id`, wired as the GTK shell wires a tab's view: its navigations
-        /// and the windows it opens go through `gate`, as `Tab::may_navigate` sends them, and a
-        /// window it opens is a tab too.
-        fn add(&self, runtime: &Runtime, id: TabId, view: &webkit::WebView, gate: Gate) -> Rc<RefCell<Gate>> {
+        fn runtime(&self) -> Runtime {
+            self.runtime.borrow().clone().expect("the runtime is set before any tab")
+        }
+
+        /// A tab at the end of the first window.
+        fn open(&self, url: &str, active: bool) -> Option<TabId> {
+            self.create_tab(&NewTab { url: url.to_owned(), active, window: Some(FIRST_WINDOW), index: None })
+        }
+
+        /// Puts `tab` at `index` of its window (the end for `None` or past it).
+        fn place(&self, tab: Tab, index: Option<u32>) {
+            let mut tabs = self.tabs.borrow_mut();
+            let window = tab.window.get();
+            let positions: Vec<usize> = tabs.iter().enumerate().filter(|(_, t)| t.window.get() == window).map(|(i, _)| i).collect();
+            let at = index.and_then(|i| positions.get(i as usize).copied()).unwrap_or(tabs.len());
+            tabs.insert(at, tab);
+        }
+
+        fn take(&self, tab: TabId) -> Option<Tab> {
+            let mut tabs = self.tabs.borrow_mut();
+            let i = tabs.iter().position(|t| t.id == tab)?;
+            Some(tabs.remove(i))
+        }
+
+        /// A window left without tabs closes, as in the GTK shell.
+        fn close_if_empty(&self, window: WindowId) {
+            if self.tabs.borrow().iter().any(|t| t.window.get() == window) {
+                return;
+            }
+            self.windows.borrow_mut().retain(|w| w.id != window);
+            self.runtime().windows_changed();
+        }
+
+        /// Adds `view` as tab `id` at `index` of `window`, wired as the GTK shell wires a tab's
+        /// view: its navigations and the windows it opens go through `gate`, as
+        /// `Tab::may_navigate` sends them, and a window it opens is a tab beside it.
+        fn add(&self, runtime: &Runtime, id: TabId, view: &webkit::WebView, gate: Gate, window: WindowId, index: Option<u32>) -> Rc<RefCell<Gate>> {
             self.container.append(view);
             let gate = Rc::new(RefCell::new(gate));
             let committed = Rc::new(RefCell::new(String::new()));
@@ -1609,12 +1661,14 @@ mod linux {
                     let popup_id = host.next_id();
                     let popup = webkit::WebView::builder().related_view(view).user_content_manager(&runtime.user_content_manager(popup_id)).build();
                     let opened = Gate::opened_by(&gate.borrow());
-                    host.add(&runtime, popup_id, &popup, opened);
+                    let window = host.tabs.borrow().iter().find(|t| t.id == id).map_or(FIRST_WINDOW, |t| t.window.get());
+                    host.add(&runtime, popup_id, &popup, opened, window, None);
                     println!("[harness] host: tab {} opened tab {} at {target}", id.0, popup_id.0);
                     Some(popup)
                 }
             });
-            self.tabs.borrow_mut().push(Tab { id, view: view.clone(), committed, gate: gate.clone() });
+            self.place(Tab { id, window: Cell::new(window), view: view.clone(), committed, gate: gate.clone() }, index);
+            runtime.tab_attached(id);
             gate
         }
 
@@ -1640,31 +1694,43 @@ mod linux {
     }
 
     impl TabHost for Host {
-        fn tabs(&self) -> Vec<TabInfo> {
-            self.tabs
+        fn windows(&self) -> Vec<WindowInfo> {
+            self.windows
                 .borrow()
                 .iter()
                 .enumerate()
-                .map(|(i, t)| TabInfo {
-                    id: t.id,
-                    window_id: 1,
-                    index: i as u32,
-                    url: t.committed.borrow().clone(),
-                    title: t.view.title().map(String::from).unwrap_or_default(),
-                    active: i == 0,
+                .map(|(i, w)| WindowInfo { id: w.id, focused: i == 0, incognito: false, state: w.state, width: w.width, height: w.height })
+                .collect()
+        }
+
+        fn tabs(&self) -> Vec<TabInfo> {
+            let tabs = self.tabs.borrow();
+            let mut ids: Vec<WindowId> = self.windows.borrow().iter().map(|w| w.id).collect();
+            ids.sort();
+            ids.into_iter()
+                .flat_map(|window| {
+                    tabs.iter().filter(move |t| t.window.get() == window).enumerate().map(move |(i, t)| TabInfo {
+                        id: t.id,
+                        window_id: window,
+                        index: i as u32,
+                        url: t.committed.borrow().clone(),
+                        title: t.view.title().map(String::from).unwrap_or_default(),
+                        active: i == 0,
+                    })
                 })
                 .collect()
         }
 
-        fn create_tab(&self, url: &str, _active: bool) -> Option<TabId> {
+        fn create_tab(&self, tab: &NewTab) -> Option<TabId> {
             let runtime = self.runtime.borrow().clone()?;
+            let window = tab.window.unwrap_or(FIRST_WINDOW);
             let id = self.next_id();
             let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id)).build();
-            let gate = self.add(&runtime, id, &view, Gate::default());
-            self.created.borrow_mut().push(url.to_owned());
-            println!("[harness] host: create_tab({url}) -> tab {}", id.0);
-            gate.borrow_mut().browser_load(url);
-            view.load_uri(url);
+            let gate = self.add(&runtime, id, &view, Gate::default(), window, tab.index);
+            self.created.borrow_mut().push(tab.url.clone());
+            println!("[harness] host: create_tab({}) -> tab {} in window {}", tab.url, id.0, window.0);
+            gate.borrow_mut().browser_load(&tab.url);
+            view.load_uri(&tab.url);
             Some(id)
         }
 
@@ -1678,21 +1744,83 @@ mod linux {
             true
         }
 
-        fn remove_tab(&self, tab: TabId) -> bool {
-            let removed = {
-                let mut tabs = self.tabs.borrow_mut();
-                let Some(i) = tabs.iter().position(|t| t.id == tab) else { return false };
-                tabs.remove(i)
-            };
-            self.container.remove(&removed.view);
-            if let Some(runtime) = self.runtime.borrow().clone() {
-                runtime.tab_closed(tab);
+        fn move_tab(&self, tab: TabId, window: WindowId, index: Option<u32>) -> bool {
+            let Some(moving) = self.take(tab) else { return false };
+            let from = moving.window.replace(window);
+            self.place(moving, index);
+            if from == window {
+                self.runtime().tab_moved(tab);
+            } else {
+                self.runtime().tab_attached(tab);
+                self.close_if_empty(from);
             }
+            true
+        }
+
+        fn remove_tab(&self, tab: TabId) -> bool {
+            let Some(removed) = self.take(tab) else { return false };
+            self.container.remove(&removed.view);
+            self.runtime().tab_closed(tab, false);
+            self.close_if_empty(removed.window.get());
             true
         }
 
         fn web_view(&self, tab: TabId) -> Option<webkit::WebView> {
             self.tabs.borrow().iter().find(|t| t.id == tab).map(|t| t.view.clone())
+        }
+
+        fn create_window(&self, spec: &NewWindow) -> Option<WindowId> {
+            let id = WindowId(self.next_window.get());
+            self.next_window.set(id.0 + 1);
+            let window = HostWindow { id, state: spec.state, width: spec.width.unwrap_or(800), height: spec.height.unwrap_or(600) };
+            if spec.focused {
+                self.windows.borrow_mut().insert(0, window);
+            } else {
+                self.windows.borrow_mut().push(window);
+            }
+            self.runtime().windows_changed();
+            if let Some(tab) = spec.tab {
+                self.move_tab(tab, id, None);
+            }
+            for (i, url) in spec.urls.iter().enumerate() {
+                self.create_tab(&NewTab { url: url.clone(), active: i == 0, window: Some(id), index: None });
+            }
+            if spec.tab.is_none() && spec.urls.is_empty() {
+                self.create_tab(&NewTab { url: "about:blank".into(), active: true, window: Some(id), index: None });
+            }
+            Some(id)
+        }
+
+        fn update_window(&self, window: WindowId, update: &WindowUpdate) -> bool {
+            {
+                let mut windows = self.windows.borrow_mut();
+                let Some(i) = windows.iter().position(|w| w.id == window) else { return false };
+                let w = &mut windows[i];
+                w.state = update.state.unwrap_or(w.state);
+                w.width = update.width.unwrap_or(w.width);
+                w.height = update.height.unwrap_or(w.height);
+                if update.focused == Some(true) {
+                    let focused = windows.remove(i);
+                    windows.insert(0, focused);
+                }
+            }
+            self.runtime().windows_changed();
+            true
+        }
+
+        fn remove_window(&self, window: WindowId) -> bool {
+            if !self.windows.borrow().iter().any(|w| w.id == window) {
+                return false;
+            }
+            let ids: Vec<TabId> = self.tabs.borrow().iter().filter(|t| t.window.get() == window).map(|t| t.id).collect();
+            for id in ids {
+                if let Some(tab) = self.take(id) {
+                    self.container.remove(&tab.view);
+                    self.runtime().tab_closed(id, true);
+                }
+            }
+            self.close_if_empty(window);
+            true
         }
     }
 

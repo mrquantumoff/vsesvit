@@ -22,7 +22,8 @@ use crate::menus::{Entry, ItemId, Target};
 use crate::messaging::Ports;
 use crate::notifications::{self, Activation, Shown};
 use crate::protocol::Sender;
-use crate::tabs::{TabHost, TabId, TabInfo};
+use crate::tabs::{NewTab, TabHost, TabId, TabInfo};
+use crate::windows::{self, WindowId, WindowInfo};
 use crate::{filters, patterns, scheme, views};
 
 /// One toolbar action, for the shell to render.
@@ -59,6 +60,8 @@ pub(crate) struct Inner {
     ui_locale: String,
     pub(crate) extensions: RefCell<BTreeMap<ExtensionId, Rc<Extension>>>,
     tabs: RefCell<BTreeMap<TabId, TabState>>,
+    /// The windows as last reported, which the next report is compared with.
+    windows: RefCell<Vec<WindowInfo>>,
     actions_changed: RefCell<Vec<Rc<dyn Fn()>>>,
     pub(crate) pending_filters: Cell<usize>,
     pub(crate) filters_waiters: RefCell<Vec<Box<dyn FnOnce()>>>,
@@ -71,6 +74,9 @@ struct TabState {
     /// The content-script and page handlers of each attached extension.
     handlers: BTreeMap<ExtensionId, [glib::SignalHandlerId; 2]>,
     last: Option<TabInfo>,
+    /// Where the tab was after the last change to any tab's place; `None` until the shell
+    /// first puts it in a window.
+    placed: Option<(WindowId, u32)>,
 }
 
 impl Runtime {
@@ -94,6 +100,7 @@ impl Runtime {
             ui_locale: vsesvit_core::extensions::ui_locale(),
             extensions: RefCell::new(BTreeMap::new()),
             tabs: RefCell::new(BTreeMap::new()),
+            windows: RefCell::new(Vec::new()),
             actions_changed: RefCell::new(Vec::new()),
             pending_filters: Cell::new(0),
             filters_waiters: RefCell::new(Vec::new()),
@@ -175,7 +182,7 @@ impl Runtime {
         if let Some(state) = self.0.tabs.borrow().get(&tab) {
             return state.ucm.clone();
         }
-        let mut state = TabState { ucm: webkit::UserContentManager::new(), handlers: BTreeMap::new(), last: None };
+        let mut state = TabState { ucm: webkit::UserContentManager::new(), handlers: BTreeMap::new(), last: None, placed: None };
         for ext in &self.0.loaded_extensions() {
             attach(&self.0, ext, tab, &mut state);
         }
@@ -233,11 +240,46 @@ impl Runtime {
     }
 
     pub fn tab_activated(&self, tab: TabId) {
-        let window_id = self.0.tab_info(tab).map(|t| t.window_id).unwrap_or(1);
-        self.0.emit_to_all_pages("tabs.onActivated", &[json!({ "tabId": tab.0, "windowId": window_id })]);
+        let Some(info) = self.0.tab_info(tab) else { return };
+        self.0.emit_to_all_pages("tabs.onActivated", &[json!({ "tabId": tab.0, "windowId": info.window_id })]);
     }
 
-    pub fn tab_closed(&self, tab: TabId) {
+    /// The shell put `tab` into a window: a new tab (`tabs.onCreated`), or one from another
+    /// window (`tabs.onDetached`, then `tabs.onAttached`). Report it before selecting the tab,
+    /// so that, as in Chrome, `tabs.onActivated` comes after.
+    pub fn tab_attached(&self, tab: TabId) {
+        let Some(info) = self.0.tab_info(tab) else { return };
+        let placed = self.0.tabs.borrow().get(&tab).map(|s| s.placed);
+        match placed {
+            Some(None) => {
+                for ext in self.0.loaded_extensions() {
+                    bridge::emit_to_pages(&self.0, &ext, "tabs.onCreated", &[ext.tab_json(&info)]);
+                }
+            }
+            Some(Some((window, index))) if window != info.window_id => {
+                self.0.emit_to_all_pages("tabs.onDetached", &[json!(tab.0), json!({ "oldWindowId": window, "oldPosition": index })]);
+                self.0.emit_to_all_pages("tabs.onAttached", &[json!(tab.0), json!({ "newWindowId": info.window_id, "newPosition": info.index })]);
+            }
+            _ => {}
+        }
+        self.0.place_tabs();
+    }
+
+    /// The shell moved `tab` within its window: `tabs.onMoved`.
+    pub fn tab_moved(&self, tab: TabId) {
+        let placed = self.0.tabs.borrow().get(&tab).and_then(|s| s.placed);
+        if let (Some(info), Some((window, from))) = (self.0.tab_info(tab), placed)
+            && window == info.window_id
+            && from != info.index
+        {
+            self.0.emit_to_all_pages("tabs.onMoved", &[json!(tab.0), json!({ "windowId": window, "fromIndex": from, "toIndex": info.index })]);
+        }
+        self.0.place_tabs();
+    }
+
+    /// `window_closing` when the tab goes with its window, which extensions are told. A tab
+    /// the shell never put in a window was never announced, so nothing says it went.
+    pub fn tab_closed(&self, tab: TabId, window_closing: bool) {
         let removed = self.0.tabs.borrow_mut().remove(&tab);
         let Some(mut state) = removed else { return };
         self.0.close_ports(|c| c.origin.tab() == Some(tab));
@@ -245,8 +287,20 @@ impl Runtime {
             detach(ext, &mut state);
             ext.revoke_active_tab(tab);
         }
-        let window_id = state.last.as_ref().map(|t| t.window_id).unwrap_or(1);
-        self.0.emit_to_all_pages("tabs.onRemoved", &[json!(tab.0), json!({ "windowId": window_id, "isWindowClosing": false })]);
+        if let Some((window, _)) = state.placed {
+            self.0.emit_to_all_pages("tabs.onRemoved", &[json!(tab.0), json!({ "windowId": window, "isWindowClosing": window_closing })]);
+        }
+        self.0.place_tabs();
+    }
+
+    /// The shell's windows changed: one opened or closed, took or lost the focus, or was
+    /// resized. Extensions hear what changed since the last report ([`windows::changes`]).
+    pub fn windows_changed(&self) {
+        let now = self.0.host.windows();
+        let before = self.0.windows.replace(now.clone());
+        for event in windows::changes(&before, &now) {
+            self.0.emit_to_all_pages(event.name(), &event.args());
+        }
     }
 
     pub fn actions(&self) -> Vec<ActionInfo> {
@@ -528,6 +582,23 @@ impl Inner {
 
     pub(crate) fn tab_info(&self, tab: TabId) -> Option<TabInfo> {
         self.host.tabs().into_iter().find(|t| t.id == tab)
+    }
+
+    /// A selected tab at `url`, at the end of the last focused window.
+    pub(crate) fn open_tab(&self, url: &str) -> Option<TabId> {
+        let window = self.host.windows().first().map(|w| w.id);
+        self.host.create_tab(&NewTab { url: url.to_owned(), active: true, window, index: None })
+    }
+
+    /// Notes where every tab now is, which the next move is told from.
+    fn place_tabs(&self) {
+        let infos = self.host.tabs();
+        let mut tabs = self.tabs.borrow_mut();
+        for info in infos {
+            if let Some(state) = tabs.get_mut(&info.id) {
+                state.placed = Some((info.window_id, info.index));
+            }
+        }
     }
 
     pub(crate) fn emit_to_all_pages(&self, event: &str, args: &[Value]) {

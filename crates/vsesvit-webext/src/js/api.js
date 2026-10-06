@@ -346,6 +346,7 @@
         return [tabId, props || {}];
       }),
       remove: bridged("tabs.remove"),
+      move: bridged("tabs.move", null, (args) => [args[0], args[1] || {}]),
       reload: bridged("tabs.reload", null, (args) => [typeof args[0] === "number" ? args[0] : null]),
       sendMessage(tabId, message, options, callback) {
         if (typeof options === "function") { callback = options; options = null; }
@@ -359,6 +360,9 @@
       onActivated: new ExtensionEvent("tabs.onActivated"),
       onRemoved: new ExtensionEvent("tabs.onRemoved"),
       onCreated: new ExtensionEvent("tabs.onCreated"),
+      onMoved: new ExtensionEvent("tabs.onMoved"),
+      onDetached: new ExtensionEvent("tabs.onDetached"),
+      onAttached: new ExtensionEvent("tabs.onAttached"),
       TAB_ID_NONE: -1,
     };
     const filter = (args) => [args[0] || null];
@@ -524,16 +528,24 @@
     }
     // In extension pages only, as Chrome's default access level has it.
     storage.session = Object.assign(storageArea("session", { QUOTA_BYTES: 10485760 }), { setAccessLevel: local(() => undefined) });
-    const currentWindow = () => ({ id: 1, focused: true, incognito: false, type: "normal", state: "normal", alwaysOnTop: false });
+    const queryOptions = (args) => [args[0] || {}];
     const windows = {
       WINDOW_ID_NONE: -1,
       WINDOW_ID_CURRENT: -2,
-      getCurrent: local(currentWindow),
-      getLastFocused: local(currentWindow),
-      getAll: local(() => [currentWindow()]),
-      onFocusChanged: new ExtensionEvent("windows.onFocusChanged"),
+      WindowType: { NORMAL: "normal", POPUP: "popup", PANEL: "panel", APP: "app", DEVTOOLS: "devtools" },
+      WindowState: { NORMAL: "normal", MINIMIZED: "minimized", MAXIMIZED: "maximized", FULLSCREEN: "fullscreen", LOCKED_FULLSCREEN: "locked-fullscreen" },
+      CreateType: { NORMAL: "normal", POPUP: "popup", PANEL: "panel" },
+      get: bridged("windows.get", null, (args) => [args[0], args[1] || {}]),
+      getCurrent: bridged("windows.getCurrent", null, queryOptions),
+      getLastFocused: bridged("windows.getLastFocused", null, queryOptions),
+      getAll: bridged("windows.getAll", null, queryOptions),
+      create: bridged("windows.create", null, queryOptions),
+      update: bridged("windows.update", null, (args) => [args[0], args[1] || {}]),
+      remove: bridged("windows.remove"),
       onCreated: new ExtensionEvent("windows.onCreated"),
       onRemoved: new ExtensionEvent("windows.onRemoved"),
+      onFocusChanged: new ExtensionEvent("windows.onFocusChanged"),
+      onBoundsChanged: new ExtensionEvent("windows.onBoundsChanged"),
     };
     Object.assign(api, {
       tabs, scripting, action, browserAction: action, alarms, windows,

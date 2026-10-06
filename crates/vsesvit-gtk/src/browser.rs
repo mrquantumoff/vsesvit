@@ -30,7 +30,10 @@ use vsesvit_core::sync::Changed;
 use vsesvit_core::tab_search::{self, Listed, Row};
 use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_core::{Profile, Url};
-use vsesvit_webext::{ActionInfo, Runtime, TabHost, TabId, TabInfo};
+use vsesvit_webext::{
+    ActionInfo, NewTab, NewWindow, Runtime, TabHost, TabId, TabInfo, WindowId, WindowInfo,
+    WindowState, WindowUpdate,
+};
 use webkit::prelude::*;
 
 use crate::closed_tabs::{ClosedKey, ClosedTabs};
@@ -160,6 +163,14 @@ impl Browser {
                 updates: Updates::new(app, updates_automatic, updates_channel),
                 sync,
                 welcome: Cell::new(welcome),
+            }
+        });
+        let weak = Rc::downgrade(&inner);
+        app.connect_window_removed(move |_, window| {
+            if window.is::<BrowserWindow>()
+                && let Some(inner) = weak.upgrade()
+            {
+                inner.runtime.windows_changed();
             }
         });
         let weak = Rc::downgrade(&inner);
@@ -401,7 +412,7 @@ impl Browser {
 
     pub(crate) fn tab_closed(&self, tab: &Tab, position: i32, pinned: bool) {
         permissions::closed(tab);
-        self.runtime().tab_closed(tab.id());
+        self.runtime().tab_closed(tab.id(), false);
         self.schedule_session_save();
         let Some(uri) = tab.committed_uri().filter(|uri| uri != "about:blank") else {
             return;
@@ -419,10 +430,21 @@ impl Browser {
         self.0.closed_tabs.borrow_mut().push(closed);
     }
 
-    /// A tab that goes away with its window, without being closed one by one.
-    pub(crate) fn tab_discarded(&self, tab: &Tab) {
+    /// A tab that goes away without being closed one by one: with its window, or a
+    /// `window.open` view that never showed.
+    pub(crate) fn tab_discarded(&self, tab: &Tab, window_closing: bool) {
         permissions::closed(tab);
-        self.runtime().tab_closed(tab.id());
+        self.runtime().tab_closed(tab.id(), window_closing);
+    }
+
+    /// A window took `tab`: a new tab, or one from another window.
+    pub(crate) fn tab_attached(&self, tab: &Tab) {
+        self.runtime().tab_attached(tab.id());
+    }
+
+    pub(crate) fn tab_moved(&self, tab: &Tab) {
+        self.runtime().tab_moved(tab.id());
+        self.schedule_session_save();
     }
 
     pub(crate) fn tab_activated(&self, tab: &Tab) {
@@ -1054,16 +1076,85 @@ impl Host {
     fn browser(&self) -> Option<Browser> {
         self.0.upgrade().map(Browser)
     }
+
+    fn window(&self, id: WindowId) -> Option<BrowserWindow> {
+        self.browser()?.windows().into_iter().find(|w| w.id() == id.0)
+    }
+}
+
+/// What `chrome.windows` shows of `window`. Its size is the one on screen once it is shown.
+fn window_info(window: &BrowserWindow) -> WindowInfo {
+    let minimized = window
+        .surface()
+        .and_downcast::<gdk::Toplevel>()
+        .is_some_and(|toplevel| toplevel.state().contains(gdk::ToplevelState::MINIMIZED));
+    let state = if minimized {
+        WindowState::Minimized
+    } else if window.is_fullscreen() {
+        WindowState::Fullscreen
+    } else if window.is_maximized() {
+        WindowState::Maximized
+    } else {
+        WindowState::Normal
+    };
+    let (width, height) = if window.is_mapped() && window.width() > 0 {
+        (window.width(), window.height())
+    } else {
+        window.default_size()
+    };
+    WindowInfo {
+        id: WindowId(window.id()),
+        focused: window.is_active(),
+        incognito: false,
+        state,
+        width: width.max(0).cast_unsigned(),
+        height: height.max(0).cast_unsigned(),
+    }
+}
+
+fn set_window_state(window: &BrowserWindow, state: WindowState) {
+    match state {
+        WindowState::Normal => {
+            window.unfullscreen();
+            window.unmaximize();
+            if window_info(window).state == WindowState::Minimized {
+                window.present();
+            }
+        }
+        WindowState::Minimized => window.minimize(),
+        WindowState::Maximized => {
+            window.unfullscreen();
+            window.maximize();
+        }
+        WindowState::Fullscreen => window.fullscreen(),
+    }
+}
+
+fn set_window_size(window: &BrowserWindow, width: Option<u32>, height: Option<u32>) {
+    if width.is_none() && height.is_none() {
+        return;
+    }
+    let (current_width, current_height) = window.default_size();
+    let pixels = |size: Option<u32>, current: i32| {
+        size.map_or(current, |s| i32::try_from(s).unwrap_or(i32::MAX))
+    };
+    window.set_default_size(pixels(width, current_width), pixels(height, current_height));
 }
 
 impl TabHost for Host {
+    fn windows(&self) -> Vec<WindowInfo> {
+        self.browser()
+            .map(|browser| browser.windows().iter().map(window_info).collect())
+            .unwrap_or_default()
+    }
+
     fn tabs(&self) -> Vec<TabInfo> {
         let Some(browser) = self.browser() else { return Vec::new() };
         browser
             .windows()
             .into_iter()
             .flat_map(|window| {
-                let window_id = window.id();
+                let window_id = WindowId(window.id());
                 let selected = window.selected_tab();
                 window
                     .tabs()
@@ -1083,15 +1174,18 @@ impl TabHost for Host {
             .collect()
     }
 
-    fn create_tab(&self, url: &str, active: bool) -> Option<TabId> {
+    fn create_tab(&self, tab: &NewTab) -> Option<TabId> {
         let browser = self.browser()?;
-        let window = browser
-            .windows()
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| browser.open_window(&[]));
-        let focus = if active { Focus::Foreground } else { Focus::Background };
-        Some(window.open_tab(Some(url), None, focus).id())
+        let window = match tab.window {
+            Some(id) => self.window(id)?,
+            None => {
+                let window = BrowserWindow::new(&browser);
+                window.present();
+                window
+            }
+        };
+        let focus = if tab.active { Focus::Foreground } else { Focus::Background };
+        Some(window.open_tab_at(&tab.url, tab.index, focus).id())
     }
 
     fn update_tab(&self, tab: TabId, url: Option<&str>, active: Option<bool>) -> bool {
@@ -1107,6 +1201,15 @@ impl TabHost for Host {
         true
     }
 
+    fn move_tab(&self, tab: TabId, window: WindowId, index: Option<u32>) -> bool {
+        let found = self.browser().and_then(|b| b.find_tab(tab));
+        let (Some((from, tab)), Some(to)) = (found, self.window(window)) else {
+            return false;
+        };
+        from.move_tab(&tab, &to, index);
+        true
+    }
+
     fn remove_tab(&self, tab: TabId) -> bool {
         let Some((window, tab)) = self.browser().and_then(|b| b.find_tab(tab)) else {
             return false;
@@ -1119,6 +1222,48 @@ impl TabHost for Host {
         self.browser()
             .and_then(|b| b.find_tab(tab))
             .map(|(_, tab)| tab.web_view().clone())
+    }
+
+    fn create_window(&self, spec: &NewWindow) -> Option<WindowId> {
+        let browser = self.browser()?;
+        let window = BrowserWindow::new(&browser);
+        if let Some((from, tab)) = spec.tab.and_then(|id| browser.find_tab(id)) {
+            from.move_tab(&tab, &window, None);
+        }
+        window.open_tabs(&spec.urls);
+        if spec.tab.is_none() && spec.urls.is_empty() {
+            window.new_tab();
+        }
+        set_window_size(&window, spec.width, spec.height);
+        set_window_state(&window, spec.state);
+        if spec.focused {
+            window.present();
+        } else {
+            window.set_visible(true);
+        }
+        Some(WindowId(window.id()))
+    }
+
+    fn update_window(&self, window: WindowId, update: &WindowUpdate) -> bool {
+        let Some(window) = self.window(window) else {
+            return false;
+        };
+        if let Some(state) = update.state {
+            set_window_state(&window, state);
+        }
+        set_window_size(&window, update.width, update.height);
+        if update.focused == Some(true) {
+            window.present();
+        }
+        true
+    }
+
+    fn remove_window(&self, window: WindowId) -> bool {
+        let Some(window) = self.window(window) else {
+            return false;
+        };
+        window.close();
+        true
     }
 }
 

@@ -134,6 +134,14 @@ methods! {
     TabsReload = "tabs.reload",
     TabsSendMessage = "tabs.sendMessage",
     TabsConnect = "tabs.connect",
+    TabsMove = "tabs.move",
+    WindowsGet = "windows.get",
+    WindowsGetCurrent = "windows.getCurrent",
+    WindowsGetLastFocused = "windows.getLastFocused",
+    WindowsGetAll = "windows.getAll",
+    WindowsCreate = "windows.create",
+    WindowsUpdate = "windows.update",
+    WindowsRemove = "windows.remove",
     ScriptingExecuteScript = "scripting.executeScript",
     ScriptingInsertCss = "scripting.insertCSS",
     ScriptingRemoveCss = "scripting.removeCSS",
@@ -462,6 +470,14 @@ mod tests {
             "tabs.reload",
             "tabs.sendMessage",
             "tabs.connect",
+            "tabs.move",
+            "windows.get",
+            "windows.getCurrent",
+            "windows.getLastFocused",
+            "windows.getAll",
+            "windows.create",
+            "windows.update",
+            "windows.remove",
             "scripting.executeScript",
             "scripting.insertCSS",
             "scripting.removeCSS",
@@ -607,11 +623,12 @@ mod tests {
         assert!(shim.contains("t: config.token"), "calls must carry the page token");
     }
 
-    /// The trailing-callback rule and the window the shim reports are each written once.
+    /// The trailing-callback rule is written once, and the windows are the runtime's: the
+    /// shim makes none up.
     #[test]
     fn shim_pops_the_trailing_callback_in_one_place() {
         assert_eq!(crate::API_JS.matches("args.pop()").count(), 1);
-        assert_eq!(crate::API_JS.matches("alwaysOnTop").count(), 1);
+        assert_eq!(crate::API_JS.matches("alwaysOnTop").count(), 0);
     }
 
     #[test]

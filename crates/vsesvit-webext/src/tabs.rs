@@ -5,6 +5,10 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::windows::{WINDOW_TYPE, WindowId, WindowScope};
+#[cfg(target_os = "linux")]
+use crate::windows::{NewWindow, WindowInfo, WindowUpdate};
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct TabId(pub u32);
@@ -18,7 +22,7 @@ impl TabId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabInfo {
     pub id: TabId,
-    pub window_id: u32,
+    pub window_id: WindowId,
     pub index: u32,
     pub url: String,
     pub title: String,
@@ -50,7 +54,9 @@ impl TabInfo {
     /// `chrome.tabs.query(queryInfo)`. Unknown keys are ignored; `url` accepts a match
     /// pattern or a list of them, matched with [`crate::patterns::url_matches`]. A tab
     /// whose contents the caller may not see never matches a `url` or `title` filter.
-    pub fn matches_query(&self, query: &Value, sees_content: bool) -> bool {
+    /// `currentWindow`, `lastFocusedWindow` and `WINDOW_ID_CURRENT` are the caller's
+    /// `scope`.
+    pub fn matches_query(&self, query: &Value, sees_content: bool, scope: &WindowScope) -> bool {
         let Some(q) = query.as_object() else { return true };
         if !sees_content && (q.contains_key("url") || q.contains_key("title")) {
             return false;
@@ -67,9 +73,15 @@ impl TabInfo {
             return false;
         }
         if let Some(window) = q.get("windowId").and_then(Value::as_i64)
-            && window >= 0
-            && window != i64::from(self.window_id)
+            && scope.resolve(window) != Some(self.window_id)
         {
+            return false;
+        }
+        let in_window = |key: &str, window: Option<WindowId>| bool_key(key).is_none_or(|wanted| wanted == (window == Some(self.window_id)));
+        if !in_window("currentWindow", scope.current) || !in_window("lastFocusedWindow", scope.last_focused) {
+            return false;
+        }
+        if q.get("windowType").and_then(Value::as_str).is_some_and(|t| t != WINDOW_TYPE) {
             return false;
         }
         if let Some(title) = q.get("title").and_then(Value::as_str)
@@ -91,16 +103,37 @@ impl TabInfo {
     }
 }
 
+/// `tabs.create`, once the runtime has resolved the URL and the window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewTab {
+    pub url: String,
+    pub active: bool,
+    /// `None` when there is no window to put it in: the shell opens one.
+    pub window: Option<WindowId>,
+    /// `None` for the end of the window's tabs; past the end means the end too.
+    pub index: Option<u32>,
+}
+
 /// What the shell provides. Every method is called on the UI thread, never while the
 /// runtime holds internal borrows, so an implementation may call back into
-/// [`crate::Runtime`] (for example `create_tab` calling `user_content_manager`).
+/// [`crate::Runtime`] (for example `create_tab` calling `user_content_manager`, or any
+/// change reporting itself through `tab_attached` or `windows_changed`).
 #[cfg(target_os = "linux")]
 pub trait TabHost {
+    /// Most recently focused first.
+    fn windows(&self) -> Vec<WindowInfo>;
+    /// In window order, each window's tabs in order.
     fn tabs(&self) -> Vec<TabInfo>;
-    fn create_tab(&self, url: &str, active: bool) -> Option<TabId>;
+    fn create_tab(&self, tab: &NewTab) -> Option<TabId>;
     fn update_tab(&self, tab: TabId, url: Option<&str>, active: Option<bool>) -> bool;
+    /// To `index` of `window` (the end for `None` or past it), within its window or out of it.
+    fn move_tab(&self, tab: TabId, window: WindowId, index: Option<u32>) -> bool;
     fn remove_tab(&self, tab: TabId) -> bool;
     fn web_view(&self, tab: TabId) -> Option<webkit::WebView>;
+    /// `window.urls` are absolute and `window.tab` exists.
+    fn create_window(&self, window: &NewWindow) -> Option<WindowId>;
+    fn update_window(&self, window: WindowId, update: &WindowUpdate) -> bool;
+    fn remove_window(&self, window: WindowId) -> bool;
 }
 
 #[cfg(test)]
@@ -109,24 +142,45 @@ mod tests {
     use serde_json::json;
 
     fn tab() -> TabInfo {
-        TabInfo { id: TabId(7), window_id: 1, index: 2, url: "http://127.0.0.1:8080/index.html".into(), title: "Vsesvit fixture".into(), active: true }
+        TabInfo { id: TabId(7), window_id: WindowId(1), index: 2, url: "http://127.0.0.1:8080/index.html".into(), title: "Vsesvit fixture".into(), active: true }
+    }
+
+    /// The caller's window is 1, the last focused 3.
+    fn scope() -> WindowScope {
+        WindowScope { current: Some(WindowId(1)), last_focused: Some(WindowId(3)) }
     }
 
     #[test]
     fn query_filters() {
-        let t = tab();
-        assert!(t.matches_query(&json!({}), true));
-        assert!(t.matches_query(&Value::Null, true));
-        assert!(t.matches_query(&json!({"active": true, "currentWindow": true}), true));
-        assert!(!t.matches_query(&json!({"active": false}), true));
-        assert!(t.matches_query(&json!({"url": "http://127.0.0.1/*"}), true));
-        assert!(t.matches_query(&json!({"url": ["https://x/*", "*://*/index.html"]}), true));
-        assert!(!t.matches_query(&json!({"url": "https://*/*"}), true));
-        assert!(t.matches_query(&json!({"title": "Vsesvit*"}), true));
-        assert!(!t.matches_query(&json!({"title": "Other"}), true));
-        assert!(t.matches_query(&json!({"index": 2, "windowId": 1}), true));
-        assert!(!t.matches_query(&json!({"windowId": 2}), true));
-        assert!(t.matches_query(&json!({"windowId": -2}), true));
+        let (t, s) = (tab(), scope());
+        assert!(t.matches_query(&json!({}), true, &s));
+        assert!(t.matches_query(&Value::Null, true, &s));
+        assert!(t.matches_query(&json!({"active": true, "currentWindow": true}), true, &s));
+        assert!(!t.matches_query(&json!({"active": false}), true, &s));
+        assert!(t.matches_query(&json!({"url": "http://127.0.0.1/*"}), true, &s));
+        assert!(t.matches_query(&json!({"url": ["https://x/*", "*://*/index.html"]}), true, &s));
+        assert!(!t.matches_query(&json!({"url": "https://*/*"}), true, &s));
+        assert!(t.matches_query(&json!({"title": "Vsesvit*"}), true, &s));
+        assert!(!t.matches_query(&json!({"title": "Other"}), true, &s));
+        assert!(t.matches_query(&json!({"index": 2, "windowId": 1}), true, &s));
+        assert!(!t.matches_query(&json!({"windowId": 2}), true, &s));
+        assert!(t.matches_query(&json!({"windowId": -2}), true, &s));
+        assert!(t.matches_query(&json!({"windowType": "normal"}), true, &s));
+        assert!(!t.matches_query(&json!({"windowType": "popup"}), true, &s));
+    }
+
+    #[test]
+    fn queries_follow_the_callers_windows() {
+        let (t, s) = (tab(), scope());
+        assert!(!t.matches_query(&json!({"currentWindow": false}), true, &s));
+        assert!(!t.matches_query(&json!({"lastFocusedWindow": true}), true, &s));
+        assert!(t.matches_query(&json!({"lastFocusedWindow": false}), true, &s));
+        let elsewhere = WindowScope { current: Some(WindowId(2)), last_focused: Some(WindowId(1)) };
+        assert!(!t.matches_query(&json!({"currentWindow": true}), true, &elsewhere));
+        assert!(!t.matches_query(&json!({"windowId": -2}), true, &elsewhere));
+        assert!(t.matches_query(&json!({"lastFocusedWindow": true}), true, &elsewhere));
+        assert!(!t.matches_query(&json!({"currentWindow": true}), true, &WindowScope::default()));
+        assert!(!t.matches_query(&json!({"windowId": -1}), true, &s));
     }
 
     #[test]
@@ -150,8 +204,9 @@ mod tests {
         assert_eq!(v["id"], 7);
         assert_eq!(v["active"], true);
         assert!(v.get("url").is_none() && v.get("title").is_none(), "{v}");
-        assert!(t.matches_query(&json!({"active": true}), false));
-        assert!(!t.matches_query(&json!({"url": "http://127.0.0.1/*"}), false));
-        assert!(!t.matches_query(&json!({"title": "Vsesvit*"}), false));
+        let s = scope();
+        assert!(t.matches_query(&json!({"active": true}), false, &s));
+        assert!(!t.matches_query(&json!({"url": "http://127.0.0.1/*"}), false, &s));
+        assert!(!t.matches_query(&json!({"title": "Vsesvit*"}), false, &s));
     }
 }

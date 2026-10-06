@@ -59,6 +59,10 @@ const COMPACT_ADDRESS_WIDTH: i32 = 720;
 /// How long the notice naming a page that went full screen stays.
 const FULLSCREEN_NOTICE_TIME: Duration = Duration::from_secs(4);
 
+/// How long a window's size must hold before extensions hear of it: as in Chrome, a resize
+/// is reported once it is done, not while the user drags.
+const BOUNDS_SETTLE_TIME: Duration = Duration::from_millis(250);
+
 /// Whether a newly opened tab is selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Focus {
@@ -120,6 +124,9 @@ mod imp {
         /// The tab the header currently reflects, to save its unsubmitted address text on switch.
         pub(super) chrome_tab: glib::WeakRef<Tab>,
         pub(super) closing: Cell<bool>,
+        /// Set while a tab moves to another window, which must not close this one midway.
+        pub(super) transferring: Cell<bool>,
+        pub(super) bounds_report: RefCell<Option<glib::SourceId>>,
         pub(super) prompt: RefCell<Option<ShownPrompt>>,
         pub(super) fullscreen_notice_timeout: RefCell<Option<glib::SourceId>>,
         pub(super) tab_menu: tab_menu::TabMenu,
@@ -182,6 +189,7 @@ impl BrowserWindow {
             updates.window_opened(&window);
         }
         browser.sync().window_opened();
+        browser.runtime().windows_changed();
         window
     }
 
@@ -360,13 +368,20 @@ impl BrowserWindow {
             self,
             move |_, page, _| {
                 window.sync_page(page);
+                if let Ok(tab) = page.child().downcast::<Tab>() {
+                    window.browser().tab_attached(&tab);
+                }
                 window.browser().schedule_session_save();
             }
         ));
         view.connect_page_reordered(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            move |_, _, _| window.browser().schedule_session_save()
+            move |_, page, _| {
+                if let Ok(tab) = page.child().downcast::<Tab>() {
+                    window.browser().tab_moved(&tab);
+                }
+            }
         ));
         view.connect_close_page(glib::clone!(
             #[weak(rename_to = window)]
@@ -464,6 +479,25 @@ impl BrowserWindow {
             {
                 window.browser().tab_used(&tab);
             }
+            window.browser().runtime().windows_changed();
+        });
+        self.connect_realize(|window| {
+            let Some(surface) = window.surface() else {
+                return;
+            };
+            surface.connect_notify_local(
+                Some("state"),
+                glib::clone!(
+                    #[weak]
+                    window,
+                    move |_, _| window.browser().runtime().windows_changed()
+                ),
+            );
+            surface.connect_layout(glib::clone!(
+                #[weak]
+                window,
+                move |_, _, _| window.report_bounds()
+            ));
         });
 
         self.connect_fullscreened_notify(|window| {
@@ -502,6 +536,23 @@ impl BrowserWindow {
         }
     }
 
+    fn report_bounds(&self) {
+        let report = glib::timeout_add_local_once(
+            BOUNDS_SETTLE_TIME,
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move || {
+                    window.imp().bounds_report.take();
+                    window.browser().runtime().windows_changed();
+                }
+            ),
+        );
+        if let Some(earlier) = self.imp().bounds_report.replace(Some(report)) {
+            earlier.remove();
+        }
+    }
+
     pub(crate) fn hide_fullscreen_notice(&self) {
         if let Some(timeout) = self.imp().fullscreen_notice_timeout.take() {
             timeout.remove();
@@ -518,7 +569,10 @@ impl BrowserWindow {
         }
         let popups = self.imp().popups.take();
         for tab in self.tabs().into_iter().chain(popups) {
-            browser.tab_discarded(&tab);
+            browser.tab_discarded(&tab, true);
+        }
+        if let Some(report) = self.imp().bounds_report.take() {
+            report.remove();
         }
     }
 
@@ -956,6 +1010,36 @@ impl BrowserWindow {
         tab
     }
 
+    /// Opens a tab at `index` (the end for `None` or past it), as an extension asks.
+    pub(crate) fn open_tab_at(&self, uri: &str, index: Option<u32>, focus: Focus) -> Tab {
+        let tab = Tab::new(self.browser());
+        tab.load(uri);
+        let view = &self.ui().tab_view;
+        let page = view.insert(&tab, position(index, view.n_pages()));
+        if focus == Focus::Foreground {
+            view.set_selected_page(&page);
+        }
+        tab
+    }
+
+    /// Moves `tab`, one of this window's, to `index` of `target` (the end for `None` or
+    /// past it), which may be this window. A window left without tabs closes.
+    pub(crate) fn move_tab(&self, tab: &Tab, target: &BrowserWindow, index: Option<u32>) {
+        let Some(page) = self.page_of(tab) else {
+            return;
+        };
+        let view = &self.ui().tab_view;
+        if target == self {
+            view.reorder_page(&page, position(index, view.n_pages() - 1));
+            return;
+        }
+        let to = &target.ui().tab_view;
+        self.imp().transferring.set(true);
+        view.transfer_page(&page, to, position(index, to.n_pages()));
+        self.imp().transferring.set(false);
+        self.close_if_empty();
+    }
+
     /// Opens a tab for each of `uris` at the end, selecting the first.
     pub(crate) fn open_tabs<S: AsRef<str>>(&self, uris: &[S]) {
         for (i, uri) in uris.iter().enumerate() {
@@ -1064,7 +1148,7 @@ impl BrowserWindow {
             popup,
             move |_| {
                 if window.forget_popup(&popup) {
-                    window.browser().tab_discarded(&popup);
+                    window.browser().tab_discarded(&popup, false);
                 }
             }
         ));
@@ -1095,7 +1179,12 @@ impl BrowserWindow {
 
     fn close_if_empty(&self) {
         let view = &self.ui().tab_view;
-        if view.n_pages() == 0 && !view.is_transferring_page() && !self.imp().closing.get() {
+        let imp = self.imp();
+        if view.n_pages() == 0
+            && !view.is_transferring_page()
+            && !imp.transferring.get()
+            && !imp.closing.get()
+        {
             self.close();
         }
     }
@@ -1283,6 +1372,11 @@ fn sync_indicator(page: &adw::TabPage, tab: &Tab) {
     page.set_indicator_icon(icon.map(gio::ThemedIcon::new).as_ref());
     page.set_indicator_tooltip(&tooltip);
     page.set_indicator_activatable(activatable);
+}
+
+/// `index` as a tab view position no further than `last`.
+fn position(index: Option<u32>, last: i32) -> i32 {
+    index.map_or(last, |i| i32::try_from(i).unwrap_or(i32::MAX).min(last))
 }
 
 fn icon_button(icon: &str, action: &str, tooltip: &str) -> gtk::Button {

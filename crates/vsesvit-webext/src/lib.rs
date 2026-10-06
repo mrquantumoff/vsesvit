@@ -198,10 +198,12 @@ pub mod patterns;
 pub mod protocol;
 pub mod support;
 pub mod tabs;
+pub mod windows;
 
 pub use lifecycle::LoadReason;
 pub use support::{Unsupported, unsupported_features};
-pub use tabs::{TabId, TabInfo};
+pub use tabs::{NewTab, TabId, TabInfo};
+pub use windows::{NewWindow, WindowId, WindowInfo, WindowState, WindowUpdate};
 
 #[cfg(target_os = "linux")]
 mod bridge;

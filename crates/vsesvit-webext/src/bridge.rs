@@ -29,7 +29,8 @@ use crate::messaging::{self, PortEvent, Wake};
 use crate::notifications::{self, Activation, Priority, Shown};
 use crate::protocol::{self, Call, Dispatch, Dispatched, Method, NO_RECEIVER, Replies, Sender};
 use crate::runtime::Inner;
-use crate::tabs::{TabId, TabInfo};
+use crate::tabs::{NewTab, TabId, TabInfo};
+use crate::windows::{self, NewWindow, WINDOW_ID_CURRENT, WindowInfo, WindowQuery, WindowScope, WindowUpdate};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Origin {
@@ -150,9 +151,21 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
                 }
             });
         }
-        Method::TabsQuery | Method::TabsGet | Method::TabsGetCurrent | Method::TabsCreate | Method::TabsUpdate | Method::TabsRemove | Method::TabsReload => {
-            reply.finish(tabs(inner, ext, origin, &call));
-        }
+        Method::TabsQuery
+        | Method::TabsGet
+        | Method::TabsGetCurrent
+        | Method::TabsCreate
+        | Method::TabsUpdate
+        | Method::TabsMove
+        | Method::TabsRemove
+        | Method::TabsReload => reply.finish(tabs(inner, ext, origin, &call)),
+        Method::WindowsGet
+        | Method::WindowsGetCurrent
+        | Method::WindowsGetLastFocused
+        | Method::WindowsGetAll
+        | Method::WindowsCreate
+        | Method::WindowsUpdate
+        | Method::WindowsRemove => reply.finish(windows(inner, ext, origin, &call)),
         Method::ScriptingInsertCss | Method::ScriptingRemoveCss => css(inner, ext, &call, reply),
         Method::ScriptingRegisterContentScripts
         | Method::ScriptingGetRegisteredContentScripts
@@ -528,11 +541,17 @@ fn key_list(v: &Value) -> Result<Option<Vec<String>>, String> {
 
 fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> Result<Option<Value>, String> {
     let host = &inner.host;
+    let scope = window_scope(inner, origin);
     let find = |id: TabId| host.tabs().into_iter().find(|t| t.id == id);
-    let tab_or_active = || TabId::from_json(call.arg(0)).or_else(|| host.tabs().into_iter().find(|t| t.active).map(|t| t.id)).ok_or_else(|| format!("{}: no active tab", call.method.name()));
+    let no_tab = |id: TabId| format!("No tab with id: {}.", id.0);
+    let tab_or_active = || {
+        TabId::from_json(call.arg(0))
+            .or_else(|| host.tabs().into_iter().find(|t| t.active && Some(t.window_id) == scope.current).map(|t| t.id))
+            .ok_or_else(|| format!("{}: no active tab", call.method.name()))
+    };
     let visible = |t: &TabInfo| ext.tab_json(t);
     Ok(match call.method {
-        Method::TabsQuery => Some(Value::Array(host.tabs().iter().filter(|t| t.matches_query(call.arg(0), ext.sees_tab(t))).map(visible).collect())),
+        Method::TabsQuery => Some(Value::Array(host.tabs().iter().filter(|t| t.matches_query(call.arg(0), ext.sees_tab(t), &scope)).map(visible).collect())),
         Method::TabsGet => {
             let id = TabId::from_json(call.arg(0)).ok_or("tabs.get: tabId must be an integer")?;
             Some(visible(&find(id).ok_or_else(|| format!("No tab with id: {}.", id.0))?))
@@ -544,8 +563,13 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
         Method::TabsCreate => {
             let props = call.arg(0);
             let url = navigation_url(ext, call, props.get("url").and_then(Value::as_str).unwrap_or("about:blank"))?;
-            let active = props.get("active").and_then(Value::as_bool).unwrap_or(true);
-            let id = host.create_tab(&url, active).ok_or("tabs.create: the browser refused to open a tab")?;
+            let active = props.get("active").or(props.get("selected")).and_then(Value::as_bool).unwrap_or(true);
+            let window = match props.get("windowId").and_then(Value::as_i64) {
+                Some(id) => Some(find_window(inner, &scope, id)?.id),
+                None => scope.current,
+            };
+            let index = props.get("index").and_then(Value::as_u64).map(|i| u32::try_from(i).unwrap_or(u32::MAX));
+            let id = host.create_tab(&NewTab { url: url.clone(), active, window, index }).ok_or("tabs.create: the browser refused to open a tab")?;
             Some(find(id).as_ref().map(visible).unwrap_or_else(|| {
                 let mut tab = json!({ "id": id.0, "active": active });
                 if ext.has_permission("tabs") || ext.host_access(&url, Some(id)) {
@@ -560,9 +584,37 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
             let url = props.get("url").and_then(Value::as_str).map(|u| navigation_url(ext, call, u)).transpose()?;
             let active = props.get("active").and_then(Value::as_bool);
             if !host.update_tab(id, url.as_deref(), active) {
-                return Err(format!("No tab with id: {}.", id.0));
+                return Err(no_tab(id));
             }
             find(id).as_ref().map(visible)
+        }
+        // As in Chrome, the tabs go one after another from `index` (-1 for the end), into
+        // `windowId` or each within its own window.
+        Method::TabsMove => {
+            let (ids, many) = match call.arg(0) {
+                Value::Array(items) => (items.iter().map(TabId::from_json).collect::<Option<Vec<_>>>(), true),
+                other => (TabId::from_json(other).map(|id| vec![id]), false),
+            };
+            let ids = ids.ok_or("tabs.move: tabIds must be an integer or an array of integers")?;
+            let props = call.arg(1);
+            let mut index = props.get("index").and_then(Value::as_i64).ok_or("tabs.move: index must be an integer")?;
+            let target = props.get("windowId").and_then(Value::as_i64).map(|id| find_window(inner, &scope, id)).transpose()?;
+            let mut moved = Vec::new();
+            for id in ids {
+                let tab = find(id).ok_or_else(|| no_tab(id))?;
+                let window = target.as_ref().map_or(tab.window_id, |w| w.id);
+                if !host.move_tab(id, window, u32::try_from(index).ok()) {
+                    return Err(no_tab(id));
+                }
+                let now = find(id).ok_or_else(|| no_tab(id))?;
+                index = i64::from(now.index) + 1;
+                moved.push(visible(&now));
+            }
+            match moved.len() {
+                0 => return Err("No tabs given.".into()),
+                1 if !many => moved.pop(),
+                _ => Some(Value::Array(moved)),
+            }
         }
         Method::TabsRemove => {
             let ids: Vec<TabId> = match call.arg(0) {
@@ -571,18 +623,98 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
             };
             for id in ids {
                 if !host.remove_tab(id) {
-                    return Err(format!("No tab with id: {}.", id.0));
+                    return Err(no_tab(id));
                 }
             }
             None
         }
         Method::TabsReload => {
             let id = tab_or_active()?;
-            host.web_view(id).ok_or_else(|| format!("No tab with id: {}.", id.0))?.reload();
+            host.web_view(id).ok_or_else(|| no_tab(id))?.reload();
             None
         }
         _ => unreachable!("not a tabs method"),
     })
+}
+
+// --- windows ----------------------------------------------------------------------------
+
+/// The windows `WINDOW_ID_CURRENT` and the window filters mean for a call from `origin`: a
+/// page in a tab is in that tab's window, any other page in the last focused one.
+fn window_scope(inner: &Inner, origin: Origin) -> WindowScope {
+    let last_focused = inner.host.windows().first().map(|w| w.id);
+    let current = origin.tab().and_then(|tab| inner.tab_info(tab)).map(|t| t.window_id).or(last_focused);
+    WindowScope { current, last_focused }
+}
+
+/// The window an extension's `windowId` names, or Chrome's error.
+fn find_window(inner: &Inner, scope: &WindowScope, id: i64) -> Result<WindowInfo, String> {
+    let found = scope.resolve(id).and_then(|w| inner.host.windows().into_iter().find(|x| x.id == w));
+    found.ok_or_else(|| if id == WINDOW_ID_CURRENT { windows::NO_CURRENT_WINDOW.to_owned() } else { windows::not_found(id) })
+}
+
+fn windows(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> Result<Option<Value>, String> {
+    let host = &inner.host;
+    let scope = window_scope(inner, origin);
+    let window_id = |v: &Value| v.as_i64().ok_or_else(|| format!("{}: windowId must be an integer", call.method.name()));
+    let shown = |w: &WindowInfo, populate: bool| {
+        let tabs = populate.then(|| host.tabs().iter().filter(|t| t.window_id == w.id).map(|t| ext.tab_json(t)).collect());
+        w.to_json(tabs)
+    };
+    let admitted = |id: i64, query: &WindowQuery| find_window(inner, &scope, id).and_then(|w| if query.admits(&w) { Ok(w) } else { Err(windows::not_found(id)) });
+    Ok(Some(match call.method {
+        Method::WindowsGet => {
+            let query = WindowQuery::parse(call.arg(1));
+            shown(&admitted(window_id(call.arg(0))?, &query)?, query.populate)
+        }
+        Method::WindowsGetCurrent => {
+            let query = WindowQuery::parse(call.arg(0));
+            shown(&admitted(WINDOW_ID_CURRENT, &query).map_err(|_| windows::NO_CURRENT_WINDOW)?, query.populate)
+        }
+        Method::WindowsGetLastFocused => {
+            let query = WindowQuery::parse(call.arg(0));
+            let window = host.windows().into_iter().find(|w| query.admits(w)).ok_or(windows::NO_LAST_FOCUSED_WINDOW)?;
+            shown(&window, query.populate)
+        }
+        Method::WindowsGetAll => {
+            let query = WindowQuery::parse(call.arg(0));
+            let mut all: Vec<WindowInfo> = host.windows().into_iter().filter(|w| query.admits(w)).collect();
+            all.sort_by_key(|w| w.id);
+            Value::Array(all.iter().map(|w| shown(w, query.populate)).collect())
+        }
+        Method::WindowsCreate => {
+            let mut new = NewWindow::parse(call.arg(0))?;
+            // Chrome's answer where private windows are off, as they are for extensions here.
+            if new.incognito {
+                return Err(windows::INCOGNITO_DISABLED.into());
+            }
+            new.urls = new.urls.iter().map(|url| navigation_url(ext, call, url)).collect::<Result<_, _>>()?;
+            if let Some(tab) = new.tab
+                && inner.tab_info(tab).is_none()
+            {
+                return Err(format!("No tab with id: {}.", tab.0));
+            }
+            let id = host.create_window(&new).ok_or("windows.create: the browser refused to open a window")?;
+            let window = host.windows().into_iter().find(|w| w.id == id).ok_or("windows.create: the new window closed")?;
+            shown(&window, true)
+        }
+        Method::WindowsUpdate => {
+            let window = find_window(inner, &scope, window_id(call.arg(0))?)?;
+            if !host.update_window(window.id, &WindowUpdate::parse(call.arg(1))?) {
+                return Err(windows::not_found(window.id.0.into()));
+            }
+            let updated = host.windows().into_iter().find(|w| w.id == window.id).unwrap_or(window);
+            shown(&updated, false)
+        }
+        Method::WindowsRemove => {
+            let window = find_window(inner, &scope, window_id(call.arg(0))?)?;
+            if !host.remove_window(window.id) {
+                return Err(windows::not_found(window.id.0.into()));
+            }
+            return Ok(None);
+        }
+        _ => unreachable!("not a windows method"),
+    }))
 }
 
 /// See [`crate::patterns::navigation_url`]: relative to the calling page, and never a
@@ -593,7 +725,7 @@ fn navigation_url(ext: &Extension, call: &Call, raw: &str) -> Result<String, Str
 
 fn open_options_page(inner: &Rc<Inner>, ext: &Rc<Extension>) -> Result<Option<Value>, String> {
     let page = ext.manifest.options_page.as_ref().ok_or("This extension has no options page")?;
-    inner.host.create_tab(&ext.url(page.as_str()), true).ok_or("the browser refused to open a tab")?;
+    inner.open_tab(&ext.url(page.as_str())).ok_or("the browser refused to open a tab")?;
     Ok(None)
 }
 
