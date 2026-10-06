@@ -50,7 +50,16 @@
 //!     command without one), and the new one after the user assigns it; a shortcut fires
 //!     `onCommand` with the name and the tab, whose URL `activeTab` now shows; an extension
 //!     without `commands` in its manifest has no `chrome.commands`;
-//! 11. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//! 11. notifications (`tests/fixtures/extensions/notifications/`, a service worker): a popup
+//!     creates notifications with an id and without one (a UUID), lists them with `getAll`,
+//!     and the runtime shows each as Chrome does on the Linux portal (title, body, two
+//!     buttons at most, priority, the icon as PNG scaled down to 128 pixels); an update
+//!     merges and answers whether there was one; every refusal has Chrome's message; a
+//!     click and a button reach the background's listeners, a button the notification lacks
+//!     does nothing; `clear` fires `onClosed`; the user's switch in core turns the API off
+//!     and back on, closing the notifications; an extension without the permission has no
+//!     `chrome.notifications`;
+//! 12. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -86,6 +95,7 @@ mod linux {
     use vsesvit_core::testkit::FixtureServer;
     use vsesvit_core::{OpenOptions, Profile};
     use vsesvit_webext::menus::{Entry, ItemId, Target};
+    use vsesvit_webext::notifications::{Activation, Priority, Shown};
     use vsesvit_webext::{Gate, LoadReason, Runtime, TabHost, TabId, TabInfo};
     use webkit::glib;
     use webkit::prelude::*;
@@ -96,6 +106,7 @@ mod linux {
     const FRIEND_ID: &str = "friend@vsesvit.test";
     const MENUS_ID: &str = "menus@vsesvit.test";
     const COMMANDS_ID: &str = "commands@vsesvit.test";
+    const NOTIFICATIONS_ID: &str = "notifications@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -147,6 +158,8 @@ mod linux {
         write_xpi(&classic_xpi, &classic_files());
         let commands_xpi = out_dir.join("commands.xpi");
         write_xpi(&commands_xpi, &fixture_files("commands"));
+        let notifications_xpi = out_dir.join("notifications.xpi");
+        write_xpi(&notifications_xpi, &fixture_files("notifications"));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -160,7 +173,9 @@ mod linux {
         let classic = install(&profile, &classic_xpi);
         let commands = install(&profile, &commands_xpi);
         assert_eq!(commands.id.as_str(), COMMANDS_ID);
-        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands] {
+        let notifications = install(&profile, &notifications_xpi);
+        assert_eq!(notifications.id.as_str(), NOTIFICATIONS_ID);
+        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -187,6 +202,7 @@ mod linux {
             menus,
             classic_id: classic.id.clone(),
             commands_id: commands.id.clone(),
+            notifications_id: notifications.id.clone(),
             window: window.clone(),
             results: RefCell::new(Vec::new()),
         };
@@ -230,6 +246,7 @@ mod linux {
         menus: InstalledExtension,
         classic_id: ExtensionId,
         commands_id: ExtensionId,
+        notifications_id: ExtensionId,
         window: gtk::Window,
         results: RefCell<Vec<(&'static str, bool)>>,
     }
@@ -291,7 +308,10 @@ mod linux {
             // 8. keyboard commands
             self.commands().await;
 
-            // 9. lifecycle events
+            // 9. notifications
+            self.notifications().await;
+
+            // 10. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -806,6 +826,132 @@ mod linux {
             let mut profile = self.profile.borrow_mut();
             let items = profile.ext_storage().get(&self.commands_id, Area::Local, Some(&[key.to_owned()])).ok()?;
             items.get(key).cloned()
+        }
+
+        async fn notifications(&self) {
+            let id = self.notifications_id.clone();
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("notifications_create", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Notifications"), TIMEOUT).await;
+
+            let created = self
+                .eval_async(
+                    &popup,
+                    r#"const greeting = await chrome.notifications.create("greeting", { type: "basic", iconUrl: "icon.svg", title: "Hello", message: "From the harness", contextMessage: "Vsesvit", priority: 2, buttons: [{ title: "Yes" }, { title: "No" }, { title: "Dropped" }] });
+                    const list = await new Promise((resolve) => chrome.notifications.create({ type: chrome.notifications.TemplateType.LIST, iconUrl: "/icon.svg", title: "Inbox", message: "", items: [{ title: "Ann", message: "Lunch?" }, { title: "Bo", message: "Done" }] }, resolve));
+                    return { greeting, list, all: await chrome.notifications.getAll() };"#,
+                )
+                .await
+                .unwrap_or_default();
+            let list = created["list"].as_str().unwrap_or_default().to_owned();
+            let uuid_v4 = list.len() == 36
+                && list.char_indices().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_digit() || ('a'..='f').contains(&c) })
+                && list.as_bytes()[14] == b'4';
+            let all = serde_json::json!({ "greeting": true, list.clone(): true });
+            self.note("notifications_create", created["greeting"] == "greeting" && uuid_v4 && created["all"] == all, &created);
+
+            let describe = |shown: &Option<Shown>| format!("{:?}", shown.as_ref().map(|s| (&s.title, &s.body, &s.buttons, s.priority, s.icon.len())));
+            // A 256-pixel icon arrives as a PNG of 128 by 128 (IHDR's width and height).
+            let png_128 = |icon: &[u8]| icon.starts_with(b"\x89PNG\r\n\x1a\n") && icon.get(16..24) == Some(&[0, 0, 0, 128, 0, 0, 0, 128]);
+            let greeting = self.runtime.notification(&id, "greeting");
+            let greeting_ok = greeting.as_ref().is_some_and(|s| {
+                s.title == "Hello" && s.body.as_deref() == Some("Vsesvit\n\nFrom the harness") && s.buttons == ["Yes", "No"] && s.priority == Priority::Urgent && png_128(&s.icon)
+            });
+            let inbox = self.runtime.notification(&id, &list);
+            let inbox_ok = inbox.as_ref().is_some_and(|s| s.title == "Inbox" && s.body.as_deref() == Some("Ann - Lunch?\nBo - Done") && s.buttons.is_empty() && s.priority == Priority::Normal);
+            self.note("notifications_shown", greeting_ok && inbox_ok, format!("greeting = {}; list = {}", describe(&greeting), describe(&inbox)));
+
+            let updated = self
+                .eval_async(&popup, r#"return [await chrome.notifications.update("greeting", { type: "progress", progress: 40, title: "Copying" }), await chrome.notifications.update("missing", { title: "x" })];"#)
+                .await;
+            let progress = self.runtime.notification(&id, "greeting");
+            let update_ok = updated == Some(serde_json::json!([true, false])) && progress.as_ref().is_some_and(|s| s.title == "40% - Copying" && s.buttons == ["Yes", "No"]);
+            self.note("notifications_update", update_ok, format!("update answered {updated:?}; greeting = {}", describe(&progress)));
+
+            let refused = self
+                .eval_async(
+                    &popup,
+                    r#"const basic = { type: "basic", iconUrl: "icon.svg", title: "t", message: "m" };
+                    const attempt = async (...args) => { try { await chrome.notifications.create(...args); return "created"; } catch (e) { return e.message; } };
+                    return [
+                      await new Promise((resolve) => chrome.notifications.create("lacking", { type: "basic", iconUrl: "icon.svg", title: "t" }, () => resolve(chrome.runtime.lastError && chrome.runtime.lastError.message))),
+                      await attempt(Object.assign({}, basic, { priority: -1 })),
+                      await attempt(Object.assign({}, basic, { imageUrl: "icon.svg" })),
+                      await attempt(Object.assign({}, basic, { type: "progress", progress: 150 })),
+                      await attempt(Object.assign({}, basic, { iconUrl: "missing.png" })),
+                      await attempt("x".repeat(501), basic),
+                      Object.keys(await chrome.notifications.getAll()).length,
+                    ];"#,
+                )
+                .await;
+            let chrome_errors = serde_json::json!([
+                "Some of the required properties are missing: type, iconUrl, title and message.",
+                "Low-priority notifications are deprecated on this platform.",
+                "Image resource provided for notification type != image",
+                "The progress value should range from 0 to 100",
+                "Unable to download all specified images.",
+                "The notification's ID should be 500 characters or less",
+                2,
+            ]);
+            self.note("notifications_errors", refused.as_ref() == Some(&chrome_errors), format!("{refused:?}"));
+
+            self.runtime.notification_activated(&id, "greeting", Activation::Click);
+            self.runtime.notification_activated(&id, "greeting", Activation::Button(5));
+            self.runtime.notification_activated(&id, "greeting", Activation::Button(1));
+            self.runtime.notification_activated(&id, "greeting", Activation::Settings);
+            let log = wait_for_value(|| Some(self.notifications_log()).filter(|log| log.len() >= 2), TIMEOUT).await;
+            let listed = self.runtime.notification(&id, "greeting").is_some();
+            let clicked = serde_json::json!([["clicked", "greeting"], ["button", "greeting", 1]]);
+            self.note("notifications_clicked", log.as_ref() == clicked.as_array() && listed, format!("background log = {log:?}; still listed = {listed}"));
+
+            let cleared = self.eval_async(&popup, r#"return [await chrome.notifications.clear("greeting"), await chrome.notifications.clear("greeting"), await chrome.notifications.getAll()];"#).await;
+            let closed = wait_for_value(|| self.notifications_log().get(2).cloned(), TIMEOUT).await;
+            let clear_ok = cleared == Some(serde_json::json!([true, false, { list.clone(): true }])) && closed == Some(serde_json::json!(["closed", "greeting", false]));
+            self.note("notifications_clear", clear_ok, format!("clear answered {cleared:?}; the background got {closed:?}"));
+
+            let switch = |allowed: bool| {
+                let stored = self.profile.borrow_mut().extensions().set_notifications_allowed(&id, allowed);
+                self.runtime.notification_permission_changed(&id);
+                stored
+            };
+            let off = switch(false);
+            let denied = wait_for_value(|| Some(self.notifications_log()).filter(|log| log.len() >= 5).map(|log| log[3..].to_vec()), TIMEOUT).await;
+            let refused = self
+                .eval_async(
+                    &popup,
+                    r#"const level = await chrome.notifications.getPermissionLevel();
+                    try { await chrome.notifications.create({ type: "basic", iconUrl: "icon.svg", title: "t", message: "m" }); return [level, "created"]; } catch (e) { return [level, e.message]; }"#,
+                )
+                .await;
+            let off_ok = off.is_ok()
+                && denied == Some(vec![serde_json::json!(["closed", list.clone(), false]), serde_json::json!(["permission", "denied"])])
+                && refused == Some(serde_json::json!(["denied", "Notifications are turned off for this extension."]))
+                && self.runtime.notification(&id, &list).is_none();
+            self.note("notifications_turned_off", off_ok, format!("stored: {off:?}; the background got {denied:?}; the popup got {refused:?}"));
+            let on = switch(true);
+            let granted = wait_for_value(|| self.notifications_log().get(5).cloned(), TIMEOUT).await;
+            let level = self.eval_async(&popup, "return chrome.notifications.getPermissionLevel();").await;
+            let on_ok = on.is_ok() && granted == Some(serde_json::json!(["permission", "granted"])) && level == Some(serde_json::json!("granted"));
+            self.note("notifications_turned_on", on_ok, format!("stored: {on:?}; the background got {granted:?}; getPermissionLevel = {level:?}"));
+
+            let Some(classic) = self.popup(&self.classic_id, self.tab).await else {
+                self.note("notifications_need_the_permission", false, "no classic popup");
+                return;
+            };
+            let _classic_window = self.park(&classic);
+            wait_until(|| classic.title().as_deref() == Some("classic"), TIMEOUT).await;
+            let api = self.eval_async(&classic, "return typeof chrome.notifications;").await;
+            self.note("notifications_need_the_permission", api.as_ref().and_then(Value::as_str) == Some("undefined"), format!("typeof chrome.notifications without the permission = {api:?}"));
+        }
+
+        /// The events the notifications fixture's background logged in its `storage.local`.
+        fn notifications_log(&self) -> Vec<Value> {
+            let mut profile = self.profile.borrow_mut();
+            let items = profile.ext_storage().get(&self.notifications_id, Area::Local, Some(&["log".to_owned()])).unwrap_or_default();
+            items.get("log").and_then(Value::as_array).cloned().unwrap_or_default()
         }
 
         async fn lifecycle(&self) {

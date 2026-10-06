@@ -18,6 +18,7 @@ use crate::extension::Extension;
 use crate::lifecycle::{self, InstallEvent, LoadReason};
 use crate::menus::{Entry, ItemId, Target};
 use crate::messaging::Ports;
+use crate::notifications::{self, Activation, Shown};
 use crate::protocol::Sender;
 use crate::tabs::{TabHost, TabId, TabInfo};
 use crate::{filters, patterns, scheme, views};
@@ -149,6 +150,9 @@ impl Runtime {
             }
         }
         ext.clear_alarms();
+        for notification in ext.notifications.borrow_mut().take_all() {
+            bridge::withdraw_notification(&ext, &notification);
+        }
         self.0.close_ports(|c| c.ext == *id);
         if let Some(bg) = ext.background.borrow_mut().take() {
             bg.load_uri("about:blank");
@@ -336,6 +340,49 @@ impl Runtime {
         args.extend(tab.and_then(|t| self.0.tab_info(t)).map(|t| ext.tab_json(&t)));
         let (inner, target) = (self.0.clone(), ext.clone());
         ext.when_background_loaded(move || bridge::emit_to_pages(&inner, &target, "commands.onCommand", &args));
+    }
+
+    /// The user clicked `id`'s notification `notification` or one of its buttons (the shell's
+    /// [`notifications::ACTION`]). As in Chrome, that fires `notifications.onClicked` or
+    /// `onButtonClicked` and leaves the notification listed. The Settings button is the
+    /// shell's to handle; a notification this run did not show, or a button it lacks, does
+    /// nothing.
+    pub fn notification_activated(&self, id: &ExtensionId, notification: &str, activation: Activation) {
+        let Some(ext) = self.0.extension(id) else { return };
+        let Some(shown) = ext.notifications.borrow().shown(notification) else { return };
+        let (event, args) = match activation {
+            Activation::Click => ("notifications.onClicked", vec![json!(notification)]),
+            Activation::Button(index) if index < shown.buttons.len() => ("notifications.onButtonClicked", vec![json!(notification), json!(index)]),
+            Activation::Button(_) | Activation::Settings => return,
+        };
+        let (inner, target) = (self.0.clone(), ext.clone());
+        ext.when_background_loaded(move || bridge::emit_to_pages(&inner, &target, event, &args));
+    }
+
+    /// The user turned `id`'s notifications on or off in core
+    /// (`Extensions::set_notifications_allowed`). Off, its notifications close, each with
+    /// `notifications.onClosed`; either way it gets `notifications.onPermissionLevelChanged`.
+    pub fn notification_permission_changed(&self, id: &ExtensionId) {
+        let Some(ext) = self.0.extension(id) else { return };
+        let allowed = self.0.profile.borrow_mut().extensions().notifications_allowed(id);
+        let closed = if allowed { Vec::new() } else { ext.notifications.borrow_mut().take_all() };
+        let mut events: Vec<(&str, Vec<Value>)> = Vec::new();
+        for notification in closed {
+            bridge::withdraw_notification(&ext, &notification);
+            events.push(("notifications.onClosed", vec![json!(notification), json!(false)]));
+        }
+        events.push(("notifications.onPermissionLevelChanged", vec![json!(notifications::permission_level(allowed))]));
+        let (inner, target) = (self.0.clone(), ext.clone());
+        ext.when_background_loaded(move || {
+            for (event, args) in events {
+                bridge::emit_to_pages(&inner, &target, event, &args);
+            }
+        });
+    }
+
+    /// How `id`'s notification `notification` shows, while it is listed.
+    pub fn notification(&self, id: &ExtensionId, notification: &str) -> Option<Shown> {
+        self.0.extension(id)?.notifications.borrow().shown(notification)
     }
 
     /// `storage.sync` changed remotely (a sync engine's `ApplyReport`): fire

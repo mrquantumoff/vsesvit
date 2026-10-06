@@ -13,6 +13,7 @@ use webkit::glib;
 use crate::content;
 use crate::i18n;
 use crate::menus::Menus;
+use crate::notifications::Notifications;
 use crate::patterns;
 use crate::protocol;
 use crate::runtime::LoadError;
@@ -110,6 +111,7 @@ pub(crate) struct Extension {
     /// Tabs the user invoked the action on, while the `activeTab` permission applies.
     pub active_tabs: RefCell<BTreeSet<TabId>>,
     pub menus: RefCell<Menus>,
+    pub notifications: RefCell<Notifications>,
 }
 
 impl Extension {
@@ -187,6 +189,7 @@ impl Extension {
             alarms: RefCell::new(BTreeMap::new()),
             active_tabs: RefCell::new(BTreeSet::new()),
             menus: RefCell::new(Menus::default()),
+            notifications: RefCell::new(Notifications::default()),
         })
     }
 

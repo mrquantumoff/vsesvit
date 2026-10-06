@@ -23,6 +23,7 @@ use vsesvit_core::extensions::ExtensionId;
 use crate::extension::{Alarm, Extension, ViewId};
 use crate::menus::ItemId;
 use crate::messaging::{self, PortEvent, Wake};
+use crate::notifications::{self, Activation, Priority, Shown};
 use crate::protocol::{self, Call, Dispatch, Dispatched, Method, NO_RECEIVER, Replies, Sender};
 use crate::runtime::Inner;
 use crate::tabs::{TabId, TabInfo};
@@ -165,6 +166,11 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
             reply.finish(context_menus(inner, ext, &call));
         }
         Method::CommandsGetAll => reply.finish(commands(inner, ext)),
+        Method::NotificationsCreate
+        | Method::NotificationsUpdate
+        | Method::NotificationsClear
+        | Method::NotificationsGetAll
+        | Method::NotificationsGetPermissionLevel => reply.finish(notifications(inner, ext, &call)),
     }
 }
 
@@ -730,6 +736,93 @@ fn commands(inner: &Inner, ext: &Extension) -> Result<Option<Value>, String> {
         })
         .collect();
     Ok(Some(Value::Array(commands)))
+}
+
+// --- notifications ----------------------------------------------------------------------
+
+/// `notifications.create(id, options, icon)`, `update(id, options, icon)`, `clear(id)`,
+/// `getAll()` and `getPermissionLevel()`. The shim makes up a missing id and loads the
+/// options' images first, sending the icon as base64 PNG (or `null` when `iconUrl` is absent).
+fn notifications(inner: &Inner, ext: &Extension, call: &Call) -> Result<Option<Value>, String> {
+    if !ext.has_permission("notifications") {
+        return Err(format!("{} requires the \"notifications\" permission", call.method));
+    }
+    let allowed = inner.profile.borrow_mut().extensions().notifications_allowed(&ext.id);
+    if call.method == Method::NotificationsGetPermissionLevel {
+        return Ok(Some(json!(notifications::permission_level(allowed))));
+    }
+    if !allowed {
+        return Err(notifications::TURNED_OFF.to_owned());
+    }
+    let id = call.arg(0).as_str().unwrap_or_default();
+    let icon = || call.arg(2).as_str().map(glib::base64_decode).filter(|png| !png.is_empty());
+    match call.method {
+        Method::NotificationsCreate => {
+            let shown = ext.notifications.borrow_mut().create(id, call.arg(1), icon())?;
+            show_notification(ext, id, shown);
+            Ok(Some(json!(id)))
+        }
+        Method::NotificationsUpdate => {
+            let shown = ext.notifications.borrow_mut().update(id, call.arg(1), icon())?;
+            let updated = shown.is_some();
+            if let Some(shown) = shown {
+                show_notification(ext, id, shown);
+            }
+            Ok(Some(json!(updated)))
+        }
+        Method::NotificationsClear => {
+            let cleared = ext.notifications.borrow_mut().clear(id);
+            if cleared {
+                withdraw_notification(ext, id);
+                emit_to_pages(inner, ext, "notifications.onClosed", &[json!(id), json!(false)]);
+            }
+            Ok(Some(json!(cleared)))
+        }
+        Method::NotificationsGetAll => Ok(Some(Value::Object(ext.notifications.borrow().ids().map(|id| (id.to_owned(), json!(true))).collect()))),
+        _ => unreachable!("not a notifications method"),
+    }
+}
+
+/// The application that shows notifications, as WebKitGTK shows a page's: the process's
+/// default `GApplication`, once registered. The harness has none.
+fn notifying_application() -> Option<gio::Application> {
+    gio::Application::default().filter(|app| app.is_registered())
+}
+
+/// Chrome's id for an extension's notification, unique across extensions.
+fn notification_id(ext: &Extension, id: &str) -> String {
+    format!("{}-{id}", ext.id.as_str())
+}
+
+/// Shows (or replaces) `ext`'s notification `id` as a `GNotification` whose clicks invoke the
+/// shell's [`notifications::ACTION`], with Chrome's Settings button after the extension's own.
+pub(crate) fn show_notification(ext: &Extension, id: &str, shown: Shown) {
+    let Some(app) = notifying_application() else {
+        log::debug!("{}: notification {id:?} not shown: no registered application", ext.id.as_str());
+        return;
+    };
+    let notification = gio::Notification::new(&shown.title);
+    notification.set_body(shown.body.as_deref());
+    notification.set_icon(&gio::BytesIcon::new(&glib::Bytes::from_owned(shown.icon)));
+    notification.set_priority(match shown.priority {
+        Priority::Normal => gio::NotificationPriority::Normal,
+        Priority::High => gio::NotificationPriority::High,
+        Priority::Urgent => gio::NotificationPriority::Urgent,
+    });
+    let action = format!("app.{}", notifications::ACTION);
+    let target = |activation: Activation| notifications::action_target(ext.id.as_str(), id, activation).to_variant();
+    notification.set_default_action_and_target_value(&action, Some(&target(Activation::Click)));
+    for (index, title) in shown.buttons.iter().enumerate() {
+        notification.add_button_with_target_value(title, &action, Some(&target(Activation::Button(index))));
+    }
+    notification.add_button_with_target_value("Settings", &action, Some(&target(Activation::Settings)));
+    app.send_notification(Some(&notification_id(ext, id)), &notification);
+}
+
+pub(crate) fn withdraw_notification(ext: &Extension, id: &str) {
+    if let Some(app) = notifying_application() {
+        app.withdraw_notification(&notification_id(ext, id));
+    }
 }
 
 // --- alarms -----------------------------------------------------------------------------

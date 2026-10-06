@@ -16,6 +16,7 @@ pub const SUPPORTED_PERMISSIONS: &[&str] = &[
     "declarativeNetRequest",
     "declarativeNetRequestWithHostAccess",
     "menus",
+    "notifications",
     "scripting",
     "storage",
     "tabs",

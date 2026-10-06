@@ -6,7 +6,7 @@
 //!
 //! Platform-neutral pieces compile and test everywhere: [`dnr`] (the translator),
 //! [`protocol`] (the JS/Rust wire format), [`messaging`] (port channels), [`menus`] (context
-//! menu items), [`patterns`],
+//! menu items), [`notifications`] (what an extension notification shows), [`patterns`],
 //! [`mime`], [`i18n`], the tab
 //! types in [`tabs`] and [`support`] (which of a manifest's requests this runtime lacks).
 //! The WebKit glue ([`Runtime`]) is Linux only.
@@ -79,6 +79,17 @@
 //! // (`_execute_action`) is the shell's `activate_action`.
 //! runtime.command(&id, "toggle-feature", Some(tab_id));
 //!
+//! // Extensions' notifications (`notifications`) go out as GNotifications of the default
+//! // GApplication, whose clicks invoke `app.extension-notification` (`notifications::ACTION`,
+//! // parameter `(sss)`: extension id, notification id, activation name), which the shell
+//! // registers and reports; the Settings button is the shell's (its extension settings).
+//! // The per-extension switch lives in core; the shell reports each change.
+//! let (ext, notification, name) = parameter.get::<(String, String, String)>()?;
+//! runtime.notification_activated(&ExtensionId::parse(&ext)?, &notification, Activation::parse(&name)?);
+//! profile.extensions().set_notifications_allowed(&id, false)?;
+//! runtime.notification_permission_changed(&id);
+//! let shown: Option<notifications::Shown> = runtime.notification(&id, &notification);
+//!
 //! // Remote storage.sync changes (from a future sync engine's ApplyReport):
 //! runtime.storage_sync_changed(&ext_id, &changes);
 //! ```
@@ -107,7 +118,11 @@
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
 //!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
 //!   `permissions.contains/getAll`, `contextMenus` (also as Firefox's `menus`, see [`menus`]),
-//!   `commands.getAll/onCommand` when the manifest declares `commands`, `extension.getURL`,
+//!   `commands.getAll/onCommand` when the manifest declares `commands`, `notifications` (see
+//!   [`notifications`]: `create/update/clear/getAll/getPermissionLevel` with
+//!   `onClicked/onButtonClicked/onClosed/onPermissionLevelChanged`, shown as Chrome shows
+//!   them through the Linux portal, and refused while the user has them turned off),
+//!   `extension.getURL`,
 //!   `runtime.openOptionsPage`, `runtime.reload` (the whole extension starts over, its
 //!   pages in tabs reload), and `runtime.onInstalled` on the first load of an install
 //!   or version (`runtime.onStartup` on later startups), `tabs.connect`, and
@@ -140,7 +155,10 @@
 //! document posted a message, so the sender could not be told apart from a frame
 //! claiming its URL); `getBackgroundPage` cannot reach the background from an extension
 //! page in a tab; a context menu click in a subframe has no `frameId`; WebKit's menus show
-//! a radio item with a check mark; no `webRequest`; one runtime per process;
+//! a radio item with a check mark; an image notification shows no image, and
+//! `requireInteraction` and `silent` change nothing; GNotification does not tell when the
+//! user dismisses a notification, so it stays in `notifications.getAll` until cleared or
+//! replaced, as with Chrome on the portal; no `webRequest`; one runtime per process;
 //! `about:blank` frames inside extension pages get no API; in a background or popup view,
 //! an `http(s)` iframe loads only for an extension without host permissions (WebKitGTK
 //! applies the view's CORS allowlist to every frame); WebKitGTK does not say which frame
@@ -157,6 +175,7 @@ pub mod lifecycle;
 pub mod menus;
 pub mod messaging;
 pub mod mime;
+pub mod notifications;
 pub mod patterns;
 pub mod protocol;
 pub mod support;

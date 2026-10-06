@@ -442,6 +442,56 @@
     if (config.manifest && config.manifest.commands) {
       api.commands = { getAll: bridged("commands.getAll"), onCommand: new ExtensionEvent("commands.onCommand") };
     }
+    if (grantedPermissions.has("notifications")) {
+      // As in Chrome, every image of the options loads before the call goes out, and a
+      // failure fails the call; the icon goes on as PNG, scaled down to fit 128x128.
+      const loadImage = (url) => new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = reject;
+        image.src = new URL(String(url), g.location.href).href;
+      });
+      const iconPng = (image) => {
+        const scale = Math.min(1, 128 / image.naturalWidth, 128 / image.naturalHeight);
+        const canvas = g.document.createElement("canvas");
+        canvas.width = Math.round(image.naturalWidth * scale);
+        canvas.height = Math.round(image.naturalHeight * scale);
+        canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/png").split(",")[1];
+      };
+      const withImages = async (id, options) => {
+        const copy = Object.assign({}, options);
+        const others = [copy.appIconMaskUrl, copy.imageUrl].concat(Array.isArray(copy.buttons) ? copy.buttons.map((b) => b && b.iconUrl) : []);
+        try {
+          const icon = copy.iconUrl == null ? null : loadImage(copy.iconUrl).then(iconPng);
+          const [png] = await Promise.all([icon].concat(others.filter((u) => u != null).map(loadImage)));
+          return [id, copy, png];
+        } catch (_) {
+          throw new Error("Unable to download all specified images.");
+        }
+      };
+      api.notifications = {
+        TemplateType: { BASIC: "basic", IMAGE: "image", LIST: "list", PROGRESS: "progress" },
+        PermissionLevel: { GRANTED: "granted", DENIED: "denied" },
+        // create(options), create(id, options), each with an optional callback.
+        create(...args) {
+          const callback = takeCallback(args);
+          const [id, options] = typeof args[0] === "string" || args.length >= 2 ? args : [null, args[0]];
+          return settle(withImages(id || g.crypto.randomUUID(), options).then((posted) => post("notifications.create", posted)), callback);
+        },
+        update(id, options, callback) {
+          return settle(withImages(String(id), options).then((posted) => post("notifications.update", posted)), callback);
+        },
+        clear: bridged("notifications.clear", null, (args) => [String(args[0])]),
+        getAll: bridged("notifications.getAll"),
+        getPermissionLevel: bridged("notifications.getPermissionLevel"),
+        onClicked: new ExtensionEvent("notifications.onClicked"),
+        onButtonClicked: new ExtensionEvent("notifications.onButtonClicked"),
+        onClosed: new ExtensionEvent("notifications.onClosed"),
+        onPermissionLevelChanged: new ExtensionEvent("notifications.onPermissionLevelChanged"),
+        onShowSettings: new ExtensionEvent("notifications.onShowSettings"),
+      };
+    }
     const currentWindow = () => ({ id: 1, focused: true, incognito: false, type: "normal", state: "normal", alwaysOnTop: false });
     const windows = {
       WINDOW_ID_NONE: -1,
