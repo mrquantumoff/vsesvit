@@ -129,6 +129,13 @@ Settings > Search lists every engine with its name, shortcut and URL, as Chrome'
 
 As the user types a search, the address bar asks the default engine for suggestions at its `suggest_url` and reads the OpenSearch JSON answer, as Chrome does. Core does the whole exchange (`search::Omnibox::suggest_request`, `suggest::SuggestRequest::run`): it waits 100 ms after a keystroke, sends nothing if the user typed again meanwhile, and drops an answer that arrives after a newer keystroke. It fetches on a worker thread with a 5 s limit. Like current desktop Chrome, the list keeps its default match first and puts the search rows (the typed search and up to four suggestions) above the URL rows from history and bookmarks. The rows join the open list when the answer arrives, and the highlighted row and the text in the box stay as the user has them. `suggest_request` decides what may leave the device. It sends nothing when Settings > Search > Search suggestions is off (a synced setting, on by default), when the default engine has no suggestion URL, or in a private window. It also sends nothing unless the text is a plain search of the default engine, so a URL being typed, a file path, a `file:` URL or a shortcut search of another engine never leaves the address bar. Engines added in the editor have no suggestion URL, as in Chrome, so only the built-in engines suggest.
 
+## Bookmark export
+
+Export bookmarks writes every bookmark to a bookmarks HTML file, the Netscape format every browser imports. The file is laid out as Chrome writes it: the bookmarks bar as the toolbar folder, then the items of Other bookmarks, then Mobile bookmarks as a folder if it has any. Core's `export::html` writes it, and the importer reads it back as the same tree. The save dialog opens in Documents with Chrome's name for the day, such as `bookmarks_10_6_26.html`. The file has no favicons.
+
+- **Linux.** The Bookmarks window's main menu holds Import Bookmarks… and Export Bookmarks…, like the menu in Chrome's bookmark manager.
+- **Windows.** The Bookmarks dialog has an Export bookmarks… button under Import.
+
 ## Extensions in detail
 
 Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (a bare slug is not accepted, because it cannot be told apart from a relative path), local `.crx`/`.xpi` files, and unpacked developer directories. Each install records how it was verified.
