@@ -14,8 +14,9 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use vsesvit_core::cookies::{self, Browsing, SiteRules};
+use vsesvit_core::cookies::{self, SiteRules};
 use vsesvit_core::permissions::Origin;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::{Profile, Url};
 
 use crate::blocker::Blocker;

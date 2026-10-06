@@ -4,8 +4,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use vsesvit_core::cookies::{self, Browsing};
+use vsesvit_core::cookies;
 use vsesvit_core::permissions::Setting;
+use vsesvit_core::private::Browsing;
 use windows_core::{Interface, Result};
 
 use super::BrowserWindow;

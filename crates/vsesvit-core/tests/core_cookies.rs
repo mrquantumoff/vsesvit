@@ -5,10 +5,11 @@ use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use vsesvit_core::cookies::{self, Browsing, SiteCookies, ThirdPartyCookies};
+use vsesvit_core::cookies::{self, SiteCookies, ThirdPartyCookies};
 use vsesvit_core::crdt::{DeviceId, Seq, TimeSource};
 use vsesvit_core::permissions::{Capturing, Origin, Permission, Setting, site_rows};
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::sync::Kind;
 use vsesvit_core::{OpenOptions, Profile};
 

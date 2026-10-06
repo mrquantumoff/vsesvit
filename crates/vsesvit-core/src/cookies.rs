@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::address::covers;
 use crate::permissions::{Origin, Permission, Setting};
 use crate::prefs::keys;
+use crate::private::Browsing;
 use crate::{Error, Profile, Url};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,21 +57,12 @@ impl ThirdPartyCookies {
     }
 }
 
-/// Normal or private browsing. Vsesvit has no private windows yet; when it does, they pass
-/// [`Browsing::Private`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Browsing {
-    Normal,
-    Private,
-}
-
 /// The title of the site-info popup's section, the same as [`Permission::Cookies`]' label.
 pub const SITE_TITLE: &str = "Cookies and site data";
 
 /// Whether third-party cookies are blocked on pages of `top` in `browsing` windows: the
 /// Settings choice, lifted on a site whose cookies are set to Allow. `top: None` asks for every
-/// site at once, as WebKitGTK sets one policy for all, so no site's rule counts. This is the
-/// hook private windows call with [`Browsing::Private`].
+/// site at once, as WebKitGTK sets one policy for all, so no site's rule counts.
 pub fn third_party_blocked(p: &mut Profile, browsing: Browsing, top: Option<&Origin>) -> bool {
     p.prefs().get(&keys::THIRD_PARTY_COOKIES).blocks(browsing) && !top.is_some_and(|o| setting(p, o) == Some(Setting::Allow))
 }

@@ -8,8 +8,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use vsesvit_core::cookies::{self, Browsing};
+use vsesvit_core::cookies;
 use vsesvit_core::permissions::{Origin, Setting};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::testkit::FixtureServer;
 use vsesvit_core::trackers::{self, Category, TrackerList};
 

@@ -21,8 +21,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use vsesvit_core::cookies::{self, Browsing, SiteRules};
+use vsesvit_core::cookies::{self, SiteRules};
 use vsesvit_core::permissions::Origin;
+use vsesvit_core::private::Browsing;
 use windows_core::{HSTRING, Result};
 use windows_future::IAsyncOperation;
 
