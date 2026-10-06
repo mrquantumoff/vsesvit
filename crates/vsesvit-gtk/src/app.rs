@@ -210,8 +210,8 @@ fn startup(app: &adw::Application, slot: &Slot, profile: Profile) {
 ///
 /// The windows open once tracking protection's and the cookie rules' blockers are on the tabs
 /// ([`Browser::when_blockers_applied`]), so no page of the restored session or the command line
-/// loads before them. The application is held meanwhile,
-/// and an invocation arriving then waits its turn behind the first.
+/// loads before them. The application is held meanwhile, and an invocation arriving then waits
+/// its turn behind the first.
 fn open_from_command_line(
     browser: &Browser,
     command_line: &gio::ApplicationCommandLine,

@@ -1,9 +1,9 @@
 //! Settings, bound to vsesvit-core preferences, in categories down the side as in Windows
 //! Settings. Every choice applies at once, in every window, except the engine's startup
 //! switches (at the next start), tracking protection, third-party cookies and HTTPS-only (from
-//! each page's next load),
-//! the home page (written when the dialog closes) and the sync server (written when its box loses
-//! focus). Secure DNS is only described: WebView2 takes no setting for it.
+//! each page's next load), the home page (written when the dialog closes) and the sync server
+//! (written when its box loses focus). Secure DNS is only described: WebView2 takes no setting
+//! for it.
 
 use std::rc::Rc;
 
