@@ -27,6 +27,7 @@ use vsesvit_core::history::Transition;
 use vsesvit_core::new_tab;
 use vsesvit_core::permissions::{Answer, Permission};
 use vsesvit_core::prefs::TabsPosition;
+use vsesvit_core::private::Browsing;
 use webkit::prelude::*;
 
 use crate::address_bar::{AddressBar, Anchor};
@@ -1056,7 +1057,7 @@ impl BrowserWindow {
     }
 
     fn load_new_tab_page(&self, tab: &Tab) {
-        match new_tab::page(&mut self.browser().core().borrow_mut()) {
+        match new_tab::page(&mut self.browser().core().borrow_mut(), Browsing::Normal) {
             Ok(html) => tab.web_view().load_html(&html, None),
             Err(e) => log::warn!("new tab page: {e}"),
         }

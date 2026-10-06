@@ -2,6 +2,7 @@
 
 use vsesvit_core::history::Transition;
 use vsesvit_core::new_tab::{self, TopSite};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::search::{SearchEngine, SearchEngineId, UrlTemplate};
 use vsesvit_core::{OpenOptions, Profile, Url};
 
@@ -62,11 +63,27 @@ fn local_hosts_get_http_like_the_omnibox() {
 fn page_reads_history_and_the_default_engine() {
     let dir = std::env::temp_dir().join(format!("vsesvit-ntp-{}", uuid::Uuid::new_v4()));
     let mut p = Profile::open(&dir, OpenOptions::default()).unwrap();
-    assert!(!new_tab::page(&mut p).unwrap().contains("class=\"tiles\""));
+    assert!(!new_tab::page(&mut p, Browsing::Normal).unwrap().contains("class=\"tiles\""));
     p.history().record_visit(&Url::parse("https://www.example.com/a").unwrap(), Transition::Link).unwrap();
-    let html = new_tab::page(&mut p).unwrap();
+    let html = new_tab::page(&mut p, Browsing::Normal).unwrap();
     assert!(html.contains("href=\"https://www.example.com/\" title=\"example.com\""));
     assert!(html.contains("Search with DuckDuckGo or enter address"));
+    drop(p);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_private_window_gets_the_private_page_with_no_search_box_and_no_tiles() {
+    let dir = std::env::temp_dir().join(format!("vsesvit-ntp-{}", uuid::Uuid::new_v4()));
+    let mut p = Profile::open(&dir, OpenOptions::default()).unwrap();
+    p.history().record_visit(&Url::parse("https://www.example.com/a").unwrap(), Transition::Link).unwrap();
+    let html = new_tab::page(&mut p, Browsing::Private).unwrap();
+    assert_eq!(html, new_tab::PRIVATE_PAGE);
+    assert!(html.contains("<h1>You're browsing privately</h1>"));
+    for absent in ["<input", "<form", "<script", "class=\"tile", "example.com", "src=", "href="] {
+        assert!(!html.contains(absent), "{absent}");
+    }
+    assert!(html.contains("<title></title>"), "the shell's own new tab title applies");
     drop(p);
     let _ = std::fs::remove_dir_all(&dir);
 }

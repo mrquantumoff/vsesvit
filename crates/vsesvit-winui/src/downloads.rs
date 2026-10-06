@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use vsesvit_core::Profile;
 use vsesvit_core::downloads::{self as list, Download, DownloadId, State};
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use windows_core::Result;
 
 use crate::bindings::*;
@@ -245,7 +246,7 @@ impl Browser {
         let url = operation.Uri()?;
         let now = u64::try_from(crate::session::now_ms()).unwrap_or(0);
         let download = self
-            .core(|p| p.downloads().start(&url, path, total, now))
+            .core(|p| p.downloads().start(&url, path, total, now, Browsing::Normal))
             .map_err(|e| windows_core::Error::new(E_FAIL, e.to_string()))?;
         let id = download.id;
         log::info!("downloading {url} to {}", path.display());

@@ -21,6 +21,7 @@ use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Verific
 use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::search::{EngineForm, NavTarget, SearchEngineId};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::suggest::DEBOUNCE;
@@ -2293,10 +2294,10 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         load(&here);
         wait_for(&last, || at(&here, 1.25)).await;
 
-        let stored = browser.core().borrow_mut().site_zoom().get(&here).map_err(|e| e.to_string())?;
+        let stored = browser.core().borrow_mut().site_zoom(Browsing::Normal).get(&here).map_err(|e| e.to_string())?;
         gio::prelude::ActionGroupExt::activate_action(window, "zoom-reset", None);
         wait_for(&last, || at(&here, 1.0)).await;
-        let forgotten = browser.core().borrow_mut().site_zoom().get(&here).map_err(|e| e.to_string())?;
+        let forgotten = browser.core().borrow_mut().site_zoom(Browsing::Normal).get(&here).map_err(|e| e.to_string())?;
         if stored == 1.25 && forgotten == 1.0 {
             Ok("125% followed the site to another page and came back to it, another host stayed at 100%; reset forgot it".to_owned())
         } else {
@@ -2578,7 +2579,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         crate::screenshot::save_png(window, &ctx.out_dir.join("https-only-warning.png")).await.map_err(|e| e.to_string())?;
         eval_js(tab.web_view(), "document.getElementById('continue').click()").await?;
         wait_for(&last, || at("Vsesvit fixture")).await;
-        let allowed = https_only::allowed(&mut browser.core().borrow_mut(), &origin);
+        let allowed = https_only::allowed(&mut browser.core().borrow_mut(), Browsing::Normal, &origin);
 
         let detail = format!(
             "Settings > Privacy's {HTTPS_ONLY_ROW:?} switch and preference were {off:?}, switched on stored {on}; Secure DNS reads {dns:?}; {index_url} failed over https and showed {:?} at its own address, marked insecure ({insecure}) (https-only-warning.png); Continue to site loaded it over http and stored the exception ({allowed})",

@@ -6,6 +6,7 @@
 //! answers. "Continue to site" on the warning stores an exception for the site
 //! ([`Permission::Http`] set to Allow), synced with the other site settings. Unlike Chrome's,
 //! which lapse after 15 days, exceptions stay until the user removes them in Settings' site list.
+//! One made in a private window lasts for the private session ([`crate::private`]).
 
 use std::net::Ipv4Addr;
 
@@ -14,6 +15,7 @@ use url::Host;
 use crate::html::escape;
 use crate::permissions::{Origin, Permission, Setting};
 use crate::prefs::keys;
+use crate::private::Browsing;
 use crate::{Error, Profile, Url};
 
 /// The title of the Settings row (sentence case; GTK title-cases it itself).
@@ -73,27 +75,27 @@ fn shared(ip: Ipv4Addr) -> bool {
 }
 
 /// What a navigation to `url` loads instead: [`upgraded`], when the user turned HTTPS-only on
-/// and has no exception for `url`'s site.
-pub fn upgrade(p: &mut Profile, url: &Url, reach: Reach) -> Option<Url> {
+/// and has no exception for `url`'s site: stored, or in private, kept by the private session.
+pub fn upgrade(p: &mut Profile, browsing: Browsing, url: &Url, reach: Reach) -> Option<Url> {
     if !p.prefs().get(&keys::HTTPS_ONLY) {
         return None;
     }
     let https = upgraded(url, reach)?;
     let origin = Origin::of(url)?;
-    (!allowed(p, &origin)).then_some(https)
+    (!allowed(p, browsing, &origin)).then_some(https)
 }
 
 /// Remembers the exception for `url`'s site: what "Continue to site" does.
-pub fn allow(p: &mut Profile, url: &Url) -> Result<(), Error> {
+pub fn allow(p: &mut Profile, browsing: Browsing, url: &Url) -> Result<(), Error> {
     let Some(origin) = Origin::of(url) else {
         return Ok(());
     };
-    p.site_permissions().set(&origin, Permission::Http, Some(Setting::Allow))
+    p.site_permissions_in(browsing).set(&origin, Permission::Http, Some(Setting::Allow))
 }
 
 /// Whether the user made an exception for `origin`.
-pub fn allowed(p: &mut Profile, origin: &Origin) -> bool {
-    p.site_permissions().get(origin, Permission::Http) == Some(Setting::Allow)
+pub fn allowed(p: &mut Profile, browsing: Browsing, origin: &Origin) -> bool {
+    p.site_permissions_in(browsing).get(origin, Permission::Http) == Some(Setting::Allow)
 }
 
 /// How a main-frame navigation started.

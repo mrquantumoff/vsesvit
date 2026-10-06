@@ -19,6 +19,7 @@ use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::permissions::SiteSetting;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, homepage_url, keys};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::search::{SelectionAction, Suggestions};
 use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::shortcuts::Keymap;
@@ -383,7 +384,7 @@ impl Browser {
     /// The https URL a navigation to `url` loads instead, under HTTPS-only.
     pub fn https_upgrade(&self, url: &Url) -> Option<Url> {
         let reach = self.https_reach.get();
-        self.core(|p| https_only::upgrade(p, url, reach))
+        self.core(|p| https_only::upgrade(p, Browsing::Normal, url, reach))
     }
 
     #[cfg(feature = "self-test")]

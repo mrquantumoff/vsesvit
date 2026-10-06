@@ -31,6 +31,7 @@
 //! | [`new_tab`]      | the new tab page: search box + most visited sites, as HTML            |
 //! | [`onboarding`]   | the first-run welcome: when to show it, recommended extensions        |
 //! | [`permissions`]  | site permissions: stored choices, one-time grants, the prompt         |
+//! | [`private`]      | private windows: what a private session keeps in memory, never stored |
 //! | [`zoom`]         | page zoom per site (LOCAL)                                            |
 //! | [`session`]      | this device's windows/tabs (restore) = its published "tabs" record    |
 //! | [`prefs`]        | typed preferences                                                    |
@@ -69,6 +70,7 @@ pub mod new_tab;
 pub mod onboarding;
 pub mod permissions;
 pub mod prefs;
+pub mod private;
 pub mod search;
 pub mod session;
 pub mod shortcuts;
@@ -87,6 +89,7 @@ pub mod zoom;
 pub use url::Url;
 
 use crdt::{Clock, DeviceId, Hlc, TimeSource};
+use private::Browsing;
 
 /// One open browser profile. One per process, owned by the UI thread.
 ///
@@ -114,6 +117,8 @@ pub struct Profile {
     /// Fetched on first use, then kept for the process lifetime.
     vault_key: Option<vault::Key>,
     created: bool,
+    /// What private windows keep instead of writing to the database.
+    pub(crate) private: private::PrivateSession,
     /// Exclusive OS lock (`std::fs::File::try_lock`) on `<root>/LOCK`. The OS releases it
     /// when the process dies, so a crash never leaves a stale lock.
     _lock: std::fs::File,
@@ -235,6 +240,7 @@ impl Profile {
             key_store: opts.key_store,
             vault_key: None,
             created: meta.created,
+            private: private::PrivateSession::default(),
             _lock: lock,
             _not_send: PhantomData,
         };
@@ -286,12 +292,18 @@ impl Profile {
         prefs::Prefs { p: self }
     }
 
+    /// The stored settings, as Settings and sync see them.
     pub fn site_permissions(&mut self) -> permissions::SitePermissions<'_> {
-        permissions::SitePermissions { p: self }
+        self.site_permissions_in(Browsing::Normal)
     }
 
-    pub fn site_zoom(&mut self) -> zoom::SiteZoom<'_> {
-        zoom::SiteZoom { p: self }
+    /// The settings a tab of `browsing`'s kind goes by, and changes.
+    pub fn site_permissions_in(&mut self, browsing: Browsing) -> permissions::SitePermissions<'_> {
+        permissions::SitePermissions { p: self, browsing }
+    }
+
+    pub fn site_zoom(&mut self, browsing: Browsing) -> zoom::SiteZoom<'_> {
+        zoom::SiteZoom { p: self, browsing }
     }
 
     pub fn search_engines(&mut self) -> search::SearchEngines<'_> {

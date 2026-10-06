@@ -6,12 +6,17 @@
 //! ([`Downloads::interrupt_stale`]).
 //!
 //! LOCAL: files on this device's disk, so never synced.
+//!
+//! A download started in a private window has its row in the private session instead
+//! ([`crate::private`]): listed with the others until the session ends. Its file stays on disk.
 
+use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 
 use crate::db::bad_column;
+use crate::private::Browsing;
 use crate::{Error, Profile, Url};
 
 pub(crate) const SCHEMA: &str = "
@@ -29,6 +34,14 @@ CREATE TABLE downloads (                  -- LOCAL: files on this device's disk
 /// The row id of a download.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DownloadId(pub i64);
+
+impl DownloadId {
+    /// Private rows take negative ids, so they share one id space with the stored rows, whose
+    /// SQLite rowids are positive, and a shell keys every download by its id alike.
+    fn is_private(self) -> bool {
+        self.0 < 0
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum State {
@@ -74,30 +87,68 @@ pub struct Downloads<'p> {
     pub(crate) p: &'p mut Profile,
 }
 
+/// The rows of the private session's downloads.
+#[derive(Default)]
+pub(crate) struct PrivateDownloads {
+    rows: Vec<Download>,
+    /// The last id handed out, counting down from -1. Kept when the session ends, so a late
+    /// [`Downloads::finish`] of an ended session's download never lands on a later one's row.
+    last_id: i64,
+}
+
+impl PrivateDownloads {
+    pub(crate) fn forget(&mut self) {
+        self.rows.clear();
+    }
+
+    fn row(&mut self, id: DownloadId) -> Option<&mut Download> {
+        self.rows.iter_mut().find(|d| d.id == id)
+    }
+}
+
 impl Downloads<'_> {
-    /// Records a download that has just been given its destination. A path that is not
-    /// valid Unicode is stored lossily.
-    pub fn start(&mut self, url: &str, path: &Path, total: Option<u64>, now_ms: u64) -> Result<Download, Error> {
+    /// Records a download that has just been given its destination, in a tab of `browsing`'s
+    /// kind. A path that is not valid Unicode is stored lossily.
+    pub fn start(&mut self, url: &str, path: &Path, total: Option<u64>, now_ms: u64, browsing: Browsing) -> Result<Download, Error> {
         let state = State::InProgress;
-        self.p.conn.execute(
-            "INSERT INTO downloads (url, path, started_ms, state, total) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![url, path.to_string_lossy(), now_ms as i64, state.as_str(), total.map(|t| t as i64)],
-        )?;
-        Ok(Download {
-            id: DownloadId(self.p.conn.last_insert_rowid()),
+        let id = match browsing {
+            Browsing::Normal => {
+                self.p.conn.execute(
+                    "INSERT INTO downloads (url, path, started_ms, state, total) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![url, path.to_string_lossy(), now_ms as i64, state.as_str(), total.map(|t| t as i64)],
+                )?;
+                DownloadId(self.p.conn.last_insert_rowid())
+            }
+            Browsing::Private => {
+                self.p.private.downloads.last_id -= 1;
+                DownloadId(self.p.private.downloads.last_id)
+            }
+        };
+        let download = Download {
+            id,
             url: url.to_owned(),
             path: path.to_path_buf(),
             started_ms: now_ms,
             state,
             received: 0,
             total,
-        })
+        };
+        if browsing == Browsing::Private {
+            self.p.private.downloads.rows.push(download.clone());
+        }
+        Ok(download)
     }
 
     /// Stores the outcome. `state` is a final state, never [`State::InProgress`]. No-op if
     /// the download was removed from the list meanwhile.
     pub fn finish(&mut self, id: DownloadId, state: State, received: u64, total: Option<u64>) -> Result<(), Error> {
         debug_assert_ne!(state, State::InProgress, "finish takes a final state");
+        if id.is_private() {
+            if let Some(d) = self.p.private.downloads.row(id) {
+                (d.state, d.received, d.total) = (state, received, total);
+            }
+            return Ok(());
+        }
         self.p.conn.execute(
             "UPDATE downloads SET state = ?2, received = ?3, total = ?4 WHERE id = ?1",
             params![id.0, state.as_str(), received as i64, total.map(|t| t as i64)],
@@ -105,29 +156,42 @@ impl Downloads<'_> {
         Ok(())
     }
 
-    /// Newest first.
+    /// Newest first, the private session's among the stored ones.
     pub fn list(&mut self, limit: usize) -> Result<Vec<Download>, Error> {
         let mut stmt = self.p.conn.prepare_cached(
             "SELECT id, url, path, started_ms, state, received, total FROM downloads
              ORDER BY started_ms DESC, id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map([limit.min(i64::MAX as usize) as i64], row_download)?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let mut list: Vec<Download> = rows.collect::<Result<_, _>>()?;
+        let private = &self.p.private.downloads.rows;
+        if !private.is_empty() {
+            list.extend(private.iter().cloned());
+            // A private id counts down, so its magnitude grows with each download as a rowid does.
+            list.sort_by_key(|d| Reverse((d.started_ms, d.id.0.unsigned_abs())));
+            list.truncate(limit);
+        }
+        Ok(list)
     }
 
     /// Removes the entry from the list. The file stays on disk.
     pub fn remove(&mut self, id: DownloadId) -> Result<(), Error> {
+        if id.is_private() {
+            self.p.private.downloads.rows.retain(|d| d.id != id);
+            return Ok(());
+        }
         self.p.conn.execute("DELETE FROM downloads WHERE id = ?1", [id.0])?;
         Ok(())
     }
 
-    /// Removes every entry that is not in progress. Files stay on disk.
+    /// Removes every entry that is not in progress, the private session's too. Files stay on disk.
     pub fn clear(&mut self) -> Result<(), Error> {
+        self.p.private.downloads.rows.retain(|d| d.state == State::InProgress);
         self.p.conn.execute("DELETE FROM downloads WHERE state <> ?1", [State::InProgress.as_str()])?;
         Ok(())
     }
 
-    /// Marks every download still in progress as failed and returns how many there were.
+    /// Marks every stored download still in progress as failed and returns how many there were.
     /// Shells call it once at startup, before any download can begin: no engine download
     /// outlives the process that started it.
     pub fn interrupt_stale(&mut self) -> Result<usize, Error> {

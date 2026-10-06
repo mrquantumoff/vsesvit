@@ -1,10 +1,15 @@
 //! The new tab page: a search box for the default engine and tiles for the most visited
 //! sites. Shells load [`page`] as HTML at `about:blank`, so a new tab keeps reading as blank
 //! everywhere else (empty address bar, "New tab" title, not in session or history).
+//!
+//! A private window's new tab is [`PRIVATE_PAGE`] instead, as Chrome's incognito one: what
+//! private browsing does and does not do, with no search box and no tiles, which would show
+//! the normal windows' history and fetch its favicons.
 
 use std::fmt::Write;
 
 use crate::html::escape;
+use crate::private::Browsing;
 use crate::search::SearchEngine;
 use crate::{Error, Profile, Url};
 
@@ -32,8 +37,11 @@ impl TopSite {
     }
 }
 
-/// The page for a new tab in this profile.
-pub fn page(p: &mut Profile) -> Result<String, Error> {
+/// The page for a new tab in a window of `browsing`'s kind.
+pub fn page(p: &mut Profile, browsing: Browsing) -> Result<String, Error> {
+    if browsing == Browsing::Private {
+        return Ok(PRIVATE_PAGE.to_owned());
+    }
     let sites = p.history().top_sites(TILES)?;
     let engine = p.search_engines().default_engine()?;
     Ok(html(&sites, &engine))
@@ -125,6 +133,44 @@ input::placeholder { color: var(--muted); }
   border-radius: 50%; background: var(--icon-bg);
 }
 .label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+"#;
+
+/// Self-contained HTML, dark whatever the theme as Chrome's incognito page is, in Chrome's
+/// words plus the site choices a private session keeps until it ends.
+pub const PRIVATE_PAGE: &str = r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="color-scheme" content="dark">
+<meta name="viewport" content="width=device-width"><title></title><style>
+:root { --bg: #1f1f23; --fg: #e8eaed; --muted: #9aa0a6; --card: #2b2c30; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font: 14px "Segoe UI Variable Text", "Segoe UI", Cantarell, system-ui, sans-serif; line-height: 1.5;
+}
+main { max-width: 640px; margin: 0 auto; padding: 14vh 24px 48px; }
+h1 { font-size: 24px; font-weight: 600; margin: 0 0 12px; }
+p { margin: 0 0 24px; color: var(--muted); }
+.lists { display: flex; flex-wrap: wrap; gap: 16px; }
+section { flex: 1 1 260px; padding: 16px 20px; border-radius: 12px; background: var(--card); }
+h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+ul { margin: 0; padding-left: 20px; color: var(--muted); }
+</style></head>
+<body><main>
+<h1>You're browsing privately</h1>
+<p>Others who use this device won't see your activity. Downloads and bookmarks are still saved.</p>
+<div class="lists">
+<section><h2>Once you close all private windows, Vsesvit won't save</h2><ul>
+<li>Your browsing history</li>
+<li>Cookies and site data</li>
+<li>Choices you make for sites, such as permissions and zoom</li>
+</ul></section>
+<section><h2>Your activity might still be visible to</h2><ul>
+<li>Websites you visit</li>
+<li>Your employer or school</li>
+<li>Your internet service provider</li>
+</ul></section>
+</div>
+</main></body></html>
 "#;
 
 /// An address: a scheme with `//` or `about:`, else a host (`x.yy`, `localhost`, IPv4,

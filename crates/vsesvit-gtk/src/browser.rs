@@ -25,6 +25,7 @@ use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::onboarding;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
 use vsesvit_core::tab_search::{self, Listed, Row};
@@ -244,7 +245,7 @@ impl Browser {
 
     /// The https URL a navigation to `url` loads instead, under HTTPS-only.
     pub(crate) fn https_upgrade(&self, url: &Url) -> Option<Url> {
-        https_only::upgrade(&mut self.core().borrow_mut(), url, self.0.https_reach.get())
+        https_only::upgrade(&mut self.core().borrow_mut(), Browsing::Normal, url, self.0.https_reach.get())
     }
 
     #[cfg(feature = "self-test")]
@@ -553,7 +554,7 @@ impl Browser {
     /// WebKit keeps a view's zoom from page to page, so a new document is shown at the level
     /// remembered for its site (100% for a site with none) instead of the previous page's.
     fn show_at_site_zoom(&self, tab: &Tab, url: &Url) {
-        let level = match self.core().borrow_mut().site_zoom().get(url) {
+        let level = match self.core().borrow_mut().site_zoom(Browsing::Normal).get(url) {
             Ok(level) => level,
             Err(e) => {
                 log::warn!("site zoom: {e}");
@@ -574,7 +575,7 @@ impl Browser {
             return;
         };
         let level = tab.web_view().zoom_level();
-        if let Err(e) = self.core().borrow_mut().site_zoom().set(&url, level) {
+        if let Err(e) = self.core().borrow_mut().site_zoom(Browsing::Normal).set(&url, level) {
             log::warn!("site zoom: {e}");
         }
     }

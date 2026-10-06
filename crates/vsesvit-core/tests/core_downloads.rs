@@ -9,6 +9,7 @@ use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::crdt::{DeviceId, Seq, TimeSource};
 use vsesvit_core::downloads::{Download, State};
 use vsesvit_core::prefs::{Scope, keys};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::sync::Kind;
 use vsesvit_core::{OpenOptions, Profile, Url};
 
@@ -51,7 +52,7 @@ fn user_version(dir: &Path) -> u32 {
 fn start_then_finish() {
     let (mut p, _dir) = open();
     let path = Path::new("/dl/a.zip");
-    let started = p.downloads().start("https://example.com/a.zip", path, Some(10), T0).unwrap();
+    let started = p.downloads().start("https://example.com/a.zip", path, Some(10), T0, Browsing::Normal).unwrap();
     assert_eq!((started.state, started.received, started.total, started.started_ms), (State::InProgress, 0, Some(10), T0));
     assert_eq!(p.downloads().list(10).unwrap(), vec![started.clone()], "start returns the stored row");
 
@@ -71,10 +72,10 @@ fn start_then_finish() {
 fn list_is_newest_first_and_limited() {
     let (mut p, _dir) = open();
     let path = Path::new("/dl/f");
-    p.downloads().start("https://a.example/", path, None, T0).unwrap();
-    p.downloads().start("https://c.example/", path, None, T0 + 2).unwrap();
-    p.downloads().start("https://b1.example/", path, None, T0 + 1).unwrap();
-    p.downloads().start("https://b2.example/", path, None, T0 + 1).unwrap();
+    p.downloads().start("https://a.example/", path, None, T0, Browsing::Normal).unwrap();
+    p.downloads().start("https://c.example/", path, None, T0 + 2, Browsing::Normal).unwrap();
+    p.downloads().start("https://b1.example/", path, None, T0 + 1, Browsing::Normal).unwrap();
+    p.downloads().start("https://b2.example/", path, None, T0 + 1, Browsing::Normal).unwrap();
     let urls: Vec<String> = states(&mut p).into_iter().map(|(url, _)| url).collect();
     assert_eq!(urls, ["https://c.example/", "https://b2.example/", "https://b1.example/", "https://a.example/"], "same start time: later id first");
     assert_eq!(p.downloads().list(2).unwrap().len(), 2);
@@ -86,9 +87,9 @@ fn clear_keeps_downloads_in_progress() {
     let (mut p, _dir) = open();
     let path = Path::new("/dl/f");
     let mut dl = p.downloads();
-    let running = dl.start("https://running.example/", path, None, T0 + 4).unwrap();
+    let running = dl.start("https://running.example/", path, None, T0 + 4, Browsing::Normal).unwrap();
     for (i, state) in [State::Completed, State::Failed, State::Cancelled].into_iter().enumerate() {
-        let d = dl.start(&format!("https://{i}.example/"), path, None, T0 + i as u64).unwrap();
+        let d = dl.start(&format!("https://{i}.example/"), path, None, T0 + i as u64, Browsing::Normal).unwrap();
         dl.finish(d.id, state, 1, None).unwrap();
     }
     dl.clear().unwrap();
@@ -101,8 +102,8 @@ fn interrupted_downloads_read_as_failed_after_a_restart() {
     {
         let mut p = open_at(&dir.0);
         let mut dl = p.downloads();
-        dl.start("https://running.example/", Path::new("/dl/r"), Some(100), T0 + 1).unwrap();
-        let done = dl.start("https://done.example/", Path::new("/dl/d"), None, T0).unwrap();
+        dl.start("https://running.example/", Path::new("/dl/r"), Some(100), T0 + 1, Browsing::Normal).unwrap();
+        let done = dl.start("https://done.example/", Path::new("/dl/d"), None, T0, Browsing::Normal).unwrap();
         dl.finish(done.id, State::Completed, 5, Some(5)).unwrap();
     }
     let mut p = open_at(&dir.0);
@@ -118,7 +119,7 @@ fn interrupted_downloads_read_as_failed_after_a_restart() {
 #[test]
 fn downloads_are_local() {
     let (mut p, _dir) = open();
-    let d = p.downloads().start("https://example.com/", Path::new("/dl/f"), None, T0).unwrap();
+    let d = p.downloads().start("https://example.com/", Path::new("/dl/f"), None, T0, Browsing::Normal).unwrap();
     p.downloads().finish(d.id, State::Completed, 1, None).unwrap();
     for &kind in Kind::ALL {
         assert!(p.sync().changes_since(kind, Seq::ZERO, usize::MAX).unwrap().records.is_empty(), "{kind:?}");
@@ -139,7 +140,7 @@ fn a_v1_profile_gains_the_table_and_keeps_its_data() {
 
     let mut p = open_at(&dir.0);
     assert!(p.bookmarks().is_bookmarked(&bookmark));
-    let d = p.downloads().start("https://example.com/", Path::new("/dl/f"), None, T0).unwrap();
+    let d = p.downloads().start("https://example.com/", Path::new("/dl/f"), None, T0, Browsing::Normal).unwrap();
     drop(p);
     assert_eq!(user_version(&dir.0), 9);
 

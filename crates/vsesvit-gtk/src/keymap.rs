@@ -32,6 +32,7 @@ pub(crate) fn binding(cmd: Command) -> Option<Binding> {
         | SelectLastTab => return None,
         ToggleTabList => Action("win.toggle-tab-sidebar"),
         NewWindow => Action("app.new-window"),
+        NewPrivateWindow => return None,
         Quit => Action("app.quit"),
         FocusAddress => Action("win.focus-location"),
         Back => Action("win.back"),

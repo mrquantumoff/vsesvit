@@ -15,6 +15,9 @@
 //!
 //! Opaque origins (`file:`, `data:`, `about:`) have no [`Origin`], so nothing is stored for
 //! them; only one-time grants apply.
+//!
+//! A private window's choices go to the private session instead of the stored settings, and
+//! read over them ([`crate::private`]).
 
 use std::collections::BTreeSet;
 
@@ -23,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::crdt::{Lattice, Lww, Seq, Stamp};
 use crate::db::{seq_col, stamp_col};
+use crate::private::Browsing;
 use crate::sync::{ChangedRows, Kind, SyncTable, changed_rows};
 use crate::{Error, Profile, Url};
 
@@ -579,15 +583,26 @@ pub struct SiteGroup {
     pub settings: Vec<(Permission, Setting)>,
 }
 
+/// The settings a tab of one [`Browsing`] kind goes by. In private, what the private session
+/// kept for a site wins over what is stored, and changes stay in the session.
 pub struct SitePermissions<'p> {
     pub(crate) p: &'p mut Profile,
+    pub(crate) browsing: Browsing,
 }
 
 impl SitePermissions<'_> {
     /// `None` = ask. A stored Allow of a permission that is asked for every time (written by
     /// another build) reads as `None`.
     pub fn get(&mut self, origin: &Origin, p: Permission) -> Option<Setting> {
-        load_record(&self.p.conn, origin, p).ok().flatten().and_then(|r| effective(p, r.setting.v))
+        let kept = match self.browsing {
+            Browsing::Normal => None,
+            Browsing::Private => self.p.private.sites.get(&(origin.clone(), p)).copied(),
+        };
+        let setting = match kept {
+            Some(setting) => setting,
+            None => load_record(&self.p.conn, origin, p).ok().flatten().and_then(|r| r.setting.v),
+        };
+        effective(p, setting)
     }
 
     /// `None` goes back to asking. No-op (no stamp) when unchanged.
@@ -600,7 +615,7 @@ impl SitePermissions<'_> {
         Permission::ALL.iter().filter_map(|&p| self.get(origin, p).map(|s| (p, s))).collect()
     }
 
-    /// Every stored setting, by origin, then permission.
+    /// Every stored setting, by origin, then permission. A private session's are not listed.
     pub fn all(&mut self) -> Vec<SiteSetting> {
         let records = load_all(&self.p.conn).unwrap_or_else(|e| {
             log::warn!("site settings: {e}");
@@ -647,8 +662,15 @@ impl SitePermissions<'_> {
     }
 
     /// Whether a request for `permissions` may go ahead. With no origin only `grants` count.
+    /// In private, notifications are blocked without asking, as Chrome does in incognito: a
+    /// site's notifications would outlive the window.
     pub fn decide(&mut self, origin: Option<&Origin>, permissions: &[Permission], grants: &TabGrants) -> Decision {
-        decision(permissions, |p| origin.and_then(|o| self.get(o, p)), |p| grants.allows(origin, p))
+        let browsing = self.browsing;
+        let setting = |p: Permission| match (browsing, p) {
+            (Browsing::Private, Permission::Notifications) => Some(Setting::Block),
+            _ => origin.and_then(|o| self.get(o, p)),
+        };
+        decision(permissions, setting, |p| grants.allows(origin, p))
     }
 
     /// Applies a prompt answer and returns whether the request is granted. "Allow while
@@ -683,6 +705,12 @@ impl SitePermissions<'_> {
             && let Some(&p) = permissions.iter().find(|p| !p.remembers_allow())
         {
             return Err(Error::AlwaysAsks(p));
+        }
+        if self.browsing == Browsing::Private {
+            for &permission in permissions {
+                self.p.private.sites.insert((origin.clone(), permission), setting);
+            }
+            return Ok(());
         }
         self.p.write(|tx| {
             for &permission in permissions {

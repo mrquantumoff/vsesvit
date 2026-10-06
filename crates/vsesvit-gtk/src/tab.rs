@@ -14,6 +14,7 @@ use gtk::{gdk, glib};
 use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Cause, Next, Upgrades};
 use vsesvit_core::permissions::{Capturing, Origin};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::session::TabId as SessionTabId;
 use vsesvit_core::{Url, view_source};
 use vsesvit_webext::{Gate, Runtime, TabId};
@@ -892,7 +893,7 @@ impl Tab {
             Next::Load => false,
             Next::Allow(url) => {
                 log::info!("continuing to {url} without a secure connection");
-                if let Err(e) = https_only::allow(&mut browser.core().borrow_mut(), &url) {
+                if let Err(e) = https_only::allow(&mut browser.core().borrow_mut(), Browsing::Normal, &url) {
                     log::warn!("HTTPS-only exception for {url}: {e}");
                 }
                 false

@@ -255,6 +255,7 @@ commands! {
         // Chrome saves the page with Ctrl+S; Vsesvit gives it to the tab list and saves with Ctrl+Shift+S.
         ToggleTabList = "toggle-tab-list", "Show or hide the tab list", [ctrl(S), bare(F9)];
         NewWindow = "new-window", "New window", [ctrl(N)];
+        NewPrivateWindow = "new-private-window", "New private window", [ctrl_shift(N)];
         Quit = "quit", "Quit", [ctrl(Q)];
     }
     Navigation {

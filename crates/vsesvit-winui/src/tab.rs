@@ -12,6 +12,7 @@ use serde_json::json;
 use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Cause, Next, Upgrades};
 use vsesvit_core::permissions::{Origin, Permission};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::trackers::{self, TrackerList, TrackingProtection};
 use vsesvit_core::{Url, new_tab, session, view_source};
 use windows_core::{HSTRING, IInspectable, Interface, Ref, Result};
@@ -630,7 +631,7 @@ impl Tab {
     fn show_new_tab_page(&self, core: &CoreWebView2) {
         let shown = match self.browser() {
             Some(browser) => browser
-                .core(new_tab::page)
+                .core(|p| new_tab::page(p, Browsing::Normal))
                 .map_err(|e| e.to_string())
                 .and_then(|html| core.NavigateToString(&html).map_err(|e| e.to_string())),
             None => Err("the window is gone".to_owned()),
@@ -829,7 +830,7 @@ impl Tab {
             .and_then(|core| core.Source().ok())
             .and_then(|source| vsesvit_core::Url::parse(&source).ok());
         let remembered = match &url {
-            Some(url) => browser.core(|p| p.site_zoom().get(url)).unwrap_or_else(|e| {
+            Some(url) => browser.core(|p| p.site_zoom(Browsing::Normal).get(url)).unwrap_or_else(|e| {
                 log::warn!("site zoom: {e}");
                 vsesvit_core::zoom::DEFAULT
             }),
@@ -850,7 +851,7 @@ impl Tab {
                     .tab(id)
                     .and_then(|tab| tab.zoom_memory.borrow().settled(change, window.scale()));
                 if let (Some(level), Some(browser)) = (settled, window.browser())
-                    && let Err(e) = browser.core(|p| p.site_zoom().set(&url, level.factor()))
+                    && let Err(e) = browser.core(|p| p.site_zoom(Browsing::Normal).set(&url, level.factor()))
                 {
                     log::warn!("site zoom: {e}");
                 }
@@ -985,7 +986,7 @@ impl Tab {
             Next::Load => false,
             Next::Allow(url) => {
                 log::info!("tab {}: continuing to {url} without a secure connection", self.id);
-                if let Err(e) = browser.core(|p| https_only::allow(p, &url)) {
+                if let Err(e) = browser.core(|p| https_only::allow(p, Browsing::Normal, &url)) {
                     log::warn!("tab {}: HTTPS-only exception for {url}: {e}", self.id);
                 }
                 false

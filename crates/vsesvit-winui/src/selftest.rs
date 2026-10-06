@@ -28,6 +28,7 @@ use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::import;
 use vsesvit_core::permissions::{Origin, Permission};
 use vsesvit_core::prefs::{TabsPosition, keys};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::search::NavTarget;
 use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
@@ -581,7 +582,7 @@ async fn checks(
 
     check(report, "zoom_is_remembered_per_site", DEFAULT_TIMEOUT, async |p| {
         let page2 = server.url("/page2.html");
-        let remembered = |url: &Url| browser.core(|c| c.site_zoom().get(url)).unwrap_or(-1.0);
+        let remembered = |url: &Url| browser.core(|c| c.site_zoom(Browsing::Normal).get(url)).unwrap_or(-1.0);
         let scale = window.scale();
         let mut seen = Vec::new();
 
@@ -858,7 +859,7 @@ async fn checks(
         let link = eval(&tab, "document.getElementById('continue').href").await?;
         eval(&tab, "document.getElementById('continue').click()").await?;
         until(p, |p| at(FIXTURE_TITLE, p)).await;
-        let allowed = browser.core(|c| https_only::allowed(c, &site));
+        let allowed = browser.core(|c| https_only::allowed(c, Browsing::Normal, &site));
         let detail = format!(
             "{index} failed over https and showed {:?} at its own address; its Continue link {link} loaded the page over http and stored the exception ({allowed})",
             https_only::WARNING_TITLE

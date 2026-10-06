@@ -14,6 +14,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::downloads::{Download, DownloadId, State, sanitize, unique_destination};
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use webkit::prelude::*;
 
 use crate::dialogs::plain_toast;
@@ -318,7 +319,7 @@ impl Downloads {
         let url = download.request().and_then(|r| r.uri()).map(String::from).unwrap_or_default();
         let total = total_of(download);
         let now = u64::try_from(now_ms()).unwrap_or(0);
-        let started = self.core.borrow_mut().downloads().start(&url, destination, total, now);
+        let started = self.core.borrow_mut().downloads().start(&url, destination, total, now, Browsing::Normal);
         let record = match started {
             Ok(record) => record,
             Err(e) => {

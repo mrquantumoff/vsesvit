@@ -9,6 +9,7 @@ use vsesvit_core::crdt::{DeviceId, TimeSource};
 use vsesvit_core::https_only::{self, Cause, Next, Reach, Upgrades};
 use vsesvit_core::permissions::{Capturing, Origin, Permission, Setting, SiteSetting, site_rows};
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::{OpenOptions, Profile, Url};
 
 use Reach::{Everywhere, Public};
@@ -92,17 +93,17 @@ fn upgrades_once_on_until_the_site_has_an_exception() {
     let site = Origin::parse("http://plain.example.org").unwrap();
     assert!(!p.prefs().get(&keys::HTTPS_ONLY), "off by default");
     assert_eq!(keys::HTTPS_ONLY.scope, vsesvit_core::prefs::Scope::Synced);
-    assert_eq!(https_only::upgrade(&mut p, &page, Public), None);
+    assert_eq!(https_only::upgrade(&mut p, Browsing::Normal, &page, Public), None);
 
     p.prefs().set(&keys::HTTPS_ONLY, &true).unwrap();
-    assert_eq!(https_only::upgrade(&mut p, &page, Public), Some(url("https://plain.example.org/page")));
-    assert!(!https_only::allowed(&mut p, &site));
+    assert_eq!(https_only::upgrade(&mut p, Browsing::Normal, &page, Public), Some(url("https://plain.example.org/page")));
+    assert!(!https_only::allowed(&mut p, Browsing::Normal, &site));
 
-    https_only::allow(&mut p, &page).unwrap();
-    assert!(https_only::allowed(&mut p, &site));
-    assert_eq!(https_only::upgrade(&mut p, &page, Public), None);
-    assert_eq!(https_only::upgrade(&mut p, &url("http://plain.example.org/other"), Public), None, "the whole site");
-    assert!(https_only::upgrade(&mut p, &url("http://other.example.org/"), Public).is_some());
+    https_only::allow(&mut p, Browsing::Normal, &page).unwrap();
+    assert!(https_only::allowed(&mut p, Browsing::Normal, &site));
+    assert_eq!(https_only::upgrade(&mut p, Browsing::Normal, &page, Public), None);
+    assert_eq!(https_only::upgrade(&mut p, Browsing::Normal, &url("http://plain.example.org/other"), Public), None, "the whole site");
+    assert!(https_only::upgrade(&mut p, Browsing::Normal, &url("http://other.example.org/"), Public).is_some());
     assert_eq!(p.site_permissions().all(), [SiteSetting { origin: site, permission: Permission::Http, setting: Setting::Allow }]);
     assert!(site_rows(true, &[(Permission::Http, Setting::Allow)], &[], Capturing::default()).is_empty(), "site info has no row for it");
 }
