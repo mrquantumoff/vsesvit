@@ -605,8 +605,7 @@ impl Inner {
     /// `ext`'s dynamic content scripts changed: every tab gets their new user content, which
     /// applies from the next load as in Chrome, and the ones that persist are saved.
     pub(crate) fn dynamic_scripts_changed(&self, ext: &Extension) {
-        let content = ext.build_dynamic_content();
-        let previous = ext.dynamic_content.replace(content);
+        let previous = ext.dynamic_content.replace(ext.build_dynamic_content());
         for ucm in self.tab_managers() {
             previous.remove_from(&ucm);
             ext.dynamic_content.borrow().add_to(&ucm);

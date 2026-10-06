@@ -254,10 +254,11 @@ impl Draft {
                 _ => return Err(invalid("world", "ISOLATED, MAIN")),
             };
         }
-        self.matches = given.matches.unwrap_or(std::mem::take(&mut self.matches));
-        self.exclude_matches = given.exclude_matches.unwrap_or(std::mem::take(&mut self.exclude_matches));
-        self.js = given.js.unwrap_or(std::mem::take(&mut self.js));
-        self.css = given.css.unwrap_or(std::mem::take(&mut self.css));
+        for (field, given) in [(&mut self.matches, given.matches), (&mut self.exclude_matches, given.exclude_matches), (&mut self.js, given.js), (&mut self.css, given.css)] {
+            if let Some(given) = given {
+                *field = given;
+            }
+        }
         self.all_frames = given.all_frames.unwrap_or(self.all_frames);
         self.match_origin_as_fallback = given.match_origin_as_fallback.unwrap_or(self.match_origin_as_fallback);
         self.persist = given.persist_across_sessions.unwrap_or(self.persist);

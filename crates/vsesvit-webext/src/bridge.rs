@@ -718,7 +718,7 @@ fn css_sources(ext: &Extension, injection: &Value, read: bool) -> Result<Vec<(St
 fn css(inner: &Inner, ext: &Extension, call: &Call, reply: Reply) {
     let insert = call.method == Method::ScriptingInsertCss;
     let injection = call.arg(0);
-    let prepared = css_sources(ext, injection, insert).and_then(|sources| Ok((sources, injection_target(inner, ext, injection, call.method.name())?)));
+    let prepared = css_sources(ext, injection, insert).and_then(|sources| injection_target(inner, ext, injection, call.method.name()).map(|target| (sources, target)));
     let (sources, (view, guard)) = match prepared {
         Ok(prepared) => prepared,
         Err(e) => return reply.err(&e),
