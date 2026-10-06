@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::crdt::{DeviceId, Seq, TimeSource};
-use vsesvit_core::downloads::{Download, State};
+use vsesvit_core::downloads::{Download, State, unconfirmed_path};
 use vsesvit_core::prefs::{Scope, keys};
 use vsesvit_core::private::Browsing;
 use vsesvit_core::sync::Kind;
@@ -21,6 +21,9 @@ impl Drop for TempDir {
 }
 
 const T0: u64 = 1_780_000_000_000;
+
+const STATES: [State; 7] =
+    [State::InProgress, State::Paused, State::Interrupted, State::Unconfirmed, State::Completed, State::Failed, State::Cancelled];
 
 fn tmp() -> TempDir {
     TempDir(std::env::temp_dir().join(format!("vsesvit-dl-{}", uuid::Uuid::new_v4())))
@@ -56,14 +59,14 @@ fn start_then_finish() {
     assert_eq!((started.state, started.received, started.total, started.started_ms), (State::InProgress, 0, Some(10), T0));
     assert_eq!(p.downloads().list(10).unwrap(), vec![started.clone()], "start returns the stored row");
 
-    p.downloads().finish(started.id, State::Completed, 12, Some(12)).unwrap();
+    p.downloads().update(started.id, State::Completed, 12, Some(12)).unwrap();
     let done = p.downloads().list(10).unwrap().remove(0);
     assert_eq!(done, Download { state: State::Completed, received: 12, total: Some(12), ..started.clone() });
     assert_eq!(done.path, path);
 
     p.downloads().remove(started.id).unwrap();
     assert!(p.downloads().list(10).unwrap().is_empty());
-    p.downloads().finish(started.id, State::Failed, 0, None).unwrap();
+    p.downloads().update(started.id, State::Failed, 0, None).unwrap();
     assert!(p.downloads().list(10).unwrap().is_empty(), "finish after remove is a no-op");
     p.downloads().remove(started.id).unwrap();
 }
@@ -83,44 +86,87 @@ fn list_is_newest_first_and_limited() {
 }
 
 #[test]
-fn clear_keeps_downloads_in_progress() {
+fn clear_keeps_what_is_not_over() {
     let (mut p, _dir) = open();
     let path = Path::new("/dl/f");
     let mut dl = p.downloads();
-    let running = dl.start("https://running.example/", path, None, T0 + 4, Browsing::Normal).unwrap();
-    for (i, state) in [State::Completed, State::Failed, State::Cancelled].into_iter().enumerate() {
-        let d = dl.start(&format!("https://{i}.example/"), path, None, T0 + i as u64, Browsing::Normal).unwrap();
-        dl.finish(d.id, state, 1, None).unwrap();
+    let mut kept = Vec::new();
+    for (i, state) in STATES.into_iter().enumerate() {
+        let mut d = dl.start(&format!("https://{i}.example/"), path, None, T0 + i as u64, Browsing::Normal).unwrap();
+        dl.update(d.id, state, 1, None).unwrap();
+        (d.state, d.received) = (state, 1);
+        if !state.is_final() {
+            kept.insert(0, d);
+        }
     }
     dl.clear().unwrap();
-    assert_eq!(dl.list(10).unwrap(), vec![running]);
+    assert_eq!(dl.list(10).unwrap(), kept);
+    assert_eq!(kept.iter().map(|d| d.state).collect::<Vec<_>>(), [State::Unconfirmed, State::Interrupted, State::Paused, State::InProgress]);
 }
 
 #[test]
-fn interrupted_downloads_read_as_failed_after_a_restart() {
+fn downloads_the_engine_held_read_as_failed_after_a_restart() {
     let dir = tmp();
     {
         let mut p = open_at(&dir.0);
         let mut dl = p.downloads();
-        dl.start("https://running.example/", Path::new("/dl/r"), Some(100), T0 + 1, Browsing::Normal).unwrap();
-        let done = dl.start("https://done.example/", Path::new("/dl/d"), None, T0, Browsing::Normal).unwrap();
-        dl.finish(done.id, State::Completed, 5, Some(5)).unwrap();
+        for (i, state) in STATES.into_iter().enumerate() {
+            let d = dl.start(&format!("https://{i}.example/"), Path::new("/dl/f"), Some(100), T0 + i as u64, Browsing::Normal).unwrap();
+            dl.update(d.id, state, 7, Some(100)).unwrap();
+        }
     }
     let mut p = open_at(&dir.0);
-    assert_eq!(p.downloads().interrupt_stale().unwrap(), 1);
+    assert_eq!(p.downloads().interrupt_stale().unwrap(), 3);
     assert_eq!(p.downloads().interrupt_stale().unwrap(), 0, "idempotent");
-    assert_eq!(
-        states(&mut p),
-        [("https://running.example/".to_owned(), State::Failed), ("https://done.example/".to_owned(), State::Completed)]
-    );
-    assert_eq!(p.downloads().list(1).unwrap()[0].received, 0, "an interrupted download keeps its last stored counts");
+    let after: Vec<State> = states(&mut p).into_iter().rev().map(|(_, state)| state).collect();
+    use State::*;
+    assert_eq!(after, [Failed, Failed, Failed, Unconfirmed, Completed, Failed, Cancelled], "an unconfirmed file still waits");
+    assert!(p.downloads().list(10).unwrap().iter().all(|d| d.received == 7), "the last stored counts stay");
+}
+
+#[test]
+fn a_kept_file_takes_its_name_and_a_discarded_one_is_gone() {
+    let (mut p, dir) = open();
+    let folder = dir.0.join("Downloads");
+    std::fs::create_dir_all(&folder).unwrap();
+    let mut dl = p.downloads();
+    let start = |dl: &mut vsesvit_core::downloads::Downloads<'_>, name: &str| {
+        let path = folder.join(name);
+        std::fs::write(unconfirmed_path(&path), name).unwrap();
+        let mut d = dl.start("https://example.com/", &path, None, T0, Browsing::Normal).unwrap();
+        dl.update(d.id, State::Unconfirmed, 9, Some(9)).unwrap();
+        (d.state, d.received, d.total) = (State::Unconfirmed, 9, Some(9));
+        d
+    };
+
+    let setup = start(&mut dl, "setup.exe");
+    assert_eq!(dl.keep(&setup).unwrap(), folder.join("setup.exe"));
+    assert_eq!(std::fs::read_to_string(folder.join("setup.exe")).unwrap(), "setup.exe");
+    assert!(!unconfirmed_path(&setup.path).exists());
+    let listed = dl.list(10).unwrap();
+    assert_eq!(listed, [Download { state: State::Completed, ..setup.clone() }]);
+
+    let again = start(&mut dl, "setup.exe");
+    assert_eq!(dl.keep(&again).unwrap(), folder.join("setup (1).exe"), "a file took the name meanwhile");
+    assert_eq!(dl.list(1).unwrap()[0].path, folder.join("setup (1).exe"));
+    assert_eq!(std::fs::read_to_string(folder.join("setup.exe")).unwrap(), "setup.exe", "never overwritten");
+
+    let script = start(&mut dl, "run.sh");
+    dl.discard(&script).unwrap();
+    assert!(!unconfirmed_path(&script.path).exists() && !script.path.exists());
+    assert!(dl.list(10).unwrap().iter().all(|d| d.id != script.id), "off the list");
+
+    let gone = start(&mut dl, "gone.bat");
+    std::fs::remove_file(unconfirmed_path(&gone.path)).unwrap();
+    dl.discard(&gone).unwrap();
+    assert!(dl.list(10).unwrap().iter().all(|d| d.id != gone.id), "discarding a file deleted meanwhile still clears the entry");
 }
 
 #[test]
 fn downloads_are_local() {
     let (mut p, _dir) = open();
     let d = p.downloads().start("https://example.com/", Path::new("/dl/f"), None, T0, Browsing::Normal).unwrap();
-    p.downloads().finish(d.id, State::Completed, 1, None).unwrap();
+    p.downloads().update(d.id, State::Completed, 1, None).unwrap();
     for &kind in Kind::ALL {
         assert!(p.sync().changes_since(kind, Seq::ZERO, usize::MAX).unwrap().records.is_empty(), "{kind:?}");
     }
@@ -142,12 +188,42 @@ fn a_v1_profile_gains_the_table_and_keeps_its_data() {
     assert!(p.bookmarks().is_bookmarked(&bookmark));
     let d = p.downloads().start("https://example.com/", Path::new("/dl/f"), None, T0, Browsing::Normal).unwrap();
     drop(p);
-    assert_eq!(user_version(&dir.0), 9);
+    assert_eq!(user_version(&dir.0), 10);
 
     let mut p = open_at(&dir.0);
-    assert_eq!(user_version(&dir.0), 9, "reopening migrates nothing");
+    assert_eq!(user_version(&dir.0), 10, "reopening migrates nothing");
     assert_eq!(p.downloads().list(10).unwrap(), vec![d]);
     assert!(p.bookmarks().is_bookmarked(&bookmark));
+}
+
+#[test]
+fn a_v9_profile_takes_the_new_states_and_keeps_its_rows() {
+    let dir = tmp();
+    let d = {
+        let mut p = open_at(&dir.0);
+        let d = p.downloads().start("https://example.com/a.zip", Path::new("/dl/a.zip"), Some(3), T0, Browsing::Normal).unwrap();
+        p.downloads().update(d.id, State::Completed, 3, Some(3)).unwrap();
+        Download { state: State::Completed, received: 3, ..d }
+    };
+    let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE v9 (id INTEGER PRIMARY KEY, url TEXT NOT NULL, path TEXT NOT NULL, started_ms INTEGER NOT NULL,            state TEXT NOT NULL CHECK (state IN ('in_progress','completed','failed','cancelled')),            received INTEGER NOT NULL DEFAULT 0, total INTEGER);
+         INSERT INTO v9 SELECT * FROM downloads;
+         DROP TABLE downloads;
+         ALTER TABLE v9 RENAME TO downloads;
+         PRAGMA user_version = 9;",
+    )
+    .unwrap();
+    assert!(conn.execute("UPDATE downloads SET state = 'paused'", []).is_err(), "the v9 table refuses it");
+    drop(conn);
+
+    let mut p = open_at(&dir.0);
+    assert_eq!(p.downloads().list(10).unwrap(), vec![d.clone()]);
+    let paused = p.downloads().start("https://example.com/b.zip", Path::new("/dl/b.zip"), None, T0 + 1, Browsing::Normal).unwrap();
+    p.downloads().update(paused.id, State::Paused, 1, None).unwrap();
+    drop(p);
+    assert_eq!(user_version(&dir.0), 10);
+    assert_eq!(states(&mut open_at(&dir.0)), [("https://example.com/b.zip".to_owned(), State::Paused), (d.url, State::Completed)]);
 }
 
 #[test]

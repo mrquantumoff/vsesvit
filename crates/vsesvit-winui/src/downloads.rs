@@ -336,7 +336,7 @@ impl Browser {
         }
         let (received, total) = counts(operation);
         log::info!("download {} ended {state:?}: {received} bytes", id.0);
-        if let Err(e) = self.core(|p| p.downloads().finish(id, state, received, total)) {
+        if let Err(e) = self.core(|p| p.downloads().update(id, state, received, total)) {
             log::warn!("downloads list: {e}");
         }
         self.downloads_changed(Change::List);

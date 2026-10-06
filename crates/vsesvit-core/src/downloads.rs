@@ -1,9 +1,13 @@
 //! The downloads list, and the naming and status text both shells share.
 //!
 //! One row per download this device started. The shell owns the engine download and its
-//! live byte counts; core stores the start and the outcome, so the list survives restarts.
-//! A download still in progress when the browser exits reads as failed on the next start
-//! ([`Downloads::interrupt_stale`]).
+//! live byte counts; core stores the start, each pause or interruption, and the outcome, so the
+//! list survives restarts. A download the engine still held when the browser exited reads as
+//! failed on the next start ([`Downloads::interrupt_stale`]).
+//!
+//! A file of a type that can run code ([`is_dangerous`]) is written under its unconfirmed name
+//! ([`unconfirmed_path`]) and waits there, [`State::Unconfirmed`], until the user keeps it
+//! ([`Downloads::keep`]) or discards it ([`Downloads::discard`]), as Chrome asks.
 //!
 //! LOCAL: files on this device's disk, so never synced.
 //!
@@ -19,6 +23,7 @@ use crate::db::bad_column;
 use crate::private::Browsing;
 use crate::{Error, Profile, Url};
 
+/// Migration v3. [`SCHEMA_STATES`] holds the table's current definition.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE downloads (                  -- LOCAL: files on this device's disk
   id          INTEGER PRIMARY KEY,
@@ -29,6 +34,25 @@ CREATE TABLE downloads (                  -- LOCAL: files on this device's disk
   received    INTEGER NOT NULL DEFAULT 0,
   total       INTEGER
 );
+";
+
+/// Migration v10: the state CHECK accepts 'paused', 'interrupted' and 'unconfirmed'. SQLite
+/// cannot alter a CHECK, so the table is rebuilt as `extensions/schema_v4.sql` rebuilds the
+/// extension tables.
+pub(crate) const SCHEMA_STATES: &str = "
+CREATE TABLE downloads_v10 (
+  id          INTEGER PRIMARY KEY,
+  url         TEXT NOT NULL,
+  path        TEXT NOT NULL,             -- where the file goes; an unconfirmed one waits beside it
+  started_ms  INTEGER NOT NULL,
+  state       TEXT NOT NULL CHECK (state IN ('in_progress','paused','interrupted','unconfirmed','completed','failed','cancelled')),
+  received    INTEGER NOT NULL DEFAULT 0,
+  total       INTEGER
+);
+INSERT INTO downloads_v10 (id, url, path, started_ms, state, received, total)
+  SELECT id, url, path, started_ms, state, received, total FROM downloads;
+DROP TABLE downloads;
+ALTER TABLE downloads_v10 RENAME TO downloads;
 ";
 
 /// The row id of a download.
@@ -46,18 +70,47 @@ impl DownloadId {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum State {
     InProgress,
+    /// The user paused it; the engine keeps what arrived.
+    Paused,
+    /// A network or server error stopped it, and the engine can resume it.
+    Interrupted,
+    /// Every byte arrived, but the file can run code: it stays under its [`unconfirmed_path`]
+    /// until the user keeps or discards it.
+    Unconfirmed,
     Completed,
     Failed,
     Cancelled,
 }
 
 impl State {
-    const ALL: [State; 4] = [State::InProgress, State::Completed, State::Failed, State::Cancelled];
+    const ALL: [State; 7] = [
+        State::InProgress,
+        State::Paused,
+        State::Interrupted,
+        State::Unconfirmed,
+        State::Completed,
+        State::Failed,
+        State::Cancelled,
+    ];
+
+    /// Whether the engine still holds the download: it can be cancelled, and it cannot outlive
+    /// the process that started it.
+    pub fn is_live(self) -> bool {
+        matches!(self, State::InProgress | State::Paused | State::Interrupted)
+    }
+
+    /// Whether nothing is left to happen to the download, so it can leave the list.
+    pub fn is_final(self) -> bool {
+        matches!(self, State::Completed | State::Failed | State::Cancelled)
+    }
 
     /// The `state` column's text.
     fn as_str(self) -> &'static str {
         match self {
             State::InProgress => "in_progress",
+            State::Paused => "paused",
+            State::Interrupted => "interrupted",
+            State::Unconfirmed => "unconfirmed",
             State::Completed => "completed",
             State::Failed => "failed",
             State::Cancelled => "cancelled",
@@ -78,7 +131,7 @@ pub struct Download {
     pub path: PathBuf,
     pub started_ms: u64,
     pub state: State,
-    /// Bytes written, as of the last [`Downloads::finish`]. Live progress lives in the shell.
+    /// Bytes written, as of the last [`Downloads::update`]. Live progress lives in the shell.
     pub received: u64,
     pub total: Option<u64>,
 }
@@ -135,10 +188,9 @@ impl Downloads<'_> {
         Ok(download)
     }
 
-    /// Stores the outcome. `state` is a final state, never [`State::InProgress`]. No-op if
-    /// the download was removed from the list meanwhile.
-    pub fn finish(&mut self, id: DownloadId, state: State, received: u64, total: Option<u64>) -> Result<(), Error> {
-        debug_assert_ne!(state, State::InProgress, "finish takes a final state");
+    /// Stores where the download is now: paused, interrupted, running again, waiting for the user
+    /// to keep it, or ended. No-op if the download was removed from the list meanwhile.
+    pub fn update(&mut self, id: DownloadId, state: State, received: u64, total: Option<u64>) -> Result<(), Error> {
         if id.is_private() {
             if let Some(d) = self.p.private.downloads.rows.iter_mut().find(|d| d.id == id) {
                 (d.state, d.received, d.total) = (state, received, total);
@@ -180,20 +232,51 @@ impl Downloads<'_> {
         Ok(())
     }
 
-    /// Removes every entry that is not in progress, the private session's too. Files stay on disk.
+    /// Moves an unconfirmed file to its destination and lists it as completed. If a file took
+    /// that name meanwhile, the kept one is numbered instead. Returns where the file now is.
+    pub fn keep(&mut self, download: &Download) -> Result<PathBuf, Error> {
+        debug_assert_eq!(download.state, State::Unconfirmed, "only an unconfirmed file is kept");
+        let path = &download.path;
+        let kept = match (path.parent(), path.file_name()) {
+            (Some(dir), Some(name)) if path.exists() => unique_destination(dir, &name.to_string_lossy(), Path::exists),
+            _ => path.clone(),
+        };
+        std::fs::rename(unconfirmed_path(path), &kept)?;
+        self.p.conn.execute(
+            "UPDATE downloads SET state = ?2, path = ?3 WHERE id = ?1",
+            params![download.id.0, State::Completed.as_str(), kept.to_string_lossy()],
+        )?;
+        Ok(kept)
+    }
+
+    /// Deletes an unconfirmed file and takes it off the list.
+    pub fn discard(&mut self, download: &Download) -> Result<(), Error> {
+        debug_assert_eq!(download.state, State::Unconfirmed, "only an unconfirmed file is discarded");
+        match std::fs::remove_file(unconfirmed_path(&download.path)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        self.remove(download.id)
+    }
+
+    /// Removes every entry nothing is left to happen to ([`State::is_final`]), the private
+    /// session's too. Files stay on disk.
     pub fn clear(&mut self) -> Result<(), Error> {
-        self.p.private.downloads.rows.retain(|d| d.state == State::InProgress);
-        self.p.conn.execute("DELETE FROM downloads WHERE state <> ?1", [State::InProgress.as_str()])?;
+        self.p.private.downloads.rows.retain(|d| !d.state.is_final());
+        self.p.conn.execute(
+            "DELETE FROM downloads WHERE state IN (?1, ?2, ?3)",
+            [State::Completed, State::Failed, State::Cancelled].map(State::as_str),
+        )?;
         Ok(())
     }
 
-    /// Marks every stored download still in progress as failed and returns how many there were.
-    /// Shells call it once at startup, before any download can begin: no engine download
-    /// outlives the process that started it.
+    /// Marks every download the engine held ([`State::is_live`]) as failed and returns how many
+    /// there were. Shells call it once at startup, before any download can begin: no engine
+    /// download outlives the process that started it. An unconfirmed file still waits.
     pub fn interrupt_stale(&mut self) -> Result<usize, Error> {
         Ok(self.p.conn.execute(
-            "UPDATE downloads SET state = ?2 WHERE state = ?1",
-            [State::InProgress.as_str(), State::Failed.as_str()],
+            "UPDATE downloads SET state = ?4 WHERE state IN (?1, ?2, ?3)",
+            [State::InProgress, State::Paused, State::Interrupted, State::Failed].map(State::as_str),
         )?)
     }
 }
@@ -215,12 +298,14 @@ fn row_download(row: &rusqlite::Row<'_>) -> Result<Download, rusqlite::Error> {
     })
 }
 
-/// `dir/name`, or `dir/name (1)`, `dir/name (2)`, ... before the extension, whichever does not
-/// exist yet. The suggested name comes from the server and is reduced to a plain file name.
+/// `dir/name`, or `dir/name (1)`, `dir/name (2)`, ... before the extension, whichever is free:
+/// neither it nor its [`unconfirmed_path`] exists. The suggested name comes from the server and
+/// is reduced to a plain file name.
 pub fn unique_destination(dir: &Path, suggested: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let taken = |path: &Path| exists(path) || exists(&unconfirmed_path(path));
     let name = sanitize(suggested);
     let candidate = dir.join(&name);
-    if !exists(&candidate) {
+    if !taken(&candidate) {
         return candidate;
     }
     let (stem, extension) = match name.rfind('.') {
@@ -229,8 +314,106 @@ pub fn unique_destination(dir: &Path, suggested: &str, exists: impl Fn(&Path) ->
     };
     (1..)
         .map(|n| dir.join(format!("{stem} ({n}){extension}")))
-        .find(|candidate| !exists(candidate))
+        .find(|candidate| !taken(candidate))
         .expect("an unused name exists")
+}
+
+/// Where a file that can run code waits until the user keeps it: beside its destination, under
+/// a name no program opens (`setup.exe.unconfirmed` for `setup.exe`).
+pub fn unconfirmed_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".unconfirmed");
+    path.with_file_name(name)
+}
+
+/// The systems whose dangerous file types differ.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum System {
+    Windows,
+    Linux,
+}
+
+impl System {
+    const CURRENT: System = if cfg!(windows) { System::Windows } else { System::Linux };
+}
+
+/// File types that run code when opened, after Chrome's list of dangerous download types:
+/// lowercase extensions, MIME types, and the systems they run on.
+const DANGEROUS_TYPES: &[(&[&str], &[&str], &[System])] = &[
+    (
+        &[
+            "ade", "adp", "app", "application", "appref-ms", "appx", "appxbundle", "bas", "bat", "chm", "cmd", "com", "cpl",
+            "dll", "drv", "exe", "gadget", "hlp", "hta", "inf", "ins", "isp", "js", "jse", "library-ms", "lnk", "mad",
+            "maf", "mag", "mam", "maq", "mar", "mas", "mat", "mau", "mav", "maw", "mda", "mdb", "mde", "mdt", "mdw", "mdz",
+            "mmc", "msc", "msh", "msh1", "msh1xml", "msh2", "msh2xml", "mshxml", "msi", "msix", "msixbundle", "msp", "mst",
+            "ocx", "ops", "pcd", "pif", "plg", "prf", "prg", "ps1", "ps1xml", "ps2", "ps2xml", "psc1", "psc2", "psd1",
+            "psm1", "pst", "reg", "scf", "scr", "sct", "search-ms", "settingcontent-ms", "shb", "shs", "sys", "url", "vb",
+            "vbe", "vbs", "vsmacros", "vsw", "website", "ws", "wsc", "wsf", "wsh", "xbap", "xnk",
+        ],
+        &[
+            "application/hta",
+            "application/vnd.microsoft.portable-executable",
+            "application/x-bat",
+            "application/x-dosexec",
+            "application/x-ms-application",
+            "application/x-ms-installer",
+            "application/x-ms-shortcut",
+            "application/x-msdos-program",
+            "application/x-msdownload",
+            "application/x-msi",
+        ],
+        &[System::Windows],
+    ),
+    (
+        &["appimage", "bash", "csh", "deb", "desktop", "flatpak", "flatpakref", "ksh", "rpm", "run", "sh", "snap", "tcsh", "zsh"],
+        &[
+            "application/vnd.appimage",
+            "application/vnd.debian.binary-package",
+            "application/x-appimage",
+            "application/x-debian-package",
+            "application/x-desktop",
+            "application/x-elf",
+            "application/x-executable",
+            "application/x-redhat-package-manager",
+            "application/x-rpm",
+            "application/x-sh",
+            "application/x-shellscript",
+        ],
+        &[System::Linux],
+    ),
+    (
+        &["jar", "jnlp"],
+        &["application/java-archive", "application/x-java-archive", "application/x-java-jnlp-file"],
+        &[System::Windows, System::Linux],
+    ),
+];
+
+/// Whether a download named `name` and served as `mime` is of a type that runs code when opened
+/// on this system, so it waits for the user to keep it.
+pub fn is_dangerous(name: &str, mime: Option<&str>) -> bool {
+    dangerous_on(System::CURRENT, name, mime)
+}
+
+fn dangerous_on(system: System, name: &str, mime: Option<&str>) -> bool {
+    // Windows drops trailing dots and spaces when it makes a file: "setup.exe. " is setup.exe.
+    let name = name.trim_end_matches(['.', ' ']).to_lowercase();
+    let extension = name.rsplit_once('.').map(|(_, extension)| extension);
+    let mime = mime.map(|m| m.split(';').next().unwrap_or_default().trim().to_ascii_lowercase());
+    DANGEROUS_TYPES.iter().filter(|(_, _, systems)| systems.contains(&system)).any(|(extensions, mimes, _)| {
+        extension.is_some_and(|e| extensions.contains(&e)) || mime.as_deref().is_some_and(|m| mimes.contains(&m))
+    })
+}
+
+/// The Mark of the Web for a file downloaded from `url`, as Chrome writes it to the file's
+/// `Zone.Identifier` stream on Windows: the Internet zone, and the source without credentials
+/// when it is a web address. SmartScreen and Office read it when the file is opened.
+pub fn zone_identifier(url: &str) -> String {
+    let source = Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https")).map(|mut u| {
+        let _ = u.set_username("");
+        let _ = u.set_password(None);
+        u.to_string()
+    });
+    format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={}\r\n", source.as_deref().unwrap_or("about:internet"))
 }
 
 /// A server-suggested name reduced to a plain file name: no directories, no control
@@ -268,11 +451,15 @@ pub fn describe_size(bytes: u64) -> String {
 /// in-memory `(received, total)` for a download in progress; `exists` is whether the file
 /// is still on disk.
 pub fn status_line(d: &Download, live: Option<(u64, Option<u64>)>, exists: bool) -> String {
+    let counts = || match live.unwrap_or((d.received, d.total)) {
+        (received, Some(total)) => format!("{} of {}", describe_size(received), describe_size(total)),
+        (received, None) => describe_size(received),
+    };
     match d.state {
-        State::InProgress => match live.unwrap_or((d.received, d.total)) {
-            (received, Some(total)) => format!("{} of {}", describe_size(received), describe_size(total)),
-            (received, None) => describe_size(received),
-        },
+        State::InProgress => counts(),
+        State::Paused => format!("Paused · {}", counts()),
+        State::Interrupted => format!("Interrupted · {}", counts()),
+        State::Unconfirmed => "This type of file can harm your device".to_owned(),
         State::Completed if !exists => "Deleted".to_owned(),
         State::Completed => {
             let size = describe_size(d.received);
@@ -364,6 +551,14 @@ mod tests {
 
         assert_eq!(status_line(&download(url, State::Failed, 5, None), None, true), "Failed");
         assert_eq!(status_line(&download(url, State::Cancelled, 5, None), None, false), "Cancelled");
+
+        let paused = download(url, State::Paused, 1_000, Some(10_000_000));
+        assert_eq!(status_line(&paused, Some((3_200_000, Some(10_000_000))), true), "Paused · 3.2 MB of 10 MB");
+        assert_eq!(status_line(&paused, None, false), "Paused · 1.0 KB of 10 MB", "the stored counts");
+        let interrupted = download(url, State::Interrupted, 0, None);
+        assert_eq!(status_line(&interrupted, Some((5, None)), true), "Interrupted · 5 B");
+        let unconfirmed = download(url, State::Unconfirmed, 5, Some(5));
+        assert_eq!(status_line(&unconfirmed, None, true), "This type of file can harm your device");
     }
 
     #[test]
@@ -371,6 +566,64 @@ mod tests {
         for state in State::ALL {
             assert_eq!(State::parse(state.as_str()), Some(state));
         }
-        assert_eq!(State::parse("paused"), None);
+        assert_eq!(State::parse("running"), None);
+    }
+
+    #[test]
+    fn live_and_final_states() {
+        let live: Vec<State> = State::ALL.into_iter().filter(|s| s.is_live()).collect();
+        let done: Vec<State> = State::ALL.into_iter().filter(|s| s.is_final()).collect();
+        assert_eq!(live, [State::InProgress, State::Paused, State::Interrupted]);
+        assert_eq!(done, [State::Completed, State::Failed, State::Cancelled]);
+        assert!(!State::Unconfirmed.is_live() && !State::Unconfirmed.is_final(), "waits for the user");
+    }
+
+    #[test]
+    fn an_unconfirmed_file_holds_its_name() {
+        let dir = Path::new("/dl");
+        assert_eq!(unconfirmed_path(&dir.join("setup.exe")), dir.join("setup.exe.unconfirmed"));
+        let taken = [dir.join("setup.exe.unconfirmed")];
+        let exists = |p: &Path| taken.iter().any(|t| t == p);
+        assert_eq!(unique_destination(dir, "setup.exe", exists), dir.join("setup (1).exe"));
+    }
+
+    #[test]
+    fn dangerous_types_depend_on_the_system() {
+        use System::{Linux, Windows};
+        let cases = [
+            ("setup.exe", None, Windows, true),
+            ("SETUP.EXE", None, Windows, true),
+            ("setup.exe. ", None, Windows, true),
+            ("installer.msi", None, Windows, true),
+            ("run.ps1", None, Windows, true),
+            ("setup.exe", None, Linux, false),
+            ("install.sh", None, Linux, true),
+            ("app.AppImage", None, Linux, true),
+            ("pkg.deb", None, Linux, true),
+            ("install.sh", None, Windows, false),
+            ("tool.jar", None, Windows, true),
+            ("tool.jar", None, Linux, true),
+            ("report.pdf", None, Windows, false),
+            ("archive.zip", None, Linux, false),
+            ("exe", None, Windows, false),
+            ("download", Some("application/x-msdownload"), Windows, true),
+            ("download", Some("Application/X-MSDownload; charset=binary"), Windows, true),
+            ("download", Some("application/x-executable"), Linux, true),
+            ("download", Some("application/octet-stream"), Windows, false),
+            ("notes.txt", Some("text/plain"), Linux, false),
+        ];
+        for (name, mime, system, dangerous) in cases {
+            assert_eq!(dangerous_on(system, name, mime), dangerous, "{name} {mime:?} on {system:?}");
+        }
+    }
+
+    #[test]
+    fn the_mark_of_the_web_names_a_web_source() {
+        assert_eq!(
+            zone_identifier("https://user:secret@example.com/files/setup.exe?x=1"),
+            "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://example.com/files/setup.exe?x=1\r\n"
+        );
+        assert_eq!(zone_identifier("data:application/x-msdownload,MZ"), "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=about:internet\r\n");
+        assert_eq!(zone_identifier("blob:https://example.com/5e1f"), "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=about:internet\r\n");
     }
 }

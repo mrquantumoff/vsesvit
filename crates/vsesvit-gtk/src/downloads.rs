@@ -388,7 +388,7 @@ impl Downloads {
         self.live.borrow_mut().remove(&id);
         let received = download.received_data_length();
         let total = total_of(download).or((state == State::Completed).then_some(received));
-        let finished = self.core.borrow_mut().downloads().finish(id, state, received, total);
+        let finished = self.core.borrow_mut().downloads().update(id, state, received, total);
         if let Err(e) = finished {
             log::warn!("downloads: {e}");
         }

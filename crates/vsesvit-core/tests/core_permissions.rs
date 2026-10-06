@@ -507,7 +507,7 @@ fn a_v5_profile_gains_the_table() {
     drop(p);
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     drop(conn);
     assert_eq!(open_at(&dir, 1).site_permissions().get(&site, Location), Some(Setting::Allow));
 }

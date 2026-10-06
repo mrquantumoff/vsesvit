@@ -33,6 +33,7 @@ const MIGRATIONS: &[&[&str]] = &[
     &[crate::zoom::SCHEMA],
     &[crate::vault::SCHEMA, crate::sync::SECRETS_SCHEMA],
     &[crate::permissions::SCHEMA_CLEAR_ON_EXIT],
+    &[crate::downloads::SCHEMA_STATES],
 ];
 
 /// `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=0`

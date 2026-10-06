@@ -242,5 +242,5 @@ fn a_v1_profile_gains_the_favicon_table() {
     assert!(p.favicons().record(&url("https://a.example/"), b"a").unwrap());
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }
