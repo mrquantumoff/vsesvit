@@ -8,6 +8,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::history::Transition;
+use vsesvit_core::tab_place::TabPlace;
 use webkit::prelude::*;
 
 use super::{BrowserWindow, Layout};
@@ -67,36 +68,10 @@ impl TabAction {
     }
 }
 
-/// Where a tab is in its window: its index, how many tabs there are, and how many of them
-/// are pinned, which lead.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Place {
-    index: u32,
-    count: u32,
-    pinned: u32,
-}
-
-impl Place {
-    fn is_pinned(self) -> bool {
-        self.index < self.pinned
-    }
-
-    /// The indices of the other tabs `action` closes, last first. As in Chrome, Close Other
-    /// Tabs and Close Tabs to the Right leave pinned tabs open.
-    fn closes(self, action: TabAction) -> Vec<u32> {
-        let range = match action {
-            TabAction::CloseOthers => self.pinned..self.count,
-            TabAction::CloseAfter => (self.index + 1).max(self.pinned)..self.count,
-            _ => return Vec::new(),
-        };
-        range.rev().filter(|&i| i != self.index).collect()
-    }
-}
-
 /// What the menu depends on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TabFacts {
-    place: Place,
+    place: TabPlace,
     /// The tabs are a list in the sidebar, where Chrome's "to the right" reads "below".
     vertical: bool,
     muted: bool,
@@ -133,12 +108,12 @@ fn sections(facts: TabFacts) -> [Vec<Item>; 3] {
         page.push(Item("Copy _Link", CopyLink, true));
     }
     [
-        vec![Item(new_tab, NewTabNext, true), Item("Move Tab to New _Window", MoveToNewWindow, place.count > 1)],
+        vec![Item(new_tab, NewTabNext, true), Item("Move Tab to New _Window", MoveToNewWindow, place.can_move_out())],
         page,
         vec![
             Item("_Close Tab", Close, true),
-            Item("Close _Other Tabs", CloseOthers, !place.closes(CloseOthers).is_empty()),
-            Item(close_after, CloseAfter, !place.closes(CloseAfter).is_empty()),
+            Item("Close _Other Tabs", CloseOthers, !place.closes_others().is_empty()),
+            Item(close_after, CloseAfter, !place.closes_after().is_empty()),
             Item("R_eopen Closed Tab", ReopenClosed, facts.can_reopen),
         ],
     ]
@@ -246,7 +221,8 @@ impl BrowserWindow {
             TabAction::CopyLink => self.copy_link(&tab, true),
             TabAction::Close => view.close_page(page),
             TabAction::CloseOthers | TabAction::CloseAfter => {
-                for index in place.closes(action) {
+                let closes = if action == TabAction::CloseOthers { place.closes_others() } else { place.closes_after() };
+                for index in closes {
                     view.close_page(&view.nth_page(to_i32(index)));
                 }
             }
@@ -277,16 +253,16 @@ impl BrowserWindow {
     }
 }
 
-fn place_of(view: &adw::TabView, page: &adw::TabPage) -> Place {
-    let count = |n: i32| u32::try_from(n).unwrap_or(0);
-    Place {
+fn place_of(view: &adw::TabView, page: &adw::TabPage) -> TabPlace {
+    let count = |n: i32| usize::try_from(n).unwrap_or(0);
+    TabPlace {
         index: count(view.page_position(page)),
         count: count(view.n_pages()),
         pinned: count(view.n_pinned_pages()),
     }
 }
 
-fn to_i32(index: u32) -> i32 {
+fn to_i32(index: usize) -> i32 {
     i32::try_from(index).unwrap_or(i32::MAX)
 }
 
@@ -294,9 +270,9 @@ fn to_i32(index: u32) -> i32 {
 mod tests {
     use super::*;
 
-    fn facts(index: u32, count: u32, pinned: u32) -> TabFacts {
+    fn facts(index: usize, count: usize, pinned: usize) -> TabFacts {
         TabFacts {
-            place: Place { index, count, pinned },
+            place: TabPlace { index, count, pinned },
             vertical: false,
             muted: false,
             has_link: true,
@@ -344,17 +320,6 @@ mod tests {
     fn copy_link_only_for_pages() {
         assert_eq!(enabled(TabFacts { has_link: false, ..facts(0, 1, 0) }, TabAction::CopyLink), None);
         assert_eq!(enabled(facts(0, 1, 0), TabAction::CopyLink), Some(true));
-    }
-
-    #[test]
-    fn closing_others_and_after_leaves_pinned_tabs() {
-        let place = |index, count, pinned| Place { index, count, pinned };
-        assert_eq!(place(1, 4, 0).closes(TabAction::CloseOthers), [3, 2, 0]);
-        assert_eq!(place(2, 4, 2).closes(TabAction::CloseOthers), [3]);
-        assert_eq!(place(0, 4, 2).closes(TabAction::CloseOthers), [3, 2]);
-        assert_eq!(place(1, 4, 0).closes(TabAction::CloseAfter), [3, 2]);
-        assert_eq!(place(0, 4, 2).closes(TabAction::CloseAfter), [3, 2]);
-        assert_eq!(place(3, 4, 0).closes(TabAction::CloseAfter), Vec::<u32>::new());
     }
 
     #[test]
