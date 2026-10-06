@@ -30,6 +30,7 @@ pub mod commands;
 pub mod crx;
 mod install;
 pub mod manifest;
+pub mod notifications;
 pub mod toolbar;
 
 use std::cmp::Ordering;
