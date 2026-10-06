@@ -5,6 +5,7 @@
 //! from a custom URI scheme, and declarativeNetRequest translated to content blockers.
 //!
 //! Platform-neutral pieces compile and test everywhere: [`dnr`] (the translator),
+//! [`dnr_rules`] (the rules the declarativeNetRequest API changes),
 //! [`protocol`] (the JS/Rust wire format), [`messaging`] (port channels), [`menus`] (context
 //! menu items), [`notifications`] (what an extension notification shows), [`patterns`],
 //! [`mime`], [`i18n`], the tab
@@ -42,9 +43,9 @@
 //!
 //! // Lifecycle: load/unload installed extensions (content scripts apply to loads that
 //! // start afterwards, as in Chrome). `load` returns after the synchronous part; DNR
-//! // rulesets compile in the background, `pending_filters()` counts them and
-//! // `on_filters_ready` runs once every pending one is attached, which the self-test
-//! // uses before its `dnr_blocked` navigation. `Runtime::web_context()` is the context
+//! // rules compile in the background (at load and whenever an extension changes them),
+//! // `pending_filters()` counts the compiles and `on_filters_ready` runs once every pending
+//! // one is attached, which the self-test uses before its `dnr_blocked` navigation. `Runtime::web_context()` is the context
 //! // the scheme is registered on. `load` is for startup and the load after an install;
 //! // when the user re-enables an extension, `load_with(.., LoadReason::Enable)` keeps
 //! // `runtime.onStartup` from firing.
@@ -113,7 +114,7 @@
 //!   `storage.local/sync` with `storage.onChanged`, `i18n`. Extension pages (background,
 //!   popup, and any of the extension's documents shown in a tab: the options page,
 //!   `tabs.create(getURL(..))`, links) additionally get
-//!   `tabs.query/get/getCurrent/create/update/remove/reload/sendMessage` with
+//!   `storage.session`, `tabs.query/get/getCurrent/create/update/remove/reload/sendMessage` with
 //!   `onUpdated/onActivated/onRemoved`, `scripting.executeScript/insertCSS`,
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
 //!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
@@ -143,11 +144,16 @@
 //!   "Allow access to file URLs" grant for that, which Vsesvit does not offer.
 //!   `tabs.create/update` resolve relative URLs against the calling page and refuse
 //!   `javascript:` and `file:`.
-//! - declarativeNetRequest static rulesets as one WebKit content blocker per extension,
-//!   attached to every tab. Rules WebKit cannot express are logged and skipped. As in
-//!   Chrome, rulesets need the `declarativeNetRequest` permission, and redirect and
-//!   modifyHeaders rules (every rule, with `declarativeNetRequestWithHostAccess`) act only
-//!   on requests to hosts the extension has host permissions for.
+//! - declarativeNetRequest: the enabled static rulesets with the dynamic and session rules
+//!   (`updateDynamicRules`, `updateSessionRules`, `updateEnabledRulesets`, their getters,
+//!   `isRegexSupported`, `getAvailableStaticRuleCount`; see [`dnr_rules`]) as one WebKit
+//!   content blocker per extension, attached to every tab beside the shell's own blockers
+//!   and rebuilt on a worker thread when they change; an update resolves once the tabs have
+//!   it. Dynamic rules and the chosen rulesets outlive a restart. Rules WebKit cannot
+//!   express are logged and skipped. As in Chrome, the API and the rulesets need the
+//!   `declarativeNetRequest` permission, and redirect and modifyHeaders rules (every rule,
+//!   with `declarativeNetRequestWithHostAccess`) act only on requests to hosts the
+//!   extension has host permissions for.
 //!
 //! Known limits: events reach a tab's top frame only (`tabs.sendMessage`, `tabs.connect`,
 //! `storage.onChanged` in subframes; a subframe's own ports work); web pages cannot
@@ -158,14 +164,16 @@
 //! a radio item with a check mark; an image notification shows no image, and
 //! `requireInteraction` and `silent` change nothing; GNotification does not tell when the
 //! user dismisses a notification, so it stays in `notifications.getAll` until cleared or
-//! replaced, as with Chrome on the portal; no `webRequest`; one runtime per process;
+//! replaced, as with Chrome on the portal; WebKit reports no content-blocker matches, so
+//! `setExtensionActionOptions` shows no count and there is no `getMatchedRules`; no
+//! `webRequest`; one runtime per process;
 //! `about:blank` frames inside extension pages get no API; in a background or popup view,
 //! an `http(s)` iframe loads only for an extension without host permissions (WebKitGTK
 //! applies the view's CORS allowlist to every frame); WebKitGTK does not say which frame
 //! requests a file, so a request without a `Referer` is judged by its view's top document:
 //! an extension frame inside a web page loads only web-accessible files (extension
 //! documents send no `Referer`), and a frame whose referrer policy sends none passes for
-//! its top document. Runtime state (compiled filters, install markers) lives in
+//! its top document. Runtime state (compiled filters, dynamic rules, install markers) lives in
 //! `<profile>/webext/`.
 
 pub mod dnr;

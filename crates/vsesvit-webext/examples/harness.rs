@@ -59,7 +59,15 @@
 //!     does nothing; `clear` fires `onClosed`; the user's switch in core turns the API off
 //!     and back on, closing the notifications; an extension without the permission has no
 //!     `chrome.notifications`;
-//! 12. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//! 12. declarativeNetRequest (`tests/fixtures/extensions/dnr/`, two static rulesets, one
+//!     off): `/dnr.html` shows which of its images reached the server as a popup enables
+//!     and disables rulesets, adds dynamic and session rules (refusing a duplicate id) and
+//!     turns filtering off for the site and then for every other site with uBlock Origin
+//!     Lite's `allowAllRequests` rule; `isRegexSupported` answers for WebKit's regexes; a
+//!     restart keeps the dynamic rules and chosen rulesets and drops the session rules and
+//!     `storage.session`; a content blocker of the browser's own on the tab blocks
+//!     throughout;
+//! 13. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!

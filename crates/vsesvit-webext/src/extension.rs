@@ -98,8 +98,8 @@ pub(crate) struct Extension {
     pub content_bootstrap: String,
     pub csp: String,
     pub host_permissions: Vec<String>,
-    /// What the extension's declarativeNetRequest rules may do; `None` without the permission
-    /// for them, when it has none.
+    /// What the extension's declarativeNetRequest rules may do; `None` without the
+    /// declarativeNetRequest permission.
     pub grants: Option<Grants>,
     pub dnr: RefCell<Rules>,
     pub compiles: Compiles,

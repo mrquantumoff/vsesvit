@@ -121,8 +121,8 @@ fn attach(inner: &Rc<Inner>, ext: &Rc<Extension>, change: u64, built: Built) {
         finished(inner, ext, change, Some(None));
         return;
     };
-    let (weak_inner, ext) = (Rc::downgrade(inner), ext.clone());
-    inner.filter_store.save(&ext.host.clone(), &glib::Bytes::from_owned(json.into_bytes()), None::<&gio::Cancellable>, move |result| {
+    let (weak_inner, ext, identifier) = (Rc::downgrade(inner), ext.clone(), ext.host.clone());
+    inner.filter_store.save(&identifier, &glib::Bytes::from_owned(json.into_bytes()), None::<&gio::Cancellable>, move |result| {
         let Some(inner) = weak_inner.upgrade() else { return };
         match result {
             Ok(filter) => finished(&inner, &ext, change, Some(Some(filter))),
