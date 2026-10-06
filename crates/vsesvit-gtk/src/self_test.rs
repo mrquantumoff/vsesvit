@@ -1919,6 +1919,9 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         }
         details.push(format!("closing the window ended the session: no engine session, closed tab, zoom or download row left; {} kept", row.path.display()));
         Ok(format!("{}; private-window.png", details.join("; ")))
+    })
+    .await;
+
     ctx.check("download_safety", CHECK_TIMEOUT, |last| async move {
         let dir = ctx.out_dir.join("downloads");
         let url = ctx.server.url("/dangerous.sh");
