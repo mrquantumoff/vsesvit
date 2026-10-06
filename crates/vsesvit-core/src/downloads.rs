@@ -146,7 +146,7 @@ pub struct Downloads<'p> {
 pub(crate) struct PrivateDownloads {
     rows: Vec<Download>,
     /// The last id handed out, counting down from -1. Kept when the session ends, so a late
-    /// [`Downloads::finish`] of an ended session's download never lands on a later one's row.
+    /// [`Downloads::update`] of an ended session's download never lands on a later one's row.
     last_id: i64,
 }
 

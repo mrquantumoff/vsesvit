@@ -184,7 +184,7 @@ fn private_downloads_are_listed_with_the_others_until_the_session_ends() {
     assert_eq!(ids(&mut p, 10), [stored_new.id, private_c.id, private_b.id, private_a.id, stored_old.id], "newest first");
     assert_eq!(ids(&mut p, 2), [stored_new.id, private_c.id]);
 
-    p.downloads().finish(private_a.id, State::Completed, 7, Some(7)).unwrap();
+    p.downloads().update(private_a.id, State::Completed, 7, Some(7)).unwrap();
     let a = p.downloads().list(10).unwrap().into_iter().find(|d| d.id == private_a.id).unwrap();
     assert_eq!((a.state, a.received, a.total), (State::Completed, 7, Some(7)));
     p.downloads().remove(private_c.id).unwrap();
@@ -196,7 +196,7 @@ fn private_downloads_are_listed_with_the_others_until_the_session_ends() {
 
     p.end_private_session();
     assert!(p.downloads().list(10).unwrap().is_empty());
-    p.downloads().finish(private_b.id, State::Cancelled, 0, None).unwrap();
+    p.downloads().update(private_b.id, State::Cancelled, 0, None).unwrap();
     let next = p.downloads().start("https://d.example/", path, None, T0 + 4, Private).unwrap();
     assert!(next.id.0 < private_c.id.0, "a later session never reuses an ended one's ids");
     assert_eq!(p.downloads().list(10).unwrap()[0].state, State::InProgress);
