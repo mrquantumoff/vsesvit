@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use vsesvit_core::crdt::{DeviceId, Seq, TimeSource};
-use vsesvit_core::downloads::State;
+use vsesvit_core::downloads::{State, unconfirmed_path};
 use vsesvit_core::https_only;
 use vsesvit_core::permissions::{Answer, Decision, Origin, Permission, Setting, TabGrants};
 use vsesvit_core::private::Browsing::{Normal, Private};
@@ -200,4 +200,28 @@ fn private_downloads_are_listed_with_the_others_until_the_session_ends() {
     let next = p.downloads().start("https://d.example/", path, None, T0 + 4, Private).unwrap();
     assert!(next.id.0 < private_c.id.0, "a later session never reuses an ended one's ids");
     assert_eq!(p.downloads().list(10).unwrap()[0].state, State::InProgress);
+}
+
+#[test]
+fn a_private_file_waiting_to_be_kept_is_kept_or_discarded_in_its_session() {
+    let (mut p, dir) = open();
+    let wait = |p: &mut Profile, name: &str| {
+        let path = dir.0.join(name);
+        std::fs::write(unconfirmed_path(&path), "held").unwrap();
+        let d = p.downloads().start("https://a.example/", &path, None, T0, Private).unwrap();
+        p.downloads().update(d.id, State::Unconfirmed, 4, Some(4)).unwrap();
+        (d.id, path)
+    };
+    let (kept, kept_path) = wait(&mut p, "kept.sh");
+    let (discarded, discarded_path) = wait(&mut p, "discarded.sh");
+
+    assert_eq!(p.downloads().keep(kept).unwrap(), Some(kept_path.clone()));
+    p.downloads().discard(discarded).unwrap();
+    let listed = p.downloads().list(10).unwrap();
+    let row = listed.iter().find(|d| d.id == kept).unwrap();
+    assert_eq!((row.state, &row.path), (State::Completed, &kept_path));
+    assert!(!listed.iter().any(|d| d.id == discarded));
+    assert_eq!(std::fs::read_to_string(&kept_path).unwrap(), "held");
+    assert!(!unconfirmed_path(&discarded_path).exists());
+    assert_eq!(p.downloads().keep(kept).unwrap(), None, "kept already");
 }

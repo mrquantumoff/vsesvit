@@ -239,6 +239,12 @@ impl Downloads<'_> {
     pub fn keep(&mut self, id: DownloadId) -> Result<Option<PathBuf>, Error> {
         let Some(download) = self.unconfirmed(id)? else { return Ok(None) };
         let kept = move_to_free_name(&unconfirmed_path(&download.path), &download.path)?;
+        if id.is_private() {
+            if let Some(d) = self.p.private.downloads.rows.iter_mut().find(|d| d.id == id) {
+                (d.state, d.path) = (State::Completed, kept.clone());
+            }
+            return Ok(Some(kept));
+        }
         self.p.conn.execute(
             "UPDATE downloads SET state = ?2, path = ?3 WHERE id = ?1",
             params![id.0, State::Completed.as_str(), kept.to_string_lossy()],
@@ -259,6 +265,10 @@ impl Downloads<'_> {
 
     /// The entry `id` while it waits for the user to keep or discard it.
     fn unconfirmed(&mut self, id: DownloadId) -> Result<Option<Download>, Error> {
+        if id.is_private() {
+            let rows = &self.p.private.downloads.rows;
+            return Ok(rows.iter().find(|d| d.id == id && d.state == State::Unconfirmed).cloned());
+        }
         let mut stmt = self.p.conn.prepare_cached(
             "SELECT id, url, path, started_ms, state, received, total FROM downloads WHERE id = ?1 AND state = ?2",
         )?;
