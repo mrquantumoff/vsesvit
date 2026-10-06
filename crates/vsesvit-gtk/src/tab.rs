@@ -3,7 +3,9 @@
 //! A tab reports changes to whichever window currently holds it (tabs can be dragged between
 //! windows), looked up through the widget tree at the time of the change. Every tab has two
 //! identities: the runtime's [`TabId`], which `chrome.tabs` sees, and a session id that
-//! keys its saved back/forward state in the profile.
+//! keys its saved back/forward state in the profile. It is normal or private for its whole
+//! life, as the window it was made for ([`Browsing`]): its view's network session is that
+//! kind's.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
@@ -86,6 +88,7 @@ mod imp {
         pub(super) web_view: OnceCell<webkit::WebView>,
         pub(super) id: OnceCell<TabId>,
         pub(super) browser: OnceCell<Weak<browser::Inner>>,
+        pub(super) browsing: OnceCell<Browsing>,
         pub(super) runtime: OnceCell<Runtime>,
         /// Which navigations the view may make (see `vsesvit_webext::gate`).
         pub(super) gate: RefCell<Gate>,
@@ -139,36 +142,42 @@ glib::wrapper! {
 }
 
 impl Tab {
-    /// A tab whose view carries the extension runtime's content for its id, tracking
-    /// protection's blocker and the cookie rules.
-    pub(crate) fn new(browser: &Browser) -> Self {
+    /// A tab for a window of `browsing`'s kind, whose view is in that kind's network session
+    /// and carries the extension runtime's content for its id, tracking protection's blocker
+    /// and the cookie rules.
+    pub(crate) fn new(browser: &Browser, browsing: Browsing) -> Self {
         let id = browser.allocate_tab_id();
-        let content = browser.runtime().user_content_manager(id);
+        let content = browser.runtime().user_content_manager(id, browsing);
         browser.trackers().attach(&content);
         browser.cookies().attach(&content);
-        Self::wrap(browser.engine().web_view(&content), id, browser)
+        let session = browser.network_session(browsing);
+        Self::wrap(browser.engine().web_view(&session, &content), id, browser, browsing)
     }
 
+    /// A tab for `window.open`, of its opener's kind, whose session the view shares.
     pub(crate) fn new_related(browser: &Browser, opener: &Tab) -> Self {
         let id = browser.allocate_tab_id();
-        let content = browser.runtime().user_content_manager(id);
+        let browsing = opener.browsing();
+        let content = browser.runtime().user_content_manager(id, browsing);
         browser.trackers().attach(&content);
         browser.cookies().attach(&content);
         let popup = Self::wrap(
             browser.engine().related_web_view(opener.web_view(), &content),
             id,
             browser,
+            browsing,
         );
         let gate = Gate::opened_by(&opener.imp().gate.borrow());
         popup.imp().gate.replace(gate);
         popup
     }
 
-    fn wrap(web_view: webkit::WebView, id: TabId, browser: &Browser) -> Self {
+    fn wrap(web_view: webkit::WebView, id: TabId, browser: &Browser, browsing: Browsing) -> Self {
         let tab: Self = glib::Object::new();
         let imp = tab.imp();
         imp.id.set(id).expect("wrap runs once");
         imp.browser.set(Rc::downgrade(&browser.0)).expect("wrap runs once");
+        imp.browsing.set(browsing).expect("wrap runs once");
         assert!(imp.runtime.set(browser.runtime().clone()).is_ok(), "wrap runs once");
         web_view.set_hexpand(true);
         web_view.set_vexpand(true);
@@ -206,6 +215,10 @@ impl Tab {
 
     pub(crate) fn web_view(&self) -> &webkit::WebView {
         self.imp().web_view.get().expect("set in Tab::wrap")
+    }
+
+    pub(crate) fn browsing(&self) -> Browsing {
+        *self.imp().browsing.get().expect("set in Tab::wrap")
     }
 
     /// The id the extension runtime knows this tab by.
@@ -887,13 +900,13 @@ impl Tab {
         let (Some(browser), Ok(url)) = (self.browser(), Url::parse(uri)) else {
             return false;
         };
-        let upgrade = browser.https_upgrade(&url);
+        let upgrade = browser.https_upgrade(self.browsing(), &url);
         let next = self.imp().https.borrow_mut().starting(&url, cause, upgrade);
         match next {
             Next::Load => false,
             Next::Allow(url) => {
                 log::info!("continuing to {url} without a secure connection");
-                if let Err(e) = https_only::allow(&mut browser.core().borrow_mut(), Browsing::Normal, &url) {
+                if let Err(e) = https_only::allow(&mut browser.core().borrow_mut(), self.browsing(), &url) {
                     log::warn!("HTTPS-only exception for {url}: {e}");
                 }
                 false

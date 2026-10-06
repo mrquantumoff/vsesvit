@@ -3,6 +3,11 @@
 //! vertical list in an `AdwOverlaySplitView` sidebar (left or right) or as an `AdwTabBar` on
 //! top, each with a Search Tabs button; the bookmarks bar, the find bar, and the tab view
 //! holding one web view per tab.
+//!
+//! A private window, as GNOME Web's incognito one, has dark header bars, the private-browsing
+//! icon before the address bar and "(Private)" after its title. Its tabs stay private: a tab
+//! moved out of it opens a private window, and one dropped into a window of the other kind
+//! goes back to a window of its own.
 
 mod actions;
 mod ext_actions;
@@ -28,6 +33,7 @@ use vsesvit_core::new_tab;
 use vsesvit_core::permissions::{Answer, Permission};
 use vsesvit_core::prefs::TabsPosition;
 use vsesvit_core::private::Browsing;
+use vsesvit_webext::ActionInfo;
 use webkit::prelude::*;
 
 use crate::address_bar::{AddressBar, Anchor};
@@ -117,6 +123,7 @@ mod imp {
     #[derive(Default)]
     pub struct BrowserWindow {
         pub(super) browser: OnceCell<Browser>,
+        pub(super) browsing: OnceCell<Browsing>,
         pub(super) ui: OnceCell<Ui>,
         pub(super) id: Cell<u32>,
         pub(super) layout: Cell<Option<Layout>>,
@@ -162,19 +169,28 @@ glib::wrapper! {
 }
 
 impl BrowserWindow {
-    /// An empty window laid out per the profile's preferences. Callers add tabs.
+    /// An empty normal window laid out per the profile's preferences. Callers add tabs.
     pub(crate) fn new(browser: &Browser) -> Self {
+        Self::with_browsing(browser, Browsing::Normal)
+    }
+
+    /// An empty window of `browsing`'s kind, which it keeps, laid out per the profile's
+    /// preferences. Callers add tabs.
+    pub(crate) fn with_browsing(browser: &Browser, browsing: Browsing) -> Self {
         let window: Self = glib::Object::builder()
             .property("application", browser.app())
             .build();
         let imp = window.imp();
         assert!(
-            imp.browser.set(browser.clone()).is_ok(),
+            imp.browser.set(browser.clone()).is_ok() && imp.browsing.set(browsing).is_ok(),
             "new runs once per window"
         );
         imp.id.set(browser.allocate_window_id());
         window.set_default_size(1280, 820);
-        window.set_title(Some("Vsesvit"));
+        if browsing == Browsing::Private {
+            window.add_css_class("private");
+        }
+        window.show_title("Vsesvit");
         let ui = window.build_ui();
         assert!(imp.ui.set(ui).is_ok(), "new runs once per window");
         actions::install(&window);
@@ -196,6 +212,15 @@ impl BrowserWindow {
 
     pub(crate) fn browser(&self) -> &Browser {
         self.imp().browser.get().expect("set in BrowserWindow::new")
+    }
+
+    pub(crate) fn browsing(&self) -> Browsing {
+        *self.imp().browsing.get().expect("set in BrowserWindow::new")
+    }
+
+    /// The window's title for a page titled `title`.
+    fn show_title(&self, title: &str) {
+        self.set_title(Some(&window_title(title, self.browsing())));
     }
 
     fn ui(&self) -> &Ui {
@@ -276,6 +301,14 @@ impl BrowserWindow {
         header_end.append(&menu_button);
         let header = adw::HeaderBar::new();
         header.pack_start(&header_start);
+        if self.browsing() == Browsing::Private {
+            header.pack_start(
+                &gtk::Image::builder()
+                    .icon_name("user-not-tracked-symbolic")
+                    .tooltip_text("Private browsing")
+                    .build(),
+            );
+        }
         header.set_title_widget(Some(&title));
         header.pack_end(&header_end);
 
@@ -314,6 +347,7 @@ impl BrowserWindow {
             .build();
 
         let toolbar = adw::ToolbarView::new();
+        toolbar.add_css_class("browser-toolbar");
         toolbar.set_top_bar_style(adw::ToolbarStyle::Raised);
         toolbar.add_top_bar(&header);
         toolbar.add_top_bar(&update_banner);
@@ -368,6 +402,10 @@ impl BrowserWindow {
             #[weak(rename_to = window)]
             self,
             move |_, page, _| {
+                if page.child().downcast_ref::<Tab>().is_some_and(|tab| tab.browsing() != window.browsing()) {
+                    window.send_back(page);
+                    return;
+                }
                 window.sync_page(page);
                 if let Ok(tab) = page.child().downcast::<Tab>() {
                     window.browser().tab_attached(&tab);
@@ -393,9 +431,9 @@ impl BrowserWindow {
                 if let Ok(tab) = page.child().downcast::<Tab>() {
                     window.browser().tab_closed(&tab, view.page_position(page), page.is_pinned());
                 }
-                // The last tab of the last window is saved while it still exists, so that,
-                // as in Chrome, the next start restores it.
-                if view.n_pages() == 1 && window.browser().windows().len() <= 1 {
+                // The last tab of the last normal window is saved while it still exists, so
+                // that, as in Chrome, the next start restores it.
+                if view.n_pages() == 1 && window.browser().is_last_normal_window(&window) {
                     window.browser().save_session_now();
                 }
                 view.close_page_finish(page, true);
@@ -427,7 +465,7 @@ impl BrowserWindow {
             #[upgrade_or]
             None,
             move |_| {
-                let target = BrowserWindow::new(window.browser());
+                let target = BrowserWindow::with_browsing(window.browser(), window.browsing());
                 target.present();
                 Some(target.ui().tab_view.clone())
             }
@@ -561,11 +599,12 @@ impl BrowserWindow {
         self.ui().fullscreen_notice.set_reveal_child(false);
     }
 
-    /// The last window saves the session while its tabs still exist (one closed with its last
-    /// tab saved it then); every tab that goes with the window leaves the extension runtime.
+    /// The last normal window saves the session while its tabs still exist (one closed with
+    /// its last tab saved it then); every tab that goes with the window leaves the extension
+    /// runtime.
     fn before_close(&self) {
         let browser = self.browser();
-        if browser.windows().len() <= 1 && !self.tabs().is_empty() {
+        if browser.is_last_normal_window(self) && !self.tabs().is_empty() {
             browser.save_session_now();
         }
         let popups = self.imp().popups.take();
@@ -888,9 +927,15 @@ impl BrowserWindow {
 
     // Extension actions.
 
-    /// The toolbar shows the pinned actions in the synced order; the Extensions menu all.
+    /// The toolbar shows the pinned actions in the synced order; the Extensions menu all. A
+    /// private window has only those of the extensions allowed there.
     pub(crate) fn refresh_extension_actions(&self) {
-        let actions = self.browser().extension_actions();
+        let browser = self.browser();
+        let actions: Vec<ActionInfo> = browser
+            .extension_actions()
+            .into_iter()
+            .filter(|action| browser.runtime().runs_in(&action.extension, self.browsing()))
+            .collect();
         let available: Vec<String> = actions.iter().map(|a| a.extension.as_str().to_owned()).collect();
         let pinned: Vec<ExtensionId> = self
             .browser()
@@ -1003,7 +1048,7 @@ impl BrowserWindow {
 
     /// Opens a tab, next to `opener` if given, else at the end.
     pub(crate) fn open_tab(&self, uri: Option<&str>, opener: Option<&Tab>, focus: Focus) -> Tab {
-        let tab = Tab::new(self.browser());
+        let tab = Tab::new(self.browser(), self.browsing());
         if let Some(uri) = uri {
             tab.load(uri);
         }
@@ -1013,7 +1058,7 @@ impl BrowserWindow {
 
     /// Opens a tab at `index` (the end for `None` or past it), as an extension asks.
     pub(crate) fn open_tab_at(&self, uri: &str, index: Option<u32>, focus: Focus) -> Tab {
-        let tab = Tab::new(self.browser());
+        let tab = Tab::new(self.browser(), self.browsing());
         tab.load(uri);
         let view = &self.ui().tab_view;
         let page = view.insert(&tab, position(index, view.n_pages()));
@@ -1057,7 +1102,7 @@ impl BrowserWindow {
     }
 
     fn load_new_tab_page(&self, tab: &Tab) {
-        match new_tab::page(&mut self.browser().core().borrow_mut(), Browsing::Normal) {
+        match new_tab::page(&mut self.browser().core().borrow_mut(), self.browsing()) {
             Ok(html) => tab.web_view().load_html(&html, None),
             Err(e) => log::warn!("new tab page: {e}"),
         }
@@ -1103,7 +1148,7 @@ impl BrowserWindow {
     }
 
     pub(crate) fn restore_closed(&self, closed: &ClosedTab) {
-        let tab = Tab::new(self.browser());
+        let tab = Tab::new(self.browser(), self.browsing());
         let view = &self.ui().tab_view;
         let pinned = view.n_pinned_pages();
         let page = if closed.pinned {
@@ -1178,6 +1223,28 @@ impl BrowserWindow {
             .find(|page| page.child() == *tab.upcast_ref::<gtk::Widget>())
     }
 
+    /// `page` was dropped here from a window of the other kind, whose network session its view
+    /// keeps: it goes to a window of its own kind with tabs, else a new one, once the drop is
+    /// done. That window is chosen now, before the window it left closes if it is empty, which
+    /// would end the private session the tab is still in.
+    fn send_back(&self, page: &adw::TabPage) {
+        let Ok(tab) = page.child().downcast::<Tab>() else { return };
+        let browser = self.browser();
+        let home = browser.windows_of(tab.browsing()).into_iter().find(|window| !window.tabs().is_empty());
+        let home = home.unwrap_or_else(|| BrowserWindow::with_browsing(browser, tab.browsing()));
+        let (window, page) = (self.downgrade(), page.downgrade());
+        glib::idle_add_local_once(move || match (window.upgrade(), page.upgrade()) {
+            (Some(window), Some(page)) => {
+                let target = &home.ui().tab_view;
+                window.ui().tab_view.transfer_page(&page, target, target.n_pages());
+                target.set_selected_page(&page);
+                home.present();
+            }
+            // The tab went meanwhile; a window made for it must not stay behind unseen.
+            _ => home.close_if_empty(),
+        });
+    }
+
     fn close_if_empty(&self) {
         let view = &self.ui().tab_view;
         let imp = self.imp();
@@ -1216,7 +1283,7 @@ impl BrowserWindow {
             TabChange::Title => {
                 page.set_title(&tab.display_title());
                 if selected {
-                    self.set_title(Some(&tab.display_title()));
+                    self.show_title(&tab.display_title());
                 }
                 self.browser().title_changed(tab);
             }
@@ -1287,7 +1354,7 @@ impl BrowserWindow {
         let editing = typed.is_some();
         ui.address.restore(typed, tab.committed_uri().as_deref());
         ui.find_bar.retarget(tab.web_view());
-        self.set_title(Some(&tab.display_title()));
+        self.show_title(&tab.display_title());
         self.sync_location(&tab);
         self.sync_history(&tab);
         self.sync_loading(&tab);
@@ -1378,6 +1445,14 @@ fn sync_indicator(page: &adw::TabPage, tab: &Tab) {
 /// `index` as a tab view position no further than `last`.
 fn position(index: Option<u32>, last: i32) -> i32 {
     index.map_or(last, |i| i32::try_from(i).unwrap_or(i32::MAX).min(last))
+}
+
+/// A private window says so after the page's title, as GNOME Web's and Chrome's do.
+fn window_title(title: &str, browsing: Browsing) -> String {
+    match browsing {
+        Browsing::Normal => title.to_owned(),
+        Browsing::Private => format!("{title} (Private)"),
+    }
 }
 
 fn icon_button(icon: &str, action: &str, tooltip: &str) -> gtk::Button {
@@ -1494,7 +1569,7 @@ mod tests {
         let opener = window.open_tab(None, None, Focus::Foreground);
         // The runtime hands back a tab's own content manager only while it knows the tab.
         let known = |tab: &Tab| {
-            let ucm = browser.runtime().user_content_manager(tab.id());
+            let ucm = browser.runtime().user_content_manager(tab.id(), Browsing::Normal);
             tab.web_view().user_content_manager().as_ref() == Some(&ucm)
         };
         let closed = Tab::new_related(&browser, &opener);
@@ -1539,6 +1614,30 @@ mod tests {
                 None,
             ]
         );
+    }
+
+    #[test]
+    fn a_private_window_says_so_after_the_title() {
+        assert_eq!(window_title("News", Browsing::Normal), "News");
+        assert_eq!(window_title("News", Browsing::Private), "News (Private)");
+    }
+
+    #[gtk::test]
+    fn a_tab_dropped_into_a_window_of_the_other_kind_goes_back_to_its_own() {
+        let browser = browser();
+        let (normal, private) = (BrowserWindow::new(&browser), BrowserWindow::with_browsing(&browser, Browsing::Private));
+        normal.open_tab(None, None, Focus::Foreground);
+        let stays = private.open_tab(None, None, Focus::Foreground);
+        let dropped = private.open_tab(None, None, Focus::Foreground);
+        let page = private.page_of(&dropped).expect("the tab's page");
+        private.ui().tab_view.transfer_page(&page, &normal.ui().tab_view, 0);
+        wait_until("the tab back in a private window", || dropped.window().as_ref() == Some(&private));
+        let normal_tabs = normal.tabs().len();
+        let private_tabs = private.tabs();
+        normal.destroy();
+        private.destroy();
+        assert_eq!(normal_tabs, 1, "the dropped tab left the normal window");
+        assert_eq!(private_tabs, [stays, dropped]);
     }
 
     #[gtk::test]

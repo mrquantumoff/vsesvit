@@ -117,6 +117,7 @@ mod linux {
     use vsesvit_core::ext_storage::Area;
     use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension};
     use vsesvit_core::shortcuts::Chord;
+    use vsesvit_core::private::Browsing;
     use vsesvit_core::testkit::FixtureServer;
     use vsesvit_core::{OpenOptions, Profile};
     use vsesvit_webext::menus::{Entry, ItemId, Target};
@@ -1025,7 +1026,7 @@ mod linux {
         async fn declarative_net_request(&self) {
             // The shell's own content blockers (tracking protection, cookie rules) share each
             // tab's manager with the extensions'; this one blocks every run's browser.png.
-            let ucm = self.runtime.user_content_manager(self.tab);
+            let ucm = self.runtime.user_content_manager(self.tab, Browsing::Normal);
             let store = webkit::UserContentFilterStore::new(&self.out_dir.join("browser-filters").to_string_lossy());
             let compiled = Rc::new(RefCell::new(None));
             let slot = compiled.clone();
@@ -1814,7 +1815,7 @@ mod linux {
                         return None;
                     }
                     let popup_id = host.next_id();
-                    let popup = webkit::WebView::builder().related_view(view).user_content_manager(&runtime.user_content_manager(popup_id)).build();
+                    let popup = webkit::WebView::builder().related_view(view).user_content_manager(&runtime.user_content_manager(popup_id, Browsing::Normal)).build();
                     let opened = Gate::opened_by(&gate.borrow());
                     let window = host.tabs.borrow().iter().find(|t| t.id == id).map_or(FIRST_WINDOW, |t| t.window.get());
                     host.add(&runtime, popup_id, &popup, opened, window, None);
@@ -1871,6 +1872,7 @@ mod linux {
                         url: t.committed.borrow().clone(),
                         title: t.view.title().map(String::from).unwrap_or_default(),
                         active: i == 0,
+                        browsing: Browsing::Normal,
                     })
                 })
                 .collect()
@@ -1880,7 +1882,7 @@ mod linux {
             let runtime = self.runtime.borrow().clone()?;
             let window = tab.window.unwrap_or(FIRST_WINDOW);
             let id = self.next_id();
-            let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id)).build();
+            let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id, Browsing::Normal)).build();
             let gate = self.add(&runtime, id, &view, Gate::default(), window, tab.index);
             self.created.borrow_mut().push(tab.url.clone());
             println!("[harness] host: create_tab({}) -> tab {} in window {}", tab.url, id.0, window.0);

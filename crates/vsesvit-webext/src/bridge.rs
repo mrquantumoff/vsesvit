@@ -230,7 +230,7 @@ pub(crate) fn emit_to_pages(inner: &Inner, ext: &Extension, event: &str, args: &
 }
 
 pub(crate) fn emit_to_tabs(inner: &Inner, ext: &Extension, event: &str, args: &[Value]) {
-    for view in inner.tab_views() {
+    for view in inner.tab_views(ext) {
         emit(&view, Some(&ext.world), event, args);
     }
 }
@@ -281,7 +281,7 @@ fn sender_for(inner: &Inner, caller: &Extension, receiver: &Extension, origin: O
     let url = call.url.clone();
     let mut sender = Sender { id: caller.id.as_str().to_owned(), origin: url.as_deref().and_then(Sender::origin_of), url, ..Sender::default() };
     if let Some(tab) = origin.tab() {
-        sender.tab = inner.tab_info(tab).map(|t| receiver.tab_json(&t));
+        sender.tab = inner.tab_for(receiver, tab).map(|t| receiver.tab_json(&t));
         sender.frame_id = call.top_frame.then_some(0);
     }
     sender
@@ -334,9 +334,14 @@ fn page_targets(inner: &Inner, ext: &Extension, except: Option<Origin>) -> Vec<T
     views.chain(tabs).filter(|t| Some(t.origin) != except).collect()
 }
 
+/// The view of `tab`, a tab `ext` runs in.
+fn tab_view(inner: &Inner, ext: &Extension, tab: TabId) -> Result<webkit::WebView, String> {
+    inner.tab_for(ext, tab).and_then(|_| inner.host.web_view(tab)).ok_or_else(|| format!("No tab with id: {}.", tab.0))
+}
+
 /// `ext`'s content scripts in `tab`'s top frame, and its page if the tab shows one.
 fn tab_targets(inner: &Inner, ext: &Extension, tab: TabId) -> Result<Vec<Target>, String> {
-    let view = inner.host.web_view(tab).ok_or_else(|| format!("No tab with id: {}.", tab.0))?;
+    let view = tab_view(inner, ext, tab)?;
     let shows_page = view.uri().is_some_and(|u| ext.owns_url(&u));
     let mut targets = vec![Target { view: view.clone(), world: Some(ext.world.clone()), guarded: false, origin: Origin::Content { tab } }];
     if shows_page {
@@ -542,19 +547,19 @@ fn key_list(v: &Value) -> Result<Option<Vec<String>>, String> {
 fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> Result<Option<Value>, String> {
     let host = &inner.host;
     let scope = window_scope(inner, origin);
-    let find = |id: TabId| host.tabs().into_iter().find(|t| t.id == id);
-    let no_tab = |id: TabId| format!("No tab with id: {}.", id.0);
+    let find = |id: TabId| inner.tab_for(ext, id);
     let tab_or_active = || {
         TabId::from_json(call.arg(0))
-            .or_else(|| host.tabs().into_iter().find(|t| t.active && Some(t.window_id) == scope.current).map(|t| t.id))
+            .or_else(|| inner.tabs_for(ext).into_iter().find(|t| t.active && Some(t.window_id) == scope.current).map(|t| t.id))
             .ok_or_else(|| format!("{}: no active tab", call.method.name()))
     };
     let visible = |t: &TabInfo| ext.tab_json(t);
+    let no_tab = |id: TabId| format!("No tab with id: {}.", id.0);
     Ok(match call.method {
-        Method::TabsQuery => Some(Value::Array(host.tabs().iter().filter(|t| t.matches_query(call.arg(0), ext.sees_tab(t), &scope)).map(visible).collect())),
+        Method::TabsQuery => Some(Value::Array(inner.tabs_for(ext).iter().filter(|t| t.matches_query(call.arg(0), ext.sees_tab(t), &scope)).map(visible).collect())),
         Method::TabsGet => {
             let id = TabId::from_json(call.arg(0)).ok_or("tabs.get: tabId must be an integer")?;
-            Some(visible(&find(id).ok_or_else(|| format!("No tab with id: {}.", id.0))?))
+            Some(visible(&find(id).ok_or_else(|| no_tab(id))?))
         }
         Method::TabsGetCurrent => match origin {
             Origin::TabPage { tab } => find(tab).as_ref().map(visible),
@@ -583,7 +588,7 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
             let props = call.arg(1);
             let url = props.get("url").and_then(Value::as_str).map(|u| navigation_url(ext, call, u)).transpose()?;
             let active = props.get("active").and_then(Value::as_bool);
-            if !host.update_tab(id, url.as_deref(), active) {
+            if find(id).is_none() || !host.update_tab(id, url.as_deref(), active) {
                 return Err(no_tab(id));
             }
             find(id).as_ref().map(visible)
@@ -622,7 +627,7 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
                 other => TabId::from_json(other).into_iter().collect(),
             };
             for id in ids {
-                if !host.remove_tab(id) {
+                if find(id).is_none() || !host.remove_tab(id) {
                     return Err(no_tab(id));
                 }
             }
@@ -630,7 +635,7 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
         }
         Method::TabsReload => {
             let id = tab_or_active()?;
-            host.web_view(id).ok_or_else(|| no_tab(id))?.reload();
+            tab_view(inner, ext, id)?.reload();
             None
         }
         _ => unreachable!("not a tabs method"),
@@ -742,7 +747,7 @@ fn injection_target(inner: &Inner, ext: &Extension, injection: &Value, api: &str
     if !ext.has_permission("scripting") {
         return Err(format!("{api} requires the \"scripting\" permission"));
     }
-    let view = inner.host.web_view(tab).ok_or_else(|| format!("No tab with id: {}.", tab.0))?;
+    let view = tab_view(inner, ext, tab)?;
     let denied = |url: &str| format!("Cannot access contents of url \"{url}\". Extension manifest must request permission to access this host.");
     let committed = inner.tab_info(tab).map(|t| t.url).unwrap_or_default();
     if !ext.host_access(&committed, Some(tab)) {

@@ -368,7 +368,7 @@ fn context_model(widget: &gtk::Widget, target: &Target) -> (gio::Menu, gio::Simp
             add("open-window", true, Box::new({
                 let url = item.node.url.clone();
                 move |window| {
-                    window.browser().open_window(url.as_slice());
+                    window.browser().open_window(window.browsing(), url.as_slice());
                 }
             }));
             add("copy", true, Box::new(move |window| window.clipboard().set_text(&url)));

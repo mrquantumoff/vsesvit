@@ -340,7 +340,7 @@ impl Syncer {
         let Some(browser) = self.browser().filter(|_| self.0.attempt.get() == attempt) else {
             return Err(Error::Cancelled);
         };
-        let window = browser.windows().into_iter().next().unwrap_or_else(|| browser.open_window(&[]));
+        let window = browser.normal_window();
         window.open_tab(Some(pending.authorize_url()), None, Focus::Foreground);
         window.present();
         self.0.canceller.replace(Some(pending.canceller()));

@@ -6,6 +6,9 @@
 //! WebKit's requests carry no origin, so a request is taken to come from the document on
 //! screen: the tab's committed URI. `navigator.permissions.query` is answered by the same
 //! rule, so a frame never reads a state its requests would not meet.
+//!
+//! A private tab goes by core's settings for private windows, which keep what is chosen there
+//! in memory until the private session ends.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -255,7 +258,7 @@ pub(crate) fn answer(browser: &Browser, tab: &Tab, request: &webkit::PermissionR
         if matches!(answer, Answer::Dismiss | Answer::NeverAllow) {
             state.dismissed.extend_from_slice(asked);
         }
-        browser.core().borrow_mut().site_permissions().answer(origin.as_ref(), asked, answer, &mut state.grants)
+        browser.core().borrow_mut().site_permissions_in(tab.browsing()).answer(origin.as_ref(), asked, answer, &mut state.grants)
     };
     let granted = granted.unwrap_or_else(|e| {
         log::warn!("site permissions: {e}");
@@ -325,7 +328,7 @@ fn ends(permission: Permission, decision: &Decision) -> bool {
 
 fn decide(browser: &Browser, tab: &Tab, origin: Option<&Origin>, permissions: &[Permission]) -> Decision {
     let state = tab.permissions().borrow();
-    browser.core().borrow_mut().site_permissions().decide(origin, permissions, &state.grants)
+    browser.core().borrow_mut().site_permissions_in(tab.browsing()).decide(origin, permissions, &state.grants)
 }
 
 /// [`decide`] for a request of the page on screen, which is refused what the user turned down
@@ -467,7 +470,7 @@ fn fill_section(section: &gtk::Box, browser: &Browser, tab: &Tab) {
         section.remove(&child);
     }
     let origin = origin_of(tab.committed_uri().as_deref());
-    let mut stored = origin.as_ref().map(|o| browser.core().borrow_mut().site_permissions().for_site(o)).unwrap_or_default();
+    let mut stored = origin.as_ref().map(|o| browser.core().borrow_mut().site_permissions_in(tab.browsing()).for_site(o)).unwrap_or_default();
     stored.retain(|&(permission, _)| listed(permission));
     let granted: Vec<Permission> = {
         let state = tab.permissions().borrow();
@@ -513,7 +516,7 @@ fn reset_site(browser: &Browser, tab: &Tab, origin: &Origin) {
     if capturing(tab.web_view()).screen {
         stop(tab.web_view(), Permission::ScreenShare);
     }
-    if let Err(e) = browser.core().borrow_mut().site_permissions().reset_site(origin) {
+    if let Err(e) = browser.core().borrow_mut().site_permissions_in(tab.browsing()).reset_site(origin) {
         log::warn!("site permissions: {e}");
     }
 }
@@ -577,7 +580,7 @@ fn choose(browser: &Browser, tab: &Tab, origin: Option<&Origin>, permission: Per
         }
     }
     if let Some(origin) = origin
-        && let Err(e) = browser.core().borrow_mut().site_permissions().set(origin, permission, setting)
+        && let Err(e) = browser.core().borrow_mut().site_permissions_in(tab.browsing()).set(origin, permission, setting)
     {
         log::warn!("site permissions: {e}");
     }

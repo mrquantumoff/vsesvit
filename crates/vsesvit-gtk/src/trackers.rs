@@ -14,6 +14,7 @@ use gtk::glib;
 use vsesvit_core::Url;
 use vsesvit_core::permissions::Origin;
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::trackers::{self, TrackerList, TrackingProtection};
 use vsesvit_webext::dnr;
 
@@ -88,8 +89,12 @@ fn content_blocker(list: &TrackerList, level: TrackingProtection, allowed: &[Ori
 }
 
 /// The site-info popover's switch for `tab`'s site, on while trackers are blocked there.
-/// `None` for a page that is not from a website, or while tracking protection is off.
+/// `None` for a page that is not from a website, while tracking protection is off, and in a
+/// private window: an exception would go into the blocker compiled on disk.
 pub(crate) fn site_info_section(browser: &Browser, tab: &Tab) -> Option<gtk::ListBox> {
+    if tab.browsing() == Browsing::Private {
+        return None;
+    }
     let url = tab.committed_uri().and_then(|uri| Url::parse(&uri).ok())?;
     let origin = Origin::of(&url).filter(|_| matches!(url.scheme(), "http" | "https"))?;
     let (level, on) = {

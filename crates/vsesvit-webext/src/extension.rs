@@ -1,6 +1,6 @@
 //! Everything the runtime keeps per loaded extension.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use vsesvit_core::extensions::manifest::{Background, Manifest, ManifestVersion, RelPath};
 use vsesvit_core::extensions::{ExtensionId, InstalledExtension};
 use vsesvit_core::html::escape as html_escape;
+use vsesvit_core::private::Browsing;
 use webkit::glib;
 
 use crate::content::UserContent;
@@ -124,6 +125,8 @@ pub(crate) struct Extension {
     pub notifications: RefCell<Notifications>,
     /// `storage.session`, which lasts as long as this load of the extension.
     pub session_storage: RefCell<BTreeMap<String, Value>>,
+    /// The user allowed it in private windows (`extensions::private` in core).
+    pub in_private: Cell<bool>,
 }
 
 impl Extension {
@@ -210,6 +213,7 @@ impl Extension {
             menus: RefCell::new(Menus::default()),
             notifications: RefCell::new(Notifications::default()),
             session_storage: RefCell::new(BTreeMap::new()),
+            in_private: Cell::new(false),
         })
     }
 
@@ -260,6 +264,13 @@ impl Extension {
             return false;
         }
         tab.is_some_and(|t| self.active_tabs.borrow().contains(&t)) || parsed.is_ok_and(|u| self.manifest.host_permissions.iter().any(|p| p.matches(&u)))
+    }
+
+    /// Whether it runs in tabs of `browsing`'s kind: in private ones only where the user allowed
+    /// it, as Chrome's "Allow in Incognito". A private tab it does not run in does not exist for
+    /// it: no content, no `chrome.tabs` entry, no tab events.
+    pub fn runs_in(&self, browsing: Browsing) -> bool {
+        browsing == Browsing::Normal || self.in_private.get()
     }
 
     /// May this extension see `tab`'s URL and title? The `tabs` permission or host

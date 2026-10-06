@@ -141,7 +141,7 @@ fn finished(inner: &Rc<Inner>, ext: &Rc<Extension>, change: u64, filter: Option<
     let loaded = inner.extension(&ext.id).is_some_and(|e| Rc::ptr_eq(&e, ext));
     if loaded && let Some(filter) = filter {
         let old = ext.filter.replace(filter.clone());
-        for ucm in inner.tab_managers() {
+        for ucm in inner.tab_managers(ext) {
             // By identifier, which the new blocker shares: off first, then on.
             if let Some(old) = &old {
                 ucm.remove_filter(old);

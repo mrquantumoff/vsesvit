@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use vsesvit_core::private::Browsing;
 
 use crate::windows::{WINDOW_TYPE, WindowId, WindowScope};
 #[cfg(target_os = "linux")]
@@ -27,6 +28,8 @@ pub struct TabInfo {
     pub url: String,
     pub title: String,
     pub active: bool,
+    /// The kind of its window: `incognito` in `chrome.tabs`.
+    pub browsing: Browsing,
 }
 
 impl TabInfo {
@@ -41,7 +44,7 @@ impl TabInfo {
             "highlighted": self.active,
             "selected": self.active,
             "pinned": false,
-            "incognito": false,
+            "incognito": self.browsing == Browsing::Private,
             "status": "complete",
         });
         if sees_content {
@@ -142,7 +145,7 @@ mod tests {
     use serde_json::json;
 
     fn tab() -> TabInfo {
-        TabInfo { id: TabId(7), window_id: WindowId(1), index: 2, url: "http://127.0.0.1:8080/index.html".into(), title: "Vsesvit fixture".into(), active: true }
+        TabInfo { id: TabId(7), window_id: WindowId(1), index: 2, url: "http://127.0.0.1:8080/index.html".into(), title: "Vsesvit fixture".into(), active: true, browsing: Browsing::Normal }
     }
 
     /// The caller's window is 1, the last focused 3.
@@ -190,6 +193,8 @@ mod tests {
         assert_eq!(v["active"], true);
         assert_eq!(v["url"], "http://127.0.0.1:8080/index.html");
         assert_eq!(v["title"], "Vsesvit fixture");
+        assert_eq!(v["incognito"], false);
+        assert_eq!(TabInfo { browsing: Browsing::Private, ..tab() }.to_json_for(true)["incognito"], true);
         assert_eq!(TabId::from_json(&json!(7)), Some(TabId(7)));
         assert_eq!(TabId::from_json(&json!("7")), None);
         assert_eq!(TabId::from_json(&json!(-1)), None);

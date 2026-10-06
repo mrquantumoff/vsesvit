@@ -1,5 +1,6 @@
 //! Tab search (Chrome's Ctrl+Shift+A): a popover with a search entry over the open tabs of
-//! every window and the recently closed ones, listed again from core on every edit. The first
+//! every window and the recently closed ones, of the window's kind only (normal or private),
+//! listed again from core on every edit. The first
 //! row is selected; Up and Down move the selection, wrapping around at the ends, Enter or a
 //! click goes to the row's tab, and Escape closes the popover.
 
@@ -160,12 +161,12 @@ impl TabSearch {
     fn refresh(&self) {
         let Some(window) = self.0.window.upgrade() else { return };
         let browser = window.browser();
-        let rows = browser.search_tabs(&self.0.entry.text());
+        let rows = browser.search_tabs(window.browsing(), &self.0.entry.text());
         let list = &self.0.list;
         list.remove_all();
         *self.0.hits.borrow_mut() = rows.iter().map(|row| row.hit).collect();
         for row in &rows {
-            list.append(&list_row(row, browser.tab_icon(row.hit)));
+            list.append(&list_row(row, browser.tab_icon(window.browsing(), row.hit)));
         }
         list.select_row(list.row_at_index(0).as_ref());
     }

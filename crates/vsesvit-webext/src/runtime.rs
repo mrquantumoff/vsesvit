@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use vsesvit_core::Profile;
 use vsesvit_core::ext_storage::{Area, StorageChange};
 use vsesvit_core::extensions::{ExtensionId, InstalledExtension};
+use vsesvit_core::private::Browsing;
 use webkit::glib;
 use webkit::prelude::*;
 
@@ -71,6 +72,7 @@ pub(crate) struct Inner {
 
 struct TabState {
     ucm: webkit::UserContentManager,
+    browsing: Browsing,
     /// The content-script and page handlers of each attached extension.
     handlers: BTreeMap<ExtensionId, [glib::SignalHandlerId; 2]>,
     last: Option<TabInfo>,
@@ -132,12 +134,13 @@ impl Runtime {
             self.unload(&installed.id);
         }
         let ext = Rc::new(Extension::build(installed, &self.0.ui_locale)?);
+        ext.in_private.set(self.0.profile.borrow_mut().extensions().allowed_in_private(&ext.id));
         let event = self.0.install_event(&ext, reason);
         self.0.restore_scripts(&ext, &event);
         self.0.extensions.borrow_mut().insert(ext.id.clone(), ext.clone());
         {
             let mut tabs = self.0.tabs.borrow_mut();
-            for (tab, state) in tabs.iter_mut() {
+            for (tab, state) in tabs.iter_mut().filter(|(_, state)| ext.runs_in(state.browsing)) {
                 attach(&self.0, &ext, *tab, state);
             }
         }
@@ -176,14 +179,41 @@ impl Runtime {
         self.0.extensions.borrow().keys().cloned().collect()
     }
 
-    /// The `UserContentManager` to build `tab`'s WebView with. Created on first use with
-    /// every loaded extension attached; the same object on later calls.
-    pub fn user_content_manager(&self, tab: TabId) -> webkit::UserContentManager {
+    /// Whether loaded extension `id` runs in tabs of `browsing`'s kind (see
+    /// [`Extension::runs_in`]), so the shell offers its action and menu items there.
+    pub fn runs_in(&self, id: &ExtensionId, browsing: Browsing) -> bool {
+        self.0.extension(id).is_some_and(|ext| ext.runs_in(browsing))
+    }
+
+    /// The user's "Allow in private windows" changed, here or through sync: each loaded
+    /// extension joins or leaves the open private tabs at once, for loads that start afterwards.
+    pub fn allowed_in_private_changed(&self) {
+        for ext in self.0.loaded_extensions() {
+            let allowed = self.0.profile.borrow_mut().extensions().allowed_in_private(&ext.id);
+            if ext.in_private.replace(allowed) == allowed {
+                continue;
+            }
+            let mut tabs = self.0.tabs.borrow_mut();
+            for (tab, state) in tabs.iter_mut().filter(|(_, state)| state.browsing == Browsing::Private) {
+                if allowed {
+                    attach(&self.0, &ext, *tab, state);
+                } else {
+                    detach(&ext, state);
+                    ext.revoke_active_tab(*tab);
+                }
+            }
+        }
+    }
+
+    /// The `UserContentManager` to build `tab`'s WebView with, a tab of a `browsing` window for
+    /// its whole life. Created on first use with every loaded extension that runs in such tabs
+    /// attached; the same object on later calls.
+    pub fn user_content_manager(&self, tab: TabId, browsing: Browsing) -> webkit::UserContentManager {
         if let Some(state) = self.0.tabs.borrow().get(&tab) {
             return state.ucm.clone();
         }
-        let mut state = TabState { ucm: webkit::UserContentManager::new(), handlers: BTreeMap::new(), last: None, placed: None };
-        for ext in &self.0.loaded_extensions() {
+        let mut state = TabState { ucm: webkit::UserContentManager::new(), browsing, handlers: BTreeMap::new(), last: None, placed: None };
+        for ext in self.0.loaded_extensions().iter().filter(|ext| ext.runs_in(browsing)) {
             attach(&self.0, ext, tab, &mut state);
         }
         let ucm = state.ucm.clone();
@@ -222,7 +252,7 @@ impl Runtime {
         let url_changed = previous.as_ref().is_none_or(|p| p.url != info.url);
         let title_changed = previous.as_ref().is_none_or(|p| p.title != info.title);
         let origin_changed = previous.as_ref().is_some_and(|p| Sender::origin_of(&p.url) != Sender::origin_of(&info.url));
-        for ext in self.0.loaded_extensions() {
+        for ext in self.0.loaded_extensions().into_iter().filter(|ext| ext.runs_in(info.browsing)) {
             if origin_changed {
                 ext.revoke_active_tab(tab);
             }
@@ -241,7 +271,7 @@ impl Runtime {
 
     pub fn tab_activated(&self, tab: TabId) {
         let Some(info) = self.0.tab_info(tab) else { return };
-        self.0.emit_to_all_pages("tabs.onActivated", &[json!({ "tabId": tab.0, "windowId": info.window_id })]);
+        self.0.emit_about_tab(info.browsing, "tabs.onActivated", &[json!({ "tabId": tab.0, "windowId": info.window_id })]);
     }
 
     /// The shell put `tab` into a window: a new tab (`tabs.onCreated`), or one from another
@@ -252,13 +282,13 @@ impl Runtime {
         let placed = self.0.tabs.borrow().get(&tab).map(|s| s.placed);
         match placed {
             Some(None) => {
-                for ext in self.0.loaded_extensions() {
+                for ext in self.0.loaded_extensions().into_iter().filter(|ext| ext.runs_in(info.browsing)) {
                     bridge::emit_to_pages(&self.0, &ext, "tabs.onCreated", &[ext.tab_json(&info)]);
                 }
             }
             Some(Some((window, index))) if window != info.window_id => {
-                self.0.emit_to_all_pages("tabs.onDetached", &[json!(tab.0), json!({ "oldWindowId": window, "oldPosition": index })]);
-                self.0.emit_to_all_pages("tabs.onAttached", &[json!(tab.0), json!({ "newWindowId": info.window_id, "newPosition": info.index })]);
+                self.0.emit_about_tab(info.browsing, "tabs.onDetached", &[json!(tab.0), json!({ "oldWindowId": window, "oldPosition": index })]);
+                self.0.emit_about_tab(info.browsing, "tabs.onAttached", &[json!(tab.0), json!({ "newWindowId": info.window_id, "newPosition": info.index })]);
             }
             _ => {}
         }
@@ -272,7 +302,7 @@ impl Runtime {
             && window == info.window_id
             && from != info.index
         {
-            self.0.emit_to_all_pages("tabs.onMoved", &[json!(tab.0), json!({ "windowId": window, "fromIndex": from, "toIndex": info.index })]);
+            self.0.emit_about_tab(info.browsing, "tabs.onMoved", &[json!(tab.0), json!({ "windowId": window, "fromIndex": from, "toIndex": info.index })]);
         }
         self.0.place_tabs();
     }
@@ -288,7 +318,7 @@ impl Runtime {
             ext.revoke_active_tab(tab);
         }
         if let Some((window, _)) = state.placed {
-            self.0.emit_to_all_pages("tabs.onRemoved", &[json!(tab.0), json!({ "windowId": window, "isWindowClosing": window_closing })]);
+            self.0.emit_about_tab(state.browsing, "tabs.onRemoved", &[json!(tab.0), json!({ "windowId": window, "isWindowClosing": window_closing })]);
         }
         self.0.place_tabs();
     }
@@ -337,7 +367,7 @@ impl Runtime {
             ext.grant_active_tab(tab);
         }
         if state.popup.is_empty() {
-            let tab_json = tab.and_then(|t| self.0.tab_info(t)).map(|t| ext.tab_json(&t)).unwrap_or(Value::Null);
+            let tab_json = tab.and_then(|t| self.0.tab_for(&ext, t)).map(|t| ext.tab_json(&t)).unwrap_or(Value::Null);
             bridge::emit_to_pages(&self.0, &ext, "action.onClicked", &[tab_json]);
             return;
         }
@@ -375,7 +405,7 @@ impl Runtime {
             ext.grant_active_tab(tab);
         }
         let mut args = vec![info];
-        args.extend(tab.and_then(|t| self.0.tab_info(t)).map(|t| ext.tab_json(&t)));
+        args.extend(tab.and_then(|t| self.0.tab_for(&ext, t)).map(|t| ext.tab_json(&t)));
         let (inner, target) = (self.0.clone(), ext.clone());
         ext.when_background_loaded(move || bridge::emit_to_pages(&inner, &target, "contextMenus.onClicked", &args));
     }
@@ -393,7 +423,7 @@ impl Runtime {
             ext.grant_active_tab(tab);
         }
         let mut args = vec![json!(name)];
-        args.extend(tab.and_then(|t| self.0.tab_info(t)).map(|t| ext.tab_json(&t)));
+        args.extend(tab.and_then(|t| self.0.tab_for(&ext, t)).map(|t| ext.tab_json(&t)));
         let (inner, target) = (self.0.clone(), ext.clone());
         ext.when_background_loaded(move || bridge::emit_to_pages(&inner, &target, "commands.onCommand", &args));
     }
@@ -500,19 +530,19 @@ fn attach(inner: &Rc<Inner>, ext: &Rc<Extension>, tab: TabId, state: &mut TabSta
     state.handlers.insert(ext.id.clone(), [content, page]);
 }
 
+/// Nothing to do in a tab the extension does not run in.
 fn detach(ext: &Extension, state: &mut TabState) {
+    let Some([content, page]) = state.handlers.remove(&ext.id) else { return };
     ext.content.remove_from(&state.ucm);
     ext.dynamic_content.borrow().remove_from(&state.ucm);
     state.ucm.remove_script(&ext.page_script);
     if let Some(filter) = ext.filter.borrow().as_ref() {
         state.ucm.remove_filter(filter);
     }
-    if let Some([content, page]) = state.handlers.remove(&ext.id) {
-        state.ucm.disconnect(content);
-        state.ucm.disconnect(page);
-        state.ucm.unregister_script_message_handler(&ext.handler, Some(&ext.world));
-        state.ucm.unregister_script_message_handler(&ext.page_handler, None);
-    }
+    state.ucm.disconnect(content);
+    state.ucm.disconnect(page);
+    state.ucm.unregister_script_message_handler(&ext.handler, Some(&ext.world));
+    state.ucm.unregister_script_message_handler(&ext.page_handler, None);
 }
 
 /// `file` as JSON; `None` when it does not exist or does not parse, which is logged.
@@ -560,21 +590,26 @@ impl Inner {
         self.extensions.borrow().values().cloned().collect()
     }
 
-    pub(crate) fn tab_managers(&self) -> Vec<webkit::UserContentManager> {
-        self.tabs.borrow().values().map(|s| s.ucm.clone()).collect()
+    /// The managers of the tabs `ext` runs in.
+    pub(crate) fn tab_managers(&self, ext: &Extension) -> Vec<webkit::UserContentManager> {
+        self.tabs.borrow().values().filter(|s| ext.runs_in(s.browsing)).map(|s| s.ucm.clone()).collect()
     }
 
-    /// WebViews of every tab the shell registered. Never called with `tabs` borrowed,
-    /// since the host may call back into the runtime.
-    pub(crate) fn tab_views(&self) -> Vec<webkit::WebView> {
-        let ids: Vec<TabId> = self.tabs.borrow().keys().copied().collect();
-        ids.into_iter().filter_map(|id| self.host.web_view(id)).collect()
+    /// The tabs `ext` runs in, of those the shell registered.
+    fn tab_ids(&self, ext: &Extension) -> Vec<TabId> {
+        self.tabs.borrow().iter().filter(|(_, s)| ext.runs_in(s.browsing)).map(|(id, _)| *id).collect()
     }
 
-    /// The tabs whose view is showing (or loading) one of `ext`'s own documents.
+    /// WebViews of every tab `ext` runs in. Never called with `tabs` borrowed, since the host
+    /// may call back into the runtime.
+    pub(crate) fn tab_views(&self, ext: &Extension) -> Vec<webkit::WebView> {
+        self.tab_ids(ext).into_iter().filter_map(|id| self.host.web_view(id)).collect()
+    }
+
+    /// The tabs `ext` runs in whose view is showing (or loading) one of its own documents.
     pub(crate) fn page_tab_views(&self, ext: &Extension) -> Vec<(TabId, webkit::WebView)> {
-        let ids: Vec<TabId> = self.tabs.borrow().keys().copied().collect();
-        ids.into_iter()
+        self.tab_ids(ext)
+            .into_iter()
             .filter_map(|id| self.host.web_view(id).map(|v| (id, v)))
             .filter(|(_, v)| v.uri().is_some_and(|u| ext.owns_url(&u)))
             .collect()
@@ -582,6 +617,15 @@ impl Inner {
 
     pub(crate) fn tab_info(&self, tab: TabId) -> Option<TabInfo> {
         self.host.tabs().into_iter().find(|t| t.id == tab)
+    }
+
+    /// The tabs as `ext` may know them: no private one unless it runs there.
+    pub(crate) fn tabs_for(&self, ext: &Extension) -> Vec<TabInfo> {
+        self.host.tabs().into_iter().filter(|t| ext.runs_in(t.browsing)).collect()
+    }
+
+    pub(crate) fn tab_for(&self, ext: &Extension, tab: TabId) -> Option<TabInfo> {
+        self.tab_info(tab).filter(|t| ext.runs_in(t.browsing))
     }
 
     /// A selected tab at `url`, at the end of the last focused window.
@@ -598,6 +642,13 @@ impl Inner {
             if let Some(state) = tabs.get_mut(&info.id) {
                 state.placed = Some((info.window_id, info.index));
             }
+        }
+    }
+
+    /// Fires a tab event in the pages of every extension that runs in tabs of the tab's kind.
+    fn emit_about_tab(&self, browsing: Browsing, event: &str, args: &[Value]) {
+        for ext in self.loaded_extensions().into_iter().filter(|ext| ext.runs_in(browsing)) {
+            bridge::emit_to_pages(self, &ext, event, args);
         }
     }
 
@@ -677,7 +728,7 @@ impl Inner {
     /// applies from the next load as in Chrome, and the ones that persist are saved.
     pub(crate) fn dynamic_scripts_changed(&self, ext: &Extension) {
         let previous = ext.dynamic_content.replace(ext.build_dynamic_content());
-        for ucm in self.tab_managers() {
+        for ucm in self.tab_managers(ext) {
             previous.remove_from(&ucm);
             ext.dynamic_content.borrow().add_to(&ucm);
         }

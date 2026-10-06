@@ -7,6 +7,7 @@ pub(super) fn main_menu() -> (gtk::MenuButton, gtk::Button) {
     let windows = gio::Menu::new();
     windows.append(Some("New _Tab"), Some("win.new-tab"));
     windows.append(Some("New _Window"), Some("app.new-window"));
+    windows.append(Some("New _Private Window"), Some("app.new-private-window"));
 
     let zoom = gio::Menu::new();
     let zoom_row = gio::MenuItem::new(None, None);

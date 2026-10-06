@@ -6,6 +6,7 @@ use adw::prelude::*;
 use gtk::glib;
 use vsesvit_core::Url;
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::session::{SessionSnapshot, TabSnapshot, WindowSnapshot};
 
 use crate::browser::Browser;
@@ -18,7 +19,8 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 /// Every window with at least one page, committed or still loading, most recently focused
-/// first, so the active window is index 0.
+/// first, so the active window is index 0. Private tabs, and so private windows, are never
+/// saved.
 pub(crate) fn snapshot(browser: &Browser) -> SessionSnapshot {
     let windows = browser
         .windows()
@@ -36,7 +38,7 @@ fn window_snapshot(window: &BrowserWindow) -> Option<WindowSnapshot> {
     let selected = window.selected_tab();
     let mut tabs = Vec::new();
     let mut active_tab = 0;
-    for tab in window.tabs() {
+    for tab in window.tabs().into_iter().filter(|tab| tab.browsing() == Browsing::Normal) {
         let Some(url) = tab.session_uri().and_then(|u| Url::parse(&u).ok()) else {
             continue;
         };

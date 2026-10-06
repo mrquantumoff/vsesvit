@@ -16,6 +16,7 @@ use vsesvit_core::extensions::manifest::Manifest;
 use vsesvit_core::extensions::{
     ExtensionId, InstallError, InstallJob, InstallPhase, InstallSource, InstalledExtension,
 };
+use vsesvit_core::private::Browsing;
 use vsesvit_webext::{LoadError, Unsupported};
 
 use crate::browser::Browser;
@@ -167,6 +168,17 @@ impl Browser {
                 Ok(())
             }
         }
+    }
+
+    /// The user's "Allow in private windows" for `id`: it joins or leaves the open private tabs
+    /// at once, and the private windows' toolbars follow.
+    pub(crate) fn set_extension_allowed_in_private(&self, id: &ExtensionId, allowed: bool) -> Result<(), vsesvit_core::Error> {
+        self.core().borrow_mut().extensions().set_allowed_in_private(id, allowed)?;
+        self.runtime().allowed_in_private_changed();
+        for window in self.windows_of(Browsing::Private) {
+            window.refresh_extension_actions();
+        }
+        Ok(())
     }
 
     /// Stops the extension first, so the runtime never runs files the uninstall removes. An

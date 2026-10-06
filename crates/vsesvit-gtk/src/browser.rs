@@ -3,6 +3,13 @@
 //! for everything that touches data or policy: history, bookmarks, the omnibox, session
 //! persistence, preferences with a live effect, and extension installs.
 //!
+//! A window is normal or private for its whole life, and so are its tabs ([`Browsing`]). The
+//! private session (see `vsesvit_core::private`) lasts from its first window until its last
+//! closes: its tabs share an ephemeral engine session and a closed-tab stack of their own, and
+//! every write a tab causes (history, favicons, zoom, site settings, downloads, the session
+//! file) goes through one function that leaves private tabs out or keeps their part in
+//! memory. A private window sees only private tabs, and a normal one only normal ones.
+//!
 //! The runtime's [`TabHost`] is implemented here over the live windows, so `chrome.tabs`
 //! sees exactly what the user sees.
 
@@ -20,6 +27,7 @@ use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::extensions::commands::{self, ExtensionShortcuts};
 use vsesvit_core::cookies::ThirdPartyCookies;
 use vsesvit_core::favicons::FaviconFetch;
+use vsesvit_core::extensions::private::ALLOWED_IN_PRIVATE;
 use vsesvit_core::extensions::{ExtensionId, toolbar};
 use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Reach};
@@ -73,6 +81,9 @@ pub(crate) struct Inner {
     https_reach: Cell<Reach>,
     downloads: Rc<Downloads>,
     closed_tabs: RefCell<ClosedTabs<ClosedTab>>,
+    private_closed_tabs: RefCell<ClosedTabs<ClosedTab>>,
+    /// The private session's engine side, while it lasts.
+    private: RefCell<Option<PrivateEngine>>,
     /// Why the runtime could not load an enabled extension, by extension.
     extension_errors: RefCell<HashMap<ExtensionId, String>>,
     next_tab_id: Cell<u32>,
@@ -98,6 +109,14 @@ pub(crate) struct Inner {
     sync: Syncer,
     /// This run created the profile: the first window opens the welcome, once.
     welcome: Cell<bool>,
+}
+
+/// The engine side of the private session, made for its first tab and dropped when its last
+/// window closes, so that the next private window starts with nothing.
+struct PrivateEngine {
+    session: webkit::NetworkSession,
+    /// [`Downloads::watch`]'s handler on it.
+    downloads: glib::SignalHandlerId,
 }
 
 /// The background fetch of bookmarked sites' icons.
@@ -150,6 +169,8 @@ impl Browser {
                 https_reach: Cell::new(Reach::Public),
                 downloads,
                 closed_tabs: RefCell::new(ClosedTabs::new(CLOSED_TABS_KEPT)),
+                private_closed_tabs: RefCell::new(ClosedTabs::new(CLOSED_TABS_KEPT)),
+                private: RefCell::new(None),
                 extension_errors: RefCell::new(HashMap::new()),
                 next_tab_id: Cell::new(1),
                 next_window_id: Cell::new(1),
@@ -180,6 +201,14 @@ impl Browser {
                 for window in Browser(inner).windows() {
                     window.refresh_extension_actions();
                 }
+            }
+        });
+        let weak = Rc::downgrade(&inner);
+        app.connect_window_removed(move |_, removed| {
+            let Some(browser) = weak.upgrade().map(Browser) else { return };
+            let private = |window: &BrowserWindow| window.browsing() == Browsing::Private;
+            if removed.downcast_ref().is_some_and(private) && !browser.windows().iter().any(|w| private(w) && w != removed) {
+                browser.end_private_session();
             }
         });
         let browser = Browser(inner);
@@ -243,9 +272,10 @@ impl Browser {
         self.trackers().when_applied(move || cookies.when_applied(f));
     }
 
-    /// The https URL a navigation to `url` loads instead, under HTTPS-only.
-    pub(crate) fn https_upgrade(&self, url: &Url) -> Option<Url> {
-        https_only::upgrade(&mut self.core().borrow_mut(), Browsing::Normal, url, self.0.https_reach.get())
+    /// The https URL a navigation to `url` in a tab of `browsing`'s kind loads instead, under
+    /// HTTPS-only.
+    pub(crate) fn https_upgrade(&self, browsing: Browsing, url: &Url) -> Option<Url> {
+        https_only::upgrade(&mut self.core().borrow_mut(), browsing, url, self.0.https_reach.get())
     }
 
     #[cfg(feature = "self-test")]
@@ -255,6 +285,40 @@ impl Browser {
 
     pub(crate) fn downloads(&self) -> &Rc<Downloads> {
         &self.0.downloads
+    }
+
+    /// The engine session of a tab of `browsing`'s kind: the profile's, or the private
+    /// session's, made for its first tab with its own downloads handler.
+    pub(crate) fn network_session(&self, browsing: Browsing) -> webkit::NetworkSession {
+        match browsing {
+            Browsing::Normal => self.engine().session().clone(),
+            Browsing::Private => {
+                let mut private = self.0.private.borrow_mut();
+                let engine = private.get_or_insert_with(|| {
+                    let session = Engine::ephemeral_session();
+                    let downloads = self.downloads().watch(&session, Browsing::Private);
+                    PrivateEngine { session, downloads }
+                });
+                engine.session.clone()
+            }
+        }
+    }
+
+    /// The last private window closed. As in Chrome its downloads still running are
+    /// cancelled, and everything the private session kept goes: its closed tabs, what core
+    /// kept for it, its engine session with the cookies and cache in it.
+    fn end_private_session(&self) {
+        self.downloads().cancel_private();
+        if let Some(engine) = self.0.private.take() {
+            engine.session.disconnect(engine.downloads);
+        }
+        self.0.private_closed_tabs.borrow_mut().clear();
+        self.core().borrow_mut().end_private_session();
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn private_session_lasts(&self) -> bool {
+        self.0.private.borrow().is_some()
     }
 
     /// Why the runtime is not running this enabled extension, when it failed to load it.
@@ -306,6 +370,19 @@ impl Browser {
             .collect()
     }
 
+    /// The windows of `browsing`'s kind, most recently focused first.
+    pub(crate) fn windows_of(&self, browsing: Browsing) -> Vec<BrowserWindow> {
+        self.windows().into_iter().filter(|window| window.browsing() == browsing).collect()
+    }
+
+    /// The most recently focused normal window, else a new one with a blank tab: where the
+    /// browser opens what comes from outside any window (another invocation, an extension,
+    /// sync), which must not land among private tabs.
+    pub(crate) fn normal_window(&self) -> BrowserWindow {
+        let window = self.windows_of(Browsing::Normal).into_iter().next();
+        window.unwrap_or_else(|| self.open_window(Browsing::Normal, &[]))
+    }
+
     pub(crate) fn find_tab(&self, id: TabId) -> Option<(BrowserWindow, Tab)> {
         self.windows().into_iter().find_map(|window| {
             let tab = window.tabs().into_iter().find(|t| t.id() == id)?;
@@ -347,7 +424,7 @@ impl Browser {
         if !targets.is_empty() {
             // Into the restored window, or a window of their own: no blank tab beside them.
             let window = self
-                .windows()
+                .windows_of(Browsing::Normal)
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| BrowserWindow::new(self));
@@ -355,15 +432,16 @@ impl Browser {
             window.present();
         }
         if self.0.welcome.take()
-            && let Some(window) = self.windows().into_iter().next()
+            && let Some(window) = self.windows_of(Browsing::Normal).into_iter().next()
         {
             dialogs::welcome::present(&window);
         }
     }
 
-    /// Opens a window with a tab for each target, the first one selected, or a blank tab.
-    pub(crate) fn open_window(&self, targets: &[Url]) -> BrowserWindow {
-        let window = BrowserWindow::new(self);
+    /// Opens a window of `browsing`'s kind with a tab for each target, the first one selected,
+    /// or a blank tab.
+    pub(crate) fn open_window(&self, browsing: Browsing, targets: &[Url]) -> BrowserWindow {
+        let window = BrowserWindow::with_browsing(self, browsing);
         if targets.is_empty() {
             window.new_tab();
         }
@@ -373,12 +451,7 @@ impl Browser {
     }
 
     pub(crate) fn present(&self) {
-        match self.windows().into_iter().next() {
-            Some(window) => window.present(),
-            None => {
-                self.open_window(&[]);
-            }
-        }
+        self.normal_window().present();
     }
 
     /// `kind`'s own window, while it is open. A closed one can outlive its closing for as long
@@ -428,7 +501,15 @@ impl Browser {
             pinned,
             used: self.tick(),
         };
-        self.0.closed_tabs.borrow_mut().push(closed);
+        self.closed_tabs(tab.browsing()).borrow_mut().push(closed);
+    }
+
+    /// The tabs closed in windows of `browsing`'s kind.
+    fn closed_tabs(&self, browsing: Browsing) -> &RefCell<ClosedTabs<ClosedTab>> {
+        match browsing {
+            Browsing::Normal => &self.0.closed_tabs,
+            Browsing::Private => &self.0.private_closed_tabs,
+        }
     }
 
     /// A tab that goes away without being closed one by one: with its window, or a
@@ -465,12 +546,13 @@ impl Browser {
         now
     }
 
-    pub(crate) fn can_reopen_closed_tab(&self) -> bool {
-        !self.0.closed_tabs.borrow().is_empty()
+    pub(crate) fn can_reopen_closed_tab(&self, browsing: Browsing) -> bool {
+        !self.closed_tabs(browsing).borrow().is_empty()
     }
 
+    /// The tab last closed in a window of `window`'s kind, back in `window`.
     pub(crate) fn reopen_closed_tab(&self, window: &BrowserWindow) {
-        let closed = self.0.closed_tabs.borrow_mut().pop();
+        let closed = self.closed_tabs(window.browsing()).borrow_mut().pop();
         if let Some(closed) = closed {
             window.restore_closed(&closed);
         }
@@ -478,13 +560,14 @@ impl Browser {
 
     // Tab search.
 
-    /// Tab search's rows for `query`: the tabs of every window, then the closed ones, as core
-    /// narrows and orders them.
-    pub(crate) fn search_tabs(&self, query: &str) -> Vec<Row<TabId, ClosedKey>> {
+    /// Tab search's rows for `query` in a window of `browsing`'s kind: the open tabs of that
+    /// kind, then the ones closed in its windows, as core narrows and orders them.
+    pub(crate) fn search_tabs(&self, browsing: Browsing, query: &str) -> Vec<Row<TabId, ClosedKey>> {
         let open = self
             .windows()
             .iter()
             .flat_map(BrowserWindow::tabs)
+            .filter(|tab| tab.browsing() == browsing)
             .map(|tab| Listed {
                 key: tab.id(),
                 title: tab.display_title(),
@@ -493,8 +576,7 @@ impl Browser {
             })
             .collect();
         let closed = self
-            .0
-            .closed_tabs
+            .closed_tabs(browsing)
             .borrow()
             .iter()
             .map(|(key, tab)| Listed { key, title: tab.title.clone(), url: tab.uri.clone(), used: tab.used })
@@ -502,11 +584,12 @@ impl Browser {
         tab_search::rows(query, open, closed)
     }
 
-    /// The icon of the tab `hit` leads to, as its tab shows it or showed it when closed.
-    pub(crate) fn tab_icon(&self, hit: TabHit) -> Option<gdk::Texture> {
+    /// The icon of the tab `hit`, listed in a window of `browsing`'s kind, leads to, as its tab
+    /// shows it or showed it when closed.
+    pub(crate) fn tab_icon(&self, browsing: Browsing, hit: TabHit) -> Option<gdk::Texture> {
         match hit {
             tab_search::Hit::Open(id) => self.find_tab(id).and_then(|(_, tab)| tab.web_view().favicon()),
-            tab_search::Hit::Closed(key) => self.0.closed_tabs.borrow().get(key).and_then(|tab| tab.favicon.clone()),
+            tab_search::Hit::Closed(key) => self.closed_tabs(browsing).borrow().get(key).and_then(|tab| tab.favicon.clone()),
         }
     }
 
@@ -521,7 +604,7 @@ impl Browser {
                 }
             }
             tab_search::Hit::Closed(key) => {
-                let closed = self.0.closed_tabs.borrow_mut().take(key);
+                let closed = self.closed_tabs(window.browsing()).borrow_mut().take(key);
                 if let Some(closed) = closed {
                     window.restore_closed(&closed);
                 }
@@ -531,7 +614,8 @@ impl Browser {
 
     // History and bookmarks.
 
-    /// Every committed main-frame navigation records a visit (not for an error page).
+    /// Every committed main-frame navigation records a visit (not for an error page, nor in a
+    /// private window).
     pub(crate) fn navigation_committed(&self, tab: &Tab, uri: &str, commit: Commit) {
         let transition = tab.take_pending_transition().unwrap_or(Transition::Link);
         if commit != Commit::SameDocument
@@ -540,6 +624,7 @@ impl Browser {
             self.show_at_site_zoom(tab, &url);
         }
         if commit != Commit::ErrorPage
+            && tab.browsing() == Browsing::Normal
             && let Ok(url) = Url::parse(uri)
         {
             let recorded = self.core().borrow_mut().history().record_visit(&url, transition);
@@ -554,7 +639,7 @@ impl Browser {
     /// WebKit keeps a view's zoom from page to page, so a new document is shown at the level
     /// remembered for its site (100% for a site with none) instead of the previous page's.
     fn show_at_site_zoom(&self, tab: &Tab, url: &Url) {
-        let level = match self.core().borrow_mut().site_zoom(Browsing::Normal).get(url) {
+        let level = match self.core().borrow_mut().site_zoom(tab.browsing()).get(url) {
             Ok(level) => level,
             Err(e) => {
                 log::warn!("site zoom: {e}");
@@ -569,13 +654,13 @@ impl Browser {
     }
 
     /// The tab's zoom changed, by the user or by [`Browser::show_at_site_zoom`]: remember it
-    /// for the site the tab is on.
+    /// for the site the tab is on, in memory only for a private tab.
     pub(crate) fn zoom_changed(&self, tab: &Tab) {
         let Some(url) = tab.committed_uri().and_then(|uri| Url::parse(&uri).ok()) else {
             return;
         };
         let level = tab.web_view().zoom_level();
-        if let Err(e) = self.core().borrow_mut().site_zoom(Browsing::Normal).set(&url, level) {
+        if let Err(e) = self.core().borrow_mut().site_zoom(tab.browsing()).set(&url, level) {
             log::warn!("site zoom: {e}");
         }
     }
@@ -583,9 +668,10 @@ impl Browser {
     /// Titles arrive after the commit, and are written to history under the committed URI,
     /// with two exceptions. WebKit clears the title as the next document commits, before it
     /// reports the commit, so an empty title would land on the page being left. An error
-    /// page's title is ours, not that of the URI that failed.
+    /// page's title is ours, not that of the URI that failed. A private tab writes none.
     pub(crate) fn title_changed(&self, tab: &Tab) {
-        if !tab.shows_error_page()
+        if tab.browsing() == Browsing::Normal
+            && !tab.shows_error_page()
             && let (Some(uri), Some(title)) = (tab.committed_uri(), tab.web_view().title())
             && !title.is_empty()
             && let Ok(url) = Url::parse(&uri)
@@ -649,9 +735,9 @@ impl Browser {
         }
     }
 
-    /// Returns whether the stored icon changed.
+    /// Returns whether the stored icon changed. A private tab's icon is never stored.
     fn save_favicon(&self, tab: &Tab) -> bool {
-        let (Some(uri), Some(icon)) = (tab.committed_uri(), tab.web_view().favicon()) else {
+        let (Some(uri), Some(icon), Browsing::Normal) = (tab.committed_uri(), tab.web_view().favicon(), tab.browsing()) else {
             return false;
         };
         favicons::record(&mut self.core().borrow_mut(), &uri, &icon)
@@ -774,11 +860,13 @@ impl Browser {
     /// Every edit in the address bar: core's suggestions (search, typed URL, bookmarks,
     /// history) followed by matching open tabs, and the inline completion when allowed. The
     /// search engine's suggestions are fetched on a worker thread and join the rows when they
-    /// arrive, unless the user typed again or stopped editing first.
+    /// arrive, unless the user typed again or stopped editing first. A private window asks the
+    /// engine for none.
     pub(crate) fn omnibox_changed(&self, window: &BrowserWindow, text: &str, allow_inline: bool) {
         let address = window.address_bar();
         address.set_suggestions(omnibox::suggestions(self, window, text, allow_inline, None));
-        let request = match self.core().borrow_mut().omnibox().suggest_request(text, address.queries(), false) {
+        let private = window.browsing() == Browsing::Private;
+        let request = match self.core().borrow_mut().omnibox().suggest_request(text, address.queries(), private) {
             Ok(Some(request)) => request,
             Ok(None) => return,
             Err(e) => {
@@ -998,6 +1086,9 @@ impl Browser {
         if changed.extensions {
             self.reconcile_extensions();
         }
+        if changed.prefs.iter().any(|key| key == ALLOWED_IN_PRIVATE.key) {
+            self.runtime().allowed_in_private_changed();
+        }
         for (ext, changes) in &changed.ext_storage {
             self.runtime().storage_sync_changed(ext, changes);
         }
@@ -1040,13 +1131,14 @@ impl Browser {
         }));
     }
 
-    /// Writes the session now, with the windows that exist. Nothing is written when no
-    /// window is left, so quitting never overwrites the last real session with an empty one.
+    /// Writes the session now, with the normal windows that exist. Nothing is written when no
+    /// normal window is left, so quitting, or closing the last normal window while a private one
+    /// stays, never overwrites the last real session with an empty one.
     pub(crate) fn save_session_now(&self) {
         if let Some(pending) = self.0.session_save.borrow_mut().take() {
             pending.remove();
         }
-        if self.windows().is_empty() || self.0.shut_down.get() {
+        if self.windows_of(Browsing::Normal).is_empty() || self.0.shut_down.get() {
             return;
         }
         let snapshot = session::snapshot(self);
@@ -1054,6 +1146,12 @@ impl Browser {
         if let Err(e) = saved {
             log::warn!("cannot save the session: {e}");
         }
+    }
+
+    /// Whether `window` is the one normal window left, which saves the session before it goes
+    /// so that the next start restores it.
+    pub(crate) fn is_last_normal_window(&self, window: &BrowserWindow) -> bool {
+        window.browsing() == Browsing::Normal && self.windows_of(Browsing::Normal).len() <= 1
     }
 }
 
@@ -1169,6 +1267,7 @@ impl TabHost for Host {
                         url: tab.committed_uri().unwrap_or_default(),
                         title: tab.display_title(),
                         active: selected.as_ref() == Some(&tab),
+                        browsing: tab.browsing(),
                     })
                     .collect::<Vec<_>>()
             })
@@ -1179,11 +1278,7 @@ impl TabHost for Host {
         let browser = self.browser()?;
         let window = match tab.window {
             Some(id) => self.window(id)?,
-            None => {
-                let window = BrowserWindow::new(&browser);
-                window.present();
-                window
-            }
+            None => browser.normal_window(),
         };
         let focus = if tab.active { Focus::Foreground } else { Focus::Background };
         Some(window.open_tab_at(&tab.url, tab.index, focus).id())
@@ -1327,6 +1422,37 @@ mod tests {
         let title = history_title(&browser, &a);
         window.destroy();
         assert_eq!(title.as_deref(), Some("A"));
+    }
+
+    #[gtk::test]
+    fn a_private_session_keeps_its_tabs_out_of_history_and_ends_with_its_last_window() {
+        let server = Server::start("127.0.0.1", |_| Reply::Page("Private"));
+        let browser = browser();
+        let url = server.url("/private");
+        let site = Url::parse(&url).unwrap();
+        let [first, second] = [(); 2].map(|()| BrowserWindow::with_browsing(&browser, Browsing::Private));
+        first.open_tab(None, None, Focus::Background);
+        let tab = first.open_tab(Some(&url), None, Focus::Foreground);
+        wait_until("the private page's title", || tab.web_view().title().as_deref() == Some("Private"));
+        let session = tab.web_view().network_session().expect("the view's network session");
+        tab.web_view().set_zoom_level(1.5);
+        let zoom = |browsing| browser.core().borrow_mut().site_zoom(browsing).get(&site).unwrap();
+        let zoomed = (zoom(Browsing::Private), zoom(Browsing::Normal));
+        let visited = history_title(&browser, &url);
+        first.close_tab(&tab);
+        let kept = browser.can_reopen_closed_tab(Browsing::Private);
+
+        first.destroy();
+        let lasts = browser.0.private.borrow().as_ref().is_some_and(|engine| engine.session == session);
+        second.destroy();
+        let ended = browser.0.private.borrow().is_none() && !browser.can_reopen_closed_tab(Browsing::Private);
+        assert!(session.is_ephemeral());
+        assert_eq!(visited, None, "a private visit reached history");
+        assert_eq!(zoomed, (1.5, 1.0), "the zoom stays in the private session");
+        assert!(kept, "the private closed tab is kept");
+        assert!(lasts, "the session lasts while a private window is open");
+        assert!(ended, "the session ends with the last private window");
+        assert_eq!(zoom(Browsing::Private), 1.0, "the private zoom is forgotten");
     }
 
     #[gtk::test]

@@ -75,7 +75,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 51] = [
+const CHECKS: [&str; 52] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -106,6 +106,7 @@ const CHECKS: [&str; 51] = [
     "selection_search",
     "session",
     "download",
+    "private_window",
     "new_tab_page",
     "address_progress",
     "settings",
@@ -792,7 +793,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             .map_err(|e| e.to_string())?;
         menu.popdown();
         let lines = window.tab_menu_lines();
-        let reopen = browser.can_reopen_closed_tab();
+        let reopen = browser.can_reopen_closed_tab(Browsing::Normal);
         let wanted = [
             vec![("_New Tab Below", true), ("Move Tab to New _Window", true)],
             vec![("_Reload", true), ("_Duplicate", true), ("P_in Tab", true), ("_Mute Tab", true), ("Copy _Link", true)],
@@ -1596,6 +1597,157 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             bytes.len(),
             status_line(&entry, None, true)
         ))
+    })
+    .await;
+
+    ctx.check("private_window", CHECK_TIMEOUT * 2, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let url = ctx.server.url("/page2.html?vsesvit-private");
+        let accels = browser.app().accels_for_action("app.new-private-window");
+        if !accels.iter().any(|a| gtk::accelerator_parse(a) == gtk::accelerator_parse("<Control><Shift>n")) {
+            return Err(format!("app.new-private-window is on {accels:?}"));
+        }
+        let menu = webkit::ContextMenu::new();
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::OpenLinkInNewWindow));
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::CopyLinkToClipboard));
+        let item = page_menu::add_private_window_item(&tab, &menu, url.as_str()).ok_or_else(|| "the link has no private window item".to_owned())?;
+        let at = menu.items().iter().position(|i| i == &item);
+        item.gaction().ok_or_else(|| "the private window item has no action".to_owned())?.activate(None);
+        let private = browser.windows_of(Browsing::Private).into_iter().next().ok_or_else(|| "the link item opened no private window".to_owned())?;
+        let _private = Cleanup(|| {
+            if browser.windows().contains(&private) {
+                private.close();
+            }
+        });
+        let _probe = Cleanup(|| {
+            if let Err(e) = browser.set_extension_allowed_in_private(probe_id, false) {
+                println!("[self-test] cannot keep the probe out of private windows: {e}");
+            }
+        });
+        let shown = private.selected_tab().ok_or_else(|| "the private window has no tab".to_owned())?;
+        wait_for(&last, || match (shown.committed_uri(), private.title()) {
+            (Some(uri), Some(title)) if uri == url.as_str() && title == "Vsesvit fixture 2 (Private)" => Ok(()),
+            seen => Err(format!("the private tab shows {seen:?}")),
+        })
+        .await;
+        let mut details = vec![format!("Open Link in Private Window (item {at:?}) and Ctrl+Shift+N open a window titled {:?}", private.title())];
+        if at != Some(1) || !private.has_css_class("private") {
+            return Err(format!("{}; the window's style classes are {:?}", details[0], private.css_classes()));
+        }
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(&private, &ctx.out_dir.join("private-window.png")).await.map_err(|e| e.to_string())?;
+
+        let ephemeral = |tab: &Tab| tab.web_view().network_session().is_some_and(|s| s.is_ephemeral());
+        if !ephemeral(&shown) || ephemeral(&tab) {
+            return Err("the private tab's network session is not the ephemeral one".to_owned());
+        }
+        let visited = browser.core().borrow_mut().history().search(url.as_str(), 20).map_err(|e| e.to_string())?;
+        if visited.iter().any(|e| e.url == url) {
+            return Err(format!("history has a visit to {url}"));
+        }
+        browser.save_session_now();
+        let saved = browser.core().borrow_mut().session().restore().map_err(|e| e.to_string())?;
+        let saved: Vec<String> = saved.into_iter().flat_map(|s| s.windows).flat_map(|w| w.tabs).map(|t| t.url.to_string()).collect();
+        if saved.is_empty() || saved.contains(&url.to_string()) {
+            return Err(format!("the saved session holds {saved:?}"));
+        }
+        details.push("its tab is in an ephemeral network session, in no history row and not in the saved session".to_owned());
+
+        gio::prelude::ActionGroupExt::activate_action(&private, "zoom-in", None);
+        wait_for(&last, || match shown.web_view().zoom_level() {
+            level if level > 1.0 => Ok(()),
+            level => Err(format!("the private tab is at {level}")),
+        })
+        .await;
+        let zoom = |browsing| browser.core().borrow_mut().site_zoom(browsing).get(&url).map_err(|e| e.to_string());
+        let (private_zoom, normal_zoom) = (zoom(Browsing::Private)?, zoom(Browsing::Normal)?);
+        if private_zoom <= 1.0 || normal_zoom != 1.0 {
+            return Err(format!("zoomed in privately, the site reads {private_zoom} there and {normal_zoom} in normal windows"));
+        }
+
+        let listed = |owner: &BrowserWindow| -> Result<usize, String> {
+            gio::prelude::ActionGroupExt::activate_action(owner, "search-tabs", None);
+            let search = owner.tab_search().ok_or_else(|| "win.search-tabs opened no tab search".to_owned())?;
+            search.set_query("vsesvit-private");
+            let rows = search.shown().len();
+            gio::prelude::ActionGroupExt::activate_action(owner, "search-tabs", None);
+            Ok(rows)
+        };
+        let (from_normal, from_private) = (listed(window)?, listed(&private)?);
+        if from_normal != 0 || from_private != 1 {
+            return Err(format!("tab search lists the private tab {from_normal} times from a normal window, {from_private} from the private one"));
+        }
+        details.push(format!("zoom {private_zoom} stayed in the private session; tab search lists the tab in its window only"));
+
+        private.new_tab();
+        let page = private.selected_tab().filter(|t| *t != shown).ok_or_else(|| "no new tab in the private window".to_owned())?;
+        let heading = loop {
+            let loaded = !page.web_view().is_loading() && page.committed_uri().as_deref() == Some("about:blank");
+            let heading = if loaded { eval_js(page.web_view(), "document.querySelector('h1')?.textContent ?? ''").await? } else { String::new() };
+            if !heading.is_empty() {
+                break heading;
+            }
+            last.set(format!("the new tab is at {:?}", page.committed_uri()));
+            glib::timeout_future(POLL).await;
+        };
+        if heading != "You're browsing privately" {
+            return Err(format!("the private new tab page says {heading:?}"));
+        }
+        private.close_tab(&page);
+
+        let probe = "String(document.documentElement.dataset.vsesvitProbe)";
+        glib::timeout_future(Duration::from_secs(1)).await;
+        let kept_out = eval_js(shown.web_view(), probe).await?;
+        browser.set_extension_allowed_in_private(probe_id, true).map_err(|e| e.to_string())?;
+        shown.reload();
+        loop {
+            let value = eval_js(shown.web_view(), probe).await.unwrap_or_else(|e| format!("error: {e}"));
+            if value == "background-replied" {
+                break;
+            }
+            last.set(format!("allowed in private, the probe's content script reports {value:?}"));
+            glib::timeout_future(POLL).await;
+        }
+        if kept_out != "undefined" {
+            return Err(format!("the probe ran in the private tab before it was allowed there: {kept_out:?}"));
+        }
+        details.push(format!("its new tab page says {heading:?}; the probe extension ran there only once allowed"));
+
+        shown.load(ctx.server.url("/download.bin").as_str());
+        let row = wait_for(&last, || {
+            let rows = browser.downloads().list();
+            match rows.into_iter().find(|d| d.id.0 < 0) {
+                Some(row) if row.state == State::Completed => Ok(row),
+                row => Err(format!("the private download's row is {row:?}")),
+            }
+        })
+        .await;
+        let closed = private.open_tab(Some(index_url.as_str()), None, Focus::Foreground);
+        wait_for(&last, || match closed.committed_uri() {
+            Some(uri) if uri == index_url.as_str() => Ok(()),
+            uri => Err(format!("the tab to close is at {uri:?}")),
+        })
+        .await;
+        private.close_tab(&closed);
+        if !browser.can_reopen_closed_tab(Browsing::Private) {
+            return Err("the private closed tab is not kept".to_owned());
+        }
+
+        private.close();
+        wait_for(&last, || if browser.windows_of(Browsing::Private).is_empty() { Ok(()) } else { Err("the private window is still open".to_owned()) }).await;
+        let forgotten = zoom(Browsing::Private)?;
+        let rows_left = browser.downloads().list().into_iter().filter(|d| d.id.0 < 0).count();
+        if browser.private_session_lasts() || browser.can_reopen_closed_tab(Browsing::Private) || forgotten != 1.0 || rows_left > 0 || !row.path.is_file() {
+            return Err(format!(
+                "after the window closed: engine session kept {}, closed tabs kept {}, zoom {forgotten}, {rows_left} private download rows, {} still there: {}",
+                browser.private_session_lasts(),
+                browser.can_reopen_closed_tab(Browsing::Private),
+                row.path.display(),
+                row.path.is_file()
+            ));
+        }
+        details.push(format!("closing the window ended the session: no engine session, closed tab, zoom or download row left; {} kept", row.path.display()));
+        Ok(format!("{}; private-window.png", details.join("; ")))
     })
     .await;
 

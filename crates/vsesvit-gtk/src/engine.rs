@@ -1,5 +1,6 @@
-//! The one WebKit network session and settings object every web view shares. Its data
-//! and cache directories are the profile's (`ProfilePaths::engine_data`, `engine_cache`).
+//! The WebKit network session and settings object every web view shares. The session's data
+//! and cache directories are the profile's (`ProfilePaths::engine_data`, `engine_cache`); a
+//! private window's views have an ephemeral session instead ([`Engine::ephemeral_session`]).
 //! The settings object carries the preferences for pop-ups, scrolling and the GPU, and the
 //! process's web context those for spell checking, so changing one reaches every open view at
 //! once.
@@ -65,10 +66,7 @@ impl Engine {
         let data = paths.engine_data.to_str().expect("profile paths are UTF-8");
         let cache = paths.engine_cache.to_str().expect("profile paths are UTF-8");
         let session = webkit::NetworkSession::new(Some(data), Some(cache));
-        session.set_tls_errors_policy(webkit::TLSErrorsPolicy::Fail);
-        if let Some(data) = session.website_data_manager() {
-            data.set_favicons_enabled(true);
-        }
+        set_up(&session);
 
         let settings = webkit::Settings::new();
         settings.set_enable_developer_extras(true);
@@ -112,12 +110,21 @@ impl Engine {
         &self.session
     }
 
-    /// A tab's view. `content` is the extension runtime's manager for that tab, which
-    /// carries every loaded extension's content scripts and content blockers, and tracking
-    /// protection's.
-    pub(crate) fn web_view(&self, content: &webkit::UserContentManager) -> webkit::WebView {
+    /// A private session's: cookies, cache and site storage in memory only, gone with the
+    /// session. Its views keep the default web context, so extension pages, view-source and
+    /// spell checking work in them as in the others.
+    pub(crate) fn ephemeral_session() -> webkit::NetworkSession {
+        let session = webkit::NetworkSession::new_ephemeral();
+        set_up(&session);
+        session
+    }
+
+    /// A tab's view in `session`, the profile's or a private session's. `content` is the
+    /// extension runtime's manager for that tab, which carries the content scripts and content
+    /// blockers of the extensions that run in it, and tracking protection's.
+    pub(crate) fn web_view(&self, session: &webkit::NetworkSession, content: &webkit::UserContentManager) -> webkit::WebView {
         webkit::WebView::builder()
-            .network_session(&self.session)
+            .network_session(session)
             .settings(&self.settings)
             .user_content_manager(content)
             .build()
@@ -135,6 +142,15 @@ impl Engine {
             .settings(&self.settings)
             .user_content_manager(content)
             .build()
+    }
+}
+
+/// What every session gets: certificate errors fail the load (the shell shows its error page),
+/// and the pages' icons are kept for the tabs and the bookmarks.
+fn set_up(session: &webkit::NetworkSession) {
+    session.set_tls_errors_policy(webkit::TLSErrorsPolicy::Fail);
+    if let Some(data) = session.website_data_manager() {
+        data.set_favicons_enabled(true);
     }
 }
 

@@ -41,6 +41,11 @@ impl<T> ClosedTabs<T> {
         self.items.is_empty()
     }
 
+    /// Forgets every tab. Their keys stay unused.
+    pub(crate) fn clear(&mut self) {
+        self.items.clear();
+    }
+
     /// The most recently closed tab.
     pub(crate) fn pop(&mut self) -> Option<T> {
         self.items.pop_back().map(|(_, item)| item)
@@ -103,5 +108,9 @@ mod tests {
         assert_eq!(listed, ["c", "d", "e"]);
         assert_eq!(stack.take(last), Some("e"));
         assert_eq!(stack.pop(), Some("d"));
+        let left = stack.iter().map(|(key, _)| key).next().expect("c is left");
+        stack.clear();
+        assert!(stack.is_empty() && stack.get(left).is_none());
+        assert_ne!(stack.push("f"), left, "a key is never reused after a clear either");
     }
 }

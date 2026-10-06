@@ -73,11 +73,13 @@ pub(crate) struct Downloads {
     /// Destinations handed out whose files are not made yet, so two downloads at once never
     /// get the same one.
     reserved: RefCell<HashSet<PathBuf>>,
+    /// The private session's engine downloads that have not ended, which end with it.
+    private: RefCell<Vec<webkit::Download>>,
 }
 
 impl Downloads {
-    /// Marks what the last run left in progress as failed, then watches `session`, so it
-    /// runs before any download can begin.
+    /// Marks what the last run left in progress as failed, then watches the profile's
+    /// `session`, so it runs before any download can begin.
     pub(crate) fn new(
         app: &adw::Application,
         core: Core,
@@ -98,13 +100,29 @@ impl Downloads {
             started_this_session: Cell::new(false),
             chosen: RefCell::new(None),
             reserved: RefCell::new(HashSet::new()),
+            private: RefCell::new(Vec::new()),
         });
-        let weak = Rc::downgrade(&downloads);
-        session.connect_download_started(move |_, download| match weak.upgrade() {
-            Some(downloads) => downloads.track(download),
-            None => download.cancel(),
-        });
+        downloads.watch(session, Browsing::Normal);
         downloads
+    }
+
+    /// Takes the downloads `session` starts, a session of `browsing`'s windows, whose rows go
+    /// to core's list for that kind. Disconnecting the handler stops it.
+    pub(crate) fn watch(self: &Rc<Self>, session: &webkit::NetworkSession, browsing: Browsing) -> glib::SignalHandlerId {
+        let weak = Rc::downgrade(self);
+        session.connect_download_started(move |_, download| match weak.upgrade() {
+            Some(downloads) => downloads.track(download, browsing),
+            None => download.cancel(),
+        })
+    }
+
+    /// The private session ended: its downloads still running are cancelled, as Chrome
+    /// cancels them when the last incognito window closes. Their files stay.
+    pub(crate) fn cancel_private(&self) {
+        // Taken first: a cancel ends the download at once, which forgets it.
+        for download in self.private.take() {
+            download.cancel();
+        }
     }
 
     /// The download folder: the preference, or else the platform's Downloads folder. Read
@@ -186,7 +204,10 @@ impl Downloads {
 
     // The engine's side.
 
-    fn track(self: &Rc<Self>, download: &webkit::Download) {
+    fn track(self: &Rc<Self>, download: &webkit::Download, browsing: Browsing) {
+        if browsing == Browsing::Private {
+            self.private.borrow_mut().push(download.clone());
+        }
         let phase = Rc::new(Cell::new(Phase::Deciding));
         let weak = Rc::downgrade(self);
         let uri = download.request().and_then(|r| r.uri());
@@ -218,7 +239,7 @@ impl Downloads {
             move |download, destination| {
                 let Some(downloads) = weak.upgrade() else { return };
                 downloads.reserved.borrow_mut().remove(Path::new(destination));
-                if let Some(id) = downloads.started(download, Path::new(destination)) {
+                if let Some(id) = downloads.started(download, Path::new(destination), browsing) {
                     phase.set(Phase::Running(id));
                 }
             }
@@ -263,8 +284,9 @@ impl Downloads {
             #[strong]
             weak,
             move |download| {
-                let Phase::Running(id) = phase.replace(Phase::Ended) else { return };
                 let Some(downloads) = weak.upgrade() else { return };
+                downloads.private.borrow_mut().retain(|d| d != download);
+                let Phase::Running(id) = phase.replace(Phase::Ended) else { return };
                 downloads.ended(id, State::Completed, download);
                 downloads.completed_toast(download);
             }
@@ -315,11 +337,11 @@ impl Downloads {
 
     /// The download has its file: it goes on the list, and every window shows the
     /// downloads button from now on.
-    fn started(&self, download: &webkit::Download, destination: &Path) -> Option<DownloadId> {
+    fn started(&self, download: &webkit::Download, destination: &Path, browsing: Browsing) -> Option<DownloadId> {
         let url = download.request().and_then(|r| r.uri()).map(String::from).unwrap_or_default();
         let total = total_of(download);
         let now = u64::try_from(now_ms()).unwrap_or(0);
-        let started = self.core.borrow_mut().downloads().start(&url, destination, total, now, Browsing::Normal);
+        let started = self.core.borrow_mut().downloads().start(&url, destination, total, now, browsing);
         let record = match started {
             Ok(record) => record,
             Err(e) => {

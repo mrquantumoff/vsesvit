@@ -1,9 +1,11 @@
 //! The page's context menu. With text selected, Chrome's item for it follows Copy: it
 //! searches the default engine for the text, or goes to it when it is an address, in a new tab
-//! next to the page. On a link, Copy Link Without Tracking follows Copy Link Address. On the
-//! page itself, Print and View Page Source come before Inspect Element. Extensions' items
-//! (`chrome.contextMenus`) come last, before Inspect Element. On a misspelled word, WebKit's
-//! spelling suggestions stay and its Learn Spelling is Chrome's Add to Dictionary.
+//! next to the page. On a link, Open Link in Private Window follows Open Link in New Window,
+//! and Copy Link Without Tracking follows Copy Link Address. On the page itself, Print and
+//! View Page Source come before Inspect Element. Extensions' items (`chrome.contextMenus`; in
+//! a private tab only those of extensions that run there) come last, before Inspect Element.
+//! On a misspelled word, WebKit's spelling suggestions stay and its Learn Spelling is Chrome's
+//! Add to Dictionary.
 //!
 //! WebKit hands over no selected text with the menu and does not say which frame it is for, so
 //! a script in a world of its own tells the tab whenever the selection changes, in any frame,
@@ -13,6 +15,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::{gio, glib};
+use vsesvit_core::Url;
+use vsesvit_core::private::Browsing;
 use vsesvit_webext::menus::{Media, Target};
 use webkit::prelude::*;
 
@@ -70,6 +74,7 @@ pub(crate) fn attach(tab: &Tab) {
             let clicked = clicked.take();
             name_add_to_dictionary(menu);
             if let Some(link) = hit.link_uri().filter(|_| hit.context_is_link()) {
+                add_private_window_item(&tab, menu, &link);
                 add_link_item(&tab, menu, &link);
             }
             if hit.context_is_selection() {
@@ -159,6 +164,30 @@ pub(crate) fn add_link_item(tab: &Tab, menu: &webkit::ContextMenu, link: &str) -
     item
 }
 
+/// Adds the item that opens `link` in a new private window, right after Open Link in New
+/// Window, or last when the menu has no such item. None for a link the page may not open, as
+/// an extension's page that is not web-accessible.
+pub(crate) fn add_private_window_item(tab: &Tab, menu: &webkit::ContextMenu, link: &str) -> Option<webkit::ContextMenuItem> {
+    let url = Url::parse(link).ok().filter(|_| tab.runtime().may_navigate(&tab.committed_uri().unwrap_or_default(), link))?;
+    let open = gio::SimpleAction::new("open-link-in-private-window", None);
+    open.connect_activate(glib::clone!(
+        #[weak]
+        tab,
+        move |_, _| {
+            if let Some(window) = tab.window() {
+                window.browser().open_window(Browsing::Private, std::slice::from_ref(&url));
+            }
+        }
+    ));
+    let item = webkit::ContextMenuItem::from_gaction(&open, "Open Link in _Private Window", None);
+    let after = menu.items().iter().position(|item| item.stock_action() == webkit::ContextMenuAction::OpenLinkInNewWindow);
+    match after.and_then(|at| i32::try_from(at + 1).ok()) {
+        Some(at) => menu.insert(&item, at),
+        None => menu.append(&item),
+    }
+    Some(item)
+}
+
 /// Renames WebKit's Learn Spelling, which adds the word to the user's dictionary, in its place.
 pub(crate) fn name_add_to_dictionary(menu: &webkit::ContextMenu) {
     let learn = webkit::ContextMenuAction::LearnSpelling;
@@ -207,7 +236,8 @@ pub(crate) fn add_page_items(tab: &Tab, menu: &webkit::ContextMenu) -> [webkit::
 /// above Inspect Element and the separator over it, or last.
 pub(crate) fn add_extension_items(tab: &Tab, menu: &webkit::ContextMenu, target: &Target) -> Vec<webkit::ContextMenuItem> {
     let runtime = tab.runtime();
-    let found = runtime.page_menu(target);
+    let mut found = runtime.page_menu(target);
+    found.retain(|(extension, _)| runtime.runs_in(extension, tab.browsing()));
     if found.is_empty() {
         return Vec::new();
     }

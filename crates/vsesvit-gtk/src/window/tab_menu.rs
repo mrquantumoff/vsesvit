@@ -165,7 +165,7 @@ impl BrowserWindow {
             vertical: matches!(self.imp().layout.get(), Some(Layout::Sidebar(_))),
             muted: tab.web_view().is_muted(),
             has_link: tab.link().is_some(),
-            can_reopen: self.browser().can_reopen_closed_tab(),
+            can_reopen: self.browser().can_reopen_closed_tab(self.browsing()),
         };
         let sections = sections(facts);
         state.menu.remove_all();
@@ -187,13 +187,13 @@ impl BrowserWindow {
         let place = place_of(view, page);
         match action {
             TabAction::NewTabNext => {
-                let new = Tab::new(self.browser());
+                let new = Tab::new(self.browser(), self.browsing());
                 let at = (place.index + 1).max(place.pinned);
                 view.set_selected_page(&view.insert(&new, to_i32(at)));
                 self.load_new_tab_page(&new);
             }
             TabAction::MoveToNewWindow => {
-                let target = BrowserWindow::new(self.browser());
+                let target = BrowserWindow::with_browsing(self.browser(), self.browsing());
                 let target_view = &target.ui().tab_view;
                 view.transfer_page(page, target_view, 0);
                 target_view.set_selected_page(page);
@@ -204,7 +204,7 @@ impl BrowserWindow {
                 tab.reload();
             }
             TabAction::Duplicate => {
-                let copy = Tab::new(self.browser());
+                let copy = Tab::new(self.browser(), self.browsing());
                 let at = to_i32(place.index + 1);
                 let added = if place.is_pinned() { view.insert_pinned(&copy, at) } else { view.insert(&copy, at) };
                 view.set_selected_page(&added);
@@ -269,6 +269,9 @@ fn to_i32(index: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::browser;
+    use crate::window::Focus;
+    use vsesvit_core::private::Browsing;
 
     fn facts(index: usize, count: usize, pinned: usize) -> TabFacts {
         TabFacts {
@@ -332,5 +335,22 @@ mod tests {
         let all_pinned = facts(1, 2, 2);
         assert_eq!(enabled(all_pinned, TabAction::CloseOthers), Some(false));
         assert_eq!(enabled(facts(0, 2, 0), TabAction::CloseAfter), Some(true));
+    }
+
+    #[gtk::test]
+    fn moving_a_private_tab_to_a_new_window_keeps_it_private() {
+        let browser = browser();
+        let private = BrowserWindow::with_browsing(&browser, Browsing::Private);
+        private.open_tab(None, None, Focus::Foreground);
+        let moved = private.open_tab(None, None, Focus::Foreground);
+        let page = private.page_of(&moved).expect("the tab's page");
+        private.tab_action(&page, TabAction::MoveToNewWindow);
+        let target = moved.window().expect("the tab is in a window");
+        let kind = target.browsing();
+        let title = target.title();
+        target.destroy();
+        private.destroy();
+        assert_eq!(kind, Browsing::Private);
+        assert_eq!(title.as_deref(), Some("New Tab (Private)"));
     }
 }

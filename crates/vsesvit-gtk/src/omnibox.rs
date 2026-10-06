@@ -75,6 +75,7 @@ fn forget_visits(window: &BrowserWindow, url: vsesvit_core::Url) -> Rc<dyn Fn()>
     })
 }
 
+/// Rows that switch to the open tabs matching `needle`, of `current`'s kind only.
 fn open_tab_suggestions(browser: &Browser, current: &BrowserWindow, needle: &str) -> Vec<Suggestion> {
     let selected = current.selected_tab();
     browser
@@ -86,7 +87,7 @@ fn open_tab_suggestions(browser: &Browser, current: &BrowserWindow, needle: &str
                 .into_iter()
                 .map(move |tab| (window.clone(), tab))
         })
-        .filter(|(_, tab)| Some(tab) != selected.as_ref())
+        .filter(|(_, tab)| tab.browsing() == current.browsing() && Some(tab) != selected.as_ref())
         .filter_map(|(window, tab)| {
             let uri = tab.committed_uri()?;
             let title = tab.display_title();

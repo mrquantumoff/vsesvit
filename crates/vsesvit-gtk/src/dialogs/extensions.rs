@@ -1,8 +1,8 @@
 //! The Extensions dialog: install from a store link or id, a `.crx`/`.xpi` file or an
 //! unpacked folder, with the job's progress shown; the installed list with icon, name,
 //! version, provenance, an enabled switch and removal; and, per extension, what its
-//! manifest asks for that the Linux runtime does not provide, and whether its notifications
-//! may show.
+//! manifest asks for that the Linux runtime does not provide, whether its notifications
+//! may show and whether it runs in private windows.
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
@@ -18,6 +18,8 @@ use crate::extensions::{
     EnableFailure, InstallFailure, icon_path, progress_to, unsupported_notice,
 };
 use crate::window::BrowserWindow;
+
+pub(crate) const ALLOW_IN_PRIVATE_ROW: &str = "Allow in private windows";
 
 /// Holds no [`Browser`] of its own: the widgets' handlers keep this state alive for as long
 /// as the dialog's widgets exist, which must not keep the profile open.
@@ -330,6 +332,24 @@ impl State {
         if ext.manifest.permissions.iter().any(|p| p == "notifications") {
             row.add_row(&self.notifications_row(&ext.id));
         }
+        let in_private = adw::SwitchRow::builder()
+            .title(ALLOW_IN_PRIVATE_ROW)
+            .subtitle("Vsesvit cannot stop it from recording what you do there")
+            .active(self.browser().is_some_and(|b| b.core().borrow_mut().extensions().allowed_in_private(&ext.id)))
+            .build();
+        in_private.connect_active_notify(glib::clone!(
+            #[strong(rename_to = state)]
+            self,
+            #[strong(rename_to = id)]
+            ext.id,
+            move |row| {
+                let Some(browser) = state.browser() else { return };
+                if let Err(e) = browser.set_extension_allowed_in_private(&id, row.is_active()) {
+                    state.toast(&format!("Cannot change the extension: {e}"));
+                }
+            }
+        ));
+        row.add_row(&in_private);
         let id_row = adw::ActionRow::builder()
             .title("ID")
             .subtitle(ext.id.as_str())
@@ -404,6 +424,38 @@ mod tests {
     fn row_titled(state: &State, title: &str) -> Option<gtk::Widget> {
         let is_titled = |row: &&gtk::Widget| row.downcast_ref::<adw::ExpanderRow>().is_some_and(|r| r.title() == title);
         state.rows.borrow().iter().find(is_titled).cloned()
+    }
+
+    #[gtk::test]
+    async fn the_private_windows_switch_lets_the_extension_into_private_tabs() {
+        use vsesvit_core::private::Browsing;
+
+        let browser = browser();
+        let dir = scratch_dir("private-switch");
+        std::fs::write(dir.join("manifest.json"), r#"{ "manifest_version": 3, "name": "Private switch", "version": "1.0" }"#).unwrap();
+        let installed = browser.install(InstallSource::from_path(&dir).unwrap(), |_| {}).await;
+        let id = installed.expect("the extension installs").expect("and is committed").id;
+        let window = BrowserWindow::new(&browser);
+        let state = build(&window, None);
+        let row = row_titled(&state, "Private switch").expect("the extension's row");
+        let switch = descendants(&row).into_iter().find_map(|w| w.downcast::<adw::SwitchRow>().ok()).expect("its private windows switch");
+        let state_of = || (browser.core().borrow_mut().extensions().allowed_in_private(&id), browser.runtime().runs_in(&id, Browsing::Private));
+        let before = (switch.title(), switch.is_active(), state_of());
+        switch.set_active(true);
+        let allowed = state_of();
+        switch.set_active(false);
+        let disallowed = state_of();
+        browser.uninstall_extension(&id).ok();
+        window.destroy();
+        assert_eq!(before, (ALLOW_IN_PRIVATE_ROW.into(), false, (false, false)), "off until the user turns it on");
+        assert_eq!(allowed, (true, true));
+        assert_eq!(disallowed, (false, false));
+    }
+
+    fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+        std::iter::successors(widget.first_child(), |child| child.next_sibling())
+            .flat_map(|child| std::iter::once(child.clone()).chain(descendants(&child)))
+            .collect()
     }
 
     #[gtk::test]

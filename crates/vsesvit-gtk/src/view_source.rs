@@ -62,10 +62,13 @@ async fn source(requester: Option<webkit::WebView>, page: &str) -> Result<Vec<u8
     load_hidden(&session, page).await
 }
 
-/// The main resource of a tab other than `requester` that has finished loading `page`.
+/// The main resource of a tab other than `requester`, and of its kind, that has finished
+/// loading `page`: a private tab's page never shows in a normal one, nor the other way round.
 fn shown_elsewhere(requester: &webkit::WebView, page: &str) -> Option<webkit::WebResource> {
-    let window = requester.ancestor(Tab::static_type()).and_downcast::<Tab>()?.window()?;
-    window.browser().windows().iter().flat_map(|window| window.tabs()).find_map(|tab| {
+    let asking = requester.ancestor(Tab::static_type()).and_downcast::<Tab>()?;
+    let window = asking.window()?;
+    let tabs = window.browser().windows().into_iter().flat_map(|window| window.tabs());
+    tabs.filter(|tab| tab.browsing() == asking.browsing()).find_map(|tab| {
         let view = tab.web_view();
         let resource = view.main_resource()?;
         (view != requester && !view.is_loading() && resource.uri().as_deref() == Some(page)).then_some(resource)

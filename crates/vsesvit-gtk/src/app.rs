@@ -17,6 +17,7 @@ use adw::prelude::*;
 use gtk::gio::ActionEntry;
 use gtk::{gdk, gio, glib};
 use vsesvit_core::extensions::ExtensionId;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::{OpenError, OpenOptions, Profile};
 use vsesvit_webext::notifications::{self, Activation};
 
@@ -62,6 +63,14 @@ entry.address-entry > progress > trough > progress {
 .tab-row { padding: 4px 6px 4px 10px; min-height: 30px; }
 .tab-row .tab-close { min-width: 22px; min-height: 22px; padding: 0; opacity: 0.6; }
 .tab-row .tab-close:hover { opacity: 1; }
+window.private toolbarview.browser-toolbar > .top-bar {
+  --headerbar-bg-color: #2e2e32;
+  --headerbar-fg-color: #ffffff;
+  --headerbar-backdrop-color: #222226;
+  --headerbar-border-color: #ffffff;
+  --headerbar-shade-color: rgb(0 0 6 / 36%);
+  --headerbar-darker-shade-color: rgb(0 0 12 / 90%);
+}
 .extension-badge {
   font-size: 0.65em;
   font-weight: bold;
@@ -213,7 +222,8 @@ fn startup(app: &adw::Application, slot: &Slot, profile: Profile) {
 /// The windows open once tracking protection's and the cookie rules' blockers are on the tabs
 /// ([`Browser::when_blockers_applied`]), so no page of the restored session or the command line
 /// loads before them. The application is held meanwhile, and an invocation arriving then waits
-/// its turn behind the first.
+/// its turn behind the first. With only private windows open, an invocation starts the browser
+/// afresh, as Chrome does, in normal windows.
 fn open_from_command_line(
     browser: &Browser,
     command_line: &gio::ApplicationCommandLine,
@@ -242,12 +252,12 @@ fn open_from_command_line(
         #[strong]
         browser,
         move || {
-            if browser.windows().is_empty() {
+            if browser.windows_of(Browsing::Normal).is_empty() {
                 browser.open_startup_windows(&urls);
             } else if urls.is_empty() {
                 browser.present();
             } else {
-                browser.open_window(&urls);
+                browser.open_window(Browsing::Normal, &urls);
             }
             drop(hold);
         }
@@ -263,7 +273,18 @@ fn install_actions(app: &adw::Application, slot: &Slot) {
                 slot,
                 move |_: &adw::Application, _, _| {
                     if let Some(browser) = slot.borrow().as_ref() {
-                        browser.open_window(&[]);
+                        browser.open_window(Browsing::Normal, &[]);
+                    }
+                }
+            ))
+            .build(),
+        ActionEntry::builder("new-private-window")
+            .activate(glib::clone!(
+                #[strong]
+                slot,
+                move |_: &adw::Application, _, _| {
+                    if let Some(browser) = slot.borrow().as_ref() {
+                        browser.open_window(Browsing::Private, &[]);
                     }
                 }
             ))

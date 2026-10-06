@@ -24,10 +24,11 @@
 //! // context (the builder default) and `session`.
 //! let runtime = Runtime::new(profile.clone(), &network_session, host);
 //!
-//! // Every tab WebView is built with the runtime's UserContentManager for that tab:
+//! // Every tab WebView is built with the runtime's UserContentManager for that tab, which
+//! // knows whether the tab is private (a private tab's view has an ephemeral session):
 //! let view = webkit::WebView::builder()
 //!     .network_session(&network_session)
-//!     .user_content_manager(&runtime.user_content_manager(tab_id))
+//!     .user_content_manager(&runtime.user_content_manager(tab_id, Browsing::Normal))
 //!     .build();
 //!
 //! // Its navigation policy is a `gate::Gate` per view, which the runtime answers for (see
@@ -157,10 +158,14 @@
 //!   "Allow access to file URLs" grant for that, which Vsesvit does not offer.
 //!   `tabs.create/update` resolve relative URLs against the calling page and refuse
 //!   `javascript:` and `file:`.
+//! - Private tabs only where the user allowed the extension in private windows (Chrome's
+//!   "Allow in Incognito"; [`Runtime::allowed_in_private_changed`] applies a change): elsewhere
+//!   a private tab gets none of its content scripts or rulesets, and `chrome.tabs` neither lists
+//!   it nor reports its events. `incognito` says which tabs are private.
 //! - declarativeNetRequest: the enabled static rulesets with the dynamic and session rules
 //!   (`updateDynamicRules`, `updateSessionRules`, `updateEnabledRulesets`, their getters,
 //!   `isRegexSupported`, `getAvailableStaticRuleCount`; see [`dnr_rules`]) as one WebKit
-//!   content blocker per extension, attached to every tab beside the shell's own blockers
+//!   content blocker per extension, attached to every tab it runs in beside the shell's own blockers
 //!   and rebuilt on a worker thread when they change; an update resolves once the tabs have
 //!   it. Dynamic rules and the chosen rulesets outlive a restart. Rules WebKit cannot
 //!   express are logged and skipped. As in Chrome, the API and the rulesets need the
