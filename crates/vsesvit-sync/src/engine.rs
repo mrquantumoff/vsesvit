@@ -379,18 +379,18 @@ impl PassphraseJob {
             Step::Set => {
                 let keyring = Keyring::new();
                 let keys = keyring.wrap(&passphrase);
-                Ok((Step::Set, keyring, keys))
+                Ok((keyring, keys))
             }
             Step::Enter(keys) => match keys.unwrap(&passphrase) {
                 Ok(keyring) if account.keyring.as_ref().is_some_and(|held| !keyring.descends_from(held)) => Err(Error::UnrelatedKey),
-                Ok(keyring) => Ok((Step::Enter(keys.clone()), keyring, keys)),
+                Ok(keyring) => Ok((keyring, keys)),
                 Err(Unwrapped::WrongPassphrase) => Err(Error::WrongPassphrase),
                 Err(Unwrapped::Invalid) => Err(Error::InvalidKeyRecord),
             },
             Step::Change(held) => {
                 let keyring = held.next();
                 let keys = keyring.wrap(&passphrase);
-                Ok((Step::Change(held), keyring, keys))
+                Ok((keyring, keys))
             }
         };
         NewKeys { account, result }
@@ -399,8 +399,9 @@ impl PassphraseJob {
 
 /// A passphrase checked or wrapped, to store on the UI thread.
 pub struct NewKeys {
+    /// As the job found it.
     account: Account,
-    result: Result<(Step, Keyring, KeyRecord), Error>,
+    result: Result<(Keyring, KeyRecord), Error>,
 }
 
 impl NewKeys {
@@ -413,23 +414,23 @@ impl NewKeys {
         if current.keyring != account.keyring || current.server_keys != account.server_keys {
             return Err(Error::KeysChanged);
         }
-        let (step, keyring, keys) = result?;
+        let (keyring, keys) = result?;
         current.adopt(keyring, keys);
-        match step {
+        match account.encryption() {
             // The key record goes up once the plaintext an older Vsesvit left is sealed, so that
             // what is sealed is only what the server held before the account was encrypted.
-            Step::Set => {
+            Encryption::Set => {
                 current.pending = true;
                 current.converting = current.plaintext_trusted;
                 current.upload_keys = !current.converting;
             }
-            Step::Enter(_) => {
+            Encryption::Ready => current.upload_keys = !current.converting,
+            Encryption::Enter | Encryption::Changed | Encryption::Checking => {
                 current.pending = false;
                 current.converting = false;
                 current.upload_keys = false;
                 current.joining = true;
             }
-            Step::Change(_) => current.upload_keys = !current.converting,
         }
         current.save(store)?;
         Ok(current)
