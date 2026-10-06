@@ -147,6 +147,12 @@ pub mod keys {
     /// Where third-party cookies are blocked ([`crate::cookies`]).
     pub const THIRD_PARTY_COOKIES: Pref<crate::cookies::ThirdPartyCookies> =
         Pref { key: "privacy.third_party_cookies", scope: Scope::Synced, default: || crate::cookies::ThirdPartyCookies::BlockInPrivate };
+    /// Underline misspelled words in a page's text fields, as Chrome's "Spell check".
+    pub const SPELLCHECK: Pref<bool> = Pref { key: "spellcheck.enabled", scope: Scope::Synced, default: || true };
+    /// The languages spell checking uses ([`crate::spellcheck::Dictionaries::checked`]). `None` =
+    /// the system's.
+    pub const SPELLCHECK_LANGUAGES: Pref<Option<Vec<String>>> =
+        Pref { key: "spellcheck.languages", scope: Scope::Synced, default: || None };
     pub const SMOOTH_SCROLLING: Pref<bool> = Pref { key: "scrolling.smooth", scope: Scope::Synced, default: || true };
     /// Local: whether the GPU works well is a property of this device.
     pub const HARDWARE_ACCELERATION: Pref<bool> = Pref { key: "system.hardware_acceleration", scope: Scope::Local, default: || true };

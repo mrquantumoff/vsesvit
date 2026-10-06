@@ -71,6 +71,7 @@ pub mod prefs;
 pub mod search;
 pub mod session;
 pub mod shortcuts;
+pub mod spellcheck;
 pub mod suggest;
 pub mod sync;
 pub mod tab_place;
