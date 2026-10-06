@@ -277,7 +277,7 @@ Microsoft.Web.WebView2.Core.ICoreWebView2Environment::CreateWebResourceResponse
 // ---- page context menu ----
 Microsoft.Web.WebView2.Core.ICoreWebView2_11::ContextMenuRequested
 Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuRequestedEventArgs::{get_MenuItems, get_ContextMenuTarget, put_SelectedCommandId, put_Handled}
-Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuTarget::{get_Kind, get_HasLinkUri, get_IsEditable, get_HasSelection, get_SelectionText}
+Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuTarget::{get_Kind, get_HasLinkUri, get_LinkUri, get_IsEditable, get_HasSelection, get_SelectionText}
 Microsoft.Web.WebView2.Core.CoreWebView2ContextMenuTargetKind
 Microsoft.Web.WebView2.Core.ICoreWebView2ContextMenuItem::{get_Name, get_Label, get_CommandId, CustomItemSelected}
 Microsoft.Web.WebView2.Core.ICoreWebView2Environment9::CreateContextMenuItem

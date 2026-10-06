@@ -38,6 +38,9 @@ const CAPTURE_POLL: Duration = Duration::from_millis(500);
 /// The name WebView2 would give a View page source item of its own (lower camel case English).
 pub(crate) const VIEW_SOURCE_ITEM: &str = "viewPageSource";
 
+/// The label of a link's context menu item that copies the link without its tracking parameters.
+pub(crate) const CLEAN_LINK_ITEM: &str = "Copy link without tracking";
+
 /// What a new tab loads first.
 pub(crate) enum Initial {
     Url(String),
@@ -1189,7 +1192,11 @@ impl Tab {
             .ContextMenuRequested(on(
                 self,
                 |tab, args: &CoreWebView2ContextMenuRequestedEventArgs| {
-                    for added in [tab.add_selection_item(args), tab.add_view_source_item(args)] {
+                    for added in [
+                        tab.add_selection_item(args),
+                        tab.add_link_item(args),
+                        tab.add_view_source_item(args),
+                    ] {
                         if let Err(e) = added {
                             log::warn!("tab {}: context menu: {e}", tab.id);
                         }
@@ -1413,6 +1420,29 @@ impl Tab {
         }
     }
 
+    /// Copy link without tracking on a link's menu, right after WebView2's Copy link, as on
+    /// Linux.
+    fn add_link_item(&self, args: &CoreWebView2ContextMenuRequestedEventArgs) -> Result<()> {
+        let target = args.ContextMenuTarget()?;
+        if !target.HasLinkUri()? {
+            return Ok(());
+        }
+        let Some(browser) = self.browser() else {
+            return Ok(());
+        };
+        let clean = vsesvit_core::clean_url::clean(&target.LinkUri()?);
+        let item = menu_item(&browser, CLEAN_LINK_ITEM, move || {
+            if let Err(e) = platform::copy_text(&clean) {
+                log::warn!("copy link: {e}");
+            }
+        })?;
+        let items = args.MenuItems()?;
+        match item_named(&items, "copyLinkLocation")? {
+            Some(index) => items.InsertAt(index + 1, &item),
+            None => items.Append(&item),
+        }
+    }
+
     /// A context menu item that opens `url` in a new tab next to this one.
     fn new_tab_item(
         self: &Rc<Self>,
@@ -1420,29 +1450,14 @@ impl Tab {
         label: &str,
         url: String,
     ) -> Result<CoreWebView2ContextMenuItem> {
-        let item = browser
-            .engine()
-            .environment()
-            .cast::<ICoreWebView2Environment9>()?
-            .CreateContextMenuItem(
-                label,
-                None::<&IRandomAccessStream>,
-                CoreWebView2ContextMenuItemKind::Command,
-            )?;
         let tab = Rc::downgrade(self);
-        item.CustomItemSelected(move |_, _| {
-            let (tab, url) = (tab.clone(), url.clone());
-            // After the menu has closed, not from inside its event.
-            exec::spawn(async move {
-                if let Some(tab) = tab.upgrade()
-                    && let Some(window) = tab.window()
-                {
-                    window.open_tab_from(tab.id, Initial::Url(url), false);
-                }
-            });
-        })?
-        .forget();
-        Ok(item)
+        menu_item(browser, label, move || {
+            if let Some(tab) = tab.upgrade()
+                && let Some(window) = tab.window()
+            {
+                window.open_tab_from(tab.id, Initial::Url(url.clone()), false);
+            }
+        })
     }
 
     pub fn permissions(&self) -> &TabPermissions {
@@ -1586,6 +1601,31 @@ fn shown_url(source: String, view_source: Option<&str>) -> String {
         Some(shown) if view_source::viewed_url(shown) == Some(source.as_str()) => shown.to_owned(),
         _ => source,
     }
+}
+
+/// A context menu item of the browser's own that runs `chosen` when it is picked.
+fn menu_item(
+    browser: &Browser,
+    label: &str,
+    chosen: impl Fn() + 'static,
+) -> Result<CoreWebView2ContextMenuItem> {
+    let item = browser
+        .engine()
+        .environment()
+        .cast::<ICoreWebView2Environment9>()?
+        .CreateContextMenuItem(
+            label,
+            None::<&IRandomAccessStream>,
+            CoreWebView2ContextMenuItemKind::Command,
+        )?;
+    let chosen = Rc::new(chosen);
+    item.CustomItemSelected(move |_, _| {
+        let chosen = chosen.clone();
+        // After the menu has closed, not from inside its event.
+        exec::spawn(async move { chosen() });
+    })?
+    .forget();
+    Ok(item)
 }
 
 /// Where the context menu item called `name` is.

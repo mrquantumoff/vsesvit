@@ -1,11 +1,13 @@
 //! A tab that plays sound shows a speaker, and its context menu pins it, splits the view with
-//! it and copies its link; Ctrl+Shift+C and Ctrl+Alt+Shift+C copy the clean and the whole link.
+//! it and copies its link; Ctrl+Shift+C and Ctrl+Alt+Shift+C copy the clean and the whole link,
+//! and a link's own context menu copies it without its tracking parameters.
 //! The sidebar player follows the tab, drives its page, and once its site allows
 //! picture-in-picture (`pip_steps`) shows its video in the pane while another tab is selected,
 //! until the tabs grow into that space.
 //! The media page (the fixture site's `/media.html`) plays a generated video with a tone, muted
 //! before it starts, so the run makes no sound.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
@@ -22,7 +24,7 @@ use super::{
 use crate::bindings::*;
 use crate::media::MediaAction;
 use crate::shortcuts::Command;
-use crate::tab::Tab;
+use crate::tab::{CLEAN_LINK_ITEM, Tab};
 use crate::tab_header::Audio;
 use crate::window::{BrowserWindow, TabAction};
 use crate::{exec, xaml};
@@ -377,10 +379,75 @@ pub(super) async fn run(
         "copied": [&button, &shortcut, &whole],
         "ok": button == clean && shortcut == clean && whole == raw && raw != clean,
     }));
+    clean_link_step(&first, tracked.as_str(), &clean, steps).await?;
 
     player_steps(window, &first, &media, out_dir, steps).await?;
     window.close_tab(media.id);
     select(window, &first);
+    Ok(())
+}
+
+/// Copy link without tracking, chosen on the page menu of a link to `tracked`, copies `clean`.
+async fn clean_link_step(
+    tab: &Rc<Tab>,
+    tracked: &str,
+    clean: &str,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let add = format!(
+        "(() => {{ const a = document.createElement('a'); a.id = 'vsesvit-link'; a.href = {tracked:?}; \
+         a.textContent = 'link'; a.style.cssText = 'display:block;font-size:48px'; \
+         document.body.prepend(a); const r = a.getBoundingClientRect(); \
+         return [r.x + r.width / 2, r.y + r.height / 2]; }})()"
+    );
+    let point = eval(tab, &add).await?;
+    let [x, y] = serde_json::from_str::<[f64; 2]>(&point).map_err(|e| e.to_string())?;
+    // Runs after the tab's own handler, which added the item; choosing it here is what a click
+    // on it does.
+    let menu = Rc::new(RefCell::new(None::<Vec<String>>));
+    let seen = menu.clone();
+    let _watch = tab
+        .core()
+        .ok_or("no engine view")?
+        .cast::<ICoreWebView2_11>()
+        .and_then(|core| {
+            core.ContextMenuRequested(move |_, args| {
+                let Some(args) = args.as_ref() else { return };
+                let items: Vec<_> = args
+                    .MenuItems()
+                    .map(|i| i.into_iter().collect())
+                    .unwrap_or_default();
+                let ours = items
+                    .iter()
+                    .find(|i| i.Label().is_ok_and(|l| l == CLEAN_LINK_ITEM));
+                if let Some(id) = ours.and_then(|i| i.CommandId().ok()) {
+                    let _ = args.SetSelectedCommandId(id);
+                }
+                let _ = args.SetHandled(true);
+                let names = items.iter().map(|i| i.Name().unwrap_or_default()).collect();
+                *seen.borrow_mut() = Some(names);
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    for kind in ["mousePressed", "mouseReleased"] {
+        let params = json!({
+            "type": kind, "x": x, "y": y, "button": "right", "buttons": 2, "clickCount": 1,
+        });
+        devtools(tab, "Input.dispatchMouseEvent", &params).await?;
+    }
+    let names = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        menu.borrow_mut().take()
+    })
+    .await;
+    exec::sleep(Duration::from_millis(300)).await;
+    let copied = clipboard_text().await;
+    eval(tab, "document.getElementById('vsesvit-link').remove(), 0").await?;
+    steps.push(json!({
+        "name": "36d-copy-link-without-tracking-in-the-link-menu",
+        "menu": names,
+        "copied": copied,
+        "ok": names.is_some() && copied == clean,
+    }));
     Ok(())
 }
 

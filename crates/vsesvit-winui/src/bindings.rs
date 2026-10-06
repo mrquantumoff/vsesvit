@@ -6940,6 +6940,19 @@ impl ICoreWebView2ContextMenuTarget {
             .map(|| result__)
         }
     }
+    pub fn LinkUri(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).LinkUri)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
     pub fn HasSelection(&self) -> windows_core::Result<bool> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -6978,7 +6991,10 @@ pub struct ICoreWebView2ContextMenuTarget_Vtbl {
     FrameUri: usize,
     pub HasLinkUri:
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
-    LinkUri: usize,
+    pub LinkUri: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     HasLinkText: usize,
     LinkText: usize,
     HasSourceUri: usize,
