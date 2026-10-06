@@ -707,7 +707,7 @@ mod tests {
             let markup = passphrase_markup(&passphrase_dialog(encryption).unwrap());
             (markup.matches("<PasswordBox").count(), markup)
         };
-        let (count, set) = fields(Encryption::Set);
+        let (count, set) = fields(Encryption::Off);
         assert_eq!(count, 2);
         assert!(set.contains(r#"Header="Confirm passphrase""#), "{set}");
         assert!(set.contains("You'll enter it on each device"), "{set}");

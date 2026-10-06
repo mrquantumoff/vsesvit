@@ -1,7 +1,7 @@
 //! The account a profile is signed in with, and the round: gather local changes (UI thread),
-//! seal and upload them and download and open one page (worker), apply the page (UI thread). The
-//! sync passphrase's steps are [`PassphraseJob`]. How records are encrypted, and why, is
-//! docs/design/sync-encryption.md.
+//! upload them, sealed when the account has a passphrase, and download and open one page (worker),
+//! apply the page (UI thread). The sync passphrase's steps are [`PassphraseJob`]. How records are
+//! encrypted, and why, is docs/design/sync-encryption.md.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use vsesvit_core::crdt::Seq;
 use vsesvit_core::permissions::Permission;
 use vsesvit_core::sync::{ApplyReport, DataType, Kind, SyncStore, WireRecord};
-use vsesvit_sync_proto::{Limits, Page, Record, Upload};
+use vsesvit_sync_proto::{Limits, MAX_ID_BYTES, Page, Record, Upload};
 
 use crate::auth;
 use crate::crypto::{KEYS_ID, KEYS_KIND, KeyRecord, Keyring, Opened, Passphrase, SEALED_KIND, Unopened, Unwrapped};
@@ -51,8 +51,8 @@ pub struct Account {
     /// other key record there means another device set one first, and this one takes that.
     #[serde(default)]
     pending: bool,
-    /// While `pending`, this device seals a copy of each plaintext record an older Vsesvit left,
-    /// until its download reaches the end; then it sends its key record.
+    /// While `pending`, this device seals a copy of each plaintext record the account holds, until
+    /// its download reaches the end; then it sends its key record.
     #[serde(default)]
     converting: bool,
     /// Send `own_keys` with the next round, as after the server lost it.
@@ -63,11 +63,6 @@ pub struct Account {
     /// uploading first would put the older copies over theirs.
     #[serde(default)]
     joining: bool,
-    /// This profile synced the account before Vsesvit encrypted it, so it took the server's
-    /// plaintext records then and may seal them now. A new sign-in never does: a server could show
-    /// it plaintext of its own making in place of an encrypted account.
-    #[serde(default = "synced_before_encryption")]
-    plaintext_trusted: bool,
     limits: Limits,
     download_cursor: u64,
     /// Per `Kind::code`, the `Seq` to pass to `changes_since` next.
@@ -118,24 +113,21 @@ enum Verdict {
     Stale,
 }
 
-/// Where end-to-end encryption stands on this device. Only [`Encryption::Ready`] syncs; the others
-/// download nothing but the account's key record, and upload nothing.
+/// Where end-to-end encryption stands on this device. [`Encryption::Off`] syncs unencrypted and
+/// [`Encryption::Ready`] encrypted; the others download nothing but the account's key record, and
+/// upload nothing.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Encryption {
     /// Looking through the account for its key record.
     Checking,
-    /// The account has no sync passphrase yet.
-    Set,
+    /// The account has no sync passphrase, so it syncs unencrypted, as before Vsesvit encrypted
+    /// sync. Setting one encrypts it.
+    Off,
     /// The account's passphrase has not been entered on this device.
     Enter,
     /// Another device changed the passphrase; the new one has not been entered here.
     Changed,
     Ready,
-}
-
-/// An account saved without `plaintext_trusted` was saved before Vsesvit encrypted sync.
-fn synced_before_encryption() -> bool {
-    true
 }
 
 fn every_type() -> BTreeSet<DataType> {
@@ -184,7 +176,6 @@ impl Account {
             converting: false,
             upload_keys: false,
             joining: false,
-            plaintext_trusted: false,
             limits,
             download_cursor: 0,
             upload_cursors: BTreeMap::new(),
@@ -214,7 +205,7 @@ impl Account {
     pub fn encryption(&self) -> Encryption {
         match (&self.keyring, &self.server_keys) {
             (None, ServerKeys::Unknown) => Encryption::Checking,
-            (None, ServerKeys::Missing) => Encryption::Set,
+            (None, ServerKeys::Missing) => Encryption::Off,
             (None, ServerKeys::Found(_)) => Encryption::Enter,
             (Some(keyring), ServerKeys::Found(keys)) if !self.pending && replaces(keys, keyring) => Encryption::Changed,
             (Some(_), _) => Encryption::Ready,
@@ -363,7 +354,7 @@ impl PassphraseJob {
     /// `None` while the device is still looking for the account's key record.
     pub fn new(account: Account, passphrase: Passphrase) -> Option<PassphraseJob> {
         let step = match (account.encryption(), &account.server_keys, &account.keyring) {
-            (Encryption::Set, _, _) => Step::Set,
+            (Encryption::Off, _, _) => Step::Set,
             (Encryption::Enter | Encryption::Changed, ServerKeys::Found(keys), _) => Step::Enter(keys.clone()),
             (Encryption::Ready, _, Some(keyring)) => Step::Change(keyring.clone()),
             _ => return None,
@@ -417,12 +408,11 @@ impl NewKeys {
         let (keyring, keys) = result?;
         current.adopt(keyring, keys);
         match account.encryption() {
-            // The key record goes up once the plaintext an older Vsesvit left is sealed, so that
-            // what is sealed is only what the server held before the account was encrypted.
-            Encryption::Set => {
+            // The key record goes up once the account's plaintext is sealed, so that what is
+            // sealed is only what the server held before the account was encrypted.
+            Encryption::Off => {
                 current.pending = true;
-                current.converting = current.plaintext_trusted;
-                current.upload_keys = !current.converting;
+                current.converting = true;
             }
             Encryption::Ready => current.upload_keys = !current.converting,
             Encryption::Enter | Encryption::Changed | Encryption::Checking => {
@@ -451,8 +441,9 @@ pub struct Round {
 
 impl Round {
     /// Collects up to one batch of local changes of the `types` this device syncs, oldest first per
-    /// kind; none until the device has the account's keys. A record that sealed would be larger
-    /// than the server takes is left out and logged; nothing else could send it. The kinds of
+    /// kind; none while the device waits for the account's passphrase. A record larger than the
+    /// server takes (sealed, when the account has a passphrase), or with an id it refuses, is left
+    /// out and logged; nothing else could send it. The kinds of
     /// other types keep their cursors, so turning a type on uploads what changed while it was off.
     pub fn gather(store: &mut SyncStore<'_>, mut account: Account, types: &[DataType]) -> Result<Round, Error> {
         let types: BTreeSet<DataType> = types.iter().copied().collect();
@@ -474,7 +465,8 @@ impl Round {
             (Some(own), Some(_)) if account.upload_keys && !account.converting => Some(own.to_record()),
             _ => None,
         };
-        if account.ready_keyring().is_none() || account.joining {
+        let plain = account.encryption() == Encryption::Off;
+        if !plain && (account.ready_keyring().is_none() || account.joining) {
             return Ok(Round { account, records, keys, upto, more_up, types });
         }
         let budget = account.limits.max_batch as usize;
@@ -488,8 +480,13 @@ impl Round {
             upto.insert(kind.code(), batch.upto.0);
             more_up |= batch.more;
             for wire in batch.records {
+                let max = account.limits.max_record_bytes as usize;
+                if plain && (wire.id.is_empty() || wire.id.len() > MAX_ID_BYTES || wire.body.len() > max) {
+                    log::warn!("not syncing {kind:?}: its {}-byte id or {}-byte body is over the server's limits", wire.id.len(), wire.body.len());
+                    continue;
+                }
                 let sealed = Keyring::sealed_len(wire.id.len(), wire.body.len());
-                if sealed > account.limits.max_record_bytes as usize {
+                if !plain && sealed > max {
                     log::warn!("not syncing {kind:?}: sealed, it is {sealed} bytes, over the server's limit");
                     continue;
                 }
@@ -509,14 +506,39 @@ impl Round {
     /// receiving the others' changes. One refused as too large first asks the server for its
     /// limits again, since they may have changed after sign-in. Nothing it does needs finishing,
     /// so the shell may stop waiting for it at any moment, as when the browser quits.
+    ///
+    /// An account without a passphrase downloads first, and uploads only once its download has
+    /// reached the end with no key record: a device that set a passphrase meanwhile has its key
+    /// record show first, and then nothing goes up unencrypted.
     pub fn run(self, http: &Http) -> Exchanged {
-        let Round { mut account, records, keys, upto, mut more_up, types } = self;
+        let Round { mut account, records, keys, mut upto, more_up, types } = self;
         let sends_keys = keys.is_some();
-        let sealed: Vec<Record> = match account.ready_keyring() {
+        let mut downloaded = None;
+        let outgoing: Vec<Record> = match account.ready_keyring() {
             Some(keyring) => keys.into_iter().chain(records.iter().map(|r| keyring.seal(r.kind.code(), &r.id, &r.body))).collect(),
+            None if account.encryption() == Encryption::Off => {
+                let page = match server::download(http, &account.server, &account.session, account.download_cursor, account.limits)
+                    .and_then(|page| open_page(http, &account, page))
+                {
+                    Ok(page) => page,
+                    Err(e) => return Exchanged { account, upto, more_up, types, refused: None, sent_keys: false, result: Err(e) },
+                };
+                let clear = page.keys.is_none() && !page.more;
+                downloaded = Some(page);
+                if clear {
+                    records.into_iter().map(|r| Record { kind: r.kind.code(), id: r.id, body: r.body }).collect()
+                } else {
+                    upto.clear();
+                    Vec::new()
+                }
+            }
             None => Vec::new(),
         };
-        let refused = match upload(http, &account, sealed) {
+        // Downloaded first, the page lacks what goes up now, so another round brings it, as one
+        // that uploads first does, and the cursor moves past it: else a server that went back to
+        // an older copy of the account could go unseen.
+        let mut more_up = more_up || (downloaded.is_some() && !outgoing.is_empty());
+        let refused = match upload(http, &account, outgoing) {
             Ok(()) => None,
             // 409: the server went back to an older copy of the account, and `finish` starts over.
             Err(e @ Error::Server { status, .. }) if status != 409 => Some(e),
@@ -528,8 +550,11 @@ impl Round {
             // have changed.
             more_up = matches!(e, Error::Server { status: 413, .. }) && relearn_limits(http, &mut account);
         }
-        let result = server::download(http, &account.server, &account.session, account.download_cursor, account.limits)
-            .and_then(|page| open_page(http, &account, page));
+        let result = match downloaded {
+            Some(page) => Ok(page),
+            None => server::download(http, &account.server, &account.session, account.download_cursor, account.limits)
+                .and_then(|page| open_page(http, &account, page)),
+        };
         Exchanged { account, upto, more_up, types, sent_keys: sends_keys && refused.is_none(), refused, result }
     }
 }
@@ -592,10 +617,11 @@ struct Downloaded {
 }
 
 /// Worker thread: notes the page's key record and opens the records sealed with the account's
-/// key. While converting it also seals a copy of each plaintext record an older Vsesvit left, and
-/// until the copies are stored the round fails, so the page comes again and none is passed. A
-/// device without the account's keys opens nothing, nor does one the page's key record takes them
-/// from: nothing in the page counts until the passphrase is entered.
+/// key, or takes the plaintext ones while the account has no passphrase. While converting it also
+/// seals a copy of each plaintext record, and until the copies are stored the round fails, so the
+/// page comes again and none is passed. A device waiting for the account's passphrase opens
+/// nothing, nor does one the page's key record takes the keys from: nothing in the page counts
+/// until the passphrase is entered.
 fn open_page(http: &Http, account: &Account, page: Page) -> Result<Downloaded, Error> {
     let Page { records, cursor, more, epoch } = page;
     let mut downloaded = Downloaded { records: Vec::new(), keys: None, cursor, more, epoch };
@@ -611,6 +637,10 @@ fn open_page(http: &Http, account: &Account, page: Page) -> Result<Downloaded, E
             _ if record.body.is_empty() => {}
             _ => plain.push(record),
         }
+    }
+    if account.encryption() == Encryption::Off {
+        downloaded.records = plain.into_iter().map(|r| Opened { kind: r.kind, id: r.id, body: r.body }).collect();
+        return Ok(downloaded);
     }
     let Some(keyring) = account.ready_keyring() else {
         return Ok(downloaded);
@@ -628,7 +658,7 @@ fn open_page(http: &Http, account: &Account, page: Page) -> Result<Downloaded, E
     }
     if !account.converting {
         if !plain.is_empty() {
-            log::info!("skipping {} unencrypted sync records an older Vsesvit, or the server, wrote", plain.len());
+            log::info!("skipping {} unencrypted sync records a device without the passphrase, or the server, wrote", plain.len());
         }
         return Ok(downloaded);
     }
@@ -721,15 +751,21 @@ impl Exchanged {
             account.upload_keys = account.ready_keyring().is_some() && !account.converting;
             Ok(Synced { report: ApplyReport::default(), again: true, refused: None })
         } else {
-            result.and_then(|page| match account.ready_keyring() {
-                None => Ok(look(&mut account, page)),
-                Some(_) => {
+            result.and_then(|page| match account.encryption() {
+                Encryption::Ready => {
                     if refused.is_none() {
                         account.upload_cursors.extend(upto);
                         account.upload_keys &= !sent_keys;
                     }
                     sync(store, &mut account, page, &types, more_up, refused)
                 }
+                Encryption::Off => {
+                    if refused.is_none() {
+                        account.upload_cursors.extend(upto);
+                    }
+                    unencrypted(store, &mut account, page, &types, more_up, refused)
+                }
+                Encryption::Checking | Encryption::Enter | Encryption::Changed => Ok(look(&mut account, page)),
             })
         };
         if let Err(e) = account.save(store) {
@@ -753,10 +789,6 @@ fn look(account: &mut Account, page: Downloaded) -> Synced {
         (Some(keys), _, Some(keyring)) => Some(keys).filter(|keys| replaces(keys, keyring)),
         (Some(keys), ServerKeys::Found(seen), None) => Some(keys).filter(|keys| keys.generation() >= seen.generation()),
         (Some(keys), _, None) => Some(keys),
-        (None, ServerKeys::Unknown, _) if !page.more => {
-            account.server_keys = ServerKeys::Missing;
-            None
-        }
         (None, _, _) => None,
     };
     if let Some(keys) = newest {
@@ -764,7 +796,37 @@ fn look(account: &mut Account, page: Downloaded) -> Synced {
     }
     account.download_cursor = page.cursor;
     account.epoch = Some(page.epoch);
+    if account.server_keys == ServerKeys::Unknown && !page.more {
+        // No key record anywhere: the account syncs unencrypted, from the start, since the look
+        // applied nothing.
+        account.server_keys = ServerKeys::Missing;
+        account.download_cursor = 0;
+        account.epoch = None;
+        return Synced { report: ApplyReport::default(), again: true, refused: None };
+    }
     Synced { report: ApplyReport::default(), again: page.more, refused: None }
+}
+
+/// A page while the account has no passphrase. A key record in it means another device set one:
+/// nothing of the page counts, and nothing more goes up, until the passphrase is entered here.
+fn unencrypted(
+    store: &mut SyncStore<'_>,
+    account: &mut Account,
+    page: Downloaded,
+    types: &BTreeSet<DataType>,
+    more_up: bool,
+    refused: Option<Error>,
+) -> Result<Synced, Error> {
+    if let Some(keys) = page.keys {
+        log::warn!("the sync account was encrypted on another device; syncing stops until its passphrase is entered here");
+        account.server_keys = ServerKeys::Found(keys);
+        return Ok(Synced { report: ApplyReport::default(), again: false, refused });
+    }
+    account.epoch = Some(page.epoch);
+    let more_down = page.more;
+    let report = apply(store, account, page, types)?;
+    let again = more_up || more_down || report.merged > 0;
+    Ok(Synced { report, again, refused })
 }
 
 /// A page while the device syncs. One whose key record takes this device's keys from it stops the
@@ -1048,18 +1110,39 @@ mod tests {
     }
 
     #[test]
-    fn a_device_looks_for_the_key_record_then_asks_to_set_or_enter_the_passphrase() {
+    fn a_device_looks_for_the_key_record_then_syncs_unencrypted_or_asks_for_the_passphrase() {
         let mut account = new_account();
         assert_eq!(account.encryption(), Encryption::Checking);
         assert!(PassphraseJob::new(account.clone(), pass("correct horse")).is_none(), "nothing to set or enter yet");
         look(&mut account, page(None, true));
         assert_eq!(account.encryption(), Encryption::Checking, "the look goes on");
-        look(&mut account, page(None, false));
-        assert_eq!(account.encryption(), Encryption::Set);
-        let keys = Keyring::new().wrap(&pass("correct horse"));
-        look(&mut account, page(Some(&keys), false));
-        assert_eq!(account.encryption(), Encryption::Enter);
         assert_eq!(account.download_cursor, 7);
+        assert!(look(&mut account, page(None, false)).again, "the unencrypted sync starts at once");
+        assert_eq!(account.encryption(), Encryption::Off);
+        assert_eq!(account.download_cursor, 0, "from the start, since the look applied nothing");
+
+        let mut account = new_account();
+        let keys = Keyring::new().wrap(&pass("correct horse"));
+        look(&mut account, page(Some(&keys), true));
+        assert_eq!(account.encryption(), Encryption::Enter);
+        look(&mut account, page(None, false));
+        assert_eq!(account.encryption(), Encryption::Enter, "found once, it stays found");
+        assert_eq!(account.download_cursor, 7);
+    }
+
+    #[test]
+    fn an_unencrypted_account_stops_at_a_key_record_and_applies_nothing_of_its_page() {
+        let mut scratch = Scratch::new("unencrypted-stops");
+        let mut account = looked(new_account());
+        let keys = Keyring::new().wrap(&pass("correct horse"));
+        let mut with_keys = page(Some(&keys), false);
+        with_keys.records.push(Opened { kind: Kind::Prefs.code(), id: "x".to_owned(), body: b"{}".to_vec() });
+        let stopped = unencrypted(&mut scratch.store(), &mut account, with_keys, &every_type(), true, None).unwrap();
+        assert!(!stopped.again && stopped.report.merged == 0 && stopped.report.rejected.is_empty());
+        assert_eq!(account.encryption(), Encryption::Enter);
+        assert_eq!(account.download_cursor, 0, "the page is not passed");
+        let round = Round::gather(&mut scratch.store(), account, &DataType::ALL).unwrap();
+        assert!(round.is_empty(), "nothing goes up");
     }
 
     #[test]
@@ -1073,30 +1156,15 @@ mod tests {
     }
 
     #[test]
-    fn only_an_account_saved_before_encryption_trusts_its_plaintext() {
-        assert!(!new_account().plaintext_trusted, "a new sign-in");
-        let mut json = serde_json::to_value(new_account()).unwrap();
-        json.as_object_mut().unwrap().remove("plaintext_trusted");
-        assert!(serde_json::from_value::<Account>(json).unwrap().plaintext_trusted);
-    }
-
-    #[test]
     fn setting_a_passphrase_starts_over_and_sends_the_key_record_once_it_has_sealed_the_plaintext() {
         let mut scratch = Scratch::new("set");
         let mut account = looked(new_account());
         account.upload_cursors.insert(1, 40);
-        let set = scratch.passphrase(&account, "correct horse").unwrap();
+        let mut set = scratch.passphrase(&account, "correct horse").unwrap();
         assert_eq!(set.encryption(), Encryption::Ready);
-        assert!(set.pending && set.upload_keys && !set.converting, "a new sign-in seals no plaintext, and sends its key record at once");
+        assert!(set.pending && set.converting && !set.upload_keys, "it seals the account's plaintext first");
         assert_eq!((set.download_cursor, set.upload_cursors.len()), (0, 0), "everything goes up and comes down again");
         assert_eq!(Account::load(&mut scratch.store()).unwrap(), Some(set.clone()), "the keyring is stored");
-
-        let mut json = serde_json::to_value(looked(new_account())).unwrap();
-        json.as_object_mut().unwrap().remove("plaintext_trusted");
-        let mut saved_before: Account = serde_json::from_value(json).unwrap();
-        saved_before.session = "session".to_owned();
-        let mut set = scratch.passphrase(&saved_before, "correct horse").unwrap();
-        assert!(set.pending && set.converting && !set.upload_keys, "an account synced before encryption seals its plaintext first");
         assert!(scratch.sync(&mut set, page(None, true)).again);
         assert!(set.converting && !set.upload_keys);
         assert!(scratch.sync(&mut set, page(None, false)).again, "the key record goes up next");

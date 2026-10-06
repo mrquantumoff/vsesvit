@@ -1154,7 +1154,7 @@ mod tests {
             needs_sign_in,
             encryption,
         };
-        let encryptions = [Encryption::Checking, Encryption::Set, Encryption::Enter, Encryption::Changed, Encryption::Ready];
+        let encryptions = [Encryption::Checking, Encryption::Off, Encryption::Enter, Encryption::Changed, Encryption::Ready];
         let signed_in_states = encryptions.into_iter().flat_map(|e| [signed_in(false, e), signed_in(true, e)]);
         for state in [State::SignedOut { error: None }, State::SigningIn].into_iter().chain(signed_in_states) {
             let actions = state.status(0).actions;

@@ -280,19 +280,18 @@ fn try_sign_in(http: &Http, server: &str) -> Result<Account, Error> {
     worker.join().unwrap()
 }
 
-/// Signs in, looks for the account's key record, sets the passphrase or enters it as Settings
-/// asks, and syncs with it.
+/// Signs in and syncs: unencrypted while the account has no passphrase, else nothing until it is
+/// entered.
 fn sign_in(profile: &mut Profile, http: &Http, server: &str) -> Account {
-    sign_in_only(profile, http, server);
-    unlock(profile, PASSPHRASE).unwrap();
+    let account = try_sign_in(http, server).unwrap();
+    account.save_signed_in(&mut profile.sync()).unwrap();
     sync(profile, http);
     Account::load(&mut profile.sync()).unwrap().unwrap()
 }
 
-/// Signs in, and syncs until the device knows what to ask for its passphrase.
-fn sign_in_only(profile: &mut Profile, http: &Http, server: &str) {
-    let account = try_sign_in(http, server).unwrap();
-    account.save_signed_in(&mut profile.sync()).unwrap();
+/// Sets the passphrase, or enters it, and syncs with it.
+fn encrypt(profile: &mut Profile, http: &Http) {
+    unlock(profile, PASSPHRASE).unwrap();
     sync(profile, http);
 }
 
@@ -339,7 +338,8 @@ fn session(profile: &mut Profile) -> String {
     String::from_utf8(profile.sync().secret_state("account.session").unwrap().unwrap()).unwrap()
 }
 
-/// What an older Vsesvit uploaded of `profile`'s bookmarks: plaintext under their real ids.
+/// What an unencrypted account holds of `profile`'s bookmarks: plaintext under their real ids, as
+/// any Vsesvit, of this version or an older one, uploads them there.
 fn plaintext_bookmarks(profile: &mut Profile) -> Vec<Record> {
     let batch = profile.sync().changes_since(Kind::Bookmarks, Seq(0), 1000).unwrap();
     batch.records.into_iter().map(|r| Record { kind: r.kind.code(), id: r.id, body: r.body }).collect()
@@ -700,7 +700,62 @@ fn holds(haystack: &[u8], needle: &str) -> bool {
 }
 
 #[test]
-fn the_server_holds_only_ciphertext_and_a_device_without_the_passphrase_syncs_nothing() {
+fn an_unencrypted_account_syncs_as_before_with_this_version_and_older_ones() {
+    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
+        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
+        return;
+    };
+    let provider = MockProvider::start();
+    let server = start_server(&bin, &provider.issuer);
+    let http = Http::new();
+    let dirs = [TempDir::new("plain-a"), TempDir::new("plain-b"), TempDir::new("plain-older")];
+    let [mut a, mut b, mut older] = dirs.each_ref().map(open);
+    let url = Url::parse("https://example.com/").unwrap();
+    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "From a", &url).unwrap();
+    older.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "From an older Vsesvit", &url).unwrap();
+
+    provider.sign_in_as("lena");
+    sign_in(&mut a, &http, &server.url);
+    assert_eq!(encryption(&mut a), Encryption::Off, "signing in does not wait for a passphrase");
+    let records = server_records(&mut a, &server.url);
+    assert!(records.iter().any(|r| r.kind == 1 && holds(&r.body, "From a")), "plaintext an older Vsesvit reads");
+    put_records(&mut a, &server.url, plaintext_bookmarks(&mut older));
+
+    sign_in(&mut b, &http, &server.url);
+    sync(&mut a, &http);
+    let sorted = |mut titles: Vec<String>| {
+        titles.sort();
+        titles
+    };
+    assert_eq!(sorted(toolbar_titles(&mut b)), ["From a", "From an older Vsesvit"]);
+    assert_eq!(sorted(toolbar_titles(&mut a)), ["From a", "From an older Vsesvit"]);
+
+    // The answer to the offer of a passphrase is this device's alone.
+    a.prefs().set(&keys::SYNC_PASSPHRASE_OFFERED, &true).unwrap();
+    a.prefs().set(&keys::THEME, &Theme::Dark).unwrap();
+    sync(&mut a, &http);
+    sync(&mut b, &http);
+    assert_eq!(b.prefs().get(&keys::THEME), Theme::Dark);
+    assert!(!b.prefs().get(&keys::SYNC_PASSPHRASE_OFFERED), "the answer is not synced");
+    assert!(a.prefs().get(&keys::SYNC_PASSPHRASE_OFFERED), "and it is remembered");
+
+    // An account an older Vsesvit saved: updating looks for a key record, then syncs on.
+    let mut saved: serde_json::Value = serde_json::from_slice(&b.sync().engine_state("account").unwrap().unwrap()).unwrap();
+    for field in ["server_keys", "own_keys", "pending", "converting", "upload_keys", "joining"] {
+        saved.as_object_mut().unwrap().remove(field);
+    }
+    saved["known_kinds"] = serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 12]);
+    b.sync().set_engine_state("account", saved.to_string().as_bytes()).unwrap();
+    assert_eq!(encryption(&mut b), Encryption::Checking);
+    b.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "After the update", &url).unwrap();
+    sync(&mut b, &http);
+    sync(&mut a, &http);
+    assert_eq!(encryption(&mut b), Encryption::Off);
+    assert_eq!(sorted(toolbar_titles(&mut a)), ["After the update", "From a", "From an older Vsesvit"]);
+}
+
+#[test]
+fn an_encrypted_account_seals_new_records_and_a_device_without_the_passphrase_syncs_nothing() {
     let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
         eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
         return;
@@ -710,44 +765,46 @@ fn the_server_holds_only_ciphertext_and_a_device_without_the_passphrase_syncs_no
     let http = Http::new();
     let (dir_a, dir_b) = (TempDir::new("sealed-a"), TempDir::new("sealed-b"));
     let (mut a, mut b) = (open(&dir_a), open(&dir_b));
-    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Secret title", &Url::parse("https://secret.example/path").unwrap()).unwrap();
-    a.history().record_visit(&Url::parse("https://secret.example/visited").unwrap(), Transition::Link).unwrap();
-    a.prefs().set(&keys::THEME, &Theme::Dark).unwrap();
+    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Before", &Url::parse("https://example.com/").unwrap()).unwrap();
 
     provider.sign_in_as("kim");
     sign_in(&mut a, &http, &server.url);
+    encrypt(&mut a, &http);
+    a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Secret title", &Url::parse("https://secret.example/path").unwrap()).unwrap();
+    a.history().record_visit(&Url::parse("https://secret.example/visited").unwrap(), Transition::Link).unwrap();
+    a.prefs().set(&keys::THEME, &Theme::Dark).unwrap();
+    sync(&mut a, &http);
     let records = server_records(&mut a, &server.url);
     assert_eq!(records.iter().filter(|r| r.kind == 200).count(), 1, "one key record");
-    assert!(records.iter().filter(|r| r.kind == 201).count() >= 3);
-    assert!(records.iter().all(|r| r.kind == 200 || r.kind == 201), "only sealed records");
     for record in &records {
         assert!(!holds(record.id.as_bytes(), "secret") && !holds(&record.body, "secret"), "{record:?}");
         assert!(!holds(&record.body, "dark"));
     }
+    assert!(records.iter().any(|r| r.kind == 1 && holds(&r.body, "Before")), "what went up unencrypted before stays");
 
-    sign_in_only(&mut b, &http, &server.url);
-    assert_eq!(encryption(&mut b), Encryption::Enter);
+    let mut b_account = sign_in(&mut b, &http, &server.url);
+    assert_eq!(b_account.encryption(), Encryption::Enter);
     b.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "From b", &Url::parse("https://example.com/b").unwrap()).unwrap();
     sync(&mut b, &http);
-    assert_eq!(toolbar_titles(&mut b), ["From b"], "nothing comes down without the passphrase");
+    assert_eq!(toolbar_titles(&mut b), ["From b"], "nothing comes down without the passphrase, not even the plaintext");
     assert_eq!(server_records(&mut b, &server.url), records, "and nothing goes up");
     assert!(matches!(unlock(&mut b, "correct horse battery stapler"), Err(Error::WrongPassphrase)));
-    assert_eq!(encryption(&mut b), Encryption::Enter, "a wrong passphrase changes nothing");
+    b_account = Account::load(&mut b.sync()).unwrap().unwrap();
+    assert_eq!(b_account.encryption(), Encryption::Enter, "a wrong passphrase changes nothing");
 
-    unlock(&mut b, PASSPHRASE).unwrap();
-    sync(&mut b, &http);
+    encrypt(&mut b, &http);
     sync(&mut a, &http);
     let sorted = |mut titles: Vec<String>| {
         titles.sort();
         titles
     };
-    assert_eq!(sorted(toolbar_titles(&mut b)), ["From b", "Secret title"]);
-    assert_eq!(sorted(toolbar_titles(&mut a)), ["From b", "Secret title"]);
+    assert_eq!(sorted(toolbar_titles(&mut b)), ["Before", "From b", "Secret title"]);
+    assert_eq!(sorted(toolbar_titles(&mut a)), ["Before", "From b", "Secret title"]);
     assert_eq!(b.prefs().get(&keys::THEME), Theme::Dark);
 }
 
 #[test]
-fn an_account_synced_before_encryption_is_sealed_when_its_passphrase_is_set() {
+fn setting_a_passphrase_seals_what_only_the_server_held_and_stops_unencrypted_devices() {
     let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
         eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
         return;
@@ -755,58 +812,33 @@ fn an_account_synced_before_encryption_is_sealed_when_its_passphrase_is_set() {
     let provider = MockProvider::start();
     let server = start_server(&bin, &provider.issuer);
     let http = Http::new();
-    let dirs = [TempDir::new("convert-a"), TempDir::new("convert-retired"), TempDir::new("convert-b")];
-    let [mut a, mut retired, mut b] = dirs.each_ref().map(open);
+    let dirs = [TempDir::new("convert-a"), TempDir::new("convert-retired"), TempDir::new("convert-b"), TempDir::new("convert-c")];
+    let [mut a, mut retired, mut b, mut c] = dirs.each_ref().map(open);
     let url = Url::parse("https://example.com/").unwrap();
     a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "On a", &url).unwrap();
     retired.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Only on the server", &url).unwrap();
 
     provider.sign_in_as("lee");
-    sign_in_only(&mut a, &http, &server.url);
-    // As an older Vsesvit left the account: plaintext from a and from a device that is gone, and
-    // a's account saved before it kept whether it trusts plaintext.
-    let plaintext: Vec<Record> = plaintext_bookmarks(&mut a).into_iter().chain(plaintext_bookmarks(&mut retired)).collect();
-    put_records(&mut a, &server.url, plaintext);
-    let mut saved: serde_json::Value = serde_json::from_slice(&a.sync().engine_state("account").unwrap().unwrap()).unwrap();
-    saved.as_object_mut().unwrap().remove("plaintext_trusted");
-    a.sync().set_engine_state("account", saved.to_string().as_bytes()).unwrap();
+    sign_in(&mut a, &http, &server.url);
+    put_records(&mut a, &server.url, plaintext_bookmarks(&mut retired));
+    sign_in(&mut b, &http, &server.url);
     sync(&mut a, &http);
-    assert_eq!(encryption(&mut a), Encryption::Set);
 
-    unlock(&mut a, PASSPHRASE).unwrap();
-    sync(&mut a, &http);
-    assert!(toolbar_titles(&mut a).contains(&"Only on the server".to_owned()), "{:?}", toolbar_titles(&mut a));
+    encrypt(&mut a, &http);
     assert_eq!(server_records(&mut a, &server.url).iter().filter(|r| r.kind == 200).count(), 1, "the key record went up after");
+    b.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "On b", &url).unwrap();
+    sync(&mut b, &http);
+    assert_eq!(encryption(&mut b), Encryption::Enter, "b stops at the key record");
+    assert!(!server_records(&mut b, &server.url).iter().any(|r| holds(&r.body, "On b")), "and uploads nothing unencrypted");
 
-    sign_in(&mut b, &http, &server.url);
-    let mut titles = toolbar_titles(&mut b);
+    sign_in(&mut c, &http, &server.url);
+    encrypt(&mut c, &http);
+    let mut titles = toolbar_titles(&mut c);
     titles.sort();
-    assert_eq!(titles, ["On a", "Only on the server"]);
-}
-
-#[test]
-fn a_new_sign_in_seals_none_of_the_plaintext_a_server_shows_it() {
-    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
-        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
-        return;
-    };
-    let provider = MockProvider::start();
-    let server = start_server(&bin, &provider.issuer);
-    let http = Http::new();
-    let dirs = [TempDir::new("no-convert-a"), TempDir::new("no-convert-made-up"), TempDir::new("no-convert-b")];
-    let [mut a, mut made_up, mut b] = dirs.each_ref().map(open);
-    made_up.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Made up", &Url::parse("https://evil.example/").unwrap()).unwrap();
-
-    provider.sign_in_as("mia");
-    sign_in_only(&mut a, &http, &server.url);
-    put_records(&mut a, &server.url, plaintext_bookmarks(&mut made_up));
-    sync(&mut a, &http);
-    assert_eq!(encryption(&mut a), Encryption::Set);
-    unlock(&mut a, PASSPHRASE).unwrap();
-    sync(&mut a, &http);
-    assert!(toolbar_titles(&mut a).is_empty());
-    sign_in(&mut b, &http, &server.url);
-    assert!(toolbar_titles(&mut b).is_empty());
+    assert_eq!(titles, ["On a", "Only on the server"], "from the sealed copies");
+    encrypt(&mut b, &http);
+    sync(&mut c, &http);
+    assert!(toolbar_titles(&mut c).contains(&"On b".to_owned()));
 }
 
 #[test]
@@ -825,7 +857,9 @@ fn a_changed_passphrase_stops_the_other_devices_until_it_is_entered_there() {
 
     provider.sign_in_as("noor");
     sign_in(&mut a, &http, &server.url);
+    encrypt(&mut a, &http);
     sign_in(&mut b, &http, &server.url);
+    encrypt(&mut b, &http);
     assert_eq!(toolbar_titles(&mut b), ["First"]);
 
     unlock(&mut a, "a new passphrase").unwrap();
@@ -846,7 +880,7 @@ fn a_changed_passphrase_stops_the_other_devices_until_it_is_entered_there() {
     sync(&mut a, &http);
     assert_eq!(toolbar_titles(&mut a), ["Renamed", "From b"]);
 
-    sign_in_only(&mut c, &http, &server.url);
+    sign_in(&mut c, &http, &server.url);
     unlock(&mut c, "a new passphrase").unwrap();
     sync(&mut c, &http);
     assert_eq!(toolbar_titles(&mut c), ["Renamed", "From b"]);
@@ -870,7 +904,9 @@ fn what_a_malicious_server_replays_moves_or_makes_up_is_refused() {
 
     provider.sign_in_as("omar");
     sign_in(&mut a, &http, &server.url);
+    encrypt(&mut a, &http);
     sign_in(&mut b, &http, &server.url);
+    encrypt(&mut b, &http);
     let before: HashMap<String, Vec<u8>> = server_records(&mut a, &server.url).into_iter().map(|r| (r.id, r.body)).collect();
     a.bookmarks().rename(x, "X2").unwrap();
     sync(&mut a, &http);
@@ -886,6 +922,7 @@ fn what_a_malicious_server_replays_moves_or_makes_up_is_refused() {
     assert_eq!(toolbar_titles(&mut b), ["X2", "Y"]);
     sync(&mut b, &http);
     sign_in(&mut c, &http, &server.url);
+    encrypt(&mut c, &http);
     assert_eq!(toolbar_titles(&mut c), ["X2", "Y"], "the replay was repaired");
 
     // Another slot's ciphertext moved into X's: it does not open there.
@@ -894,7 +931,7 @@ fn what_a_malicious_server_replays_moves_or_makes_up_is_refused() {
     sync(&mut b, &http);
     assert_eq!(toolbar_titles(&mut b), ["X2", "Y"]);
 
-    // Plaintext the server made up is never applied.
+    // Plaintext the server made up is never applied in an encrypted account.
     put_records(&mut a, &server.url, plaintext_bookmarks(&mut made_up));
     sync(&mut b, &http);
     assert_eq!(toolbar_titles(&mut b), ["X2", "Y"]);
@@ -924,15 +961,15 @@ fn a_server_restored_from_before_the_passphrase_gets_the_key_record_back() {
     a.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Kept", &Url::parse("https://example.com/").unwrap()).unwrap();
 
     provider.sign_in_as("pat");
-    sign_in_only(&mut a, &http, &server.url);
+    sign_in(&mut a, &http, &server.url);
     let backup = server.back_up();
-    unlock(&mut a, PASSPHRASE).unwrap();
-    sync(&mut a, &http);
+    encrypt(&mut a, &http);
     server.restore(&backup, &[("EPOCH", "1")]);
 
     let http = Http::new();
     sync(&mut a, &http);
     assert_eq!(server_records(&mut a, &server.url).iter().filter(|r| r.kind == 200).count(), 1);
-    sign_in(&mut b, &http, &server.url);
+    assert_eq!(sign_in(&mut b, &http, &server.url).encryption(), Encryption::Enter, "the account is encrypted again");
+    encrypt(&mut b, &http);
     assert_eq!(toolbar_titles(&mut b), ["Kept"]);
 }

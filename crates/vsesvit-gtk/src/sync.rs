@@ -622,7 +622,7 @@ mod tests {
         assert!(matches!(Account::load(&mut profile.sync()), Ok(Some(_))), "the account is stored");
 
         let asking_to_set = |mut state: State| {
-            refresh(&mut state, Encryption::Set);
+            refresh(&mut state, Encryption::Off);
             state
         };
         let state = stored_state(&mut profile, FAILED.map(str::to_owned), true);
@@ -637,7 +637,7 @@ mod tests {
         assert!(refresh(&mut state, Encryption::Changed));
         assert!(matches!(state, State::SignedIn { encryption: Encryption::Changed, .. }), "{state:?}");
         let mut state = State::SignedOut { error: None };
-        assert!(!refresh(&mut state, Encryption::Set), "a sign-out meanwhile stays");
+        assert!(!refresh(&mut state, Encryption::Off), "a sign-out meanwhile stays");
         assert_eq!(state, State::SignedOut { error: None });
     }
 

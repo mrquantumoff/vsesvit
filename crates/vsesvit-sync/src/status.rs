@@ -42,7 +42,7 @@ pub enum Action {
 /// The confirmation before [`Action::DeleteServerData`]: title, body, and the destructive button.
 pub const DELETE_CONFIRMATION: (&str, &str, &str) = (
     "Delete your data on the sync server?",
-    "Your bookmarks, history, open tabs, extensions and settings are deleted from the server, along with your sync passphrase, and all your devices sign out. They stay on your devices, which upload them again when they next sign in and a passphrase is set.",
+    "Your bookmarks, history, open tabs, extensions and settings are deleted from the server, along with your sync passphrase, and all your devices sign out. They stay on your devices, which upload them again, unencrypted until a passphrase is set, when they next sign in.",
     "Delete",
 );
 
@@ -51,7 +51,7 @@ impl Action {
         match self {
             Action::SignIn => "Sign In",
             Action::Cancel => "Cancel",
-            Action::SetPassphrase => "Set Passphrase…",
+            Action::SetPassphrase => "Encrypt with a Passphrase…",
             Action::EnterPassphrase => "Enter Passphrase…",
             Action::SyncNow => "Sync Now",
             Action::ChangePassphrase => "Change Passphrase…",
@@ -71,32 +71,68 @@ pub struct PassphraseDialog {
     /// The second field's label, for a new passphrase.
     pub confirm: Option<&'static str>,
     pub accept: &'static str,
+    /// The other button. Asking for the account's passphrase it is "Sign Out", and it signs out:
+    /// a device that waits for the passphrase syncs nothing, so the dialog only closes one way or
+    /// the other ([`Prompt::Enter`]).
+    pub dismiss: &'static str,
+}
+
+/// What the shell asks of its own accord, over the browser window, for the signed-in account.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Prompt {
+    /// Recommends a passphrase to an account that syncs unencrypted, in [`OFFER`]'s words, once
+    /// per profile: answering it either way sets `keys::SYNC_PASSPHRASE_OFFERED`. Its accept
+    /// button opens [`passphrase_dialog`]`(Encryption::Off)`.
+    Offer,
+    /// Asks for the account's passphrase, in [`passphrase_dialog`]'s words for the state, until it
+    /// is entered or the device signs out.
+    Enter,
+}
+
+/// The recommendation [`Prompt::Offer`] makes: title, body, accept, decline.
+pub const OFFER: (&str, &str, &str, &str) = (
+    "Encrypt Your Synced Data?",
+    "Your bookmarks, history, open tabs, extensions and settings sync unencrypted, so whoever runs the sync server can read them. Set a sync passphrase and Vsesvit encrypts them before they leave your devices. You can also do this later in Settings > Sync.",
+    "Set Passphrase",
+    "Not Now",
+);
+
+/// The prompt to show for `state`, if any. `offered` is `keys::SYNC_PASSPHRASE_OFFERED`.
+pub fn prompt(state: &State, offered: bool) -> Option<Prompt> {
+    match state {
+        State::SignedIn { needs_sign_in: false, encryption: Encryption::Off, .. } if !offered => Some(Prompt::Offer),
+        State::SignedIn { needs_sign_in: false, encryption: Encryption::Enter | Encryption::Changed, .. } => Some(Prompt::Enter),
+        _ => None,
+    }
 }
 
 /// The dialog for what `encryption` asks for, or `None` when it asks nothing of the passphrase.
 pub fn passphrase_dialog(encryption: Encryption) -> Option<PassphraseDialog> {
     Some(match encryption {
         Encryption::Checking => return None,
-        Encryption::Set => PassphraseDialog {
-            title: "Set a Sync Passphrase",
-            body: "Vsesvit encrypts your bookmarks, history, open tabs, extensions and settings with this passphrase before they leave this device, so the sync server can't read them. You'll enter it on each device you sync. If you forget it, it can't be recovered. If you already set one on another device, don't set a new one: enter that one here once Vsesvit finds it.",
+        Encryption::Off => PassphraseDialog {
+            title: "Encrypt Sync with a Passphrase",
+            body: "Vsesvit encrypts your bookmarks, history, open tabs, extensions and settings with this passphrase before they leave your devices, so the sync server can't read them. Your other devices stop syncing until you enter it on each of them. If you forget it, it can't be recovered. What the server already holds unencrypted stays there until you delete your data on it, which is also the only way to turn encryption off.",
             field: "Passphrase",
             confirm: Some("Confirm passphrase"),
             accept: "Set Passphrase",
+            dismiss: "Cancel",
         },
         Encryption::Enter => PassphraseDialog {
             title: "Enter Your Sync Passphrase",
-            body: "Your synced data is encrypted with your sync passphrase. Enter it to start syncing on this device. If you've forgotten it, delete your data on the sync server and set a new one.",
+            body: "Your synced data is encrypted with a sync passphrase. Enter it to sync on this device, or sign out to stop syncing here. If you've forgotten it, delete your data on the sync server in Settings > Sync.",
             field: "Passphrase",
             confirm: None,
             accept: "Start Syncing",
+            dismiss: "Sign Out",
         },
         Encryption::Changed => PassphraseDialog {
             title: "Enter Your New Sync Passphrase",
-            body: "Your sync passphrase was changed on another device. Enter the new one to keep syncing. Never enter an old passphrase here.",
+            body: "Your sync passphrase was changed on another device. Enter the new one to keep syncing, or sign out to stop syncing here. Never enter an old passphrase here.",
             field: "New passphrase",
             confirm: None,
             accept: "Start Syncing",
+            dismiss: "Sign Out",
         },
         Encryption::Ready => PassphraseDialog {
             title: "Change Your Sync Passphrase",
@@ -104,6 +140,7 @@ pub fn passphrase_dialog(encryption: Encryption) -> Option<PassphraseDialog> {
             field: "New passphrase",
             confirm: Some("Confirm new passphrase"),
             accept: "Change Passphrase",
+            dismiss: "Cancel",
         },
     })
 }
@@ -137,7 +174,7 @@ impl State {
             State::SignedOut { error } => Status {
                 title: "Not signed in".to_owned(),
                 subtitle: error.clone().unwrap_or_else(|| {
-                    "Sign in to sync bookmarks, history, open tabs, extensions and settings across your devices, encrypted with a passphrase only you know.".to_owned()
+                    "Sign in to sync bookmarks, history, open tabs, extensions and settings across your devices.".to_owned()
                 }),
                 actions: vec![Action::SignIn],
                 busy: false,
@@ -158,10 +195,9 @@ impl State {
                 };
                 let asks = match encryption {
                     Encryption::Checking => Some("Checking for a sync passphrase…"),
-                    Encryption::Set => Some("Set a sync passphrase to start syncing. Your data is encrypted with it before it leaves this device."),
-                    Encryption::Enter => Some("Enter your sync passphrase to start syncing on this device."),
+                    Encryption::Off | Encryption::Ready => None,
+                    Encryption::Enter => Some("Enter your sync passphrase to sync on this device."),
                     Encryption::Changed => Some("Your sync passphrase was changed on another device. Enter the new one to keep syncing."),
-                    Encryption::Ready => None,
                 };
                 let subtitle = if *needs_sign_in {
                     match error {
@@ -175,9 +211,13 @@ impl State {
                 } else if *syncing {
                     "Syncing…".to_owned()
                 } else {
-                    match last_synced {
+                    let when = match last_synced {
                         Some(at) => format!("Last synced {}", ago(now_secs.saturating_sub(*at))),
                         None => "Not synced yet".to_owned(),
+                    };
+                    match encryption {
+                        Encryption::Off => format!("{when}. Not encrypted: whoever runs the sync server can read your synced data."),
+                        _ => when,
                     }
                 };
                 let actions = if *needs_sign_in {
@@ -185,7 +225,7 @@ impl State {
                 } else {
                     match encryption {
                         Encryption::Checking => vec![Action::SignOut, Action::DeleteServerData],
-                        Encryption::Set => vec![Action::SetPassphrase, Action::SignOut, Action::DeleteServerData],
+                        Encryption::Off => vec![Action::SyncNow, Action::SetPassphrase, Action::SignOut, Action::DeleteServerData],
                         Encryption::Enter | Encryption::Changed => vec![Action::EnterPassphrase, Action::SignOut, Action::DeleteServerData],
                         Encryption::Ready => vec![Action::SyncNow, Action::ChangePassphrase, Action::SignOut, Action::DeleteServerData],
                     }
@@ -304,12 +344,33 @@ mod tests {
     }
 
     #[test]
+    fn an_unencrypted_account_syncs_and_says_the_server_can_read_it() {
+        let s = with_encryption(Encryption::Off).status(1000 + 125);
+        assert_eq!(s.actions, [Action::SyncNow, Action::SetPassphrase, Action::SignOut, Action::DeleteServerData]);
+        assert_eq!(s.subtitle, "Last synced 2 minutes ago. Not encrypted: whoever runs the sync server can read your synced data.");
+        assert_eq!(Action::SetPassphrase.label(), "Encrypt with a Passphrase…");
+    }
+
+    #[test]
+    fn the_offer_comes_once_and_the_passphrase_prompt_until_it_is_entered() {
+        assert_eq!(prompt(&with_encryption(Encryption::Off), false), Some(Prompt::Offer));
+        assert_eq!(prompt(&with_encryption(Encryption::Off), true), None, "answered once");
+        for encryption in [Encryption::Enter, Encryption::Changed] {
+            assert_eq!(prompt(&with_encryption(encryption), true), Some(Prompt::Enter));
+            assert_eq!(passphrase_dialog(encryption).unwrap().dismiss, "Sign Out");
+        }
+        assert_eq!(prompt(&with_encryption(Encryption::Ready), false), None);
+        assert_eq!(prompt(&with_encryption(Encryption::Checking), false), None);
+        assert_eq!(prompt(&State::SignedOut { error: None }, false), None);
+        let State::SignedIn { name, server, last_synced, syncing, error, .. } = signed_in() else { unreachable!() };
+        let expired = State::SignedIn { name, server, last_synced, syncing, error, needs_sign_in: true, encryption: Encryption::Enter };
+        assert_eq!(prompt(&expired, false), None, "signing in again comes first");
+    }
+
+    #[test]
     fn until_it_syncs_a_device_asks_for_the_passphrase_and_offers_no_sync() {
         let s = with_encryption(Encryption::Checking).status(1000);
         assert_eq!((s.subtitle.as_str(), s.actions.as_slice()), ("Checking for a sync passphrase…", &[Action::SignOut, Action::DeleteServerData][..]));
-        let s = with_encryption(Encryption::Set).status(1000);
-        assert_eq!(s.actions, [Action::SetPassphrase, Action::SignOut, Action::DeleteServerData]);
-        assert!(s.subtitle.starts_with("Set a sync passphrase"), "{}", s.subtitle);
         for encryption in [Encryption::Enter, Encryption::Changed] {
             let s = with_encryption(encryption).status(1000);
             assert_eq!(s.actions, [Action::EnterPassphrase, Action::SignOut, Action::DeleteServerData]);
@@ -320,8 +381,8 @@ mod tests {
     #[test]
     fn each_passphrase_step_has_its_dialog() {
         assert_eq!(passphrase_dialog(Encryption::Checking), None);
-        let set = passphrase_dialog(Encryption::Set).unwrap();
-        assert_eq!((set.accept, set.confirm), ("Set Passphrase", Some("Confirm passphrase")));
+        let set = passphrase_dialog(Encryption::Off).unwrap();
+        assert_eq!((set.accept, set.confirm, set.dismiss), ("Set Passphrase", Some("Confirm passphrase"), "Cancel"));
         assert_eq!(passphrase_dialog(Encryption::Enter).unwrap().confirm, None, "an existing passphrase is typed once");
         assert_eq!(passphrase_dialog(Encryption::Changed).unwrap().field, "New passphrase");
         assert_eq!(passphrase_dialog(Encryption::Ready).unwrap().accept, "Change Passphrase");

@@ -184,6 +184,9 @@ pub mod keys {
     /// What this device syncs; every type by default.
     pub const SYNC_TYPES: Pref<Vec<crate::sync::DataType>> =
         Pref { key: super::SYNC_TYPES_KEY, scope: Scope::Local, default: || crate::sync::DataType::ALL.to_vec() };
+    /// Local: the person answered the offer to encrypt sync with a passphrase on this device, which
+    /// is then not made again here.
+    pub const SYNC_PASSPHRASE_OFFERED: Pref<bool> = Pref { key: "sync.passphrase_offered", scope: Scope::Local, default: || false };
 
     /// Every Local pref above, which sync refuses to write (see [`super::remote_may_write`]).
     pub(crate) const LOCAL_KEYS: &[&str] = &[
@@ -195,6 +198,7 @@ pub mod keys {
         local(&ONBOARDING_DONE),
         local(&SYNC_SERVER),
         local(&SYNC_TYPES),
+        local(&SYNC_PASSPHRASE_OFFERED),
     ];
 
     const fn local<T>(pref: &Pref<T>) -> &'static str {

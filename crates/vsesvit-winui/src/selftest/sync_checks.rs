@@ -135,6 +135,6 @@ mod tests {
     #[test]
     fn the_seeded_account_asks_for_a_new_passphrase() {
         let account = account_without_passphrase().expect("an account");
-        assert_eq!(account.encryption(), Encryption::Set);
+        assert_eq!(account.encryption(), Encryption::Off);
     }
 }

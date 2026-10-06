@@ -2785,7 +2785,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let set = wait_for(&last, || shown(Action::SetPassphrase).ok_or_else(|| "Settings > Sync shows no Set Passphrase… button".to_owned())).await;
         set.emit_clicked();
         let dialog = wait_for(&last, || window.visible_dialog().and_downcast::<adw::AlertDialog>().ok_or_else(|| "Set Passphrase… opened no dialog".to_owned())).await;
-        let words = passphrase_dialog(Encryption::Set).ok_or_else(|| "core has no dialog for setting a passphrase".to_owned())?;
+        let words = passphrase_dialog(Encryption::Off).ok_or_else(|| "core has no dialog for setting a passphrase".to_owned())?;
         let fields = all::<adw::PasswordEntryRow>(dialog.upcast_ref());
         let titles: Vec<String> = fields.iter().map(|f| f.title().to_string()).collect();
         let (Some(accept), [passphrase, confirm]) = (button_labelled(dialog.upcast_ref(), words.accept), fields.as_slice()) else {
