@@ -341,6 +341,81 @@ async fn checks(
     })
     .await;
 
+    check(report, "dnr_site_allowed", DEFAULT_TIMEOUT, async |p| {
+        let pixels = || {
+            server
+                .hits()
+                .iter()
+                .filter(|h| *h == "/vsesvit-blocked/pixel.png")
+                .count()
+        };
+        let ask = async |want: &str, rules: &str| {
+            eval(
+                &tab,
+                &format!("document.documentElement.dataset.vsesvitDnr = '{want}'"),
+            )
+            .await?;
+            loop {
+                let value = eval(
+                    &tab,
+                    "document.documentElement.dataset.vsesvitProbeDnr || null",
+                )
+                .await?;
+                p.observe(format!("dataset.vsesvitProbeDnr = {value}"));
+                if let Ok(Some(answer)) = serde_json::from_str::<Option<String>>(&value) {
+                    return if answer == rules {
+                        Ok(answer)
+                    } else {
+                        Err(format!("asked to {want}, WebView2 gives the probe {answer}"))
+                    };
+                }
+                exec::sleep(POLL).await;
+            }
+        };
+        let reload = async || {
+            eval(&tab, "window.stale = true").await?;
+            tab.reload();
+            loop {
+                let ready = eval(
+                    &tab,
+                    "!window.stale && document.readyState == 'complete' \
+                     && document.documentElement.dataset.vsesvitProbe == 'background-replied'",
+                )
+                .await;
+                p.observe(format!("the reloaded page is ready: {ready:?}"));
+                if ready.as_deref() == Ok("true") {
+                    return Ok::<_, String>(());
+                }
+                exec::sleep(POLL).await;
+            }
+        };
+
+        let allowed = ask("allow", r#"{"rules":[1]}"#).await?;
+        let before = pixels();
+        reload().await?;
+        let seen = until(p, |p| {
+            let seen = pixels();
+            p.observe(format!(
+                "with the allow rule, the reloaded page left /vsesvit-blocked/pixel.png at {seen} request(s)"
+            ));
+            (seen > before).then_some(seen)
+        })
+        .await;
+        let cleared = ask("clear", r#"{"rules":[]}"#).await?;
+        reload().await?;
+        exec::sleep(Duration::from_secs(1)).await;
+        let after = pixels();
+        if after != seen {
+            return Err(format!(
+                "after the probe cleared its rule ({cleared}), a reload requested /vsesvit-blocked/pixel.png again ({seen} -> {after})"
+            ));
+        }
+        Ok(format!(
+            "the probe's allowAllRequests rule for the site ({allowed}) let a reload request /vsesvit-blocked/pixel.png ({before} -> {seen}); after it cleared the rule ({cleared}) a reload left it blocked"
+        ))
+    })
+    .await;
+
     check(report, "bookmark", DEFAULT_TIMEOUT, async |p| {
         window.star_clicked();
         let seen = until(p, |p| {

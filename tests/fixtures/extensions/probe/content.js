@@ -24,6 +24,17 @@
       root.dataset.vsesvitProbeNotified = JSON.stringify({ error: String(e) });
     }
   }).observe(root, { attributes: true, attributeFilter: ["data-vsesvit-notify"] });
+  // The self-test sets data-vsesvit-dnr: "allow" to stop filtering this site, or "clear".
+  new MutationObserver(async () => {
+    const want = root.dataset.vsesvitDnr;
+    if (!want) return;
+    delete root.dataset.vsesvitDnr;
+    try {
+      root.dataset.vsesvitProbeDnr = JSON.stringify(await chrome.runtime.sendMessage({ type: "dnr", want }));
+    } catch (e) {
+      root.dataset.vsesvitProbeDnr = JSON.stringify({ error: String(e) });
+    }
+  }).observe(root, { attributes: true, attributeFilter: ["data-vsesvit-dnr"] });
   const port = chrome.runtime.connect({ name: "probe" });
   port.onMessage.addListener((message) => {
     root.dataset.vsesvitProbePort = message;

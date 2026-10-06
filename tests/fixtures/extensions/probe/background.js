@@ -45,6 +45,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// uBlock Origin Lite's "no filtering on this site" is this rule, above all its static ones.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "dnr") return false;
+  const dnr = chrome.declarativeNetRequest;
+  if (typeof dnr?.updateDynamicRules !== "function") {
+    sendResponse({ api: "undefined" });
+    return false;
+  }
+  (async () => {
+    if (message.want === "allow") {
+      const condition = { requestDomains: [new URL(sender.url).hostname], resourceTypes: ["main_frame"] };
+      await dnr.updateDynamicRules({ removeRuleIds: [1], addRules: [{ id: 1, priority: 2000000, action: { type: "allowAllRequests" }, condition }] });
+    } else {
+      await dnr.updateDynamicRules({ removeRuleIds: [1] });
+    }
+    return { rules: (await dnr.getDynamicRules()).map((r) => r.id) };
+  })().then(sendResponse, (e) => sendResponse({ error: String(e?.message ?? e) }));
+  return true;
+});
+
 if (chrome.notifications) {
   const notified = (event) => chrome.storage.local.set({ notification: { ...event, at: Date.now() } });
   chrome.notifications.onClicked.addListener((id) => notified({ event: "clicked", id }));

@@ -72,7 +72,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 46] = [
+const CHECKS: [&str; 47] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -82,6 +82,7 @@ const CHECKS: [&str; 46] = [
     "content_script",
     "extension_port",
     "dnr_blocked",
+    "dnr_site_allowed",
     "bookmark",
     "star_bubble",
     "tabs",
@@ -433,6 +434,42 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let blocked = hits.iter().any(|p| p == "/vsesvit-blocked/pixel.png");
         let detail = format!("server saw {hits:?}");
         if allowed && !blocked { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
+    ctx.check("dnr_site_allowed", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let view = tab.web_view();
+        let pixels = || ctx.server.hits().iter().filter(|path| *path == "/vsesvit-blocked/pixel.png").count();
+        let ask = async |want: &str, rules: &str| {
+            eval_js(view, &format!("document.documentElement.dataset.vsesvitDnr = '{want}'")).await?;
+            let answer = wait_js(&last, view, "String(document.documentElement.dataset.vsesvitProbeDnr)", |seen| seen != "undefined").await;
+            if answer == rules { Ok(answer) } else { Err(format!("asked to {want}, the probe answered {answer}")) }
+        };
+        let reload = async || {
+            eval_js(view, "window.stale = true").await?;
+            view.reload();
+            let ready = "String(!window.stale && document.readyState == 'complete' && document.documentElement.dataset.vsesvitProbe == 'background-replied')";
+            wait_js(&last, view, ready, |s| s == "true").await;
+            Ok::<_, String>(())
+        };
+
+        let allowed = ask("allow", r#"{"rules":[1]}"#).await?;
+        let before = pixels();
+        reload().await?;
+        let seen = wait_for(&last, || {
+            let seen = pixels();
+            if seen > before { Ok(seen) } else { Err(format!("with the allow rule, the reloaded page left /vsesvit-blocked/pixel.png at {seen} request(s)")) }
+        })
+        .await;
+        let cleared = ask("clear", r#"{"rules":[]}"#).await?;
+        reload().await?;
+        glib::timeout_future(Duration::from_secs(1)).await;
+        let after = pixels();
+        if after != seen {
+            return Err(format!("after the probe cleared its rule ({cleared}), a reload requested /vsesvit-blocked/pixel.png again ({seen} -> {after})"));
+        }
+        Ok(format!("the probe's allowAllRequests rule for the site ({allowed}) let a reload request /vsesvit-blocked/pixel.png ({before} -> {seen}); after it cleared the rule ({cleared}) a reload left it blocked"))
     })
     .await;
 
