@@ -1,7 +1,8 @@
 //! The Extensions dialog: install from a store link or id, a `.crx`/`.xpi` file or an
 //! unpacked folder, with the job's progress shown; the installed list with icon, name,
 //! version, provenance, an enabled switch and removal; and, per extension, what its
-//! manifest asks for that the Linux runtime does not provide.
+//! manifest asks for that the Linux runtime does not provide, and whether its notifications
+//! may show.
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
@@ -9,7 +10,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use vsesvit_core::extensions::{InstallSource, InstalledExtension, SourceParseError};
+use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension, SourceParseError};
 
 use super::plain_toast;
 use crate::browser::Browser;
@@ -28,13 +29,21 @@ struct State {
     installing: Cell<u32>,
     installed: adw::PreferencesGroup,
     rows: RefCell<Vec<gtk::Widget>>,
+    /// The extension whose row opens expanded.
+    shown: Option<ExtensionId>,
 }
 
 pub(crate) fn present(window: &BrowserWindow) {
-    build(window).dialog.present(Some(window));
+    build(window, None).dialog.present(Some(window));
 }
 
-fn build(window: &BrowserWindow) -> Rc<State> {
+/// The dialog with `id`'s row expanded, which is where a notification's Settings button leads,
+/// as Chrome's leads to the extension's settings.
+pub(crate) fn present_extension(window: &BrowserWindow, id: &ExtensionId) {
+    build(window, Some(id.clone())).dialog.present(Some(window));
+}
+
+fn build(window: &BrowserWindow, shown: Option<ExtensionId>) -> Rc<State> {
     let source = adw::EntryRow::builder()
         .title("Chrome Web Store, Edge Add-ons or Firefox Add-ons link or ID")
         .show_apply_button(true)
@@ -78,6 +87,7 @@ fn build(window: &BrowserWindow) -> Rc<State> {
         installing: Cell::new(0),
         installed,
         rows: RefCell::new(Vec::new()),
+        shown,
     });
     state.refresh();
 
@@ -236,6 +246,7 @@ impl State {
             .use_markup(false)
             .build();
         row.add_prefix(&icon_image(icon_path(ext).as_deref()));
+        row.set_expanded(self.shown.as_ref() == Some(&ext.id));
 
         let enabled = gtk::Switch::builder()
             .active(ext.enabled)
@@ -316,6 +327,9 @@ impl State {
             row.add_row(&failed);
             row.set_expanded(true);
         }
+        if ext.manifest.permissions.iter().any(|p| p == "notifications") {
+            row.add_row(&self.notifications_row(&ext.id));
+        }
         let id_row = adw::ActionRow::builder()
             .title("ID")
             .subtitle(ext.id.as_str())
@@ -333,6 +347,32 @@ impl State {
             .css_classes(["property"])
             .build();
         row.add_row(&dir_row);
+        row
+    }
+
+    /// Chrome's per-extension notification switch: off, the extension's notifications close
+    /// and `chrome.notifications` refuses to show more.
+    fn notifications_row(self: &Rc<Self>, id: &ExtensionId) -> adw::SwitchRow {
+        let allowed = self.browser().is_some_and(|browser| browser.core().borrow_mut().extensions().notifications_allowed(id));
+        let row = adw::SwitchRow::builder().title("Notifications").subtitle("Let this extension show notifications").active(allowed).build();
+        row.connect_active_notify(glib::clone!(
+            #[strong(rename_to = state)]
+            self,
+            #[strong]
+            id,
+            move |row| {
+                let Some(browser) = state.browser() else { return };
+                let stored = browser.core().borrow_mut().extensions().set_notifications_allowed(&id, row.is_active());
+                match stored {
+                    Ok(()) => browser.runtime().notification_permission_changed(&id),
+                    Err(e) => {
+                        state.toast(&format!("Cannot change the extension's notifications: {e}"));
+                        let state = state.clone();
+                        glib::idle_add_local_once(move || state.refresh());
+                    }
+                }
+            }
+        ));
         row
     }
 }
@@ -369,7 +409,7 @@ mod tests {
     #[gtk::test]
     fn the_progress_row_stays_while_another_install_runs() {
         let window = BrowserWindow::new(&browser());
-        let state = build(&window);
+        let state = build(&window, None);
         state.install_started();
         state.install_started();
         state.install_finished();
@@ -388,7 +428,7 @@ mod tests {
         let installed = browser.install(InstallSource::from_path(&dir).unwrap(), |_| {}).await;
         let id = installed.expect("the extension installs").expect("and is committed").id;
         let window = BrowserWindow::new(&browser);
-        let state = build(&window);
+        let state = build(&window, None);
         let row = row_titled(&state, "Switched").expect("the extension's row");
         let switch = switches(&row).pop().expect("its switch");
         assert!(switch.is_active() && switch.state());

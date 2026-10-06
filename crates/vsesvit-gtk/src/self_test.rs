@@ -29,6 +29,7 @@ use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::trackers::{self, Category, TrackerList, TrackingProtection};
 use vsesvit_core::{OpenOptions, Profile};
 use vsesvit_webext::menus::Target;
+use vsesvit_webext::notifications::{self, Activation};
 use webkit::prelude::*;
 
 use crate::address_bar::Security;
@@ -71,7 +72,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 45] = [
+const CHECKS: [&str; 46] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -91,6 +92,7 @@ const CHECKS: [&str; 45] = [
     "extension_toolbar",
     "context_menus",
     "extension_commands",
+    "extension_notifications",
     "omnibox",
     "address_completion",
     "search_suggestions",
@@ -952,6 +954,75 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         dialog.close();
         let edited = edited?;
         Ok(format!("{action} is Alt+Shift+P and {named} Alt+Shift+K; probe-command fired onCommand with {command}; _execute_action opened {popup_url}, closed again; {edited}"))
+    })
+    .await;
+
+    ctx.check("extension_notifications", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        if tab.committed_uri().as_deref() != Some(index_url.as_str()) {
+            return Err(format!("the selected tab shows {:?}", tab.committed_uri()));
+        }
+        let parse = |seen: &str| serde_json::from_str::<serde_json::Value>(seen).unwrap_or_default();
+        let event = async |wanted: &dyn Fn(&serde_json::Value) -> bool| {
+            parse(&wait_js(&last, tab.web_view(), "String(document.documentElement.dataset.vsesvitProbeNotification)", |seen| wanted(&parse(seen))).await)
+        };
+        let runtime = browser.runtime();
+        let _restore = Cleanup(|| {
+            if browser.core().borrow_mut().extensions().set_notifications_allowed(probe_id, true).is_ok() {
+                runtime.notification_permission_changed(probe_id);
+            }
+        });
+
+        eval_js(tab.web_view(), "document.documentElement.dataset.vsesvitNotify = 'keep'").await?;
+        let created = parse(&wait_js(&last, tab.web_view(), "String(document.documentElement.dataset.vsesvitProbeNotified)", |seen| parse(seen).is_object()).await);
+        if created["created"] != "probe-notification" {
+            return Err(format!("the probe's notifications.create answered {created}"));
+        }
+        let shown = runtime.notification(probe_id, "probe-notification").ok_or_else(|| "the runtime lists no probe-notification".to_owned())?;
+        if shown.title != "Vsesvit Probe notification" || shown.body.as_deref() != Some("Sent by the probe") || shown.buttons != ["Open"] || !shown.icon.starts_with(b"\x89PNG") {
+            return Err(format!("the notification shows {:?}, {:?}, buttons {:?}, a {}-byte icon", shown.title, shown.body, shown.buttons, shown.icon.len()));
+        }
+
+        let activate = |activation: Activation| {
+            let target = (probe_id.as_str(), "probe-notification", activation.name().as_str()).to_variant();
+            gio::prelude::ActionGroupExt::activate_action(browser.app(), notifications::ACTION, Some(&target));
+        };
+        activate(Activation::Button(0));
+        let button = event(&|e| e["event"] == "button").await;
+        if button["id"] != "probe-notification" || button["button"] != 0 {
+            return Err(format!("the Open button fired {button}"));
+        }
+
+        activate(Activation::Settings);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .filter(|dialog| dialog.title() == "Extensions")
+            .ok_or_else(|| "the notification's Settings button opened no Extensions dialog".to_owned())?;
+        let switched = async {
+            let switch = find::<adw::SwitchRow>(dialog.upcast_ref(), |row| row.title() == "Notifications")
+                .ok_or_else(|| "the Extensions dialog has no Notifications switch".to_owned())?;
+            let expanded = switch.ancestor(adw::ExpanderRow::static_type()).and_downcast::<adw::ExpanderRow>().filter(|row| row.is_expanded()).map(|row| row.title());
+            if !switch.is_active() || expanded.as_deref() != Some("Vsesvit Probe") {
+                return Err(format!("the Notifications switch is on={}, in the expanded row {expanded:?}", switch.is_active()));
+            }
+            glib::timeout_future(Duration::from_millis(300)).await;
+            crate::screenshot::save_png(window, &ctx.out_dir.join("extension-notifications.png")).await.map_err(|e| e.to_string())?;
+            switch.set_active(false);
+            let denied = event(&|e| e["event"] == "level").await;
+            let closed = runtime.notification(probe_id, "probe-notification").is_none();
+            let stored = browser.core().borrow_mut().extensions().notifications_allowed(probe_id);
+            if denied["level"] != "denied" || !closed || stored {
+                return Err(format!("switched off: the probe got {denied}, the notification closed={closed}, core allows={stored}"));
+            }
+            switch.set_active(true);
+            let granted = event(&|e| e["event"] == "level" && e["level"] == "granted").await;
+            Ok(format!("switching it off fired {denied} and closed the notification; on again fired {granted}"))
+        }
+        .await;
+        dialog.close();
+        let switched = switched?;
+        Ok(format!("the probe's notification shows {:?} with {:?} and {:?}; its Open button fired {button}; its Settings button opened the Extensions dialog on the probe's row (extension-notifications.png), where {switched}", shown.title, shown.body, shown.buttons))
     })
     .await;
 

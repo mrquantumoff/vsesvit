@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 use gtk::gio::ActionEntry;
 use gtk::{gdk, gio, glib};
+use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::{OpenError, OpenOptions, Profile};
+use vsesvit_webext::notifications::{self, Activation};
 
 use crate::browser::Browser;
 use crate::cli::{self, Command};
@@ -286,6 +288,29 @@ fn install_actions(app: &adw::Application, slot: &Slot) {
                     dialogs::shortcuts::present(&window);
                 }
             })
+            .build(),
+        ActionEntry::builder(notifications::ACTION)
+            .parameter_type(Some(glib::VariantTy::new("(sss)").expect("a tuple of strings")))
+            .activate(glib::clone!(
+                #[strong]
+                slot,
+                move |app: &adw::Application, _, parameter| {
+                    let Some((ext, id, activation)) = parameter.and_then(|p| p.get::<(String, String, String)>()) else { return };
+                    let (Ok(ext), Some(activation)) = (ExtensionId::parse(&ext), Activation::parse(&activation)) else { return };
+                    match activation {
+                        Activation::Settings => {
+                            if let Some(window) = app.active_window().and_downcast::<BrowserWindow>() {
+                                dialogs::extensions::present_extension(&window, &ext);
+                            }
+                        }
+                        activation => {
+                            if let Some(browser) = slot.borrow().as_ref() {
+                                browser.runtime().notification_activated(&ext, &id, activation);
+                            }
+                        }
+                    }
+                }
+            ))
             .build(),
         ActionEntry::builder("quit")
             .activate(glib::clone!(
