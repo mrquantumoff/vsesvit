@@ -365,7 +365,7 @@ fn translate_rule(rule: &Rule, extension_base: &str, grants: &Grants) -> Result<
     if c.response_headers.is_some() || c.excluded_response_headers.is_some() {
         return Err("responseHeaders conditions cannot be expressed as a content blocker".into());
     }
-    if c.excluded_request_domains.is_some() {
+    if c.excluded_request_domains.is_some() && rule.action.kind != ActionType::AllowAllRequests {
         return Err("excludedRequestDomains cannot be expressed as a content blocker".into());
     }
     // `domains` and `excludedDomains` are Chrome's deprecated names for the initiator lists.
@@ -455,7 +455,10 @@ fn translate_rule(rule: &Rule, extension_base: &str, grants: &Grants) -> Result<
 
 /// `allowAllRequests` exempts every load inside a frame whose URL matches, so the URL
 /// condition moves from the request to the frame: `if-top-url` for `main_frame`,
-/// `if-frame-url` for `sub_frame`.
+/// `if-frame-url` for `sub_frame`. The request of such a frame is the frame itself, so its
+/// `requestDomains` are the frame's host, and `excludedRequestDomains` alone become
+/// `unless-top-url` or `unless-frame-url`. That is how uBlock Origin Lite turns filtering
+/// off for a site.
 fn allow_all_requests(
     c: &Condition,
     filters: &[String],
@@ -470,19 +473,28 @@ fn allow_all_requests(
     if trigger.contains_key("if-frame-url") || trigger.contains_key("unless-frame-url") {
         return Err("allowAllRequests cannot combine initiator domains with the frame URL condition".into());
     }
-    if c.request_domains.is_some() {
-        return Err("allowAllRequests with requestDomains is not supported".into());
-    }
+    let unfiltered = c.url_filter.is_none() && c.regex_filter.is_none();
+    let (unless, frames) = match (&c.request_domains, &c.excluded_request_domains) {
+        (None, None) => (false, filters.to_vec()),
+        (Some(domains), None) => {
+            let hosts = domains.iter().map(|d| domain_regex(d)).collect::<Result<Vec<_>, _>>()?;
+            (false, filters.iter().map(|f| fold_hosts(&hosts, f, "requestDomains")).collect::<Result<Vec<_>, _>>()?.concat())
+        }
+        (None, Some(excluded)) if unfiltered => (true, excluded.iter().map(|d| domain_regex(d)).collect::<Result<Vec<_>, _>>()?),
+        _ => return Err("allowAllRequests with excludedRequestDomains and another URL condition is not supported".into()),
+    };
     let mut out = Vec::new();
     for t in types {
-        let key = match t {
-            ResourceType::MainFrame => "if-top-url",
-            _ => "if-frame-url",
+        let key = match (t, unless) {
+            (ResourceType::MainFrame, false) => "if-top-url",
+            (ResourceType::MainFrame, true) => "unless-top-url",
+            (_, false) => "if-frame-url",
+            (_, true) => "unless-frame-url",
         };
         for method in methods {
             let mut trig = trigger.clone();
             trig.insert("url-filter".into(), json!(".*"));
-            trig.insert(key.into(), json!(filters));
+            trig.insert(key.into(), json!(frames));
             if let Some(m) = method {
                 trig.insert("request-method".into(), json!(m));
             }
@@ -1054,6 +1066,30 @@ mod tests {
         assert_eq!(t.rules[0]["trigger"]["if-top-url"], json!(["^[^:]+://+([^:/]+\\.)?trusted\\.test"]));
         assert_eq!(t.rules[1]["trigger"]["if-frame-url"], json!(["^[^:]+://+([^:/]+\\.)?trusted\\.test"]));
         assert_eq!(t.rules[0]["action"]["type"], "ignore-following-rules");
+    }
+
+    /// uBlock Origin Lite's "no filtering" for some sites, for every site, and for every site
+    /// but some: one dynamic rule above its static ones.
+    #[test]
+    fn allow_all_requests_by_request_domain() {
+        let text = r#"[
+          {"id": 1, "priority": 2000000, "action": {"type": "allowAllRequests"}, "condition": {"requestDomains": ["a.test", "b.test"], "resourceTypes": ["main_frame"]}},
+          {"id": 2, "priority": 2000000, "action": {"type": "allowAllRequests"}, "condition": {"resourceTypes": ["main_frame"]}},
+          {"id": 3, "priority": 2000000, "action": {"type": "allowAllRequests"}, "condition": {"excludedRequestDomains": ["c.test"], "resourceTypes": ["main_frame", "sub_frame"]}},
+          {"id": 4, "action": {"type": "allowAllRequests"}, "condition": {"requestDomains": ["a.test"], "urlFilter": "/app/", "resourceTypes": ["sub_frame"]}},
+          {"id": 5, "action": {"type": "allowAllRequests"}, "condition": {"excludedRequestDomains": ["c.test"], "urlFilter": "/app/"}},
+          {"id": 6, "action": {"type": "allowAllRequests"}, "condition": {"requestDomains": ["a.test"], "urlFilter": "||a.test/app"}}
+        ]"#;
+        let t = translate(&rules(text), BASE, &ALL);
+        let triggers: Vec<&Value> = t.rules.iter().map(|r| &r["trigger"]).collect();
+        assert!(t.rules.iter().all(|r| r["action"]["type"] == "ignore-following-rules" && r["trigger"]["url-filter"] == ".*"));
+        assert_eq!(triggers[0]["if-top-url"], json!([r"^[^:]+://+([^:/]+\.)?a\.test[:/]", r"^[^:]+://+([^:/]+\.)?b\.test[:/]"]));
+        assert_eq!(triggers[1]["if-top-url"], json!([".*"]));
+        assert_eq!(triggers[2]["unless-top-url"], json!([r"^[^:]+://+([^:/]+\.)?c\.test[:/]"]));
+        assert_eq!(triggers[3]["unless-frame-url"], triggers[2]["unless-top-url"]);
+        assert_eq!(triggers[4]["if-frame-url"], json!([r"^[^:]+://+([^:/]+\.)?a\.test[:/].*\/app\/"]));
+        assert_eq!(t.rules.len(), 5);
+        assert_eq!(t.skipped.iter().map(|s| s.rule_id).collect::<Vec<_>>(), [Some(5), Some(6)], "{:?}", t.skipped);
     }
 
     #[test]
