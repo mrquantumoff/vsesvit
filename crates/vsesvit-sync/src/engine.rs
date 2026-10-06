@@ -58,6 +58,11 @@ pub struct Account {
     /// Send `own_keys` with the next round, as after the server lost it.
     #[serde(default)]
     upload_keys: bool,
+    /// This device entered the passphrase of an account others sync, and uploads nothing until
+    /// its download reaches the end: what it holds may be older than what they sealed, and
+    /// uploading first would put the older copies over theirs.
+    #[serde(default)]
+    joining: bool,
     /// This profile synced the account before Vsesvit encrypted it, so it took the server's
     /// plaintext records then and may seal them now. A new sign-in never does: a server could show
     /// it plaintext of its own making in place of an encrypted account.
@@ -178,6 +183,7 @@ impl Account {
             pending: false,
             converting: false,
             upload_keys: false,
+            joining: false,
             plaintext_trusted: false,
             limits,
             download_cursor: 0,
@@ -251,6 +257,7 @@ impl Account {
         self.pending = false;
         self.converting = false;
         self.upload_keys = false;
+        self.joining = false;
     }
 
     /// Everything goes up and comes down again from the start.
@@ -420,6 +427,7 @@ impl NewKeys {
                 current.pending = false;
                 current.converting = false;
                 current.upload_keys = false;
+                current.joining = true;
             }
             Step::Change(_) => current.upload_keys = !current.converting,
         }
@@ -465,7 +473,7 @@ impl Round {
             (Some(own), Some(_)) if account.upload_keys && !account.converting => Some(own.to_record()),
             _ => None,
         };
-        if account.ready_keyring().is_none() {
+        if account.ready_keyring().is_none() || account.joining {
             return Ok(Round { account, records, keys, upto, more_up, types });
         }
         let budget = account.limits.max_batch as usize;
@@ -795,7 +803,9 @@ fn sync(
         account.converting = false;
         account.upload_keys = true;
     }
-    let again = more_up || more_down || report.merged > 0 || account.upload_keys;
+    let joined = account.joining && !more_down;
+    account.joining &= more_down;
+    let again = more_up || more_down || report.merged > 0 || account.upload_keys || joined;
     Ok(Synced { report, again, refused })
 }
 
@@ -1107,6 +1117,7 @@ mod tests {
         let entered = scratch.passphrase(&account, "battery staple").unwrap();
         assert_eq!(entered.encryption(), Encryption::Ready);
         assert!(!entered.pending && !entered.upload_keys);
+        assert!(entered.joining, "it downloads everything before it uploads");
     }
 
     #[test]
