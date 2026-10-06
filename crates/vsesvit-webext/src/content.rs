@@ -64,7 +64,10 @@ impl UserContent {
                     css.push_str(&text);
                     css.push('\n');
                 }
-                content.styles.push(webkit::UserStyleSheet::for_world(&css, frames, webkit::UserStyleLevel::Author, world, &allow, &block));
+                // At the user level, since WebKitGTK (2.52) applies an author-level user style
+                // sheet to quirks-mode documents only. A page's own rules win over these unless
+                // they are `!important`, where Chrome would weigh them as the page's equals.
+                content.styles.push(webkit::UserStyleSheet::for_world(&css, frames, webkit::UserStyleLevel::User, world, &allow, &block));
             }
         }
         Ok(content)
