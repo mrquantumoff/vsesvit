@@ -12,6 +12,7 @@ use vsesvit_core::bookmarks::{BookmarkId, NodeKind};
 use vsesvit_core::cookies::ThirdPartyCookies;
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
+use vsesvit_core::import;
 use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::FormField;
 use vsesvit_core::testkit;
@@ -24,7 +25,7 @@ use crate::browser::Browser;
 use crate::dialogs::search_engines::Engines;
 use crate::dialogs::{self, Dialog, Preview, SETTINGS_CATEGORIES};
 use crate::window::{Backdrop, BrowserWindow};
-use crate::{engine, exec, xaml};
+use crate::{engine, exec, selftest, xaml};
 
 const WAIT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
@@ -38,6 +39,17 @@ pub(crate) fn invoke(element: &impl Interface) -> Result<()> {
     peer.GetPattern(PatternInterface::Invoke)?
         .cast::<IInvokeProvider>()?
         .Invoke()
+}
+
+/// A button's text.
+pub(crate) fn label(button: &Button) -> String {
+    button
+        .cast::<ContentControl>()
+        .and_then(|c| c.Content())
+        .and_then(|c| c.cast::<windows_reference::IReference<windows_core::HSTRING>>())
+        .and_then(|c| c.Value())
+        .map(|c| c.to_string_lossy())
+        .unwrap_or_default()
 }
 
 /// Invokes the button named `name` in `button`'s flyout, which must be open.
@@ -540,7 +552,8 @@ fn select_node(tree: &TreeView, label: &str) -> Result<()> {
 }
 
 /// Bookmarks: rename a folder, add a folder inside it and delete that again, and move a
-/// bookmark to "Other bookmarks", each checked in core.
+/// bookmark to "Other bookmarks", each checked in core; then export them to a file and read
+/// the moved bookmark back from it.
 pub(super) async fn bookmarks(
     browser: &Rc<Browser>,
     window: &Rc<BrowserWindow>,
@@ -603,6 +616,13 @@ pub(super) async fn bookmarks(
     })
     .await;
     let favicons = until(|| (favicons_shown(&tree) > 0).then(|| favicons_shown(&tree))).await;
+    preview.find::<Button>("ExportRun")?;
+    let path = out_dir.join("bookmarks.html");
+    // An earlier run's file would pass for one this run failed to write.
+    let _ = std::fs::remove_file(&path);
+    dialogs::export_bookmarks(browser, path.clone()).await;
+    let exported = std::fs::read_to_string(&path)
+        .is_ok_and(|text| selftest::has_link(&import::parse_html(&text), page2.as_str()));
     exec::sleep(Duration::from_millis(400)).await;
     shoot(window, out_dir, "16-bookmarks-dialog", steps, |w| {
         json!({
@@ -612,10 +632,12 @@ pub(super) async fn bookmarks(
             "deleted_it": deleted.is_some(),
             "moved_to_other": moved.is_some(),
             "favicons_shown": favicons,
+            "exported": exported,
             "labels_rendered": label_rendered(&tree, "Other bookmarks") && label_rendered(&tree, "Second tab"),
             "bar": format!("{:?}", w.bookmarks_bar_items()),
             "ok": shown == "Fixture folder" && renamed.is_some() && deleted.is_some() && moved.is_some()
                 && favicons.is_some()
+                && exported
                 && label_rendered(&tree, "Other bookmarks")
                 && label_rendered(&tree, "Second tab"),
         })

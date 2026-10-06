@@ -34,7 +34,7 @@ mod toolbar_steps;
 mod tracker_steps;
 mod welcome_steps;
 
-pub(crate) use dialog_steps::{confirm_flyout, invoke, settings_on};
+pub(crate) use dialog_steps::{confirm_flyout, invoke, label, settings_on};
 
 use crate::bindings::*;
 use crate::bookmarks_bar::BarItem;

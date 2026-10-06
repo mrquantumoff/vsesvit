@@ -19,9 +19,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use vsesvit_core::Url;
+use vsesvit_core::bookmarks::ImportItem;
 use vsesvit_core::downloads::State;
 use vsesvit_core::extensions::{ExtensionId, InstallSource, Verification};
 use vsesvit_core::https_only::{self, Reach};
+use vsesvit_core::import;
 use vsesvit_core::permissions::{Origin, Permission};
 use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::NavTarget;
@@ -31,7 +33,8 @@ use vsesvit_core::trackers::{self, Category, TrackerList};
 
 use windows_core::{IInspectable, Interface};
 
-use crate::bindings::{ItemsControl, Panel};
+use crate::automation::label;
+use crate::bindings::{Button, ItemsControl, Panel};
 use crate::browser::{Browser, PASSWORDS_PURGED};
 use crate::dialogs::{self, Dialog};
 use crate::layout;
@@ -77,6 +80,7 @@ pub(crate) fn prepare(out_dir: &Path) -> std::io::Result<()> {
         "omnibox-inline.png",
         "new-tab.png",
         "saved-page.mhtml",
+        "bookmarks.html",
         "probe.crx",
         "vsesvit.log",
     ] {
@@ -476,6 +480,30 @@ async fn checks(
             after.len()
         );
         kept.then_some(detail.clone()).ok_or(detail)
+    })
+    .await;
+
+    check(report, "bookmark_export", DEFAULT_TIMEOUT, async |_| {
+        let preview = dialogs::preview(&window, Dialog::Bookmarks)
+            .map_err(|e| format!("Bookmarks view: {e}"))?;
+        let button = preview
+            .find::<Button>("ExportRun")
+            .map(|b| label(&b))
+            .map_err(|e| format!("Bookmarks view: {e}"))?;
+        let path = out_dir.join("bookmarks.html");
+        let status = dialogs::export_bookmarks(browser, path.clone()).await;
+        drop(preview);
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let found = has_link(&import::parse_html(&text), index.as_str());
+        let detail = format!(
+            "button {button:?}; status {status:?}; {} ({} bytes) links the fixture page: {found}",
+            path.display(),
+            text.len()
+        );
+        (button == "Export bookmarks\u{2026}" && found)
+            .then_some(detail.clone())
+            .ok_or(detail)
     })
     .await;
 
@@ -1041,6 +1069,15 @@ fn tab_ids(window: &BrowserWindow) -> Vec<TabId> {
     window.tabs_in_order().iter().map(|t| t.id).collect()
 }
 
+/// Whether `items` hold a link to `url`, at any depth.
+pub(crate) fn has_link(items: &[ImportItem], url: &str) -> bool {
+    items.iter().any(|item| match item {
+        ImportItem::Url { url: link, .. } => link.as_str() == url,
+        ImportItem::Folder { children, .. } => has_link(children, url),
+        ImportItem::Separator => false,
+    })
+}
+
 /// The bookmarks bar's list entries, in order.
 fn bar_entries(window: &BrowserWindow) -> Vec<IInspectable> {
     let Ok(items) = window
@@ -1131,8 +1168,30 @@ fn visits(title: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{absent, prepare, visits};
+    use super::{ImportItem, Url, absent, has_link, prepare, visits};
     use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn a_link_is_found_inside_folders() {
+        let link = |url| ImportItem::Url {
+            title: "Page".into(),
+            url: Url::parse(url).unwrap(),
+            added_ms: None,
+        };
+        let items = vec![
+            ImportItem::Separator,
+            link("http://127.0.0.1/other.html"),
+            ImportItem::Folder {
+                title: "Bookmarks bar".into(),
+                children: vec![ImportItem::Folder {
+                    title: "Nested".into(),
+                    children: vec![link("http://127.0.0.1/index.html")],
+                }],
+            },
+        ];
+        assert!(has_link(&items, "http://127.0.0.1/index.html"));
+        assert!(!has_link(&items, "http://127.0.0.1/page2.html"));
+    }
 
     #[test]
     fn popup_titles() {
@@ -1159,6 +1218,7 @@ mod tests {
             "omnibox-inline.png",
             "new-tab.png",
             "saved-page.mhtml",
+            "bookmarks.html",
             "probe.crx",
             "vsesvit.log",
         ];

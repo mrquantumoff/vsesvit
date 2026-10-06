@@ -38,7 +38,7 @@ pub(crate) use settings::CATEGORIES as SETTINGS_CATEGORIES;
 pub(crate) use windowed::DialogWindow;
 #[cfg(feature = "self-test")]
 pub(crate) use {
-    bookmarks::import_bookmarks,
+    bookmarks::{export_bookmarks, import_bookmarks},
     default_browser::describe as describe_default_browser,
     shortcut_settings::{
         Page as ShortcutsPage, extension_row_name as extension_shortcut_row_name,

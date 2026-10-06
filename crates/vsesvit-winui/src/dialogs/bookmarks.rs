@@ -1,15 +1,16 @@
 //! Bookmarks: the tree of folders and bookmarks, with add folder, rename (and edit the URL),
-//! move to another folder or up and down (or drag in the tree), delete, and import from another
-//! browser or a bookmarks file. Every change goes to core, then the tree, the bookmarks bars and the stars
-//! are rebuilt from core, as they are when the icons of bookmarked pages arrive or a sync changed
-//! bookmarks.
+//! move to another folder or up and down (or drag in the tree), delete, import from another
+//! browser or a bookmarks file, and export to a bookmarks file. Every change goes to core, then
+//! the tree, the bookmarks bars and the stars are rebuilt from core, as they are when the icons
+//! of bookmarked pages arrive or a sync changed bookmarks.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
+use vsesvit_core::export;
 use vsesvit_core::import::{self, Found, Source};
 use vsesvit_core::sync::Changed;
 use windows_core::{Interface, Result};
@@ -46,6 +47,7 @@ pub(super) const MARKUP: &str = r#"
       </StackPanel>
       <ComboBox x:Name="ImportFrom" Header="Import bookmarks from" HorizontalAlignment="Stretch"/>
       <Button x:Name="ImportRun" Content="Import"/>
+      <Button x:Name="ExportRun" Content="Export bookmarks…"/>
       <TextBlock x:Name="BookmarkStatus" TextWrapping="Wrap"
                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
     </StackPanel>
@@ -62,7 +64,7 @@ enum ImportChoice {
 
 struct Editor {
     browser: Weak<Browser>,
-    /// The window the import's file picker opens over.
+    /// The window the import's and the export's file pickers open over.
     owner: WindowId,
     tree: TreeView,
     name: TextBox,
@@ -188,6 +190,12 @@ pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>, host: &Window
     on_click(&xaml::find::<Button>(root, "ImportRun")?, move || {
         if let Some(e) = e.upgrade() {
             e.import();
+        }
+    })?;
+    let e = Rc::downgrade(&editor);
+    on_click(&xaml::find::<Button>(root, "ExportRun")?, move || {
+        if let Some(e) = e.upgrade() {
+            e.export();
         }
     })?;
     let e = Rc::downgrade(&editor);
@@ -644,6 +652,39 @@ impl Editor {
             let _ = me.status.SetText(&text);
         });
     }
+
+    fn export(self: &Rc<Self>) {
+        let Some(browser) = self.browser() else {
+            return;
+        };
+        let owner = self.owner;
+        let me = self.clone();
+        exec::spawn(async move {
+            let folder = export::default_folder().unwrap_or_else(|| browser.download_dir());
+            let today = local_date();
+            let name =
+                export::file_name(today.wYear.into(), today.wMonth.into(), today.wDay.into());
+            match pickers::pick_save_file(owner, &folder, &name).await {
+                Ok(Some(path)) => {
+                    let text = export_bookmarks(&browser, path).await;
+                    let _ = me.status.SetText(&text);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = me
+                        .status
+                        .SetText(&format!("Could not open the picker: {e}"));
+                }
+            }
+        });
+    }
+}
+
+/// Today in the user's time zone.
+fn local_date() -> SYSTEMTIME {
+    let mut now = SYSTEMTIME::default();
+    unsafe { GetLocalTime(&mut now) };
+    now
 }
 
 /// Reads `source` (named `from`) on a worker thread and adds it to the bookmarks bar as the
@@ -669,6 +710,20 @@ pub(crate) async fn import_bookmarks(
     text
 }
 
+/// Writes every bookmark to `path` as a bookmarks HTML file, on a worker thread; what happened,
+/// in words.
+pub(crate) async fn export_bookmarks(browser: &Browser, path: PathBuf) -> String {
+    let html = browser.core(|p| export::html(&p.bookmarks()));
+    let name = shown_name(&path);
+    let written = exec::background(move || std::fs::write(&path, html))
+        .await
+        .unwrap_or_else(|lost| Err(lost.into()));
+    match written {
+        Ok(()) => format!("Exported bookmarks to {name}."),
+        Err(e) => format!("Could not export bookmarks: {e}"),
+    }
+}
+
 /// A bookmarks file the user picks, as `(folder, from, source)` to import, or `None` when they
 /// cancel.
 pub(super) async fn pick_bookmarks_file(
@@ -681,14 +736,18 @@ pub(super) async fn pick_bookmarks_file(
 
 /// What importing the bookmarks file at `path` adds: its folder, the file's name and its source.
 fn file_import(path: PathBuf) -> (String, String, Source) {
-    let name = path.file_name().map_or_else(
-        || path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
     (
         import::FILE_FOLDER_TITLE.to_owned(),
-        name,
+        shown_name(&path),
         Source::File(path),
+    )
+}
+
+/// A file as the status line names it: its name, or the whole path when it has none.
+fn shown_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
     )
 }
 

@@ -16,7 +16,7 @@ use vsesvit_core::onboarding::RECOMMENDED_EXTENSIONS;
 use vsesvit_core::prefs::{Theme, keys};
 use windows_core::{Interface, Result};
 
-use super::dialog_steps::invoke;
+use super::dialog_steps::{invoke, label};
 use super::shoot;
 use crate::bindings::*;
 use crate::browser::Browser;
@@ -40,16 +40,6 @@ fn text(preview: &Preview, name: &str) -> String {
         .find::<TextBlock>(name)
         .and_then(|t| t.Text())
         .map(|t| t.to_string())
-        .unwrap_or_default()
-}
-
-fn label(button: &Button) -> String {
-    button
-        .cast::<ContentControl>()
-        .and_then(|c| c.Content())
-        .and_then(|c| c.cast::<windows_reference::IReference<windows_core::HSTRING>>())
-        .and_then(|c| c.Value())
-        .map(|c| c.to_string_lossy())
         .unwrap_or_default()
 }
 

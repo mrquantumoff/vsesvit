@@ -434,6 +434,8 @@ Windows.Win32.SM_CYSMICON
 Windows.Win32.RegGetValueW
 Windows.Win32.HKEY_CURRENT_USER
 Windows.Win32.RRF_RT_REG_SZ
+Windows.Win32.GetLocalTime
+Windows.Win32.SYSTEMTIME
 
 // ---- classes used as typed handles (minimal mode emits only what is named) ----
 Microsoft.UI.Xaml.Controls.Panel
