@@ -19,6 +19,7 @@ use vsesvit_core::cookies::{self, ThirdPartyCookies};
 use vsesvit_core::downloads::{State, status_line};
 use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Verification};
 use vsesvit_core::https_only::{self, Reach};
+use vsesvit_core::memory_saver::{self, MemorySaverMode};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
 use vsesvit_core::private::Browsing;
@@ -38,7 +39,8 @@ use webkit::prelude::*;
 use crate::address_bar::Security;
 use crate::browser::Browser;
 use crate::dialogs::settings::{
-    HTTPS_ONLY_ROW, PASSWORDS_NOTICE, SECURE_DNS_ROW, SPELLCHECK_ROW, SPELLING_LANGUAGES_ROW, TRACKING_PROTECTION_ROW,
+    HTTPS_ONLY_ROW, MEMORY_SAVINGS_ROW, PASSWORDS_NOTICE, SECURE_DNS_ROW, SPELLCHECK_ROW, SPELLING_LANGUAGES_ROW,
+    TRACKING_PROTECTION_ROW,
 };
 use crate::dialogs::site_data::SEE_ALL_ROW;
 use crate::dialogs::{Windowed, shortcut_settings};
@@ -75,7 +77,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 53] = [
+const CHECKS: [&str; 54] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -96,6 +98,7 @@ const CHECKS: [&str; 53] = [
     "tab_layout",
     "tab_menu",
     "tab_search",
+    "memory_saver",
     "popup",
     "extension_toolbar",
     "context_menus",
@@ -1051,6 +1054,124 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         }
         details.push("the closed media.html was listed under Recently closed, Enter reopened it here on its page, and it left the closed tabs; win.search-tabs again closed the popover; with tabs on top it opens on the tab bar's Search Tabs".to_owned());
         Ok(details.join("; "))
+    })
+    .await;
+
+    ctx.check("memory_saver", CHECK_TIMEOUT, |last| async move {
+        let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let icon_url = ctx.server.url("/icon.html");
+        let later = || Instant::now() + Duration::from_secs(7 * 60 * 60);
+        let (a, b, c) = (
+            window.open_tab(Some(index_url.as_str()), None, Focus::Background),
+            window.open_tab(Some(index_url.as_str()), None, Focus::Background),
+            window.open_tab(Some(index_url.as_str()), None, Focus::Background),
+        );
+        let _tabs = Cleanup(|| {
+            browser.reset_pref(&keys::MEMORY_SAVER);
+            window.select_tab(&first);
+            for tab in [&a, &b, &c] {
+                window.close_tab(tab);
+            }
+        });
+        let at = |tab: &Tab, url: &str| tab.committed_uri().as_deref() == Some(url);
+        wait_for(&last, || {
+            if [&a, &b, &c].iter().all(|tab| at(tab, index_url.as_str())) { Ok(()) } else { Err("the three tabs are still loading index.html".to_owned()) }
+        })
+        .await;
+        a.load(icon_url.as_str());
+        let favicon = wait_for(&last, || match (a.committed_uri(), title_of(a.web_view()), a.web_view().favicon()) {
+            (Some(uri), title, Some(icon)) if uri == icon_url.as_str() && title == "Icon" => Ok(icon),
+            (uri, title, icon) => Err(format!("A is at {uri:?} titled {title:?}, with an icon: {}", icon.is_some())),
+        })
+        .await;
+        let typed = "const field = document.body.appendChild(document.createElement('input')); field.value = 'unsaved'; field.value !== field.defaultValue";
+        let unsaved = eval_js(b.web_view(), typed).await?;
+        window.set_pinned(&c, true);
+        if unsaved != "true" || !window.is_pinned(&c) {
+            return Err(format!("B's typed input counts as unsaved: {unsaved}; C pinned: {}", window.is_pinned(&c)));
+        }
+
+        let ended = Rc::new(Cell::new(None));
+        let handler = a.web_view().connect_web_process_terminated({
+            let ended = ended.clone();
+            move |_, reason| ended.set(Some(reason))
+        });
+        browser.sleep_idle_tabs(later());
+        let reason = wait_for(&last, || match (a.is_asleep(), ended.get()) {
+            (true, Some(reason)) => Ok(reason),
+            (asleep, reason) => Err(format!("A asleep={asleep}, its web process ended: {reason:?}")),
+        })
+        .await;
+        a.web_view().disconnect(handler);
+        glib::timeout_future(Duration::from_secs(1)).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("tab-asleep.png")).await.map_err(|e| e.to_string())?;
+        let released = a.web_view().uri().unwrap_or_default().is_empty();
+        let awake = [&b, &c, &first].map(|tab| !tab.is_asleep() && tab.web_view().uri().is_some_and(|uri| !uri.is_empty()));
+        let look = window.tab_look(&a).map(|(title, icon)| (title, icon.and_downcast::<gdk::Texture>().map(|icon| peak_alpha(&icon))));
+        let saved = crate::session::snapshot(browser).windows.into_iter().flat_map(|w| w.tabs).find(|t| t.id == a.session_id());
+        let saved = saved.map(|t| (t.url.to_string(), t.title, t.restore_state.is_some()));
+        let full = peak_alpha(&favicon);
+        let faded = Some(("Icon".to_owned(), Some(full / 2)));
+        let kept = Some((icon_url.to_string(), "Icon".to_owned(), true));
+        if reason != webkit::WebProcessTerminationReason::TerminatedByApi || !released || awake != [true; 3] || look != faded || saved != kept {
+            return Err(format!(
+                "A's web process ended {reason:?}, its view let go of the page: {released}; B, C and the selected tab awake: {awake:?}; A's tab shows {look:?} (its icon's alpha is {full}); the session keeps {saved:?}"
+            ));
+        }
+
+        window.select_tab(&a);
+        wait_for(&last, || {
+            let icon = window.tab_look(&a).and_then(|(_, icon)| icon);
+            let woke = !a.is_asleep() && at(&a, icon_url.as_str()) && title_of(a.web_view()) == "Icon";
+            if woke && a.web_view().can_go_back() && icon == Some(favicon.clone().upcast()) {
+                Ok(())
+            } else {
+                Err(format!("A asleep={} at {:?} titled {:?}, back={}", a.is_asleep(), a.committed_uri(), title_of(a.web_view()), a.web_view().can_go_back()))
+            }
+        })
+        .await;
+        window.select_tab(&first);
+
+        browser.set_pref(&keys::MEMORY_SAVER, &false);
+        browser.sleep_idle_tabs(later());
+        glib::timeout_future(Duration::from_secs(1)).await;
+        let slept = [&a, &b, &c].iter().filter(|tab| tab.is_asleep()).count();
+        browser.reset_pref(&keys::MEMORY_SAVER);
+        if slept != 0 {
+            return Err(format!("with Memory Saver off {slept} tabs slept"));
+        }
+
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        let _dialog = Cleanup(|| {
+            dialog.close();
+        });
+        dialog.set_visible_page_name("general");
+        glib::timeout_future(Duration::from_millis(500)).await;
+        let switch = find::<adw::SwitchRow>(dialog.upcast_ref(), |r| r.title() == memory_saver::TITLE && r.is_mapped())
+            .ok_or_else(|| format!("General shows no {:?} switch", memory_saver::TITLE))?;
+        let savings = find::<adw::ComboRow>(dialog.upcast_ref(), |r| r.title() == MEMORY_SAVINGS_ROW && r.is_mapped())
+            .ok_or_else(|| format!("General shows no {MEMORY_SAVINGS_ROW:?} row"))?;
+        let choices = savings.model().and_downcast::<gtk::StringList>().map(|m| (0..m.n_items()).filter_map(|i| m.string(i)).map(String::from).collect::<Vec<_>>());
+        let shown = (switch.is_active(), selected_label(&savings), savings.subtitle().map(String::from), savings.is_sensitive());
+        switch.set_active(false);
+        let off = (browser.switch(&keys::MEMORY_SAVER), savings.is_sensitive());
+        switch.set_active(true);
+        let balanced = MemorySaverMode::Balanced;
+        let labels = MemorySaverMode::ALL.map(|m| m.label().to_owned()).to_vec();
+        if choices != Some(labels) || shown != (true, balanced.label().to_owned(), Some(balanced.description().to_owned()), true) || off != (false, false) {
+            return Err(format!("{MEMORY_SAVINGS_ROW:?} offers {choices:?}; (switch on, chosen, subtitle, sensitive) = {shown:?}; switched off, (pref, sensitive) = {off:?}"));
+        }
+        Ok(format!(
+            "A (icon.html, with history) slept at +7 h: WebKit ended its web process ({reason:?}) and its view let go of the page; its tab still reads \"Icon\" with its icon at half opacity (alpha {full} -> {}; tab-asleep.png), and the session keeps icon.html, that title and its history; B (unsaved input), C (pinned) and the selected tab stayed awake; selecting A woke it on icon.html with Back available and its own icon; with Memory Saver off nothing slept; General shows the {:?} switch and the {MEMORY_SAVINGS_ROW:?} row ({} chosen, {:?}), insensitive while the switch is off",
+            full / 2,
+            memory_saver::TITLE,
+            balanced.label(),
+            balanced.description()
+        ))
     })
     .await;
 
@@ -3509,6 +3630,14 @@ fn heading_of(bubble: &gtk::Popover) -> Option<String> {
 /// The text's length in characters, as GTK's `i32` text positions count it.
 fn char_len(text: &str) -> i32 {
     i32::try_from(text.chars().count()).unwrap_or(i32::MAX)
+}
+
+/// The image's highest opacity, 0 to 255.
+fn peak_alpha(texture: &gdk::Texture) -> u8 {
+    let mut downloader = gdk::TextureDownloader::new(texture);
+    downloader.set_format(gdk::MemoryFormat::R8g8b8a8);
+    let (bytes, _) = downloader.download_bytes();
+    bytes.as_chunks::<4>().0.iter().map(|[.., alpha]| *alpha).max().unwrap_or(0)
 }
 
 /// How many different pixel values the image has, stopping at `cap`.

@@ -1,10 +1,10 @@
 //! The Settings dialog, bound to core's preferences: General (startup, downloads, spell check,
-//! scrolling and the GPU, updates, the profile folder), Sync (the account, what it syncs and its
-//! server), Appearance (theme, tabs, bars and buttons), Search (the engines in `search_engines`,
-//! the address bar and what it suggests), Privacy (tracking protection, cookies and site data in
-//! `site_data`, secure connections and DNS, pop-ups, passwords, site permissions, browsing data)
-//! and Shortcuts (`shortcut_settings`). Every change applies at once, in every window, and an open
-//! dialog follows what sync changes.
+//! scrolling and the GPU, the profile folder, Memory Saver, updates), Sync (the account, what it
+//! syncs and its server), Appearance (theme, tabs, bars and buttons), Search (the engines in
+//! `search_engines`, the address bar and what it suggests), Privacy (tracking protection, cookies
+//! and site data in `site_data`, secure connections and DNS, pop-ups, passwords, site
+//! permissions, browsing data) and Shortcuts (`shortcut_settings`). Every change applies at once,
+//! in every window, and an open dialog follows what sync changes.
 //!
 //! WebKitGTK fills no forms, so `autofill.forms` has no row here.
 
@@ -20,6 +20,7 @@ use vsesvit_core::prefs::{
 };
 use vsesvit_core::sync::DataType;
 use vsesvit_core::https_only;
+use vsesvit_core::memory_saver::{self, MemorySaverMode};
 use vsesvit_core::spellcheck;
 use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
@@ -87,6 +88,10 @@ pub(crate) const SPELLCHECK_ROW: &str = "Check Spelling";
 
 /// The General page's row listing the dictionaries spell checking can use.
 pub(crate) const SPELLING_LANGUAGES_ROW: &str = "Languages";
+
+/// The General page's row choosing how soon Memory Saver puts tabs to sleep: core's title in
+/// this page's capitalization.
+pub(crate) const MEMORY_SAVINGS_ROW: &str = "Memory Savings";
 
 /// The Privacy page's row saying passwords are left to a password manager.
 pub(crate) const PASSWORDS_NOTICE: &str = "Vsesvit Doesn't Save Passwords";
@@ -449,7 +454,20 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
     ));
     system.add(&profile_folder_row(browser));
 
-    let mut groups = vec![startup, downloads, spelling, system];
+    let memory = group("Memory");
+    let saver = pref_switch_row(
+        browser,
+        memory_saver::TITLE,
+        Some(memory_saver::DESCRIPTION),
+        &keys::MEMORY_SAVER,
+        |b, pref, on| b.set_pref(pref, &on),
+    );
+    let savings = memory_savings_row(browser);
+    saver.bind_property("active", &savings, "sensitive").sync_create().build();
+    memory.add(&saver);
+    memory.add(&savings);
+
+    let mut groups = vec![startup, downloads, spelling, system, memory];
     // Only for a copy that updates itself; a package from a distribution or Flatpak has no group.
     if let Some(updates) = browser.updates() {
         let group = group("Updates");
@@ -794,6 +812,42 @@ fn tracking_protection_row(browser: &Browser) -> adw::ComboRow {
         false,
         move |browser: &Browser| {
             show(&row, browser.pref(&keys::TRACKING_PROTECTION));
+            true
+        }
+    ));
+    row
+}
+
+/// How soon Memory Saver puts tabs to sleep, saying it in the subtitle.
+fn memory_savings_row(browser: &Browser) -> adw::ComboRow {
+    let row = adw::ComboRow::builder()
+        .title(MEMORY_SAVINGS_ROW)
+        .model(&gtk::StringList::new(&MemorySaverMode::ALL.map(MemorySaverMode::label)))
+        .build();
+    let show = |row: &adw::ComboRow, mode: MemorySaverMode| {
+        let index = MemorySaverMode::ALL.iter().position(|m| *m == mode).unwrap_or(0);
+        row.set_selected(u32::try_from(index).unwrap_or(0));
+        row.set_subtitle(mode.description());
+    };
+    show(&row, browser.pref(&keys::MEMORY_SAVER_MODE));
+    row.connect_selected_notify(glib::clone!(
+        #[strong]
+        browser,
+        move |row| {
+            let Some(&mode) = MemorySaverMode::ALL.get(row.selected() as usize) else { return };
+            row.set_subtitle(mode.description());
+            if browser.pref(&keys::MEMORY_SAVER_MODE) != mode {
+                browser.set_pref(&keys::MEMORY_SAVER_MODE, &mode);
+            }
+        }
+    ));
+    browser.watch_prefs(glib::clone!(
+        #[weak]
+        row,
+        #[upgrade_or]
+        false,
+        move |browser: &Browser| {
+            show(&row, browser.pref(&keys::MEMORY_SAVER_MODE));
             true
         }
     ));

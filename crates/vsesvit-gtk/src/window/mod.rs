@@ -862,6 +862,13 @@ impl BrowserWindow {
         Some((name, page.indicator_tooltip().to_string()))
     }
 
+    /// The title and icon `tab`'s tab shows.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn tab_look(&self, tab: &Tab) -> Option<(String, Option<gio::Icon>)> {
+        let page = self.page_of(tab)?;
+        Some((page.title().into(), page.icon()))
+    }
+
     /// Clicks the icon on `tab`'s tab, as on the tab bar or in the list. False when the icon
     /// does nothing.
     #[cfg(feature = "self-test")]
@@ -1286,7 +1293,7 @@ impl BrowserWindow {
                 self.browser().title_changed(tab);
             }
             TabChange::Favicon => {
-                page.set_icon(tab.web_view().favicon().as_ref());
+                page.set_icon(tab.icon().as_ref());
                 self.browser().favicon_changed(tab);
             }
             TabChange::Loading => {
@@ -1317,6 +1324,7 @@ impl BrowserWindow {
                 }
             }
             TabChange::Audio => sync_indicator(&page, tab),
+            TabChange::Sleep => page.set_icon(tab.icon().as_ref()),
             TabChange::Capture => {
                 sync_indicator(&page, tab);
                 if selected {
@@ -1360,6 +1368,7 @@ impl BrowserWindow {
         self.sync_star();
         ui.address.set_in_use(permissions::indicator(tab.capturing()));
         tab.mark_active(session::now_ms());
+        tab.wake();
         self.browser().tab_activated(&tab);
         if editing || tab.is_blank() {
             ui.address.focus_for_typing();
@@ -1374,7 +1383,7 @@ impl BrowserWindow {
             return;
         };
         page.set_title(&tab.display_title());
-        page.set_icon(tab.web_view().favicon().as_ref());
+        page.set_icon(tab.icon().as_ref());
         page.set_loading(tab.web_view().is_loading());
         sync_indicator(page, &tab);
     }

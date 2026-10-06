@@ -1,6 +1,6 @@
 //! Favicons of bookmarked pages: kept in the profile as PNG when a tab shows one (core
 //! decides whether the page or its site is bookmarked), shown by the bookmarks bar and the
-//! Bookmarks window in place of the generic page icon.
+//! Bookmarks window in place of the generic page icon. Also the faded icon of a sleeping tab.
 
 use gtk::gdk_pixbuf::{Colorspace, InterpType, Pixbuf};
 use gtk::prelude::*;
@@ -54,6 +54,17 @@ fn fitted(icon: &gdk::Texture) -> gdk::Texture {
     };
     let stride = small.rowstride() as usize;
     gdk::MemoryTexture::new(small.width(), small.height(), gdk::MemoryFormat::R8g8b8a8, &small.read_pixel_bytes(), stride).upcast()
+}
+
+/// `icon` at half its opacity, as Chrome shows a sleeping tab's.
+pub(crate) fn faded(icon: &gdk::Texture) -> gdk::Texture {
+    let format = gdk::MemoryFormat::B8g8r8a8Premultiplied;
+    let mut downloader = gdk::TextureDownloader::new(icon);
+    downloader.set_format(format);
+    let (pixels, stride) = downloader.download_bytes();
+    // Premultiplied, so halving every channel halves the opacity and keeps the colour.
+    let half: Vec<u8> = pixels.iter().map(|channel| channel / 2).collect();
+    gdk::MemoryTexture::new(icon.width(), icon.height(), format, &glib::Bytes::from_owned(half), stride).upcast()
 }
 
 /// An image of the stored icon, or of the generic `fallback` icon.

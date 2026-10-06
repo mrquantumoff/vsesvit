@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -31,6 +31,7 @@ use vsesvit_core::extensions::private::ALLOWED_IN_PRIVATE;
 use vsesvit_core::extensions::{ExtensionId, toolbar};
 use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Reach};
+use vsesvit_core::memory_saver::{self, Sweep, TabActivity};
 use vsesvit_core::onboarding;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::private::Browsing;
@@ -220,7 +221,7 @@ impl Browser {
     /// rules' blockers, deletes the data of sites to clear on exit, and brings the extension
     /// runtime in line with the profile: loads every enabled extension, then reconciles against
     /// the synced desired state (installs missing store extensions, unloads ones removed
-    /// elsewhere).
+    /// elsewhere). Then Memory Saver sweeps the tabs every [`memory_saver::SWEEP_EVERY`].
     pub(crate) fn start(&self) {
         self.apply_theme();
         self.apply_keymap();
@@ -239,6 +240,14 @@ impl Browser {
         }
         self.reconcile_extensions();
         self.preload_favicons();
+        let weak = Rc::downgrade(&self.0);
+        glib::timeout_add_local(memory_saver::SWEEP_EVERY, move || match weak.upgrade() {
+            Some(inner) => {
+                Browser(inner).sleep_idle_tabs(Instant::now());
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        });
     }
 
     pub(crate) fn app(&self) -> &adw::Application {
@@ -535,6 +544,47 @@ impl Browser {
         self.tab_used(tab);
         self.runtime().tab_activated(tab.id());
         self.schedule_session_save();
+    }
+
+    /// Memory Saver's sweep at `now`: the tabs left alone long enough go to sleep.
+    pub(crate) fn sleep_idle_tabs(&self, now: Instant) {
+        let sweep = Sweep::new(&mut self.core().borrow_mut(), now);
+        for window in self.windows() {
+            let selected = window.selected_tab();
+            for tab in window.tabs() {
+                let Some(url) = tab.committed_uri() else { continue };
+                let activity = TabActivity {
+                    url: &url,
+                    shown: selected.as_ref() == Some(&tab),
+                    pinned: window.is_pinned(&tab),
+                    audible: tab.web_view().is_playing_audio(),
+                    capturing: tab.capturing().any(),
+                    related: tab.is_related(),
+                };
+                if tab.sleeps(&sweep, &activity) {
+                    self.sleep_unless_unsaved(tab);
+                }
+            }
+        }
+    }
+
+    /// Puts `tab` to sleep unless its page holds form input not yet submitted, which keeps it
+    /// awake for another delay, and unless it was selected or closed while the page answered.
+    fn sleep_unless_unsaved(&self, tab: Tab) {
+        let weak = Rc::downgrade(&self.0);
+        glib::spawn_future_local(async move {
+            let script = memory_saver::UNSAVED_INPUT_SCRIPT;
+            let answer = tab.web_view().evaluate_javascript_future(script, None, None).await;
+            if answer.is_ok_and(|value| memory_saver::has_unsaved_input(&value.to_str())) {
+                tab.keep_awake(Instant::now());
+                return;
+            }
+            let background = tab.window().is_some_and(|window| window.selected_tab().as_ref() != Some(&tab));
+            if background && let Some(inner) = weak.upgrade() {
+                tab.sleep();
+                Browser(inner).schedule_session_save();
+            }
+        });
     }
 
     /// The tab was opened or selected, or its window activated: tab search lists it first now.

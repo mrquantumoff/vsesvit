@@ -9,12 +9,14 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
+use std::time::Instant;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, glib};
 use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Cause, Next, Upgrades};
+use vsesvit_core::memory_saver::{IdleClock, Sweep, TabActivity};
 use vsesvit_core::permissions::{Capturing, Origin};
 use vsesvit_core::private::Browsing;
 use vsesvit_core::session::TabId as SessionTabId;
@@ -25,6 +27,7 @@ use webkit::prelude::*;
 use crate::address_bar::Security;
 use crate::browser::{self, Browser};
 use crate::error_page;
+use crate::favicons;
 use crate::page_menu;
 use crate::permissions::{self, TabPermissions};
 use crate::window::{BrowserWindow, Focus};
@@ -44,6 +47,8 @@ pub(crate) enum TabChange {
     Capture,
     /// The page started or stopped playing sound, or was muted or unmuted.
     Audio,
+    /// Memory Saver put the tab to sleep, or it woke.
+    Sleep,
 }
 
 /// What a committed main-frame navigation was.
@@ -78,6 +83,22 @@ enum LoadPhase {
     Idle,
     Provisional,
     Committed,
+}
+
+/// Whether Memory Saver has put the tab to sleep (`vsesvit_core::memory_saver`).
+enum Rest {
+    /// Left alone since its clock last started.
+    Awake(IdleClock),
+    /// Its web process ended. WebKit keeps the address in the back/forward list, and the icon,
+    /// but forgets the page's title, so the tab keeps it, with the icon it shows faded.
+    Asleep { title: String, icon: Option<gdk::Texture> },
+}
+
+impl Default for Rest {
+    /// Awake, from the time the tab is made.
+    fn default() -> Self {
+        Rest::Awake(IdleClock::new(Instant::now()))
+    }
 }
 
 mod imp {
@@ -118,6 +139,9 @@ mod imp {
         pub(super) typed: RefCell<Option<String>>,
         /// The text last selected in the page, for its context menu.
         pub(super) selection: RefCell<String>,
+        pub(super) rest: RefCell<Rest>,
+        /// It opened a tab, or a page opened it, that can reach its page (`window.opener`).
+        pub(super) related: Cell<bool>,
         /// Every target whose navigation this view refused, for tests to wait on.
         #[cfg(test)]
         pub(super) refused: RefCell<Vec<String>>,
@@ -169,6 +193,8 @@ impl Tab {
         );
         let gate = Gate::opened_by(&opener.imp().gate.borrow());
         popup.imp().gate.replace(gate);
+        popup.imp().related.set(true);
+        opener.imp().related.set(true);
         popup
     }
 
@@ -403,6 +429,9 @@ impl Tab {
     }
 
     pub(crate) fn display_title(&self) -> String {
+        if let Rest::Asleep { title, .. } = &*self.imp().rest.borrow() {
+            return title.clone();
+        }
         if let Some(title) = self.web_view().title().filter(|t| !t.trim().is_empty()) {
             return title.into();
         }
@@ -420,9 +449,19 @@ impl Tab {
 
     /// Nothing requested or shown yet: a new tab waiting for an address.
     pub(crate) fn is_blank(&self) -> bool {
-        self.web_view()
-            .uri()
-            .is_none_or(|uri| uri.is_empty() || uri == "about:blank")
+        !self.is_asleep()
+            && self
+                .web_view()
+                .uri()
+                .is_none_or(|uri| uri.is_empty() || uri == "about:blank")
+    }
+
+    /// The icon its tab shows: the page's, faded while the tab sleeps.
+    pub(crate) fn icon(&self) -> Option<gdk::Texture> {
+        match &*self.imp().rest.borrow() {
+            Rest::Asleep { icon, .. } => icon.clone(),
+            Rest::Awake(_) => self.web_view().favicon(),
+        }
     }
 
     /// Address-bar text typed in this tab but not submitted, kept while another tab is shown.
@@ -477,7 +516,57 @@ impl Tab {
         self.load(uri);
     }
 
+    pub(crate) fn is_related(&self) -> bool {
+        self.imp().related.get()
+    }
+
+    pub(crate) fn is_asleep(&self) -> bool {
+        matches!(*self.imp().rest.borrow(), Rest::Asleep { .. })
+    }
+
+    /// Whether Memory Saver's `sweep` puts this tab, doing `activity`, to sleep now; never one
+    /// asleep already. Whatever keeps it awake starts its idle clock again.
+    pub(crate) fn sleeps(&self, sweep: &Sweep, activity: &TabActivity) -> bool {
+        match &mut *self.imp().rest.borrow_mut() {
+            Rest::Awake(clock) => sweep.sleeps(activity, clock),
+            Rest::Asleep { .. } => false,
+        }
+    }
+
+    /// Starts its idle clock again, as for a page with unsaved input.
+    pub(crate) fn keep_awake(&self, now: Instant) {
+        if let Rest::Awake(clock) = &mut *self.imp().rest.borrow_mut() {
+            clock.restart(now);
+        }
+    }
+
+    /// Puts the tab to sleep: its page leaves memory with its web process, while the tab keeps
+    /// its title, address and history to show and save.
+    pub(crate) fn sleep(&self) {
+        if self.is_asleep() {
+            return;
+        }
+        let title = self.display_title();
+        let icon = self.web_view().favicon().as_ref().map(favicons::faded);
+        self.imp().rest.replace(Rest::Asleep { title, icon });
+        self.web_view().terminate_web_process();
+        self.notify(TabChange::Sleep);
+    }
+
+    /// Wakes a sleeping tab: WebKit loads its page again in a new web process, at the same
+    /// place in its history. The load starting ends the sleep.
+    pub(crate) fn wake(&self) {
+        if self.is_asleep() {
+            self.reload();
+        }
+    }
+
+    /// While the tab sleeps, neither the window nor the browser hears of the title WebKit forgot
+    /// with the web process, nor of an icon that would replace the faded one.
     fn notify(&self, change: TabChange) {
+        if self.is_asleep() && matches!(change, TabChange::Title | TabChange::Favicon) {
+            return;
+        }
         if let Some(window) = self.window() {
             window.tab_changed(self, change);
         }
@@ -695,6 +784,10 @@ impl Tab {
         let imp = self.imp();
         match event {
             webkit::LoadEvent::Started | webkit::LoadEvent::Redirected => {
+                if self.is_asleep() {
+                    imp.rest.replace(Rest::default());
+                    self.notify(TabChange::Sleep);
+                }
                 imp.load.set(LoadPhase::Provisional);
                 self.https_started(event == webkit::LoadEvent::Redirected);
             }
@@ -1407,6 +1500,34 @@ mod tests {
         assert!(refused_by_name, "the held window went to the options page by its name");
         assert!(refused_via_opener, "the opener went to the options page from a window it opened");
         assert!(refused_typed_over, "the held window went on from the typed options page");
+    }
+
+    #[gtk::test]
+    fn a_sleeping_tab_keeps_its_page_and_wakes_to_it_with_its_history() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/one" => Reply::Page("One"),
+            "/two" => Reply::Page("Two"),
+            _ => Reply::NotFound,
+        });
+        let window = BrowserWindow::new(&browser());
+        window.open_tab(None, None, Focus::Foreground);
+        let tab = window.open_tab(Some(&server.url("/one")), None, Focus::Background);
+        wait_until("the first page", || tab.web_view().title().as_deref() == Some("One"));
+        let two = server.url("/two");
+        tab.load(&two);
+        wait_until("the second page", || tab.web_view().title().as_deref() == Some("Two"));
+        let history = tab.session_state_bytes();
+
+        tab.sleep();
+        let released = tab.web_view().uri().unwrap_or_default().is_empty();
+        let asleep = (tab.display_title(), tab.session_uri(), tab.session_state_bytes() == history, tab.is_blank());
+        window.select_tab(&tab);
+        wait_until("the page to come back", || !tab.is_asleep() && tab.web_view().title().as_deref() == Some("Two"));
+        let awake = (tab.committed_uri(), tab.web_view().can_go_back());
+        window.destroy();
+        assert!(released, "the view still shows the page");
+        assert_eq!(asleep, ("Two".to_owned(), Some(two.clone()), true, false));
+        assert_eq!(awake, (Some(two), true));
     }
 
     #[gtk::test]
