@@ -822,6 +822,19 @@ async fn checks(
     .await;
     window.close_scripted_dialog();
 
+    check(report, "extension_notifications", DEFAULT_TIMEOUT, async |p| {
+        eval(&tab, "document.documentElement.dataset.vsesvitNotify = 'clear'").await?;
+        loop {
+            let value = eval(&tab, "document.documentElement.dataset.vsesvitProbeNotified || null").await?;
+            p.observe(format!("dataset.vsesvitProbeNotified = {value}"));
+            if let Ok(Some(answer)) = serde_json::from_str::<Option<String>>(&value) {
+                return Ok(format!("WebView2 gives the probe {answer}"));
+            }
+            exec::sleep(POLL).await;
+        }
+    })
+    .await;
+
     check(report, "download", DEFAULT_TIMEOUT, async |p| {
         let dir = out_dir.join("downloads");
         browser.set_download_dir(Some(&dir));
