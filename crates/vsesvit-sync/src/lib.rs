@@ -37,13 +37,15 @@
 //! | [`status`] | what Settings says about each state, for both shells                    |
 
 mod auth;
+mod crypto;
 mod engine;
 mod server;
 pub mod status;
 
 use std::time::Duration;
 
-pub use engine::{Account, Exchanged, Finished, MAX_ROUNDS, Round, Synced};
+pub use crypto::{MIN_PASSPHRASE_CHARS, Passphrase};
+pub use engine::{Account, Encryption, Exchanged, Finished, MAX_ROUNDS, NewKeys, PassphraseJob, Round, Synced};
 pub use auth::SignIn;
 
 pub fn now_secs() -> u64 {
@@ -74,6 +76,14 @@ pub enum Error {
     SignedOut,
     #[error("the sign-in took too long")]
     TimedOut,
+    #[error("the passphrase is wrong")]
+    WrongPassphrase,
+    #[error("that passphrase opens a key this device never had; sign out and sign in again to use it")]
+    UnrelatedKey,
+    #[error("the sync server's key record is damaged, or from a newer version of Vsesvit")]
+    InvalidKeyRecord,
+    #[error("the sync passphrase changed meanwhile; try again")]
+    KeysChanged,
     #[error(transparent)]
     Profile(#[from] vsesvit_core::Error),
 }

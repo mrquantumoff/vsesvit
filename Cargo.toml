@@ -36,3 +36,10 @@ windows-reference = "0.100"
 # Tauri-format signing keys are scrypt-encrypted; unoptimized scrypt makes key tests take seconds.
 [profile.dev.package.scrypt]
 opt-level = 3
+
+# The same for Argon2id, which derives the sync passphrase's key.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

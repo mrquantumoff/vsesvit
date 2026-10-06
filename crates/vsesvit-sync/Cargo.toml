@@ -18,6 +18,14 @@ ureq = { version = "3.4", features = ["json"] }
 base64 = "0.23"
 sha2 = "0.11"
 getrandom = "0.4"
+# End-to-end encryption (crypto.rs): the keyring wrapped by an Argon2id key from the sync passphrase, records
+# sealed with XChaCha20-Poly1305 under HMAC-SHA256 ids.
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+hmac = "0.13"
+# The passphrase in NFC, as RFC 8265 has passwords; already in the tree through `url`.
+icu_normalizer = "2.3"
+zeroize = "1"
 
 [dev-dependencies]
 vsesvit-core = { workspace = true, features = ["testkit"] }
