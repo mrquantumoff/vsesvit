@@ -39,26 +39,23 @@ impl BrowserWindow {
         let flyout: Flyout = xaml::load(FLYOUT)?;
         flyout.SetContent(&content)?;
         for (name, keep) in [("WarningKeep", true), ("WarningDiscard", false)] {
-            let window = self.me.clone();
-            let download = download.clone();
+            let (window, id) = (self.me.clone(), download.id);
             dialogs::on_click(&xaml::find::<Button>(&content, name)?, move || {
                 with(&window, |w| {
                     w.hide_download_warning();
                     match w.browser() {
-                        Some(b) if keep => b.keep_download(&download),
-                        Some(b) => b.discard_download(&download),
+                        Some(b) if keep => b.keep_download(id),
+                        Some(b) => b.discard_download(id),
                         None => {}
                     }
                 });
             })?;
         }
         self.hide_download_warning();
+        // It opens on its own while the user may be typing, so it takes no focus: a key press
+        // must not answer it.
         let options = FlyoutShowOptions::new()?;
-        options.SetShowMode(if self.is_foreground() {
-            FlyoutShowMode::Standard
-        } else {
-            FlyoutShowMode::Transient
-        })?;
+        options.SetShowMode(FlyoutShowMode::Transient)?;
         flyout
             .cast::<FlyoutBase>()?
             .ShowAtWithOptions(&self.ui.downloads.cast::<FrameworkElement>()?, &options)?;

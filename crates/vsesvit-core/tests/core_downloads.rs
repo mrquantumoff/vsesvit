@@ -140,26 +140,35 @@ fn a_kept_file_takes_its_name_and_a_discarded_one_is_gone() {
     };
 
     let setup = start(&mut dl, "setup.exe");
-    assert_eq!(dl.keep(&setup).unwrap(), folder.join("setup.exe"));
+    assert_eq!(dl.keep(setup.id).unwrap(), Some(folder.join("setup.exe")));
     assert_eq!(std::fs::read_to_string(folder.join("setup.exe")).unwrap(), "setup.exe");
     assert!(!unconfirmed_path(&setup.path).exists());
     let listed = dl.list(10).unwrap();
     assert_eq!(listed, [Download { state: State::Completed, ..setup.clone() }]);
 
+    assert_eq!(dl.keep(setup.id).unwrap(), None, "kept already");
+    dl.discard(setup.id).unwrap();
+    assert!(folder.join("setup.exe").exists(), "a stale Discard leaves a kept file alone");
+
     let again = start(&mut dl, "setup.exe");
-    assert_eq!(dl.keep(&again).unwrap(), folder.join("setup (1).exe"), "a file took the name meanwhile");
+    assert_eq!(dl.keep(again.id).unwrap(), Some(folder.join("setup (1).exe")), "a file took the name meanwhile");
     assert_eq!(dl.list(1).unwrap()[0].path, folder.join("setup (1).exe"));
     assert_eq!(std::fs::read_to_string(folder.join("setup.exe")).unwrap(), "setup.exe", "never overwritten");
 
     let script = start(&mut dl, "run.sh");
-    dl.discard(&script).unwrap();
+    dl.discard(script.id).unwrap();
     assert!(!unconfirmed_path(&script.path).exists() && !script.path.exists());
     assert!(dl.list(10).unwrap().iter().all(|d| d.id != script.id), "off the list");
 
     let gone = start(&mut dl, "gone.bat");
     std::fs::remove_file(unconfirmed_path(&gone.path)).unwrap();
-    dl.discard(&gone).unwrap();
+    dl.discard(gone.id).unwrap();
     assert!(dl.list(10).unwrap().iter().all(|d| d.id != gone.id), "discarding a file deleted meanwhile still clears the entry");
+
+    let next = start(&mut dl, "next.bat");
+    assert!(next.id.0 > gone.id.0, "the id of a removed entry is never given out again");
+    assert_eq!(dl.keep(gone.id).unwrap(), None, "a stale Keep finds nothing");
+    assert!(unconfirmed_path(&next.path).exists());
 }
 
 #[test]

@@ -185,13 +185,12 @@ impl State {
                 .css_classes(["flat"])
                 .build();
             for (button, kept) in [(&keep, true), (&discard, false)] {
-                let entry = download.clone();
                 button.connect_clicked(glib::clone!(
                     #[strong(rename_to = state)]
                     self,
                     move |_| match state.downloads.upgrade() {
-                        Some(downloads) if kept => downloads.keep(&entry),
-                        Some(downloads) => downloads.discard(&entry),
+                        Some(downloads) if kept => downloads.keep(id),
+                        Some(downloads) => downloads.discard(id),
                         None => {}
                     }
                 ));

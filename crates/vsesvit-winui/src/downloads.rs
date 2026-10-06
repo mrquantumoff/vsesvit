@@ -199,17 +199,18 @@ impl Browser {
     }
 
     /// Moves a dangerous file the user chose to keep to its own name.
-    pub fn keep_download(&self, download: &Download) {
-        match self.core(|p| p.downloads().keep(download)) {
-            Ok(path) => log::info!("kept {}", path.display()),
+    pub fn keep_download(&self, id: DownloadId) {
+        match self.core(|p| p.downloads().keep(id)) {
+            Ok(Some(path)) => log::info!("kept {}", path.display()),
+            Ok(None) => {}
             Err(e) => log::warn!("keep download: {e}"),
         }
         self.downloads_changed(Change::List);
     }
 
     /// Deletes a dangerous file the user chose not to keep, and its entry.
-    pub fn discard_download(&self, download: &Download) {
-        if let Err(e) = self.core(|p| p.downloads().discard(download)) {
+    pub fn discard_download(&self, id: DownloadId) {
+        if let Err(e) = self.core(|p| p.downloads().discard(id)) {
             log::warn!("discard download: {e}");
         }
         self.downloads_changed(Change::List);
@@ -308,14 +309,23 @@ impl Browser {
         if let Err(e) = std::fs::create_dir_all(dir) {
             log::warn!("{}: {e}", dir.display());
         }
-        let live = self.downloads.live.borrow();
-        list::unique_destination(dir, name, |path| {
-            path.exists() || live.values().any(|l| l.path == path)
-        })
+        list::unique_destination(dir, name, |path| self.taken(path))
+    }
+
+    /// Whether a file or a running download has `path`.
+    fn taken(&self, path: &Path) -> bool {
+        path.exists()
+            || self
+                .downloads
+                .live
+                .borrow()
+                .values()
+                .any(|l| l.path == path)
     }
 
     /// Sends the download to `path`, or beside it under its unconfirmed name if it can run
-    /// code, and records it, in core's private session for a private window's.
+    /// code, and records it, in core's private session for a private window's. A destination
+    /// whose unconfirmed name another download holds is numbered.
     fn begin_download(
         self: &Rc<Self>,
         args: &CoreWebView2DownloadStartingEventArgs,
@@ -326,6 +336,13 @@ impl Browser {
         let operation = args.DownloadOperation()?;
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let dangerous = list::is_dangerous(&name, operation.MimeType().ok().as_deref());
+        let path = match path.parent() {
+            Some(dir) if dangerous && self.taken(&list::unconfirmed_path(path)) => {
+                self.free_path(dir, &name)
+            }
+            _ => path.to_owned(),
+        };
+        let path = path.as_path();
         let written = if dangerous {
             list::unconfirmed_path(path)
         } else {

@@ -229,8 +229,8 @@ impl Page {
             Action::Pause => browser.pause_download(download.id),
             Action::Resume => browser.resume_download(download.id),
             Action::Cancel => browser.cancel_download(download.id),
-            Action::Keep => browser.keep_download(download),
-            Action::Discard => browser.discard_download(download),
+            Action::Keep => browser.keep_download(download.id),
+            Action::Discard => browser.discard_download(download.id),
             Action::Remove => browser.remove_download(download.id),
         }
     }

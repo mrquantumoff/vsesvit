@@ -148,7 +148,7 @@ fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>) -> io::Result<()> {
 
     let lookup = if path == "/" { "/index.html" } else { path };
     let get = method == "GET" || method == "HEAD";
-    if get && path == "/stalled.bin" {
+    if method == "GET" && path == "/stalled.bin" {
         return stall(stream);
     }
     let set_cookie = get && path == "/set-cookie";

@@ -186,18 +186,21 @@ impl Downloads {
     }
 
     /// Moves a file that can run code, which the user chose to keep, to its own name.
-    pub(crate) fn keep(&self, download: &Download) {
-        match self.core.borrow_mut().downloads().keep(download) {
-            Ok(path) => log::info!("kept {}", path.display()),
-            Err(e) => log::warn!("downloads: keeping {}: {e}", download.path.display()),
+    pub(crate) fn keep(&self, id: DownloadId) {
+        let kept = self.core.borrow_mut().downloads().keep(id);
+        match kept {
+            Ok(Some(path)) => log::info!("kept {}", path.display()),
+            Ok(None) => {}
+            Err(e) => log::warn!("downloads: keeping download {}: {e}", id.0),
         }
         self.notify(Change::List);
     }
 
     /// Deletes a file that can run code, which the user chose not to keep, and its entry.
-    pub(crate) fn discard(&self, download: &Download) {
-        if let Err(e) = self.core.borrow_mut().downloads().discard(download) {
-            log::warn!("downloads: discarding {}: {e}", download.path.display());
+    pub(crate) fn discard(&self, id: DownloadId) {
+        let discarded = self.core.borrow_mut().downloads().discard(id);
+        if let Err(e) = discarded {
+            log::warn!("downloads: discarding download {}: {e}", id.0);
         }
         self.notify(Change::List);
     }
@@ -490,15 +493,21 @@ impl Downloads {
 const NOT_UTF8: &str = "Cannot save the download: its path is not valid UTF-8";
 
 /// Where the engine writes a download going to `path`: there, or beside it under its
-/// unconfirmed name if the file can run code, keeping `path` in `held` until it has started.
+/// unconfirmed name if the file can run code, keeping the destination in `held` until it has
+/// started. A destination whose unconfirmed name another download holds is numbered.
 fn written(download: &webkit::Download, path: &Path, held: &Held) -> PathBuf {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let mime = download.response().and_then(|r| r.mime_type());
     if !is_dangerous(&name, mime.as_deref()) {
         return path.to_owned();
     }
-    held.replace(Some(path.to_owned()));
-    unconfirmed_path(path)
+    let path = match path.parent() {
+        Some(dir) if unconfirmed_path(path).exists() => unique_destination(dir, &name, Path::exists),
+        _ => path.to_owned(),
+    };
+    let written = unconfirmed_path(&path);
+    held.replace(Some(path));
+    written
 }
 
 /// Chrome's warning about a downloaded file that can run code, with Keep and Discard, for the
@@ -507,9 +516,18 @@ pub(crate) fn warning(downloads: &Rc<Downloads>, download: &Download) -> gtk::Po
     let name = gtk::Label::builder()
         .label(file_name(&download.path))
         .xalign(0.0)
+        .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::Middle)
         .css_classes(["heading"])
         .build();
+    let close = gtk::Button::builder()
+        .icon_name("window-close-symbolic")
+        .tooltip_text("Close")
+        .css_classes(["flat", "circular"])
+        .build();
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    top.append(&name);
+    top.append(&close);
     let text = gtk::Label::builder()
         .label(status_line(download, None, false))
         .xalign(0.0)
@@ -529,21 +547,31 @@ pub(crate) fn warning(downloads: &Rc<Downloads>, download: &Download) -> gtk::Po
         .margin_bottom(6)
         .width_request(300)
         .build();
-    content.append(&name);
+    content.append(&top);
     content.append(&text);
     content.append(&buttons);
-    let popover = gtk::Popover::builder().child(&content).position(gtk::PositionType::Bottom).build();
-    popover.add_css_class("download-warning");
-    popover.set_default_widget(Some(&discard));
+    // It opens on its own while the user may be typing, so it takes no focus: a key press must
+    // not answer it.
+    let popover = gtk::Popover::builder()
+        .child(&content)
+        .position(gtk::PositionType::Bottom)
+        .autohide(false)
+        .css_classes(["download-warning"])
+        .build();
+    close.connect_clicked(glib::clone!(
+        #[weak]
+        popover,
+        move |_| popover.popdown()
+    ));
     for (button, kept) in [(keep, true), (discard, false)] {
-        let (downloads, download, popover) = (Rc::downgrade(downloads), download.clone(), popover.downgrade());
+        let (downloads, id, popover) = (Rc::downgrade(downloads), download.id, popover.downgrade());
         button.connect_clicked(move |_| {
             if let Some(popover) = popover.upgrade() {
                 popover.popdown();
             }
             match downloads.upgrade() {
-                Some(downloads) if kept => downloads.keep(&download),
-                Some(downloads) => downloads.discard(&download),
+                Some(downloads) if kept => downloads.keep(id),
+                Some(downloads) => downloads.discard(id),
                 None => {}
             }
         });
@@ -736,7 +764,7 @@ mod tests {
         wait_until("the second to wait for the user", || waiting(Some(first.id)).is_some());
         let second = waiting(Some(first.id)).expect("the second entry");
         assert_eq!(second.path, dir.join("run (1).sh"), "the kept file has the name");
-        downloads.discard(&second);
+        downloads.discard(second.id);
         assert!(!unconfirmed_path(&second.path).exists() && !second.path.exists(), "discarded");
         assert!(downloads.list().iter().all(|d| d.id != second.id), "off the list");
 

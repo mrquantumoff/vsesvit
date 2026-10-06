@@ -17,7 +17,7 @@
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::db::bad_column;
 use crate::private::Browsing;
@@ -36,12 +36,13 @@ CREATE TABLE downloads (                  -- LOCAL: files on this device's disk
 );
 ";
 
-/// Migration v10: the state CHECK accepts 'paused', 'interrupted' and 'unconfirmed'. SQLite
+/// Migration v10: the state CHECK accepts 'paused', 'interrupted' and 'unconfirmed', and ids are
+/// never reused, so a warning left open about a removed entry cannot act on a later one. SQLite
 /// cannot alter a CHECK, so the table is rebuilt as `extensions/schema_v4.sql` rebuilds the
 /// extension tables.
 pub(crate) const SCHEMA_STATES: &str = "
 CREATE TABLE downloads_v10 (
-  id          INTEGER PRIMARY KEY,
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
   url         TEXT NOT NULL,
   path        TEXT NOT NULL,             -- where the file goes; an unconfirmed one waits beside it
   started_ms  INTEGER NOT NULL,
@@ -232,31 +233,36 @@ impl Downloads<'_> {
         Ok(())
     }
 
-    /// Moves an unconfirmed file to its destination and lists it as completed. If a file took
-    /// that name meanwhile, the kept one is numbered instead. Returns where the file now is.
-    pub fn keep(&mut self, download: &Download) -> Result<PathBuf, Error> {
-        debug_assert_eq!(download.state, State::Unconfirmed, "only an unconfirmed file is kept");
-        let path = &download.path;
-        let kept = match (path.parent(), path.file_name()) {
-            (Some(dir), Some(name)) if path.exists() => unique_destination(dir, &name.to_string_lossy(), Path::exists),
-            _ => path.clone(),
-        };
-        std::fs::rename(unconfirmed_path(path), &kept)?;
+    /// Moves the unconfirmed file of `id` to its destination and lists it as completed. If a
+    /// file took that name meanwhile, the kept one is numbered instead; no file is replaced.
+    /// Returns where the file now is, or `None` if the entry no longer waits for the user.
+    pub fn keep(&mut self, id: DownloadId) -> Result<Option<PathBuf>, Error> {
+        let Some(download) = self.unconfirmed(id)? else { return Ok(None) };
+        let kept = move_to_free_name(&unconfirmed_path(&download.path), &download.path)?;
         self.p.conn.execute(
             "UPDATE downloads SET state = ?2, path = ?3 WHERE id = ?1",
-            params![download.id.0, State::Completed.as_str(), kept.to_string_lossy()],
+            params![id.0, State::Completed.as_str(), kept.to_string_lossy()],
         )?;
-        Ok(kept)
+        Ok(Some(kept))
     }
 
-    /// Deletes an unconfirmed file and takes it off the list.
-    pub fn discard(&mut self, download: &Download) -> Result<(), Error> {
-        debug_assert_eq!(download.state, State::Unconfirmed, "only an unconfirmed file is discarded");
+    /// Deletes the unconfirmed file of `id` and takes it off the list. No-op if the entry no
+    /// longer waits for the user.
+    pub fn discard(&mut self, id: DownloadId) -> Result<(), Error> {
+        let Some(download) = self.unconfirmed(id)? else { return Ok(()) };
         match std::fs::remove_file(unconfirmed_path(&download.path)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
-        self.remove(download.id)
+        self.remove(id)
+    }
+
+    /// The entry `id` while it waits for the user to keep or discard it.
+    fn unconfirmed(&mut self, id: DownloadId) -> Result<Option<Download>, Error> {
+        let mut stmt = self.p.conn.prepare_cached(
+            "SELECT id, url, path, started_ms, state, received, total FROM downloads WHERE id = ?1 AND state = ?2",
+        )?;
+        Ok(stmt.query_row(params![id.0, State::Unconfirmed.as_str()], row_download).optional()?)
     }
 
     /// Removes every entry nothing is left to happen to ([`State::is_final`]), the private
@@ -302,20 +308,42 @@ fn row_download(row: &rusqlite::Row<'_>) -> Result<Download, rusqlite::Error> {
 /// neither it nor its [`unconfirmed_path`] exists. The suggested name comes from the server and
 /// is reduced to a plain file name.
 pub fn unique_destination(dir: &Path, suggested: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
-    let taken = |path: &Path| exists(path) || exists(&unconfirmed_path(path));
     let name = sanitize(suggested);
-    let candidate = dir.join(&name);
-    if !taken(&candidate) {
-        return candidate;
-    }
+    numbered(dir, &name)
+        .find(|candidate| !exists(candidate) && !exists(&unconfirmed_path(candidate)))
+        .expect("an unused name exists")
+}
+
+/// `dir/name`, then `dir/name (1)`, `dir/name (2)`, ... before the extension.
+fn numbered(dir: &Path, name: &str) -> impl Iterator<Item = PathBuf> {
     let (stem, extension) = match name.rfind('.') {
         Some(dot) if dot > 0 => name.split_at(dot),
-        _ => (name.as_str(), ""),
+        _ => (name, ""),
     };
-    (1..)
-        .map(|n| dir.join(format!("{stem} ({n}){extension}")))
-        .find(|candidate| !taken(candidate))
-        .expect("an unused name exists")
+    std::iter::once(dir.join(name)).chain((1..).map(move |n| dir.join(format!("{stem} ({n}){extension}"))))
+}
+
+/// Moves `from` to `to`, or to the first numbered name beside `to` that no file has, and returns
+/// where it went. A hard link claims the name, so a file that appears meanwhile is never replaced.
+fn move_to_free_name(from: &Path, to: &Path) -> std::io::Result<PathBuf> {
+    let dir = to.parent().unwrap_or(Path::new(""));
+    let name = to.file_name().unwrap_or_default().to_string_lossy();
+    for candidate in numbered(dir, &name) {
+        match std::fs::hard_link(from, &candidate) {
+            Ok(()) => {
+                std::fs::remove_file(from)?;
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            // A file system without hard links, such as FAT: a rename, once no file has the name.
+            Err(_) if !candidate.exists() => {
+                std::fs::rename(from, &candidate)?;
+                return Ok(candidate);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the numbered names never end")
 }
 
 /// Where a file that can run code waits until the user keeps it: beside its destination, under

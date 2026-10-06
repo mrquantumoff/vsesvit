@@ -348,8 +348,10 @@ shells call `interrupt_stale` once at startup, which turns every leftover row th
 
 A file that can run code (`is_dangerous`, by extension and MIME type, per system) is written at
 `unconfirmed_path(path)` and its row waits as `Unconfirmed`, which `interrupt_stale` and `clear` leave alone.
-`keep` renames the file to `path`, or to a numbered name if a file took `path` meanwhile, and stores the row as
-`Completed` with the path it got; `discard` deletes the file and the row. `unique_destination` counts a name as taken
+`keep` moves the file to `path`, or to a numbered name if a file took `path` meanwhile (through a hard link, so no
+file is ever replaced), and stores the row as `Completed` with the path it got; `discard` deletes the file and the
+row. Both take an id and act only while that row is still `Unconfirmed`, and v10 made the ids `AUTOINCREMENT`, so a
+warning left open about an entry the user already settled does nothing. `unique_destination` counts a name as taken
 while its unconfirmed file exists, so a second download of the same file never claims it. `zone_identifier(url)` is the
 Mark of the Web text the Windows shell writes to a finished file's `Zone.Identifier` stream.
 

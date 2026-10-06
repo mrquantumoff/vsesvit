@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use vsesvit_core::Url;
-use vsesvit_core::downloads::{Download, DownloadId, State, unconfirmed_path};
+use vsesvit_core::downloads::{Download, DownloadId, State, unconfirmed_path, zone_identifier};
 use vsesvit_core::testkit::STALLED_SENT;
 
 use super::{Probe, until};
@@ -104,10 +104,15 @@ pub(super) async fn download_safety(
     let discarded_gone = !unconfirmed_path(&second.path).exists() && !second.path.exists();
 
     let detail = format!(
-        "{} waited as {} ({held:?}, at its name: {held_at_name}); Keep made it {kept:?} marked {mark:?}; \
-         the second, {}, was discarded (files gone: {discarded_gone})",
+        "{} waited as {} ({held:?}, at its name: {held_at_name}); Keep made it {kept:?} marked {mark:?} \
+         by {}; the second, {}, was discarded (files gone: {discarded_gone})",
         first.path.display(),
         waiting.display(),
+        if mark == zone_identifier(script.as_str()) {
+            "Vsesvit"
+        } else {
+            "WebView2"
+        },
         second.path.display(),
     );
     let ok = first.path == dir.join("dangerous.bat")
