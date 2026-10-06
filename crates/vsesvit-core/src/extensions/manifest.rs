@@ -297,6 +297,52 @@ impl MatchPattern {
         };
         glob_match(self.path.as_bytes(), path.as_bytes())
     }
+
+    /// The URLs this pattern matches that the host permission `grant` covers, as one
+    /// pattern; `None` when there are none. A host permission grants whole origins, as in
+    /// Chrome, so its path is ignored and the result keeps this pattern's.
+    pub fn within(&self, grant: &MatchPattern) -> Option<MatchPattern> {
+        use SchemeMatch::{AllUrls, Exact, Web};
+        let web = |s: &str| matches!(s, "http" | "https" | "ws" | "wss");
+        let scheme = match (&self.scheme, &grant.scheme) {
+            (AllUrls, AllUrls) => return Some(self.clone()),
+            (AllUrls, other) | (other, AllUrls) => match other {
+                Exact(s) if !ALL_URLS_SCHEMES.contains(&s.as_str()) => return None,
+                other => other.clone(),
+            },
+            (Web, Web) => Web,
+            (Web, Exact(s)) | (Exact(s), Web) if web(s) => Exact(s.clone()),
+            (Exact(a), Exact(b)) if a == b => Exact(a.clone()),
+            _ => return None,
+        };
+        let covers = |domain: &str, host: &str| host == domain || host.strip_suffix(domain).is_some_and(|p| p.ends_with('.'));
+        let host = match (&self.host, &grant.host) {
+            (HostMatch::Any, other) | (other, HostMatch::Any) => other.clone(),
+            (HostMatch::Exact(a), HostMatch::Exact(b)) if a == b => HostMatch::Exact(a.clone()),
+            (HostMatch::Exact(h), HostMatch::DomainAndSubdomains(d)) | (HostMatch::DomainAndSubdomains(d), HostMatch::Exact(h)) if covers(d, h) => HostMatch::Exact(h.clone()),
+            (HostMatch::DomainAndSubdomains(a), HostMatch::DomainAndSubdomains(b)) if covers(b, a) => HostMatch::DomainAndSubdomains(a.clone()),
+            (HostMatch::DomainAndSubdomains(a), HostMatch::DomainAndSubdomains(b)) if covers(a, b) => HostMatch::DomainAndSubdomains(b.clone()),
+            _ => return None,
+        };
+        let port = match (self.port, grant.port) {
+            (None, p) | (p, None) => p,
+            (Some(a), Some(b)) if a == b => Some(a),
+            _ => return None,
+        };
+        let scheme = match scheme {
+            Exact(s) => s,
+            _ => "*".to_owned(),
+        };
+        let host = match host {
+            HostMatch::Any if scheme == "file" => String::new(),
+            HostMatch::Any => "*".to_owned(),
+            HostMatch::DomainAndSubdomains(d) => format!("*.{d}"),
+            HostMatch::Exact(h) => h,
+        };
+        let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+        let path = if self.scheme == AllUrls { "/*" } else { &self.path };
+        MatchPattern::parse(&format!("{scheme}://{host}{port}{path}")).ok()
+    }
 }
 
 /// `*` matches any run of characters, everything else matches literally.
@@ -1016,6 +1062,33 @@ mod tests {
             assert!(m(any, "http://localhost:3000/"), "{any}");
             assert!(m(any, "http://localhost:8080/"), "{any}");
         }
+    }
+
+    #[test]
+    fn a_pattern_within_a_host_permission_keeps_its_path_on_the_granted_origins() {
+        let within = |pattern: &str, grant: &str| MatchPattern::parse(pattern).unwrap().within(&MatchPattern::parse(grant).unwrap()).map(|p| p.as_str().to_owned());
+        let some = |s: &str| Some(s.to_owned());
+        assert_eq!(within("<all_urls>", "<all_urls>"), some("<all_urls>"));
+        assert_eq!(within("<all_urls>", "http://127.0.0.1/*"), some("http://127.0.0.1/*"));
+        assert_eq!(within("*://*/*", "https://*.example.com/x"), some("https://*.example.com/*"));
+        assert_eq!(within("https://a.example.com/page*", "*://*.example.com/*"), some("https://a.example.com/page*"));
+        assert_eq!(within("*://*.example.com/*", "<all_urls>"), some("*://*.example.com/*"));
+        assert_eq!(within("*://*.example.com/*", "*://*.a.example.com/*"), some("*://*.a.example.com/*"));
+        assert_eq!(within("http://localhost/*", "http://localhost:3000/*"), some("http://localhost:3000/*"));
+        assert_eq!(within("file:///home/*", "<all_urls>"), some("file:///home/*"));
+        for (pattern, grant) in [
+            ("https://a.test/*", "http://a.test/*"),
+            ("*://a.test/*", "https://b.test/*"),
+            ("*://*.example.com/*", "*://*.other.com/*"),
+            ("http://localhost:3000/*", "http://localhost:8080/*"),
+            ("urn://x/*", "<all_urls>"),
+            ("ftp://x.test/*", "*://*/*"),
+        ] {
+            assert_eq!(within(pattern, grant), None, "{pattern} within {grant}");
+        }
+        let pattern = MatchPattern::parse("<all_urls>").unwrap().within(&MatchPattern::parse("https://*.example.com/*").unwrap()).unwrap();
+        assert!(pattern.matches(&Url::parse("https://a.example.com/x?y").unwrap()));
+        assert!(!pattern.matches(&Url::parse("http://a.example.com/").unwrap()));
     }
 
     #[test]
