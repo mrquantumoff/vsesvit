@@ -2,6 +2,10 @@
 //! `TabView` strip in the title bar), the toolbar, the bookmarks bar and the page grid that hosts
 //! every tab's web view.
 //!
+//! A window is normal or private for its whole life, and so is every tab in it (see
+//! `vsesvit_core::private`). A private window is dark whatever the theme, as Chrome's and
+//! Edge's are, and says so with a pill in its toolbar and in its title.
+//!
 //! With the vertical pane the toolbar sits in the title bar and its empty stretches drag the
 //! window (see `update_drag_regions`); with the top strip the strip's footer does. `tabs` only
 //! owns the `Tab` values; their order and the selection live in the live tab list. No `RefCell`
@@ -30,6 +34,7 @@ use vsesvit_core::bookmarks::BookmarkId;
 use vsesvit_core::extensions::toolbar::Layout;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::suggest::Queries;
 use vsesvit_core::view_source;
 use windows_core::{IInspectable, Interface, Result};
@@ -154,6 +159,20 @@ pub(crate) struct WindowPrefs {
 /// The compact address bar's widest.
 const COMPACT_ADDRESS_WIDTH: f64 = 720.0;
 
+/// The window's title for a page titled `page` (empty for none), which names a private window
+/// as Chrome's names an incognito one.
+fn window_title(page: &str, browsing: Browsing) -> String {
+    let app = match browsing {
+        Browsing::Normal => "Vsesvit",
+        Browsing::Private => "Vsesvit (Private)",
+    };
+    if page.is_empty() {
+        app.to_owned()
+    } else {
+        format!("{page} - {app}")
+    }
+}
+
 /// Whether the star shows the page at `url` bookmarked: never a blank tab or the new tab page,
 /// which have no address to bookmark.
 pub(crate) fn starred(url: &str, is_bookmarked: impl FnOnce(&str) -> bool) -> bool {
@@ -182,6 +201,7 @@ type Bounds = ((i32, i32, u32, u32), bool);
 
 pub(crate) struct BrowserWindow {
     browser: Weak<Browser>,
+    browsing: Browsing,
     window: Window,
     ui: Chrome,
     top: Rc<TopStrip>,
@@ -238,10 +258,16 @@ pub(crate) struct BrowserWindow {
 }
 
 impl BrowserWindow {
-    pub fn create(browser: &Rc<Browser>, show: Show, prefs: WindowPrefs) -> Result<Rc<Self>> {
+    pub fn create(
+        browser: &Rc<Browser>,
+        browsing: Browsing,
+        show: Show,
+        prefs: WindowPrefs,
+    ) -> Result<Rc<Self>> {
         let ui = Chrome::load()?;
+        xaml::set_visible(&ui.private_pill, browsing == Browsing::Private)?;
         let window = Window::new()?;
-        window.SetTitle("Vsesvit")?;
+        window.SetTitle(&window_title("", browsing))?;
         window.SetContent(&ui.root)?;
         window.SetExtendsContentIntoTitleBar(true)?;
         platform::set_window_icon(platform::window_handle(&window)?);
@@ -268,6 +294,7 @@ impl BrowserWindow {
         side.set_media(player.element())?;
         let this = Rc::new_cyclic(|me: &Weak<BrowserWindow>| Self {
             browser: Rc::downgrade(browser),
+            browsing,
             window,
             ui,
             top,
@@ -359,6 +386,10 @@ impl BrowserWindow {
 
     pub fn browser(&self) -> Option<Rc<Browser>> {
         self.browser.upgrade()
+    }
+
+    pub fn browsing(&self) -> Browsing {
+        self.browsing
     }
 
     /// The XAML window, which owns the pickers and flyouts opened over it.
@@ -465,6 +496,7 @@ impl BrowserWindow {
             browser.next_tab_id(),
             restored.and_then(|p| p.id),
             self.me.clone(),
+            self.browsing,
         )?;
         tab.set_used(browser.tick());
         if let Initial::Url(url) = &initial {
@@ -528,11 +560,7 @@ impl BrowserWindow {
             return Err(e);
         }
         self.sync_selection();
-        exec::spawn(tab.clone().start(
-            browser.engine().environment().clone(),
-            browser.page_script(),
-            initial,
-        ));
+        exec::spawn(tab.clone().start(browser.page_script(), initial));
         browser.session_changed();
         Ok(tab)
     }
@@ -540,7 +568,7 @@ impl BrowserWindow {
     pub fn close_tab(&self, id: TabId) {
         let Some(tab) = self.tab(id) else { return };
         if let Some(browser) = self.browser() {
-            browser.tab_closing(self.tab_count() - 1);
+            browser.tab_closing(self.browsing, self.tab_count() - 1);
         }
         if let Err(e) = self.remove_tab(&tab) {
             log::warn!("close tab {id}: {e}");
@@ -729,12 +757,12 @@ impl BrowserWindow {
         self.show_permissions_state();
         self.show_tracking_status();
         let _ = xaml::set_visible(&self.ui.copy_link, omnibox::has_link(&state.url));
-        let title = if state.title.is_empty() || state.url.is_empty() {
-            "Vsesvit".to_owned()
+        let title = if state.url.is_empty() {
+            ""
         } else {
-            format!("{} - Vsesvit", state.title)
+            state.title.as_str()
         };
-        let _ = self.window.SetTitle(&title);
+        let _ = self.window.SetTitle(&window_title(title, self.browsing));
     }
 
     /// The URL in readable form: whole while the user works in the address box or asked for
@@ -983,20 +1011,16 @@ impl BrowserWindow {
                     log::error!("new tab: {e}");
                 }
             }
-            Command::NewWindow => {
-                if let Some(browser) = self.browser()
-                    && let Err(e) = browser.open_blank_window(Show::Activate)
-                {
-                    log::error!("new window: {e}");
-                }
-            }
+            // From a private window too, Ctrl+N opens a normal one, as in Chrome.
+            Command::NewWindow => self.open_new_window(Browsing::Normal),
+            Command::NewPrivateWindow => self.open_new_window(Browsing::Private),
             Command::CloseTab => {
                 if let Some(tab) = active {
                     self.close_tab(tab.id);
                 }
             }
             Command::ReopenClosedTab => {
-                if let Some(closed) = self.browser().and_then(|b| b.take_closed()) {
+                if let Some(closed) = self.browser().and_then(|b| b.take_closed(self.browsing)) {
                     self.reopen(closed);
                 }
             }
@@ -1105,6 +1129,14 @@ impl BrowserWindow {
         }
     }
 
+    fn open_new_window(&self, browsing: Browsing) {
+        if let Some(browser) = self.browser()
+            && let Err(e) = browser.open_blank_window(browsing, browser.show_mode())
+        {
+            log::error!("new {browsing:?} window: {e}");
+        }
+    }
+
     /// Opens a closed tab again, at the end of this window's tabs.
     fn reopen(&self, closed: ClosedTab) {
         log::info!("reopening {} ({})", closed.url, closed.title);
@@ -1172,6 +1204,7 @@ impl BrowserWindow {
         let menu = [
             ("MenuNewTab", Command::NewTab),
             ("MenuNewWindow", Command::NewWindow),
+            ("MenuNewPrivateWindow", Command::NewPrivateWindow),
             ("MenuBookmarks", Command::ShowBookmarks),
             ("MenuHistory", Command::ShowHistory),
             ("MenuDownloads", Command::ShowDownloads),
@@ -1319,7 +1352,7 @@ impl BrowserWindow {
                     return;
                 };
                 if let Some(png) = tab.favicon_png() {
-                    browser.record_favicon(&state.url, &png);
+                    browser.record_favicon(self.browsing, &state.url, &png);
                 }
                 Target::Added(id)
             }
@@ -1522,6 +1555,7 @@ impl BrowserWindow {
             (Disposition::NewWindow, _) => match self.browser() {
                 Some(browser) => browser
                     .open_window(
+                        self.browsing,
                         &WindowPlan::with_tabs(vec![TabPlan::url(url.to_owned())]),
                         Show::Activate,
                     )
@@ -1576,6 +1610,30 @@ impl BrowserWindow {
         xaml::is_visible(&self.ui.downloads)
     }
 
+    pub fn private_pill_shown(&self) -> bool {
+        xaml::is_visible(&self.ui.private_pill)
+    }
+
+    pub fn title(&self) -> String {
+        self.window.Title().unwrap_or_default()
+    }
+
+    /// The theme the window's content asks for.
+    pub fn requested_theme(&self) -> Option<ElementTheme> {
+        self.ui.root.RequestedTheme().ok()
+    }
+
+    /// Opens the Settings and more menu under its button, as a click does, without taking the
+    /// focus.
+    pub fn show_main_menu(&self) -> Result<MenuFlyout> {
+        let menu: MenuFlyout = xaml::find(&self.ui.root, "MainMenu")?;
+        let options = FlyoutShowOptions::new()?;
+        options.SetShowMode(FlyoutShowMode::Transient)?;
+        menu.cast::<FlyoutBase>()?
+            .ShowAtWithOptions(&self.ui.more, &options)?;
+        Ok(menu)
+    }
+
     fn update_clicked(&self) {
         let action = self.update_banner.borrow().as_ref().and_then(|b| b.action);
         if let (Some(action), Some(browser)) = (action, self.browser()) {
@@ -1583,8 +1641,13 @@ impl BrowserWindow {
         }
     }
 
-    /// Shows the pinned extension actions in the toolbar, in `layout`'s order.
+    /// Shows the pinned extension actions in the toolbar, in `layout`'s order. A private
+    /// window shows none: extensions do not run there (see `engine`).
     pub fn set_extension_actions(&self, actions: &[ExtensionAction], layout: &Layout) {
+        let actions = match self.browsing {
+            Browsing::Normal => actions,
+            Browsing::Private => &[],
+        };
         self.toolbar.set(actions, layout);
     }
 
@@ -1692,7 +1755,15 @@ impl BrowserWindow {
     }
 
     pub fn apply_theme(&self, theme: Theme) {
-        set_theme(&self.window, &self.ui.root, theme);
+        set_theme(&self.window, &self.ui.root, self.theme_for(theme));
+    }
+
+    /// The theme the window shows under the app's `theme`: a private window is always dark.
+    pub fn theme_for(&self, theme: Theme) -> Theme {
+        match self.browsing {
+            Browsing::Normal => theme,
+            Browsing::Private => Theme::Dark,
+        }
     }
 
     // ---- placement ----
@@ -1906,6 +1977,17 @@ mod tests {
         assert_eq!(
             site_look("file:///C:/a.html", None).1,
             "This page is on your device or inside the browser"
+        );
+    }
+
+    #[test]
+    fn a_private_window_says_so_in_its_title() {
+        assert_eq!(window_title("", Browsing::Normal), "Vsesvit");
+        assert_eq!(window_title("Page", Browsing::Normal), "Page - Vsesvit");
+        assert_eq!(window_title("", Browsing::Private), "Vsesvit (Private)");
+        assert_eq!(
+            window_title("Page", Browsing::Private),
+            "Page - Vsesvit (Private)"
         );
     }
 

@@ -162,6 +162,10 @@ impl BrowserWindow {
         let menu = [
             ("MenuNewTab", MenuAction::Run(Command::NewTab)),
             ("MenuNewWindow", MenuAction::Run(Command::NewWindow)),
+            (
+                "MenuNewPrivateWindow",
+                MenuAction::Run(Command::NewPrivateWindow),
+            ),
             ("MenuBookmarks", MenuAction::Show(Dialog::Bookmarks)),
             ("MenuHistory", MenuAction::Show(Dialog::History)),
             ("MenuDownloads", MenuAction::Show(Dialog::Downloads)),

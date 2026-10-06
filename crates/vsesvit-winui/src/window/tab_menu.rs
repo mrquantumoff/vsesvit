@@ -136,7 +136,9 @@ impl BrowserWindow {
             in_split: self.split.get().is_some_and(|s| s.has(id)),
             muted: state.muted,
             has_link: has_link(&state.url),
-            can_reopen: self.browser().is_some_and(|b| b.can_reopen_closed_tab()),
+            can_reopen: self
+                .browser()
+                .is_some_and(|b| b.can_reopen_closed_tab(self.browsing)),
         };
         let others = self
             .tabs_in_order()

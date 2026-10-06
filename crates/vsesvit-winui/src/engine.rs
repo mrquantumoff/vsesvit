@@ -3,6 +3,12 @@
 //!
 //! Every web view in the process must use this environment: WebView2 refuses a second
 //! environment on the same user data folder with different options (ERROR_INVALID_STATE).
+//! Private windows' web views come from it too, in its InPrivate profile, whose cookies, cache
+//! and storage WebView2 keeps in memory and drops when the last InPrivate view closes.
+//!
+//! Extensions live on the normal profile only. WebView2 has no per-extension InPrivate switch,
+//! and adding one to the InPrivate profile may reinstall it into the normal one (they share a
+//! registry), so the shell touches no extension there and offers none in private windows.
 
 use std::cell::RefCell;
 use std::os::windows::ffi::OsStrExt;
@@ -10,18 +16,22 @@ use std::path::Path;
 use std::task::{Poll, Waker};
 
 use vsesvit_core::prefs::{Pref, keys};
+use vsesvit_core::private::Browsing;
 use windows_core::imp::IGenericFactory;
 use windows_core::{HSTRING, IInspectable, Interface, PCSTR, Result, s, w};
-use windows_future::IAsyncOperation;
+use windows_future::{IAsyncAction, IAsyncOperation};
 
 use crate::bindings::*;
 
 pub(crate) struct Engine {
     environment: CoreWebView2Environment,
-    profile: RefCell<ProfileSetUp>,
+    /// Setting up the normal profile (see [`Engine::set_up_profile`]).
+    normal: RefCell<ProfileSetUp>,
+    /// Setting up the current private session's InPrivate profile.
+    private: RefCell<ProfileSetUp>,
 }
 
-/// Where setting up the profile the web views share is (see [`Engine::set_up_profile`]).
+/// Where setting up a profile its web views share is (see [`Engine::set_up_profile`]).
 enum ProfileSetUp {
     NotYet,
     /// A web view is setting it up; these wait for it.
@@ -126,15 +136,41 @@ impl Engine {
         );
         Ok(Self {
             environment,
-            profile: RefCell::new(ProfileSetUp::NotYet),
+            normal: RefCell::new(ProfileSetUp::NotYet),
+            private: RefCell::new(ProfileSetUp::NotYet),
         })
     }
 
-    /// Sets up the profile every web view shares, from the first web view's `core` (WebView2
-    /// gives the profile only through a web view), before that view loads anything; `then` is
-    /// what else must happen before any page loads (deleting the data of sites set to Clear on
-    /// exit, see `cookies`). Web views that start meanwhile wait here until it is done; after a
-    /// failure the next one tries again.
+    /// Creates `view`'s engine view: in the InPrivate profile for a tab of a private window.
+    pub fn ensure_view(&self, view: &WebView2, browsing: Browsing) -> Result<IAsyncAction> {
+        let view = view.cast::<IWebView22>()?;
+        match browsing {
+            Browsing::Normal => view.EnsureCoreWebView2WithEnvironmentAsync(&self.environment),
+            Browsing::Private => {
+                let options = self
+                    .environment
+                    .cast::<ICoreWebView2Environment10>()?
+                    .CreateCoreWebView2ControllerOptions()?;
+                options.SetIsInPrivateModeEnabled(true)?;
+                view.EnsureCoreWebView2WithEnvironmentAndOptionsAsync(&self.environment, &options)
+            }
+        }
+    }
+
+    fn set_up(&self, browsing: Browsing) -> &RefCell<ProfileSetUp> {
+        match browsing {
+            Browsing::Normal => &self.normal,
+            Browsing::Private => &self.private,
+        }
+    }
+
+    /// Sets up the profile the web views of `browsing`'s kind share, from the first such web
+    /// view's `core` (WebView2 gives a profile only through a web view), before that view loads
+    /// anything; `then` is what else must happen before any page loads (deleting the data of
+    /// sites set to Clear on exit, see `cookies`). Web views that start meanwhile wait here until
+    /// it is done; after a failure the next one tries again. The normal profile and the
+    /// InPrivate one are separate objects, each set up once; the InPrivate one again for each
+    /// private session (see [`Engine::private_session_ended`]).
     ///
     /// WebView2's own tracking prevention is turned off. Off, Standard and Strict would map
     /// naturally onto its None, Balanced and Strict, but it has no per-site exceptions and
@@ -144,9 +180,11 @@ impl Engine {
     pub async fn set_up_profile(
         &self,
         core: &CoreWebView2,
+        browsing: Browsing,
         then: impl AsyncFnOnce(),
     ) -> Result<()> {
-        std::future::poll_fn(|cx| match &mut *self.profile.borrow_mut() {
+        let state = self.set_up(browsing);
+        std::future::poll_fn(|cx| match &mut *state.borrow_mut() {
             ProfileSetUp::Running(waiting) => {
                 waiting.push(cx.waker().clone());
                 Poll::Pending
@@ -154,10 +192,10 @@ impl Engine {
             ProfileSetUp::NotYet | ProfileSetUp::Done => Poll::Ready(()),
         })
         .await;
-        if matches!(*self.profile.borrow(), ProfileSetUp::Done) {
+        if matches!(*state.borrow(), ProfileSetUp::Done) {
             return Ok(());
         }
-        *self.profile.borrow_mut() = ProfileSetUp::Running(Vec::new());
+        *state.borrow_mut() = ProfileSetUp::Running(Vec::new());
         let set_up = core
             .cast::<ICoreWebView2_13>()
             .and_then(|core| core.Profile())
@@ -172,12 +210,20 @@ impl Engine {
         } else {
             ProfileSetUp::NotYet
         };
-        if let ProfileSetUp::Running(waiting) =
-            std::mem::replace(&mut *self.profile.borrow_mut(), next)
+        if let ProfileSetUp::Running(waiting) = std::mem::replace(&mut *state.borrow_mut(), next)
         {
             waiting.into_iter().for_each(Waker::wake);
         }
         set_up
+    }
+
+    /// The last private window closed, and with its views WebView2 dropped the InPrivate
+    /// profile's data: the next private window's profile is set up afresh.
+    pub fn private_session_ended(&self) {
+        let mut private = self.private.borrow_mut();
+        if matches!(*private, ProfileSetUp::Done) {
+            *private = ProfileSetUp::NotYet;
+        }
     }
 
     pub fn environment(&self) -> &CoreWebView2Environment {

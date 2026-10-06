@@ -91,6 +91,7 @@ const WINDOW_XAML: &str = r#"
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <Button x:Name="Back" Style="{StaticResource ToolbarButton}" IsEnabled="False"
             ToolTipService.ToolTip="Back" AutomationProperties.Name="Back">
@@ -236,7 +237,18 @@ const WINDOW_XAML: &str = r#"
         <ProgressRing x:Name="DownloadsBusy" Width="28" Height="28" MinWidth="28" MinHeight="28" IsActive="False"/>
       </Grid>
     </Button>
-    <Button x:Name="More" Grid.Column="6" Margin="0,0,6,0" Style="{StaticResource ToolbarButton}"
+    <!-- A private window says so, as Edge's InPrivate pill does. -->
+    <Border x:Name="PrivatePill" Grid.Column="6" Height="28" Padding="10,0" Margin="4,0,2,0"
+            VerticalAlignment="Center" CornerRadius="14" Visibility="Collapsed"
+            Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+            ToolTipService.ToolTip="Private windows keep no history, and forget their cookies and site data when the last one closes"
+            AutomationProperties.Name="Private window">
+      <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+        <FontIcon Glyph="&#xED1A;" FontSize="14"/>
+        <TextBlock Text="Private" VerticalAlignment="Center"/>
+      </StackPanel>
+    </Border>
+    <Button x:Name="More" Grid.Column="7" Margin="0,0,6,0" Style="{StaticResource ToolbarButton}"
             ToolTipService.ToolTip="Settings and more" AutomationProperties.Name="Settings and more">
       <FontIcon Glyph="&#xE712;" FontSize="16"/>
       <Button.Flyout>
@@ -247,6 +259,9 @@ const WINDOW_XAML: &str = r#"
           </MenuFlyoutItem>
           <MenuFlyoutItem x:Name="MenuNewWindow" Text="New window">
             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE78B;"/></MenuFlyoutItem.Icon>
+          </MenuFlyoutItem>
+          <MenuFlyoutItem x:Name="MenuNewPrivateWindow" Text="New private window">
+            <MenuFlyoutItem.Icon><FontIcon Glyph="&#xED1A;"/></MenuFlyoutItem.Icon>
           </MenuFlyoutItem>
           <MenuFlyoutSeparator/>
           <MenuFlyoutItem x:Name="MenuBookmarks" Text="Bookmarks">
@@ -290,7 +305,7 @@ const WINDOW_XAML: &str = r#"
         </MenuFlyout>
       </Button.Flyout>
     </Button>
-    <Grid x:Name="ToolbarDrag" Grid.Column="7" Width="196" Background="Transparent" Visibility="Collapsed"/>
+    <Grid x:Name="ToolbarDrag" Grid.Column="8" Width="196" Background="Transparent" Visibility="Collapsed"/>
   </Grid>
 
   <Grid x:Name="BookmarksBar" Grid.Row="2" Height="30" Padding="8,0,8,2" Background="Transparent">
@@ -418,6 +433,7 @@ pub(super) struct Chrome {
     pub(super) extensions_menu: Button,
     pub(super) downloads: Button,
     pub(super) downloads_busy: ProgressRing,
+    pub(super) private_pill: FrameworkElement,
     pub(super) bookmarks_bar: FrameworkElement,
     pub(super) bookmark_items: ListView,
     pub(super) bookmarks_overflow: Button,
@@ -475,6 +491,7 @@ impl Chrome {
             extensions_menu: xaml::find(&root, "ExtensionsMenu")?,
             downloads: xaml::find(&root, "Downloads")?,
             downloads_busy: xaml::find(&root, "DownloadsBusy")?,
+            private_pill: xaml::find(&root, "PrivatePill")?,
             bookmarks_bar: xaml::find(&root, "BookmarksBar")?,
             bookmark_items: xaml::find(&root, "BookmarkItems")?,
             bookmarks_overflow: xaml::find(&root, "BookmarksOverflow")?,

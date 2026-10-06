@@ -160,6 +160,7 @@ impl BrowserWindow {
             Ok(ui.address_pill.clone()),
             ui.extension_actions.cast::<FrameworkElement>(),
             ui.downloads.cast::<FrameworkElement>(),
+            Ok(ui.private_pill.clone()),
             Ok(ui.more.clone()),
         ];
         let mut spans: Vec<(f64, f64)> = controls

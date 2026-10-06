@@ -1534,6 +1534,34 @@ impl windows_core::RuntimeType for CoreWebView2ContextMenuTargetKind {
 }
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreWebView2ControllerOptions(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    CoreWebView2ControllerOptions,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl windows_core::RuntimeType for CoreWebView2ControllerOptions {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, ICoreWebView2ControllerOptions>();
+}
+unsafe impl windows_core::Interface for CoreWebView2ControllerOptions {
+    type Vtable = <ICoreWebView2ControllerOptions as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID =
+        <ICoreWebView2ControllerOptions as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for CoreWebView2ControllerOptions {
+    type Target = ICoreWebView2ControllerOptions;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for CoreWebView2ControllerOptions {
+    const NAME: &'static str = "Microsoft.Web.WebView2.Core.CoreWebView2ControllerOptions";
+}
+unsafe impl Send for CoreWebView2ControllerOptions {}
+unsafe impl Sync for CoreWebView2ControllerOptions {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWebView2DevToolsProtocolEventReceivedEventArgs(windows_core::IUnknown);
 windows_core::imp::interface_hierarchy!(
     CoreWebView2DevToolsProtocolEventReceivedEventArgs,
@@ -7169,6 +7197,35 @@ pub struct ICoreWebView2ContextMenuTarget_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2ControllerOptions,
+    ICoreWebView2ControllerOptions_Vtbl,
+    0x3337e821_3606_5a0e_8e2f_0c1e57d743f7
+);
+impl windows_core::RuntimeType for ICoreWebView2ControllerOptions {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2ControllerOptions {
+    pub fn SetIsInPrivateModeEnabled(&self, value: bool) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetIsInPrivateModeEnabled)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2ControllerOptions_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    ProfileName: usize,
+    SetProfileName: usize,
+    IsInPrivateModeEnabled: usize,
+    pub SetIsInPrivateModeEnabled:
+        unsafe extern "system" fn(*mut core::ffi::c_void, bool) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2DevToolsProtocolEventReceivedEventArgs,
     ICoreWebView2DevToolsProtocolEventReceivedEventArgs_Vtbl,
     0xb6a4b41d_fd18_59fa_923a_c57555d960ce
@@ -7646,6 +7703,38 @@ pub struct ICoreWebView2Environment_Vtbl {
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    ICoreWebView2Environment10,
+    ICoreWebView2Environment10_Vtbl,
+    0xc224e69c_1efd_5ecc_adc8_2b52e7b97ce5
+);
+impl windows_core::RuntimeType for ICoreWebView2Environment10 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2Environment10 {
+    pub fn CreateCoreWebView2ControllerOptions(
+        &self,
+    ) -> windows_core::Result<CoreWebView2ControllerOptions> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CreateCoreWebView2ControllerOptions)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2Environment10_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub CreateCoreWebView2ControllerOptions: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    )
+        -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2Environment15,
@@ -8378,9 +8467,24 @@ impl windows_core::RuntimeType for ICoreWebView2Profile {
     const SIGNATURE: windows_core::imp::ConstBuffer =
         windows_core::imp::ConstBuffer::for_interface::<Self>();
 }
+impl ICoreWebView2Profile {
+    pub fn IsInPrivateModeEnabled(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsInPrivateModeEnabled)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+}
 #[repr(C)]
 pub struct ICoreWebView2Profile_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
+    ProfileName: usize,
+    pub IsInPrivateModeEnabled:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2Profile2,
@@ -11355,6 +11459,16 @@ impl IFrameworkElement {
             })
         }
     }
+    pub fn RequestedTheme(&self) -> windows_core::Result<ElementTheme> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).RequestedTheme)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
     pub fn SetRequestedTheme(&self, value: ElementTheme) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).SetRequestedTheme)(
@@ -11524,7 +11638,10 @@ pub struct IFrameworkElement_Vtbl {
     Parent: usize,
     FlowDirection: usize,
     SetFlowDirection: usize,
-    RequestedTheme: usize,
+    pub RequestedTheme: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut ElementTheme,
+    ) -> windows_core::HRESULT,
     pub SetRequestedTheme:
         unsafe extern "system" fn(*mut core::ffi::c_void, ElementTheme) -> windows_core::HRESULT,
     IsLoaded: usize,
@@ -16543,6 +16660,20 @@ impl IWebView22 {
             .and_then(|| windows_core::imp::Type::from_abi(result__))
         }
     }
+    pub fn EnsureCoreWebView2WithEnvironmentAndOptionsAsync<P0, P1>(
+        &self,
+        environment: P0,
+        controlleroptions: P1,
+    ) -> windows_core::Result<windows_future::IAsyncAction>
+    where
+        P0: windows_core::Param<CoreWebView2Environment>,
+        P1: windows_core::Param<CoreWebView2ControllerOptions>,
+    {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable (self) . EnsureCoreWebView2WithEnvironmentAndOptionsAsync)(windows_core::Interface::as_raw (self) , environment . param () . abi () , controlleroptions . param () . abi () , & mut result__) . and_then (|| windows_core::imp::Type::from_abi (result__))
+        }
+    }
 }
 #[repr(C)]
 pub struct IWebView22_Vtbl {
@@ -16553,6 +16684,13 @@ pub struct IWebView22_Vtbl {
         *mut *mut core::ffi::c_void,
     )
         -> windows_core::HRESULT,
+    pub EnsureCoreWebView2WithEnvironmentAndOptionsAsync:
+        unsafe extern "system" fn(
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut *mut core::ffi::c_void,
+        ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     IWebView2Factory,
@@ -16593,6 +16731,19 @@ impl IWindow {
                 value.param().abi(),
             )
             .ok()
+        }
+    }
+    pub fn Title(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).Title)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
         }
     }
     pub fn SetTitle(&self, value: &str) -> windows_core::Result<()> {
@@ -16708,7 +16859,10 @@ pub struct IWindow_Vtbl {
     Compositor: usize,
     Dispatcher: usize,
     DispatcherQueue: usize,
-    Title: usize,
+    pub Title: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     pub SetTitle: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,

@@ -177,7 +177,7 @@ pub(crate) fn build(window: &Rc<BrowserWindow>, kind: Dialog) -> Result<Built> {
         .SetXamlRoot(&window.xaml_root()?)?;
     dialog
         .cast::<FrameworkElement>()?
-        .SetRequestedTheme(element_theme(browser.theme()))?;
+        .SetRequestedTheme(element_theme(window.theme_for(browser.theme())))?;
     let root = dialog.cast::<FrameworkElement>()?;
     let wired = wire(kind, &root, &browser, window, window.xaml_window())?;
     Ok(Built {
@@ -317,7 +317,7 @@ async fn ask(window: &Rc<BrowserWindow>, markup: &str) -> Result<bool> {
         .SetXamlRoot(&window.xaml_root()?)?;
     dialog
         .cast::<FrameworkElement>()?
-        .SetRequestedTheme(element_theme(browser.theme()))?;
+        .SetRequestedTheme(element_theme(window.theme_for(browser.theme())))?;
     Ok(dialog.ShowAsync()?.await? == ContentDialogResult::Primary)
 }
 

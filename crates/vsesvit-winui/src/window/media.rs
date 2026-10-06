@@ -186,8 +186,10 @@ impl BrowserWindow {
     fn pip_allowed(&self, tab: &Tab) -> Option<bool> {
         let origin = tab.origin()?;
         let browser = self.browser()?;
-        let setting =
-            browser.core(|p| p.site_permissions().get(&origin, Permission::PictureInPicture));
+        let setting = browser.core(|p| {
+            p.site_permissions_in(self.browsing)
+                .get(&origin, Permission::PictureInPicture)
+        });
         Some(setting == Some(Setting::Allow))
     }
 
@@ -226,7 +228,7 @@ impl BrowserWindow {
         };
         let (setting, start) = pip_click(allowed);
         let stored = browser.core(|p| {
-            p.site_permissions()
+            p.site_permissions_in(self.browsing)
                 .set(&origin, Permission::PictureInPicture, Some(setting))
         });
         if let Err(e) = stored {

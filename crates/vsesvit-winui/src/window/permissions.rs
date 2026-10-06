@@ -380,7 +380,7 @@ impl BrowserWindow {
         let origin = tab.origin();
         let stored = match (&origin, self.browser()) {
             (Some(origin), Some(browser)) => {
-                browser.core(|p| p.site_permissions().for_site(origin))
+                browser.core(|p| p.site_permissions_in(self.browsing).for_site(origin))
             }
             _ => Vec::new(),
         };
@@ -524,7 +524,7 @@ fn site_choice(
     }
     if let Some(origin) = origin
         && let Err(e) = browser.core(|p| {
-            p.site_permissions()
+            p.site_permissions_in(w.browsing)
                 .set(origin, permission, choice.setting())
         })
     {
@@ -542,11 +542,17 @@ fn site_choice(
         let allowed = matches!(current, SiteChoice::Allow | SiteChoice::AllowedThisTime);
         match origin {
             Some(origin) => {
-                permissions::reload_allowed_captures(&browser, origin, &[permission], |other, p| {
-                    current == SiteChoice::Allow
-                        || (other.id == t.id && allowed)
-                        || other.permissions().grants().contains(&p)
-                })
+                permissions::reload_allowed_captures(
+                    &browser,
+                    w.browsing,
+                    origin,
+                    &[permission],
+                    |other, p| {
+                        current == SiteChoice::Allow
+                            || (other.id == t.id && allowed)
+                            || other.permissions().grants().contains(&p)
+                    },
+                )
             }
             None if permissions::must_reload(allowed, permission) => t.reload(),
             None => {}
@@ -555,7 +561,8 @@ fn site_choice(
     if choice == SiteChoice::Ask
         && let Some(origin) = origin
     {
-        permissions::reload_taken_back(&browser, origin, permission, current.setting(), None);
+        let before = current.setting();
+        permissions::reload_taken_back(&browser, w.browsing, origin, permission, before, None);
     }
     BrowserWindow::refill_site_permissions(window, tab);
 }
@@ -569,7 +576,7 @@ fn reset_site(window: &Weak<BrowserWindow>, tab: &Weak<Tab>, origin: &Origin) {
     };
     let Some(browser) = w.browser() else { return };
     let settings = browser.core(|p| {
-        let mut site = p.site_permissions();
+        let mut site = p.site_permissions_in(w.browsing);
         let settings = site.for_site(origin);
         if let Err(e) = site.reset_site(origin) {
             log::warn!("reset site permissions: {e}");
@@ -581,10 +588,10 @@ fn reset_site(window: &Weak<BrowserWindow>, tab: &Weak<Tab>, origin: &Origin) {
     for &permission in &revoked {
         t.permissions().revoke(permission);
     }
-    permissions::stop_captures(&browser, origin, &stored);
+    permissions::stop_captures(&browser, w.browsing, origin, &stored);
     permissions::settings_changed(&browser);
     // Other tabs keep their grants.
-    permissions::reload_allowed_captures(&browser, origin, Permission::ALL, |other, p| {
+    permissions::reload_allowed_captures(&browser, w.browsing, origin, Permission::ALL, |other, p| {
         settings.contains(&(p, Setting::Allow)) || (other.id == t.id && revoked.contains(&p))
     });
     BrowserWindow::refill_site_permissions(window, tab);

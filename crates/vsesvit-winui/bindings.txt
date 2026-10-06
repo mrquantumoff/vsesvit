@@ -22,7 +22,7 @@ Microsoft.UI.Dispatching.DispatcherQueueHandler
 
 // ---- window ----
 Microsoft.UI.Xaml.Window::CreateInstance
-Microsoft.UI.Xaml.IWindow::{Activate, Close, put_Content, put_Title, put_ExtendsContentIntoTitleBar, SetTitleBar, Closed, Activated}
+Microsoft.UI.Xaml.IWindow::{Activate, Close, put_Content, get_Title, put_Title, put_ExtendsContentIntoTitleBar, SetTitleBar, Closed, Activated}
 Microsoft.UI.Xaml.IWindow2::{put_SystemBackdrop, get_AppWindow}
 Microsoft.UI.Xaml.WindowEventArgs
 Microsoft.UI.Xaml.IWindowActivatedEventArgs::get_WindowActivationState
@@ -71,7 +71,7 @@ Microsoft.UI.Input.InputSystemCursorShape
 Microsoft.UI.Input.InputCursor
 Microsoft.UI.Input.IPointerPointProperties::get_PointerUpdateKind
 Microsoft.UI.Input.PointerUpdateKind
-Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, put_MaxWidth, put_MinWidth, LayoutUpdated, get_ActualWidth, get_ActualHeight, put_RequestedTheme, SizeChanged}
+Microsoft.UI.Xaml.IFrameworkElement::{FindName, get_Name, put_Width, put_Height, put_MaxWidth, put_MinWidth, LayoutUpdated, get_ActualWidth, get_ActualHeight, get_RequestedTheme, put_RequestedTheme, SizeChanged}
 Microsoft.UI.Xaml.SizeChangedEventHandler
 Microsoft.UI.Xaml.SizeChangedEventArgs
 Microsoft.UI.Xaml.ElementTheme
@@ -205,7 +205,7 @@ Microsoft.UI.Xaml.Automation.AutomationProperties::SetName
 // ---- WebView2 control ----
 Microsoft.UI.Xaml.Controls.WebView2::CreateInstance
 Microsoft.UI.Xaml.Controls.IWebView2::{get_CoreWebView2, Close}
-Microsoft.UI.Xaml.Controls.IWebView22::EnsureCoreWebView2WithEnvironmentAsync
+Microsoft.UI.Xaml.Controls.IWebView22::{EnsureCoreWebView2WithEnvironmentAsync, EnsureCoreWebView2WithEnvironmentAndOptionsAsync}
 
 // ---- WebView2 engine ----
 Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions
@@ -214,6 +214,9 @@ Microsoft.Web.WebView2.Core.ICoreWebView2EnvironmentOptions6::put_AreBrowserExte
 Microsoft.Web.WebView2.Core.ICoreWebView2EnvironmentStatics::{CreateWithOptionsAsync, GetAvailableBrowserVersionString}
 Microsoft.Web.WebView2.Core.ICoreWebView2Environment::get_BrowserVersionString
 Microsoft.Web.WebView2.Core.ICoreWebView2Environment15::CreateFindOptions
+Microsoft.Web.WebView2.Core.ICoreWebView2Environment10::CreateCoreWebView2ControllerOptions
+Microsoft.Web.WebView2.Core.ICoreWebView2ControllerOptions::put_IsInPrivateModeEnabled
+Microsoft.Web.WebView2.Core.ICoreWebView2Profile::get_IsInPrivateModeEnabled
 Microsoft.Web.WebView2.Core.ICoreWebView2FindOptions::{put_FindTerm, put_SuppressDefaultFindDialog}
 Microsoft.Web.WebView2.Core.ICoreWebView2::{get_Settings, get_Source, get_CanGoBack, get_CanGoForward, get_DocumentTitle, get_ContainsFullScreenElement, NavigationStarting, ContentLoading, SourceChanged, HistoryChanged, NavigationCompleted, WebMessageReceived, NewWindowRequested, DocumentTitleChanged, ContainsFullScreenElementChanged, WindowCloseRequested, ProcessFailed, Navigate, NavigateToString, AddScriptToExecuteOnDocumentCreatedAsync, ExecuteScriptAsync, CapturePreviewAsync, CallDevToolsProtocolMethodAsync, Reload, GoBack, GoForward, Stop, GetDevToolsProtocolEventReceiver, OpenDevToolsWindow}
 Microsoft.Web.WebView2.Core.ICoreWebView2Settings::{put_AreDevToolsEnabled, put_IsWebMessageEnabled}

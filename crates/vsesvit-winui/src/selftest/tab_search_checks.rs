@@ -5,6 +5,7 @@
 
 use std::rc::Rc;
 
+use vsesvit_core::private::Browsing;
 use vsesvit_core::testkit::FixtureServer;
 
 use super::{FIXTURE_TITLE, PAGE2_TITLE, Probe, load, until};
@@ -75,7 +76,7 @@ pub(super) async fn tab_search(
     let host = index.host_str().unwrap_or_default().to_owned();
     load(first, index.as_str(), p).await;
     let plan = WindowPlan::with_tabs(vec![TabPlan::url(page2.to_string()), TabPlan::url(LISTED.to_owned())]);
-    let other = browser.open_window(&plan, browser.show_mode()).map_err(err)?;
+    let other = browser.open_window(Browsing::Normal, &plan, browser.show_mode()).map_err(err)?;
     let [second, listed] = until(p, |p| {
         let tabs = other.tabs_in_order();
         p.observe(format!("the other window has {} tabs", tabs.len()));

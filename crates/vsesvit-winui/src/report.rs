@@ -2,7 +2,7 @@
 //! `vsesvit_core::testkit::report` writes it.
 
 /// The checks, in the order the run makes them (docs/design/self-test.md says what each proves).
-pub(crate) const CHECKS: [&str; 39] = [
+pub(crate) const CHECKS: [&str; 40] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -27,6 +27,7 @@ pub(crate) const CHECKS: [&str; 39] = [
     "selection_search",
     "search_engines",
     "session",
+    "private_window",
     "new_tab_page",
     "tracking_protection",
     "https_only",

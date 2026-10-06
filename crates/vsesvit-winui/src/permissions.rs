@@ -19,6 +19,10 @@
 //! A request waits (deferred) until its tab is the one shown, as in Chrome; the window shows one
 //! prompt at a time. A waiting request is denied when its tab closes or commits a document of
 //! another origin.
+//!
+//! A tab decides and answers in its window's kind: a private window's answers stay in core's
+//! private session, over the stored settings. The engine's copy is of the stored settings, in
+//! the normal profile only.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -26,6 +30,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use vsesvit_core::Url;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::permissions::{
     Answer, Capturing, Decision, Origin, Permission, Prompt, Setting, SiteSetting, TabGrants,
     prompt,
@@ -143,8 +148,9 @@ struct Waiting {
 
 /// One tab's permissions: its one-time grants, the requests waiting for a prompt, and what its
 /// page captures (see `capturing`).
-#[derive(Default)]
 pub(crate) struct TabPermissions {
+    /// The tab's kind, whose settings decide its requests.
+    browsing: Browsing,
     grants: RefCell<TabGrants>,
     waiting: RefCell<VecDeque<Waiting>>,
     capturing: Cell<Capturing>,
@@ -164,6 +170,17 @@ pub(crate) enum Requested {
 }
 
 impl TabPermissions {
+    pub fn new(browsing: Browsing) -> Self {
+        Self {
+            browsing,
+            grants: RefCell::default(),
+            waiting: RefCell::default(),
+            capturing: Cell::default(),
+            watch_until: Cell::new(None),
+            site_may_capture: Cell::new(false),
+        }
+    }
+
     pub fn request(
         &self,
         browser: &Browser,
@@ -254,7 +271,10 @@ impl TabPermissions {
         permissions: &[Permission],
     ) -> Decision {
         let grants = self.grants.borrow();
-        browser.core(|p| p.site_permissions().decide(origin, permissions, &grants))
+        browser.core(|p| {
+            p.site_permissions_in(self.browsing)
+                .decide(origin, permissions, &grants)
+        })
     }
 
     fn complete(&self, request: Request, allowed: bool) {
@@ -321,7 +341,7 @@ impl TabPermissions {
         let answered = {
             let mut grants = self.grants.borrow_mut();
             browser.core(|p| {
-                p.site_permissions()
+                p.site_permissions_in(self.browsing)
                     .answer(head.origin.as_ref(), &asked, answer, &mut grants)
             })
         };
@@ -535,10 +555,26 @@ async fn mirror_once(browser: &Browser) -> Result<()> {
     Ok(())
 }
 
-/// Ends what the site captures under `permissions`, in every tab showing it: a block, or a
-/// reset, while in use.
-pub(crate) fn stop_captures(browser: &Browser, origin: &Origin, permissions: &[Permission]) {
-    for tab in browser.windows().iter().flat_map(|w| w.tabs_in_order()) {
+/// The tabs a change of `browsing`'s settings reaches: a private window reads the stored
+/// settings under its own, so a stored change reaches every tab, a private one only private tabs.
+fn tabs_reached(browser: &Browser, browsing: Browsing) -> Vec<Rc<Tab>> {
+    browser
+        .windows()
+        .iter()
+        .filter(|w| browsing == Browsing::Normal || w.browsing() == browsing)
+        .flat_map(|w| w.tabs_in_order())
+        .collect()
+}
+
+/// Ends what the site captures under `permissions`, in every tab showing it that `browsing`'s
+/// settings reach: a block, or a reset, while in use.
+pub(crate) fn stop_captures(
+    browser: &Browser,
+    browsing: Browsing,
+    origin: &Origin,
+    permissions: &[Permission],
+) {
+    for tab in tabs_reached(browser, browsing) {
         if tab.origin().as_ref() != Some(origin) {
             continue;
         }
@@ -559,16 +595,17 @@ pub(crate) fn must_reload(allowed: bool, permission: Permission) -> bool {
     crate::capturing::stop_script(permission).is_some() && allowed
 }
 
-/// After a block or a reset of `permissions` for `origin`: reloads every tab showing the site,
-/// in every window, that the shell let capture under one of them (`allowed_before`), so that
-/// the capture ends (see [`must_reload`]).
+/// After a block or a reset of `permissions` for `origin` in `browsing`'s settings: reloads
+/// every tab showing the site, in every window they reach, that the shell let capture under one
+/// of them (`allowed_before`), so that the capture ends (see [`must_reload`]).
 pub(crate) fn reload_allowed_captures(
     browser: &Browser,
+    browsing: Browsing,
     origin: &Origin,
     permissions: &[Permission],
     allowed_before: impl Fn(&Tab, Permission) -> bool,
 ) {
-    for tab in browser.windows().iter().flat_map(|w| w.tabs_in_order()) {
+    for tab in tabs_reached(browser, browsing) {
         if tab.origin().as_ref() == Some(origin)
             && permissions
                 .iter()
@@ -607,15 +644,17 @@ fn moved_settings(before: &[SiteSetting], after: &[SiteSetting]) -> Vec<Moved> {
 pub(crate) fn sync_changed(browser: &Browser, before: &[SiteSetting]) {
     let after = browser.core(|p| p.site_permissions().all());
     for (origin, permission, was, now) in moved_settings(before, &after) {
-        reload_taken_back(browser, &origin, permission, was, now);
+        reload_taken_back(browser, Browsing::Normal, &origin, permission, was, now);
     }
 }
 
-/// After `permission` of `origin` went from `before` to `after`: reloads the tabs of the site
-/// the shell let capture under it, when a block or a removal takes that back (see
-/// [`must_reload`]). A removal leaves the tabs' grants as they are; a block overrides them.
+/// After `permission` of `origin` went from `before` to `after` in `browsing`'s settings:
+/// reloads the tabs of the site the shell let capture under it, when a block or a removal takes
+/// that back (see [`must_reload`]). A removal leaves the tabs' grants as they are; a block
+/// overrides them.
 pub(crate) fn reload_taken_back(
     browser: &Browser,
+    browsing: Browsing,
     origin: &Origin,
     permission: Permission,
     before: Option<Setting>,
@@ -624,7 +663,7 @@ pub(crate) fn reload_taken_back(
     if after == Some(Setting::Allow) {
         return;
     }
-    reload_allowed_captures(browser, origin, &[permission], |tab, p| {
+    reload_allowed_captures(browser, browsing, origin, &[permission], |tab, p| {
         before == Some(Setting::Allow)
             || (after == Some(Setting::Block) && tab.permissions().grants().contains(&p))
     });

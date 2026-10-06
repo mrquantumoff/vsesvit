@@ -39,6 +39,8 @@ use keymap::Command as Core;
 pub(crate) enum Command {
     NewTab,
     NewWindow,
+    /// Chrome's New incognito window.
+    NewPrivateWindow,
     CloseTab,
     ReopenClosedTab,
     /// Chrome's tab search: the open tabs of every window and the recently closed ones.
@@ -110,6 +112,7 @@ const IMPLEMENTED: &[(Core, Command, InPage)] = &[
     (Core::SelectLastTab, Command::SelectLastTab, Overridable),
     (Core::ToggleTabList, Command::ToggleTabPane, Overridable),
     (Core::NewWindow, Command::NewWindow, Reserved),
+    (Core::NewPrivateWindow, Command::NewPrivateWindow, Reserved),
     (Core::FocusAddress, Command::FocusAddress, Overridable),
     (Core::Back, Command::Back, Native),
     (Core::Forward, Command::Forward, Native),

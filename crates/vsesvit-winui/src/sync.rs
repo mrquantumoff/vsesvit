@@ -12,6 +12,7 @@ use vsesvit_core::Profile;
 use vsesvit_core::crdt::Seq;
 use vsesvit_core::extensions::toolbar;
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::sync::{Changed, DataType};
 use vsesvit_sync::status::{State, Status};
 use vsesvit_sync::{
@@ -458,13 +459,14 @@ pub(crate) fn sign_in(
             }
         };
         *b.sync().canceller.borrow_mut() = Some(pending.canceller());
-        match window.upgrade().or_else(|| b.windows().pop()) {
+        // The account's cookies belong in the normal profile: never in a private window.
+        match window.upgrade().filter(|w| w.browsing() == Browsing::Normal) {
             Some(window) => {
                 if let Err(e) = window.open_url_tab(pending.authorize_url(), true) {
                     log::warn!("opening the sign-in page: {e}");
                 }
             }
-            None => log::warn!("no window for the sign-in page"),
+            None => b.open_in_normal_window(pending.authorize_url()),
         }
         opened();
         drop(b);

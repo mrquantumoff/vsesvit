@@ -1,11 +1,12 @@
 //! The `tab_menu` check: the tab context menu's items, and what each of them does, without OS
 //! input and without touching the user's clipboard; and the page menu's Copy link without
-//! tracking on a link.
+//! tracking and Open link in private window on a link.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::json;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::testkit::FixtureServer;
 use windows_core::Interface;
 
@@ -14,7 +15,7 @@ use crate::bindings::ICoreWebView2_11;
 use crate::browser::Browser;
 use crate::omnibox::has_link;
 use crate::shortcuts::Command;
-use crate::tab::{CLEAN_LINK_ITEM, Tab};
+use crate::tab::{CLEAN_LINK_ITEM, PRIVATE_LINK_ITEM, Tab};
 use crate::tab_header::Audio;
 use crate::window::{BrowserWindow, TabAction};
 
@@ -78,7 +79,7 @@ pub(super) async fn tab_menu(
         ("Close tab", true),
         ("Close other tabs", true),
         ("Close tabs below", true),
-        ("Reopen closed tab", browser.can_reopen_closed_tab()),
+        ("Reopen closed tab", browser.can_reopen_closed_tab(Browsing::Normal)),
     ]);
     detail.push(format!("the first tab's menu: {seen:?}"));
     if seen != want {
@@ -88,8 +89,13 @@ pub(super) async fn tab_menu(
     let menu = link_menu(first, p).await?;
     let copy = menu.iter().position(|(name, _)| name == "copyLinkLocation");
     let ours = menu.iter().position(|(_, label)| label == CLEAN_LINK_ITEM);
+    let new_window = menu.iter().position(|(name, _)| name == "openLinkInNewWindow");
+    let private = menu.iter().position(|(_, label)| label == PRIVATE_LINK_ITEM);
     detail.push(format!("a link's menu (name, label): {menu:?}"));
     if copy.is_none() || ours != copy.map(|i| i + 1) {
+        return Err(detail.join("; "));
+    }
+    if new_window.is_none() || private != new_window.map(|i| i + 1) {
         return Err(detail.join("; "));
     }
 

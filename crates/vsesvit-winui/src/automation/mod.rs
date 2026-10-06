@@ -17,6 +17,7 @@ use vsesvit_core::Url;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::extensions::{ExtensionId, InstallSource};
 use vsesvit_core::prefs::{TabsPosition, Theme, keys};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::search::EngineForm;
 use vsesvit_core::testkit::{self, FixtureServer};
 use windows_core::Interface;
@@ -118,7 +119,7 @@ async fn bar_steps(
     let page = second.state().url;
     browser.bookmark_page(&page, "Second tab");
     if let Some(png) = second.favicon_png() {
-        browser.record_favicon(&page, &png);
+        browser.record_favicon(Browsing::Normal, &page, &png);
     }
     let saved = Url::parse(&page)
         .ok()
@@ -851,7 +852,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     steps.push(xpi_update(browser, &first, &server, out_dir).await);
 
     let other = browser
-        .open_blank_window(crate::window::Show::NoActivate)
+        .open_blank_window(Browsing::Normal, crate::window::Show::NoActivate)
         .map_err(|e| e.to_string())?;
     let other_tab = other.active_tab().ok_or("second window has no tab")?;
     wait_loaded(&other_tab).await?;
@@ -862,11 +863,65 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
     other.close_tab(other_tab.id);
     exec::sleep(Duration::from_millis(300)).await;
 
+    private_window(browser, &window, out_dir, steps).await?;
+
     // Last: it clears the site data every step above may rely on.
     let result = dialog_steps::clear_browsing_data(browser, &window, out_dir, &page2, steps).await;
     if let Err(e) = result {
         dialog_steps::failed(steps, "23-clear-browsing-data", &e);
     }
+    Ok(())
+}
+
+/// The main menu's New private window opens a private window, dark with its pill and title,
+/// which closes with its tab.
+async fn private_window(
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    steps: &mut Vec<Value>,
+) -> Result<(), String> {
+    let menu = window.show_main_menu().map_err(|e| e.to_string())?;
+    exec::sleep(Duration::from_millis(300)).await;
+    let item = menu
+        .Items()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|item| {
+            item.cast::<MenuFlyoutItem>()
+                .and_then(|i| i.Text())
+                .is_ok_and(|t| t == "New private window")
+        })
+        .ok_or("the main menu has no New private window")?;
+    invoke(&item).map_err(|e| e.to_string())?;
+    let _ = menu.cast::<FlyoutBase>().and_then(|m| m.Hide());
+    let private = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        browser.windows_of(Browsing::Private).pop()
+    })
+    .await
+    .ok_or("New private window opened no private window")?;
+    let tab = private.active_tab().ok_or("the private window has no tab")?;
+    wait_loaded(&tab).await?;
+    shoot(&private, out_dir, "21b-private-window", steps, |w| {
+        let (title, pill) = (w.title(), w.private_pill_shown());
+        let dark = w.requested_theme() == Some(ElementTheme::Dark);
+        json!({
+            "title": title,
+            "pill": pill,
+            "dark": dark,
+            "ok": title.ends_with("Vsesvit (Private)") && pill && dark,
+        })
+    })
+    .await;
+    private.close_tab(tab.id);
+    let closed = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+        browser.windows_of(Browsing::Private).is_empty().then_some(())
+    })
+    .await;
+    steps.push(json!({
+        "name": "21c-private-window-closes",
+        "ok": closed.is_some(),
+    }));
     Ok(())
 }
 

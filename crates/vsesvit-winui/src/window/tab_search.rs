@@ -1,5 +1,6 @@
 //! Tab search, Chrome's Ctrl+Shift+A: a box over the open tabs of every window and the recently
-//! closed ones, as core lists them for what is typed, under the tab list's search button. The
+//! closed ones, as core lists them for what is typed, under the tab list's search button; a
+//! private window's lists only private tabs, and a normal window's never lists them. The
 //! first row is selected; Up and Down move the selection, Enter or a click switches to the tab
 //! (bringing its window to the front) or reopens it here, and Escape or a click elsewhere closes
 //! the popup.
@@ -228,10 +229,13 @@ impl TabSearch {
         if self.shown.borrow().as_deref() == Some(text.as_str()) {
             return;
         }
-        let Some(browser) = self.window.upgrade().and_then(|w| w.browser()) else {
+        let Some(window) = self.window.upgrade() else {
             return;
         };
-        let found = browser.search_tabs(&text);
+        let Some(browser) = window.browser() else {
+            return;
+        };
+        let found = browser.search_tabs(window.browsing(), &text);
         if let Err(e) = self.fill(&found) {
             log::warn!("tab search: {e}");
         }
@@ -425,7 +429,7 @@ impl BrowserWindow {
                 }
             }
             Hit::Closed(at) => {
-                if let Some(closed) = browser.take_closed_at(at) {
+                if let Some(closed) = browser.take_closed_at(self.browsing, at) {
                     self.reopen(closed);
                 }
             }

@@ -68,7 +68,7 @@ impl BrowserWindow {
             return;
         };
         let list = browser.suggest(&typed, allow_inline);
-        let request = browser.suggest_request(&typed, &self.search_queries);
+        let request = browser.suggest_request(self.browsing, &typed, &self.search_queries);
         self.address
             .replace(Address::Editing(Edit::new(typed.clone(), list)));
         self.fill_list();

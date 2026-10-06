@@ -1,6 +1,11 @@
 //! The app-wide controller: the profile, the engine, the open windows and recently closed tabs,
 //! and every place the shell reads or writes vsesvit-core.
 //!
+//! Every core write a tab causes passes here with the tab's kind (`Browsing`), and a private
+//! one writes nothing that outlives its session: no history, favicons or session, and its site
+//! choices, zoom and downloads go to core's private session. The private session ends with the
+//! last private window ([`Browser::window_closed`]).
+//!
 //! Everything here runs on the UI thread. The `Profile` is borrowed for one core call at a time
 //! (`Browser::core`) and never across a XAML call, because core never calls back into the shell
 //! but XAML raises events synchronously.
@@ -104,6 +109,29 @@ enum Preload {
     Requested,
 }
 
+/// Recently closed tabs, a stack per kind of window: neither kind sees the other's.
+#[derive(Default)]
+struct ClosedTabs {
+    normal: Vec<ClosedTab>,
+    private: Vec<ClosedTab>,
+}
+
+impl ClosedTabs {
+    fn of(&self, browsing: Browsing) -> &[ClosedTab] {
+        match browsing {
+            Browsing::Normal => &self.normal,
+            Browsing::Private => &self.private,
+        }
+    }
+
+    fn of_mut(&mut self, browsing: Browsing) -> &mut Vec<ClosedTab> {
+        match browsing {
+            Browsing::Normal => &mut self.normal,
+            Browsing::Private => &mut self.private,
+        }
+    }
+}
+
 pub(crate) struct ClosedTab {
     pub url: String,
     pub title: String,
@@ -137,7 +165,7 @@ pub(crate) struct Browser {
     windows: RefCell<Vec<Rc<BrowserWindow>>>,
     /// Bookmarks, History, Downloads and Settings, each in a window of its own while open.
     dialog_windows: RefCell<Vec<Rc<DialogWindow>>>,
-    closed_tabs: RefCell<Vec<ClosedTab>>,
+    closed_tabs: RefCell<ClosedTabs>,
     next_tab_id: Cell<u64>,
     /// Orders tab search (see `Browser::tick`).
     use_clock: Cell<u64>,
@@ -231,7 +259,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         https_reach: Cell::new(Reach::Public),
         windows: RefCell::new(Vec::new()),
         dialog_windows: RefCell::new(Vec::new()),
-        closed_tabs: RefCell::new(Vec::new()),
+        closed_tabs: RefCell::default(),
         next_tab_id: Cell::new(1),
         use_clock: Cell::new(1),
         prefs: Cell::new(prefs),
@@ -262,7 +290,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         plan.iter().map(|w| w.tabs.len()).sum::<usize>()
     );
     for window in &plan {
-        browser.open_window(window, show)?;
+        browser.open_window(Browsing::Normal, window, show)?;
     }
     if welcome && let Some(window) = browser.windows().into_iter().next() {
         exec::spawn(show_welcome(window));
@@ -381,10 +409,11 @@ impl Browser {
         *self.trackers.borrow_mut() = list;
     }
 
-    /// The https URL a navigation to `url` loads instead, under HTTPS-only.
-    pub fn https_upgrade(&self, url: &Url) -> Option<Url> {
+    /// The https URL a navigation to `url` in a tab of `browsing`'s kind loads instead, under
+    /// HTTPS-only.
+    pub fn https_upgrade(&self, browsing: Browsing, url: &Url) -> Option<Url> {
         let reach = self.https_reach.get();
-        self.core(|p| https_only::upgrade(p, Browsing::Normal, url, reach))
+        self.core(|p| https_only::upgrade(p, browsing, url, reach))
     }
 
     #[cfg(feature = "self-test")]
@@ -410,6 +439,16 @@ impl Browser {
         self.windows.borrow().clone()
     }
 
+    /// The open windows of `browsing`'s kind, oldest first.
+    pub fn windows_of(&self, browsing: Browsing) -> Vec<Rc<BrowserWindow>> {
+        self.windows
+            .borrow()
+            .iter()
+            .filter(|w| w.browsing() == browsing)
+            .cloned()
+            .collect()
+    }
+
     pub fn profile_dir(&self) -> PathBuf {
         self.config.profile_dir.clone()
     }
@@ -426,11 +465,12 @@ impl Browser {
 
     pub fn open_window(
         &self,
+        browsing: Browsing,
         plan: &WindowPlan,
         show: Show,
     ) -> windows_core::Result<Rc<BrowserWindow>> {
         let browser = self.me.upgrade().ok_or_else(windows_core::Error::empty)?;
-        let window = BrowserWindow::create(&browser, show, self.prefs.get())?;
+        let window = BrowserWindow::create(&browser, browsing, show, self.prefs.get())?;
         self.windows.borrow_mut().push(window.clone());
         window.set_bookmarks_bar(&self.bookmarks_bar_items());
         window.set_extension_actions(&self.extension_actions(), &self.extension_toolbar());
@@ -440,14 +480,43 @@ impl Browser {
         Ok(window)
     }
 
-    pub fn open_blank_window(&self, show: Show) -> windows_core::Result<Rc<BrowserWindow>> {
-        self.open_window(&WindowPlan::with_tabs(vec![TabPlan::blank()]), show)
+    pub fn open_blank_window(
+        &self,
+        browsing: Browsing,
+        show: Show,
+    ) -> windows_core::Result<Rc<BrowserWindow>> {
+        self.open_window(browsing, &WindowPlan::with_tabs(vec![TabPlan::blank()]), show)
     }
 
-    /// Command-line URLs from a later launch: tabs in the newest window, or a new window.
+    /// `url` in a new window of `browsing`'s kind, brought forward.
+    pub fn open_link_in(&self, browsing: Browsing, url: &str) {
+        let plan = WindowPlan::with_tabs(vec![TabPlan::url(url.to_owned())]);
+        if let Err(e) = self.open_window(browsing, &plan, self.show_mode()) {
+            log::error!("open {url} in a new {browsing:?} window: {e}");
+        }
+    }
+
+    /// `url` in a new tab of the newest normal window, or in a new normal window: where
+    /// something from outside any window opens a page (a sign-in page), never a private one.
+    pub fn open_in_normal_window(&self, url: &str) {
+        match self.windows_of(Browsing::Normal).pop() {
+            Some(window) => {
+                if let Err(e) = window.open_url_tab(url, true) {
+                    log::error!("open {url}: {e}");
+                }
+                if self.config.mode.is_interactive() {
+                    window.activate();
+                }
+            }
+            None => self.open_link_in(Browsing::Normal, url),
+        }
+    }
+
+    /// Command-line URLs from a later launch: tabs in the newest normal window, or a new normal
+    /// window.
     pub fn open_command_line(&self, urls: &[String]) {
         let targets: Vec<String> = urls.iter().filter_map(|u| self.resolve_input(u)).collect();
-        let newest = self.windows.borrow().last().cloned();
+        let newest = self.windows_of(Browsing::Normal).pop();
         let result = match newest {
             Some(window) if !targets.is_empty() => {
                 let mut opened = Ok(());
@@ -467,7 +536,7 @@ impl Browser {
                 } else {
                     targets.into_iter().map(TabPlan::url).collect()
                 };
-                self.open_window(&WindowPlan::with_tabs(tabs), self.show_mode())
+                self.open_window(Browsing::Normal, &WindowPlan::with_tabs(tabs), self.show_mode())
                     .map(drop)
             }
         };
@@ -476,30 +545,40 @@ impl Browser {
         }
     }
 
-    /// The last window is about to close: its tabs are the session to restore next time. A
-    /// window closing because its last tab closed has none left; [`Browser::tab_closing`] saved
-    /// the session while it still had that tab.
+    /// The last normal window is about to close: its tabs are the session to restore next time.
+    /// A window closing because its last tab closed has none left; [`Browser::tab_closing`]
+    /// saved the session while it still had that tab. Private windows left open save nothing
+    /// over it (see [`Browser::save_session_now`]); the session is final once no window is left.
     pub fn window_closing(&self, window: &BrowserWindow) {
+        let last_normal = window.browsing() == Browsing::Normal
+            && self
+                .windows_of(Browsing::Normal)
+                .iter()
+                .all(|w| std::ptr::eq(w.as_ref(), window));
+        if last_normal && !self.session_final.get() && !window.tabs_in_order().is_empty() {
+            self.save_session_now();
+        }
         let last = self
             .windows
             .borrow()
             .iter()
             .all(|w| std::ptr::eq(w.as_ref(), window));
-        if last && !self.session_final.get() {
-            if !window.tabs_in_order().is_empty() {
-                self.save_session_now();
-            }
-            self.session_final.set(true);
-        }
         if last {
+            self.session_final.set(true);
             self.start_exit_clearing();
         }
     }
 
-    /// A tab is about to close, leaving `tabs_left` in its window.
-    pub(crate) fn tab_closing(&self, tabs_left: usize) {
+    /// A tab of a `browsing` window is about to close, leaving `tabs_left` in its window.
+    pub(crate) fn tab_closing(&self, browsing: Browsing, tabs_left: usize) {
         let windows = self.windows.borrow().len();
-        if save_before_closing_tab(tabs_left, windows, self.session_final.get()) {
+        if browsing == Browsing::Normal
+            && save_before_closing_tab(
+                tabs_left,
+                self.windows_of(Browsing::Normal).len(),
+                self.session_final.get(),
+            )
+        {
             self.save_session_now();
         }
         if tabs_left == 0 && windows <= 1 {
@@ -533,6 +612,9 @@ impl Browser {
             .extract_if(.., |w| std::ptr::eq(w.as_ref(), window))
             .collect();
         drop(closed);
+        if window.browsing() == Browsing::Private && self.windows_of(Browsing::Private).is_empty() {
+            self.end_private_session();
+        }
         let none_left = self.windows.borrow().is_empty();
         if none_left {
             log::info!("last window closed");
@@ -581,39 +663,47 @@ impl Browser {
         drop(closed);
     }
 
+    /// Keeps `tab` among its kind's recently closed tabs.
     pub fn remember_closed(&self, tab: &Tab) {
         let state = tab.state();
         if !omnibox::has_link(&state.url) {
             return;
         }
-        let tab = ClosedTab {
+        let closed_tab = ClosedTab {
             url: state.url,
             title: state.title,
             favicon: tab.look().favicon,
             closed: self.tick(),
         };
-        let mut closed = self.closed_tabs.borrow_mut();
-        closed.push(tab);
+        let mut closed_tabs = self.closed_tabs.borrow_mut();
+        let closed = closed_tabs.of_mut(tab.browsing());
+        closed.push(closed_tab);
         let excess = closed.len().saturating_sub(CLOSED_TABS_KEPT);
         closed.drain(..excess);
     }
 
-    pub fn take_closed(&self) -> Option<ClosedTab> {
-        self.closed_tabs.borrow_mut().pop()
+    pub fn take_closed(&self, browsing: Browsing) -> Option<ClosedTab> {
+        self.closed_tabs.borrow_mut().of_mut(browsing).pop()
     }
 
-    /// The closed tab that closed at `closed`, taken from wherever it is among them.
-    pub fn take_closed_at(&self, closed: u64) -> Option<ClosedTab> {
-        let mut tabs = self.closed_tabs.borrow_mut();
+    /// The closed tab of `browsing`'s kind that closed at `closed`, taken from wherever it is
+    /// among them.
+    pub fn take_closed_at(&self, browsing: Browsing, closed: u64) -> Option<ClosedTab> {
+        let mut closed_tabs = self.closed_tabs.borrow_mut();
+        let tabs = closed_tabs.of_mut(browsing);
         let at = tabs.iter().position(|t| t.closed == closed)?;
         Some(tabs.remove(at))
     }
 
-    /// Tab search's rows for `query`: the open tabs of every window, then the closed ones, as
-    /// core lists them, each with its icon.
-    pub fn search_tabs(&self, query: &str) -> Vec<(Row<TabId, u64>, Option<ImageSource>)> {
+    /// Tab search's rows for `query` in a window of `browsing`'s kind: the open tabs of every
+    /// window of that kind, then its closed ones, as core lists them, each with its icon.
+    pub fn search_tabs(
+        &self,
+        browsing: Browsing,
+        query: &str,
+    ) -> Vec<(Row<TabId, u64>, Option<ImageSource>)> {
         let tabs: Vec<Rc<Tab>> = self
-            .windows()
+            .windows_of(browsing)
             .iter()
             .flat_map(|w| w.tabs_in_order())
             .collect();
@@ -626,7 +716,8 @@ impl Browser {
                 used: t.used(),
             })
             .collect();
-        let closed_tabs = self.closed_tabs.borrow();
+        let all_closed = self.closed_tabs.borrow();
+        let closed_tabs = all_closed.of(browsing);
         let closed = closed_tabs
             .iter()
             .map(|t| Listed {
@@ -654,8 +745,20 @@ impl Browser {
             .collect()
     }
 
-    pub fn can_reopen_closed_tab(&self) -> bool {
-        !self.closed_tabs.borrow().is_empty()
+    pub fn can_reopen_closed_tab(&self, browsing: Browsing) -> bool {
+        !self.closed_tabs.borrow().of(browsing).is_empty()
+    }
+
+    /// The last private window closed: what its session kept goes, as Chrome's incognito
+    /// profile does. Running private downloads are cancelled, the private closed tabs forgotten
+    /// and core's private session ended; WebView2 dropped the InPrivate data with the last
+    /// InPrivate view, which closed with its tab.
+    fn end_private_session(&self) {
+        log::info!("the last private window closed: ending the private session");
+        self.cancel_downloads(Browsing::Private);
+        self.closed_tabs.borrow_mut().private.clear();
+        self.core(Profile::end_private_session);
+        self.engine.private_session_ended();
     }
 
     // ---- startup and session ----
@@ -706,8 +809,12 @@ impl Browser {
         });
     }
 
-    /// Writes the current windows and tabs as this device's session. Returns whether it worked.
+    /// Writes the current normal windows and tabs as this device's session. With none open,
+    /// nothing is written, so the last one stays to restore. Returns whether it worked.
     pub fn save_session_now(&self) -> bool {
+        if self.windows_of(Browsing::Normal).is_empty() {
+            return true;
+        }
         let snapshot = self.snapshot();
         match self.core(|p| p.session().save(&snapshot)) {
             Ok(()) => true,
@@ -718,9 +825,10 @@ impl Browser {
         }
     }
 
+    /// Private windows are in no session.
     fn snapshot(&self) -> SessionSnapshot {
         let windows = self
-            .windows()
+            .windows_of(Browsing::Normal)
             .iter()
             .filter_map(|window| {
                 let tabs = window.tabs_in_order();
@@ -758,27 +866,36 @@ impl Browser {
 
     // ---- history and bookmarks ----
 
-    /// Every committed main-frame navigation. Returns whether the URL is bookmarked.
+    /// Every committed main-frame navigation of a tab of `browsing`'s kind: a visit in
+    /// history, unless private. Returns whether the URL is bookmarked.
     pub fn navigation_committed(
         &self,
+        browsing: Browsing,
         url: &str,
         kind: CommitKind,
         transition: Transition,
     ) -> bool {
         log::debug!("committed ({kind:?}, {transition:?}) {url}");
-        self.session_changed();
+        if browsing == Browsing::Normal {
+            self.session_changed();
+        }
         let Ok(url) = Url::parse(url) else {
             return false;
         };
         self.core(|p| {
-            if let Err(e) = p.history().record_visit(&url, transition) {
+            if browsing == Browsing::Normal
+                && let Err(e) = p.history().record_visit(&url, transition)
+            {
                 log::warn!("history: {e}");
             }
             crate::window::starred(url.as_str(), |_| p.bookmarks().is_bookmarked(&url))
         })
     }
 
-    pub fn title_changed(&self, url: &str, title: &str) {
+    pub fn title_changed(&self, browsing: Browsing, url: &str, title: &str) {
+        if browsing == Browsing::Private {
+            return;
+        }
         let Ok(url) = Url::parse(url) else { return };
         if let Err(e) = self.core(|p| p.history().set_title(&url, title)) {
             log::warn!("history title: {e}");
@@ -893,8 +1010,12 @@ impl Browser {
         })
     }
 
-    /// Keeps a page's favicon when the page or its site is bookmarked, and shows it.
-    pub fn record_favicon(&self, url: &str, png: &[u8]) {
+    /// Keeps a page's favicon when the page or its site is bookmarked, and shows it; never one
+    /// a private window's tab shows.
+    pub fn record_favicon(&self, browsing: Browsing, url: &str, png: &[u8]) {
+        if browsing == Browsing::Private {
+            return;
+        }
         let Ok(url) = Url::parse(url) else { return };
         match self.core(|p| p.favicons().record(&url, png)) {
             Ok(true) => self.bookmarks_changed(),
@@ -1019,10 +1140,15 @@ impl Browser {
     }
 
     /// The default engine's suggestions for `text` to fetch, the newest of `queries`, when they
-    /// may be asked for.
-    pub fn suggest_request(&self, text: &str, queries: &Queries) -> Option<SuggestRequest> {
-        // No window is private yet.
-        self.core(|p| p.omnibox().suggest_request(text, queries, false))
+    /// may be asked for: never for a private window, where what is typed stays on the device.
+    pub fn suggest_request(
+        &self,
+        browsing: Browsing,
+        text: &str,
+        queries: &Queries,
+    ) -> Option<SuggestRequest> {
+        let private = browsing == Browsing::Private;
+        self.core(|p| p.omnibox().suggest_request(text, queries, private))
             .unwrap_or_else(|e| {
                 log::warn!("search suggestions: {e}");
                 None
@@ -1420,9 +1546,10 @@ impl Browser {
         }
     }
 
-    /// The WebView2 profile, reached through any tab's engine view.
+    /// The normal WebView2 profile, reached through a normal window's engine view; `None`
+    /// while only private windows are open.
     pub async fn engine_profile(&self) -> Option<crate::bindings::CoreWebView2Profile> {
-        let window = self.windows.borrow().first().cloned()?;
+        let window = self.windows_of(Browsing::Normal).first().cloned()?;
         window.engine_profile().await
     }
 

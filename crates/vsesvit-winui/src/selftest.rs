@@ -9,6 +9,7 @@
 mod cookie_checks;
 mod omnibox_checks;
 mod page_checks;
+mod private_checks;
 mod search_engine_checks;
 mod shortcut_checks;
 mod sync_checks;
@@ -750,6 +751,11 @@ async fn checks(
         (!restored.windows.is_empty() && restored.windows.iter().any(|w| !w.tabs.is_empty()))
             .then_some(detail.clone())
             .ok_or(detail)
+    })
+    .await;
+
+    check(report, "private_window", DEFAULT_TIMEOUT, async |p| {
+        private_checks::private_window(browser, &server, p).await
     })
     .await;
 

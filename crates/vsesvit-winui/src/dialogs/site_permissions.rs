@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::permissions::{Origin, Permission, Setting, SiteGroup};
+use vsesvit_core::private::Browsing;
 use windows_core::{Interface, Result};
 
 use super::on_click;
@@ -160,10 +161,10 @@ fn set(
         }
     };
     if setting.is_none() {
-        permissions::stop_captures(browser, origin, &[permission]);
+        permissions::stop_captures(browser, Browsing::Normal, origin, &[permission]);
     }
     permissions::settings_changed(browser);
-    permissions::reload_taken_back(browser, origin, permission, before, setting);
+    permissions::reload_taken_back(browser, Browsing::Normal, origin, permission, before, setting);
     true
 }
 

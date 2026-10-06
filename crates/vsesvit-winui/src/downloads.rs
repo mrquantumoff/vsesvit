@@ -2,7 +2,8 @@
 //!
 //! Every tab hands its `DownloadStarting` here. The file goes to the download folder under a
 //! name no file or running download has, or where the user says when they asked to be asked;
-//! core records the start and the outcome. Byte counts stay in memory while a download runs.
+//! core records the start and the outcome, a private window's in its private session. Byte counts
+//! stay in memory while a download runs.
 //! Views subscribe while they are open, and every window's toolbar shows the downloads button
 //! once a download started this session.
 
@@ -56,6 +57,8 @@ pub(crate) type Subscriber = Rc<OnChange>;
 /// A download the engine is running.
 struct Live {
     operation: CoreWebView2DownloadOperation,
+    /// The kind of window it started in.
+    browsing: Browsing,
     path: PathBuf,
     received: u64,
     total: Option<u64>,
@@ -154,6 +157,23 @@ impl Browser {
         }
     }
 
+    /// Cancels the running downloads that started in windows of `browsing`'s kind.
+    pub fn cancel_downloads(&self, browsing: Browsing) {
+        let running: Vec<CoreWebView2DownloadOperation> = self
+            .downloads
+            .live
+            .borrow()
+            .values()
+            .filter(|l| l.browsing == browsing)
+            .map(|l| l.operation.clone())
+            .collect();
+        for operation in running {
+            if let Err(e) = operation.Cancel() {
+                log::warn!("cancel download: {e}");
+            }
+        }
+    }
+
     /// Takes a finished download off the list; the file stays.
     pub fn remove_download(&self, id: DownloadId) {
         if let Err(e) = self.core(|p| p.downloads().remove(id)) {
@@ -196,9 +216,10 @@ impl Browser {
         let suggested = args.ResultFilePath()?;
         let name = list::sanitize(&suggested);
         let dir = self.download_dir();
+        let browsing = window.browsing();
         if !self.core(|p| p.prefs().get(&keys::DOWNLOADS_ASK)) {
             let path = self.free_path(&dir, &name);
-            return self.begin_download(args, &path);
+            return self.begin_download(args, &path, browsing);
         }
         let deferral = args.GetDeferral()?;
         let owner = window.window_id();
@@ -210,7 +231,7 @@ impl Browser {
                 Err(e) => Err(e),
             };
             let placed = match (picked, browser.upgrade()) {
-                (Ok(Some(path)), Some(browser)) => browser.begin_download(&args, &path),
+                (Ok(Some(path)), Some(browser)) => browser.begin_download(&args, &path, browsing),
                 (Ok(_), _) => args.SetCancel(true),
                 (Err(e), _) => {
                     log::warn!("save dialog: {e}");
@@ -234,11 +255,13 @@ impl Browser {
         })
     }
 
-    /// Sends the download to `path` and records it.
+    /// Sends the download to `path` and records it, in core's private session for a private
+    /// window's.
     fn begin_download(
         self: &Rc<Self>,
         args: &CoreWebView2DownloadStartingEventArgs,
         path: &Path,
+        browsing: Browsing,
     ) -> Result<()> {
         args.SetResultFilePath(&path.to_string_lossy())?;
         let operation = args.DownloadOperation()?;
@@ -246,7 +269,7 @@ impl Browser {
         let url = operation.Uri()?;
         let now = u64::try_from(crate::session::now_ms()).unwrap_or(0);
         let download = self
-            .core(|p| p.downloads().start(&url, path, total, now, Browsing::Normal))
+            .core(|p| p.downloads().start(&url, path, total, now, browsing))
             .map_err(|e| windows_core::Error::new(E_FAIL, e.to_string()))?;
         let id = download.id;
         log::info!("downloading {url} to {}", path.display());
@@ -270,6 +293,7 @@ impl Browser {
             id,
             Live {
                 operation,
+                browsing,
                 path: path.to_owned(),
                 received: 0,
                 total,

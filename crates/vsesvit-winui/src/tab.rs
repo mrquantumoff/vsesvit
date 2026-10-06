@@ -42,6 +42,9 @@ pub(crate) const VIEW_SOURCE_ITEM: &str = "viewPageSource";
 /// The label of a link's context menu item that copies the link without its tracking parameters.
 pub(crate) const CLEAN_LINK_ITEM: &str = "Copy link without tracking";
 
+/// The label of a link's context menu item that opens the link in a new private window.
+pub(crate) const PRIVATE_LINK_ITEM: &str = "Open link in private window";
+
 /// What a new tab loads first.
 pub(crate) enum Initial {
     Url(String),
@@ -122,6 +125,8 @@ pub(crate) struct Tab {
     /// The tab's identity in saved sessions; restored tabs keep theirs.
     pub session_id: session::TabId,
     window: Weak<BrowserWindow>,
+    /// Its window's kind, which every core write the tab causes goes through.
+    browsing: Browsing,
     view: WebView2,
     core: OnceCell<CoreWebView2>,
     state: RefCell<TabState>,
@@ -172,11 +177,13 @@ impl Tab {
         id: TabId,
         session_id: Option<session::TabId>,
         window: Weak<BrowserWindow>,
+        browsing: Browsing,
     ) -> Result<Rc<Self>> {
         Ok(Rc::new(Self {
             id,
             session_id: session_id.unwrap_or_default(),
             window,
+            browsing,
             view: WebView2::new()?,
             core: OnceCell::new(),
             state: RefCell::new(TabState {
@@ -194,7 +201,7 @@ impl Tab {
             favicon_generation: Cell::new(0),
             security: RefCell::default(),
             pinned: Cell::new(false),
-            permissions: TabPermissions::default(),
+            permissions: TabPermissions::new(browsing),
             capture_polled: Cell::new(false),
             shortcut_worlds: RefCell::default(),
             zoom_memory: RefCell::default(),
@@ -217,6 +224,10 @@ impl Tab {
             pinned: self.pinned.get(),
             capturing: self.permissions.capturing(),
         }
+    }
+
+    pub fn browsing(&self) -> Browsing {
+        self.browsing
     }
 
     pub fn is_pinned(&self) -> bool {
@@ -317,14 +328,9 @@ impl Tab {
         self.core.get().is_some()
     }
 
-    /// Creates the engine view in `environment`, then loads `initial`.
-    pub async fn start(
-        self: Rc<Self>,
-        environment: CoreWebView2Environment,
-        page_script: Rc<PageScript>,
-        initial: Initial,
-    ) {
-        let core = match self.ensure_core(&environment, &page_script).await {
+    /// Creates the engine view, in the profile of the tab's kind, then loads `initial`.
+    pub async fn start(self: Rc<Self>, page_script: Rc<PageScript>, initial: Initial) {
+        let core = match self.ensure_core(&page_script).await {
             Ok(core) => core,
             Err(e) => {
                 log::error!("tab {}: WebView2 initialization failed: {e}", self.id);
@@ -342,23 +348,25 @@ impl Tab {
         }
     }
 
-    async fn ensure_core(
-        self: &Rc<Self>,
-        environment: &CoreWebView2Environment,
-        page_script: &PageScript,
-    ) -> Result<CoreWebView2> {
-        self.view
-            .cast::<IWebView22>()?
-            .EnsureCoreWebView2WithEnvironmentAsync(environment)?
-            .await?;
+    async fn ensure_core(self: &Rc<Self>, page_script: &PageScript) -> Result<CoreWebView2> {
+        let ensured = {
+            let browser = self.browser().ok_or_else(windows_core::Error::empty)?;
+            browser.engine().ensure_view(&self.view, self.browsing)?
+        };
+        ensured.await?;
         let core = self.view.CoreWebView2()?;
         let settings = core.Settings()?;
         settings.SetAreDevToolsEnabled(true)?;
         settings.SetIsWebMessageEnabled(false)?;
         if let Some(browser) = self.browser() {
             self.apply_autofill(&settings, browser.autofill_forms());
-            let clear = async || cookies::clear_at_start(&browser, &core).await;
-            if let Err(e) = browser.engine().set_up_profile(&core, clear).await {
+            let browsing = self.browsing;
+            let clear = async || {
+                if browsing == Browsing::Normal {
+                    cookies::clear_at_start(&browser, &core).await;
+                }
+            };
+            if let Err(e) = browser.engine().set_up_profile(&core, browsing, clear).await {
                 log::warn!("tab {}: engine profile: {e}", self.id);
             }
         }
@@ -631,7 +639,7 @@ impl Tab {
     fn show_new_tab_page(&self, core: &CoreWebView2) {
         let shown = match self.browser() {
             Some(browser) => browser
-                .core(|p| new_tab::page(p, Browsing::Normal))
+                .core(|p| new_tab::page(p, self.browsing))
                 .map_err(|e| e.to_string())
                 .and_then(|html| core.NavigateToString(&html).map_err(|e| e.to_string())),
             None => Err("the window is gone".to_owned()),
@@ -830,10 +838,12 @@ impl Tab {
             .and_then(|core| core.Source().ok())
             .and_then(|source| vsesvit_core::Url::parse(&source).ok());
         let remembered = match &url {
-            Some(url) => browser.core(|p| p.site_zoom(Browsing::Normal).get(url)).unwrap_or_else(|e| {
-                log::warn!("site zoom: {e}");
-                vsesvit_core::zoom::DEFAULT
-            }),
+            Some(url) => browser
+                .core(|p| p.site_zoom(self.browsing).get(url))
+                .unwrap_or_else(|e| {
+                    log::warn!("site zoom: {e}");
+                    vsesvit_core::zoom::DEFAULT
+                }),
             None => vsesvit_core::zoom::DEFAULT,
         };
         let change = self
@@ -841,7 +851,7 @@ impl Tab {
             .borrow_mut()
             .reported(report, zoom::Level::of_factor(remembered), scale);
         if let (Some(change), Some(url)) = (change, url) {
-            let (window, id) = (self.window.clone(), self.id);
+            let (window, id, browsing) = (self.window.clone(), self.id, self.browsing);
             exec::spawn(async move {
                 exec::sleep(zoom::SETTLE).await;
                 let Some(window) = window.upgrade() else {
@@ -851,7 +861,8 @@ impl Tab {
                     .tab(id)
                     .and_then(|tab| tab.zoom_memory.borrow().settled(change, window.scale()));
                 if let (Some(level), Some(browser)) = (settled, window.browser())
-                    && let Err(e) = browser.core(|p| p.site_zoom(Browsing::Normal).set(&url, level.factor()))
+                    && let Err(e) =
+                        browser.core(|p| p.site_zoom(browsing).set(&url, level.factor()))
                 {
                     log::warn!("site zoom: {e}");
                 }
@@ -971,7 +982,7 @@ impl Tab {
         } else {
             Cause::Link
         };
-        let upgrade = browser.https_upgrade(&url);
+        let upgrade = browser.https_upgrade(self.browsing, &url);
         let next = self.https.borrow_mut().starting(&url, cause, upgrade);
         // The replacement loads once the stopped navigation is done with.
         let stop = |then: Box<dyn FnOnce(&Tab)>| {
@@ -986,7 +997,7 @@ impl Tab {
             Next::Load => false,
             Next::Allow(url) => {
                 log::info!("tab {}: continuing to {url} without a secure connection", self.id);
-                if let Err(e) = browser.core(|p| https_only::allow(p, Browsing::Normal, &url)) {
+                if let Err(e) = browser.core(|p| https_only::allow(p, self.browsing, &url)) {
                     log::warn!("tab {}: HTTPS-only exception for {url}: {e}", self.id);
                 }
                 false
@@ -1208,6 +1219,7 @@ impl Tab {
                     for added in [
                         tab.add_selection_item(args),
                         tab.add_link_item(args),
+                        tab.add_private_link_item(args),
                         tab.add_view_source_item(args),
                     ] {
                         if let Err(e) = added {
@@ -1263,7 +1275,7 @@ impl Tab {
             if self.https.borrow().warning().is_some() {
                 browser.session_changed();
             } else {
-                let starred = browser.navigation_committed(&url, kind, transition);
+                let starred = browser.navigation_committed(self.browsing, &url, kind, transition);
                 self.state.borrow_mut().starred = starred;
             }
         }
@@ -1310,7 +1322,7 @@ impl Tab {
         if let Some(browser) = self.browser()
             && self.https.borrow().warning().is_none()
         {
-            browser.title_changed(&url, &title);
+            browser.title_changed(self.browsing, &url, &title);
         }
         self.notify();
     }
@@ -1345,7 +1357,7 @@ impl Tab {
             .unzip();
         *self.favicon.borrow_mut() = image;
         if let (Some(png), Some(browser)) = (&png, self.browser()) {
-            browser.record_favicon(&self.state().url, png);
+            browser.record_favicon(self.browsing, &self.state().url, png);
         }
         *self.favicon_png.borrow_mut() = png;
         self.notify();
@@ -1451,6 +1463,32 @@ impl Tab {
         })?;
         let items = args.MenuItems()?;
         match item_named(&items, "copyLinkLocation")? {
+            Some(index) => items.InsertAt(index + 1, &item),
+            None => items.Append(&item),
+        }
+    }
+
+    /// Chrome's Open link in incognito window on a link's menu, right after WebView2's Open
+    /// link in new window.
+    fn add_private_link_item(
+        &self,
+        args: &CoreWebView2ContextMenuRequestedEventArgs,
+    ) -> Result<()> {
+        let target = args.ContextMenuTarget()?;
+        if !target.HasLinkUri()? {
+            return Ok(());
+        }
+        let Some(browser) = self.browser() else {
+            return Ok(());
+        };
+        let (url, window) = (target.LinkUri()?, self.window.clone());
+        let item = menu_item(&browser, PRIVATE_LINK_ITEM, move || {
+            if let Some(browser) = window.upgrade().and_then(|w| w.browser()) {
+                browser.open_link_in(Browsing::Private, &url);
+            }
+        })?;
+        let items = args.MenuItems()?;
+        match item_named(&items, "openLinkInNewWindow")? {
             Some(index) => items.InsertAt(index + 1, &item),
             None => items.Append(&item),
         }

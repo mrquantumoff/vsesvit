@@ -136,15 +136,15 @@ impl BrowserWindow {
         }
     }
 
-    /// Opens `tab`'s address in a new window, pinned if it was, and takes the tab out of this
-    /// one. It moved rather than closed, so it is not one to reopen.
+    /// Opens `tab`'s address in a new window of this one's kind, pinned if it was, and takes the
+    /// tab out of this one. It moved rather than closed, so it is not one to reopen.
     fn move_to_new_window(&self, tab: &Rc<Tab>) {
         let Some(browser) = self.browser() else { return };
         if !self.place_of(tab.id).is_some_and(TabPlace::can_move_out) {
             return;
         }
         let plan = WindowPlan::with_tabs(vec![plan_of(tab, Some(tab.session_id))]);
-        if let Err(e) = browser.open_window(&plan, browser.show_mode()) {
+        if let Err(e) = browser.open_window(self.browsing, &plan, browser.show_mode()) {
             log::error!("move tab to new window: {e}");
             return;
         }

@@ -4,6 +4,7 @@
 use std::rc::Rc;
 
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::trackers::{self, TrackingProtection};
 use windows_core::Result;
 
@@ -14,9 +15,13 @@ use crate::xaml;
 
 impl BrowserWindow {
     /// The switch for `tab`'s page: whether protection is on for its site, and how many
-    /// trackers it blocked on the page. `None` on pages of no web site, and while protection is
-    /// off everywhere.
+    /// trackers it blocked on the page. `None` on pages of no web site, while protection is off
+    /// everywhere, and in a private window, whose exception would outlive it (as on Linux, where
+    /// it would go into the content blocker on disk).
     pub(super) fn tracking_status(&self, tab: &Tab) -> Option<(bool, usize)> {
+        if self.browsing == Browsing::Private {
+            return None;
+        }
         let origin = tab
             .origin()
             .filter(|o| o.as_str().starts_with("https://") || o.as_str().starts_with("http://"))?;
