@@ -4,7 +4,8 @@
 //! web view, `chrome.*` bridged over `postMessage` replies, `chrome-extension://` served
 //! from a custom URI scheme, and declarativeNetRequest translated to content blockers.
 //!
-//! Platform-neutral pieces compile and test everywhere: [`dnr`] (the translator),
+//! Platform-neutral pieces compile and test everywhere: [`cookies`] (what `chrome.cookies`
+//! reaches, stores and reports), [`dnr`] (the translator),
 //! [`dnr_rules`] (the rules the declarativeNetRequest API changes), [`dynamic_scripts`]
 //! (the content scripts `scripting.registerContentScripts` adds),
 //! [`protocol`] (the JS/Rust wire format), [`messaging`] (port channels), [`menus`] (context
@@ -217,6 +218,7 @@
 //! its top document. Runtime state (compiled filters, dynamic rules, registered content
 //! scripts, install markers) lives in `<profile>/webext/`.
 
+pub mod cookies;
 pub mod dnr;
 pub mod dnr_rules;
 pub mod dynamic_scripts;
