@@ -107,6 +107,7 @@ Microsoft.UI.Xaml.Controls.IItemsControl::{put_ItemsSource, get_Items}
 Microsoft.UI.Xaml.Controls.ItemCollection
 Microsoft.UI.Xaml.Controls.ITextBox::{SelectAll, get_Text, put_Text, put_TextAlignment, TextChanged}
 Microsoft.UI.Xaml.Controls.ITextBox::{Select, get_SelectionStart, get_SelectionLength}
+Microsoft.UI.Xaml.Controls.IPasswordBox::{get_Password, put_Password, PasswordChanged}
 Microsoft.UI.Xaml.Controls.Primitives.Popup
 Microsoft.UI.Xaml.Controls.Primitives.IPopup::get_Child
 Microsoft.UI.Xaml.Controls.IListViewBase::ContainerContentChanging
@@ -443,6 +444,7 @@ Windows.Win32.SYSTEMTIME
 Microsoft.UI.Xaml.Controls.Panel
 Microsoft.UI.Xaml.Controls.TextBlock
 Microsoft.UI.Xaml.Controls.TextBox
+Microsoft.UI.Xaml.Controls.PasswordBox
 Microsoft.UI.Xaml.Controls.FontIcon
 Microsoft.UI.Xaml.Controls.Image
 Microsoft.UI.Xaml.Controls.ProgressRing

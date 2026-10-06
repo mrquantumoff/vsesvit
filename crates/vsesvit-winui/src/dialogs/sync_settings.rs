@@ -1,18 +1,22 @@
 //! Settings' Sync page: the account's status with its buttons (from `vsesvit_sync::status`),
-//! following the sync state while the dialog is open, what this device syncs, and the server to
-//! sign in to. The server box also serves the welcome's sync page.
+//! following the sync state while the dialog is open, the passphrase flyout, what this device
+//! syncs, and the server to sign in to. The server box also serves the welcome's sync page.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, keys};
 use vsesvit_core::sync::DataType;
-use vsesvit_sync::server_input;
-use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, Status};
+use vsesvit_sync::status::{
+    Action, DELETE_CONFIRMATION, PassphraseDialog, State, Status, check_passphrase,
+    passphrase_dialog,
+};
+use vsesvit_sync::{Encryption, server_input};
 use windows_core::{Interface, Result};
 
 use super::on_click;
 use crate::bindings::*;
+use crate::bookmark_editor::VK_RETURN;
 use crate::browser::Browser;
 use crate::window::BrowserWindow;
 use crate::{exec, sync, xaml};
@@ -71,20 +75,25 @@ const DELETE_BUTTON: &str = r#"<Button {ns} x:Name="SyncDeleteServerData" Conten
   </Button.Flyout>
 </Button>"#;
 
-pub(super) struct Page {
+pub(crate) struct Page {
     browser: Weak<Browser>,
     /// Where the sign-in page opens, brought over the Settings window then.
     window: Weak<BrowserWindow>,
     title: TextBlock,
     subtitle: TextBlock,
     actions: Panel,
+    /// The buttons `actions` holds, kept while the actions stay the same so that a flyout opened
+    /// from one stays where it is.
+    buttons: RefCell<Vec<(Action, Button)>>,
     action_error: TextBlock,
+    /// The passphrase flyout while it is open.
+    passphrase: RefCell<Option<Rc<PassphraseFlyout>>>,
     everything: ToggleSwitch,
     types: Vec<(DataType, ToggleSwitch)>,
     /// "Sync everything" was turned off here, so the types can be chosen one by one even while
     /// all of them are on.
     customizing: Cell<bool>,
-    pub server: Rc<ServerBox>,
+    pub(super) server: Rc<ServerBox>,
     /// Registered with the sync state; the page follows it while this is kept.
     follow: Rc<dyn Fn()>,
 }
@@ -121,7 +130,9 @@ pub(super) fn wire(
             title,
             subtitle,
             actions,
+            buttons: RefCell::default(),
             action_error,
+            passphrase: RefCell::default(),
             everything,
             types,
             customizing: Cell::new(false),
@@ -209,11 +220,25 @@ impl Page {
         sync::set_types(&browser, &DataType::toggled(&stored, data_type, on));
     }
 
-    /// One button per action, the first one accented. Deleting the server's data asks first, in
-    /// a flyout: no second dialog can open over this one.
+    /// One button per action, the first one accented. Deleting the server's data asks first, and
+    /// the passphrase is typed, in a flyout: no second dialog can open over this one.
     fn fill_actions(self: &Rc<Self>, status: &Status) -> Result<()> {
+        let shown: Vec<Action> = self.buttons.borrow().iter().map(|(a, _)| *a).collect();
+        if shown != status.actions {
+            self.make_buttons(status)?;
+        }
+        for (action, button) in self.buttons.borrow().iter() {
+            button
+                .cast::<Control>()?
+                .SetIsEnabled(!(*action == Action::SyncNow && status.busy))?;
+        }
+        Ok(())
+    }
+
+    fn make_buttons(self: &Rc<Self>, status: &Status) -> Result<()> {
         let children = self.actions.Children()?;
         children.Clear()?;
+        let mut buttons = Vec::new();
         for (index, &action) in status.actions.iter().enumerate() {
             let button: Button = if action == Action::DeleteServerData {
                 self.delete_button()?
@@ -223,27 +248,26 @@ impl Page {
                 } else {
                     ""
                 };
-                let button = xaml::load(&format!(
+                let button: Button = xaml::load(&format!(
                     r#"<Button {{ns}} x:Name="Sync{action:?}" Content="{}"{style}/>"#,
                     xaml::escape(action.label())
                 ))?;
-                let p = Rc::downgrade(self);
+                let (p, anchor) = (Rc::downgrade(self), button.cast::<FrameworkElement>()?);
                 on_click(&button, move || {
-                    let p = p.clone();
+                    let (p, anchor) = (p.clone(), anchor.clone());
                     // Not from inside the click of a button the new state removes.
                     exec::spawn(async move {
                         if let Some(p) = p.upgrade() {
-                            p.act(action);
+                            p.act(action, &anchor);
                         }
                     });
                 })?;
                 button
             };
-            button
-                .cast::<Control>()?
-                .SetIsEnabled(!(action == Action::SyncNow && status.busy))?;
             children.Append(&button.cast::<UIElement>()?)?;
+            buttons.push((action, button));
         }
+        *self.buttons.borrow_mut() = buttons;
         Ok(())
     }
 
@@ -289,7 +313,7 @@ impl Page {
         let _ = xaml::set_visible(&self.action_error, error.is_some());
     }
 
-    fn act(&self, action: Action) {
+    fn act(self: &Rc<Self>, action: Action, anchor: &FrameworkElement) {
         let Some(browser) = self.browser.upgrade() else {
             return;
         };
@@ -312,8 +336,266 @@ impl Page {
             Action::Cancel => sync::cancel_sign_in(&browser),
             Action::SyncNow => sync::sync_now(&browser),
             Action::SignOut => sync::sign_out(&browser),
+            Action::SetPassphrase | Action::EnterPassphrase | Action::ChangePassphrase => {
+                self.open_passphrase(&browser, anchor);
+            }
             Action::DeleteServerData => {}
         }
+    }
+
+    /// Opens the passphrase flyout under `anchor`, worded for what the device asks of the
+    /// passphrase.
+    fn open_passphrase(self: &Rc<Self>, browser: &Browser, anchor: &FrameworkElement) {
+        let State::SignedIn { encryption, .. } = browser.sync().state() else {
+            return;
+        };
+        let Some(dialog) = passphrase_dialog(encryption) else {
+            return;
+        };
+        match PassphraseFlyout::open(self, browser, encryption, &dialog, anchor) {
+            Ok(flyout) => *self.passphrase.borrow_mut() = Some(flyout),
+            Err(e) => log::warn!("sync passphrase flyout: {e}"),
+        }
+    }
+
+    /// The passphrase flyout once it has opened.
+    pub(crate) fn passphrase(&self) -> Option<Rc<PassphraseFlyout>> {
+        self.passphrase.borrow().clone().filter(|f| f.opened.get())
+    }
+}
+
+const PASSPHRASE: &str = r#"<Flyout {ns} Placement="BottomEdgeAlignedLeft"/>"#;
+
+/// The flyout's content: `dialog`'s words, its fields (a PasswordBox peeks at what was typed),
+/// where a problem shows, and the buttons.
+fn passphrase_markup(dialog: &PassphraseDialog) -> String {
+    let confirm = dialog.confirm.map_or(String::new(), |label| {
+        format!(
+            r#"<PasswordBox x:Name="SyncPassphraseConfirm" Header="{}"/>"#,
+            xaml::escape(label)
+        )
+    });
+    format!(
+        r#"
+<StackPanel {{ns}} Width="380" Spacing="8">
+  <TextBlock Text="{title}" TextWrapping="Wrap" Margin="0,0,0,4" Style="{{StaticResource BodyStrongTextBlockStyle}}"/>
+  <TextBlock Text="{body}" TextWrapping="Wrap"/>
+  <PasswordBox x:Name="SyncPassphrase" Header="{field}"/>
+  {confirm}
+  <TextBlock x:Name="SyncPassphraseProblem" TextWrapping="Wrap" Visibility="Collapsed" IsTextSelectionEnabled="True"
+             Style="{{StaticResource CaptionTextBlockStyle}}" Foreground="{{ThemeResource SystemFillColorCriticalBrush}}"/>
+  <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0" HorizontalAlignment="Right">
+    <ProgressRing x:Name="SyncPassphraseBusy" Width="20" Height="20" IsActive="True" Visibility="Collapsed"/>
+    <Button x:Name="SyncPassphraseAccept" Content="{accept}" Style="{{StaticResource AccentButtonStyle}}" IsEnabled="False"/>
+    <Button x:Name="SyncPassphraseCancel" Content="Cancel"/>
+  </StackPanel>
+</StackPanel>"#,
+        title = xaml::escape(dialog.title),
+        body = xaml::escape(dialog.body),
+        field = xaml::escape(dialog.field),
+        accept = xaml::escape(dialog.accept),
+    )
+}
+
+/// The flyout that sets, enters or changes the sync passphrase. It stays open while the
+/// passphrase is checked, and shows why it was not taken.
+pub(crate) struct PassphraseFlyout {
+    flyout: FlyoutBase,
+    /// Shown, with its fields loaded; the scripted runs type into it only then.
+    opened: Cell<bool>,
+    /// What the device asked of the passphrase when the flyout opened.
+    asked: Encryption,
+    field: PasswordBox,
+    confirm: Option<PasswordBox>,
+    problem: TextBlock,
+    busy: UIElement,
+    accept: Control,
+    /// Set while the passphrase is checked or stored.
+    working: Cell<bool>,
+    page: Weak<Page>,
+}
+
+impl PassphraseFlyout {
+    fn open(
+        page: &Rc<Page>,
+        browser: &Browser,
+        asked: Encryption,
+        dialog: &PassphraseDialog,
+        anchor: &FrameworkElement,
+    ) -> Result<Rc<Self>> {
+        let flyout: Flyout = xaml::load(PASSPHRASE)?;
+        let content: FrameworkElement = xaml::load(&passphrase_markup(dialog))?;
+        content.SetRequestedTheme(super::element_theme(browser.theme()))?;
+        flyout.SetContent(&content)?;
+        let this = Rc::new(PassphraseFlyout {
+            flyout: flyout.cast()?,
+            opened: Cell::new(false),
+            asked,
+            field: xaml::find(&content, "SyncPassphrase")?,
+            confirm: dialog
+                .confirm
+                .map(|_| xaml::find(&content, "SyncPassphraseConfirm"))
+                .transpose()?,
+            problem: xaml::find(&content, "SyncPassphraseProblem")?,
+            busy: xaml::find(&content, "SyncPassphraseBusy")?,
+            accept: xaml::find(&content, "SyncPassphraseAccept")?,
+            working: Cell::new(false),
+            page: Rc::downgrade(page),
+        });
+        for field in [Some(&this.field), this.confirm.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let me = Rc::downgrade(&this);
+            field
+                .PasswordChanged(move |_, _| {
+                    if let Some(me) = me.upgrade() {
+                        me.validate();
+                    }
+                })?
+                .forget();
+        }
+        let me = Rc::downgrade(&this);
+        on_click(&this.accept, move || {
+            if let Some(me) = me.upgrade() {
+                me.accept();
+            }
+        })?;
+        let me = Rc::downgrade(&this);
+        on_click(
+            &xaml::find::<Button>(&content, "SyncPassphraseCancel")?,
+            move || {
+                if let Some(me) = me.upgrade() {
+                    me.close();
+                }
+            },
+        )?;
+        let me = Rc::downgrade(&this);
+        content
+            .cast::<UIElement>()?
+            .KeyDown(move |_, args| {
+                let (Some(me), Some(args)) = (me.upgrade(), args.as_ref()) else {
+                    return;
+                };
+                if args.Key().is_ok_and(|k| k.0 == VK_RETURN) {
+                    let _ = args.SetHandled(true);
+                    me.accept();
+                }
+            })?
+            .forget();
+        let me = Rc::downgrade(&this);
+        this.flyout
+            .Opened(move |_, _| {
+                if let Some(me) = me.upgrade() {
+                    me.opened.set(true);
+                }
+            })?
+            .forget();
+        let p = Rc::downgrade(page);
+        this.flyout
+            .Closed(move |_, _| {
+                if let Some(p) = p.upgrade() {
+                    p.passphrase.borrow_mut().take();
+                }
+            })?
+            .forget();
+
+        this.flyout.ShowAt(anchor)?;
+        let first = this.field.clone();
+        exec::spawn(async move {
+            let _ = first
+                .cast::<UIElement>()
+                .and_then(|b| b.Focus(FocusState::Programmatic));
+        });
+        Ok(this)
+    }
+
+    /// What was typed, as `check_passphrase` takes it.
+    fn typed(&self) -> (String, Option<String>) {
+        let text = |field: &PasswordBox| field.Password().unwrap_or_default();
+        (text(&self.field), self.confirm.as_ref().map(text))
+    }
+
+    /// Says why what was typed is no passphrase, once anything was, and enables accepting only
+    /// when it is one.
+    fn validate(&self) {
+        let (text, confirm) = self.typed();
+        let checked = check_passphrase(&text, confirm.as_deref());
+        let typed = !text.is_empty() || confirm.as_deref().is_some_and(|c| !c.is_empty());
+        self.show_problem(checked.as_ref().err().copied().filter(|_| typed));
+        let _ = self
+            .accept
+            .SetIsEnabled(checked.is_ok() && !self.working.get());
+    }
+
+    fn show_problem(&self, problem: Option<&str>) {
+        let _ = self.problem.SetText(problem.unwrap_or_default());
+        let _ = xaml::set_visible(&self.problem, problem.is_some());
+    }
+
+    /// Takes the passphrase, busy meanwhile, and closes once it is taken; else says why not,
+    /// under the fields or, once the flyout has closed, under the page's buttons.
+    pub(crate) fn accept(self: &Rc<Self>) {
+        let (text, confirm) = self.typed();
+        let (Some(page), Ok(passphrase)) = (
+            self.page.upgrade(),
+            check_passphrase(&text, confirm.as_deref()),
+        ) else {
+            return;
+        };
+        let Some(browser) = page.browser.upgrade() else {
+            return;
+        };
+        if self.working.replace(true) {
+            return;
+        }
+        let _ = self.accept.SetIsEnabled(false);
+        let _ = xaml::set_visible(&self.busy, true);
+        let (me, page) = (Rc::downgrade(self), self.page.clone());
+        sync::set_passphrase(&browser, self.asked, passphrase, move |error| {
+            let open = me
+                .upgrade()
+                .filter(|me| me.flyout.IsOpen().unwrap_or(false));
+            match (open, error) {
+                (Some(me), None) => me.close(),
+                (Some(me), Some(error)) => {
+                    me.working.set(false);
+                    let _ = xaml::set_visible(&me.busy, false);
+                    me.validate();
+                    me.show_problem(Some(&error));
+                }
+                (None, Some(error)) => {
+                    if let Some(page) = page.upgrade() {
+                        page.show_action_error(Some(&error));
+                    }
+                }
+                (None, None) => {}
+            }
+        });
+    }
+
+    pub(crate) fn close(&self) {
+        let _ = self.flyout.Hide();
+    }
+
+    /// Types `text` into the field, and `confirm` into the second one if there is one, for the
+    /// scripted runs.
+    pub(crate) fn fill(&self, text: &str, confirm: &str) -> Result<()> {
+        self.field.SetPassword(text)?;
+        match &self.confirm {
+            Some(field) => field.SetPassword(confirm),
+            None => Ok(()),
+        }
+    }
+
+    /// How many fields it has, the problem it shows, if any, and whether accepting is enabled.
+    pub(crate) fn shown(&self) -> (usize, Option<String>, bool) {
+        let problem = xaml::is_visible(&self.problem)
+            .then(|| self.problem.Text().ok())
+            .flatten()
+            .map(|t| t.to_string());
+        let fields = 1 + usize::from(self.confirm.is_some());
+        (fields, problem, self.accept.IsEnabled().unwrap_or(false))
     }
 }
 
@@ -417,5 +699,20 @@ mod tests {
         assert!(!everything);
         assert_eq!(switches[0], (false, true));
         assert_eq!(switches[1], (true, true));
+    }
+
+    #[test]
+    fn the_flyout_words_come_from_core_and_a_new_passphrase_is_typed_twice() {
+        let fields = |encryption| {
+            let markup = passphrase_markup(&passphrase_dialog(encryption).unwrap());
+            (markup.matches("<PasswordBox").count(), markup)
+        };
+        let (count, set) = fields(Encryption::Set);
+        assert_eq!(count, 2);
+        assert!(set.contains(r#"Header="Confirm passphrase""#), "{set}");
+        assert!(set.contains("You'll enter it on each device"), "{set}");
+        assert_eq!(fields(Encryption::Enter).0, 1);
+        assert_eq!(fields(Encryption::Changed).0, 1);
+        assert_eq!(fields(Encryption::Ready).0, 2);
     }
 }

@@ -23,9 +23,9 @@ use super::{shoot, wait_layout};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::dialogs::search_engines::Engines;
-use crate::dialogs::{self, Dialog, Preview, SETTINGS_CATEGORIES};
+use crate::dialogs::{self, Dialog, Preview, SETTINGS_CATEGORIES, SyncPage};
 use crate::window::{Backdrop, BrowserWindow};
-use crate::{engine, exec, selftest, xaml};
+use crate::{engine, exec, selftest, sync, xaml};
 
 const WAIT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
@@ -278,6 +278,45 @@ pub(super) async fn settings(
             && block.1 == ThirdPartyCookies::Block
             && restored.1 == ThirdPartyCookies::BlockInPrivate,
     }));
+
+    let browser = window.browser().ok_or_else(windows_core::Error::empty)?;
+    let passphrase = sync_passphrase(window, out_dir, &preview, &browser, steps).await;
+    sync::sign_out(&browser);
+    passphrase
+}
+
+/// Settings, Sync: an account with no sync passphrase offers Set Passphrase…, whose flyout
+/// asks for it twice and cannot be accepted yet. The caller signs out again.
+async fn sync_passphrase(
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    preview: &Preview,
+    browser: &Browser,
+    steps: &mut Vec<Value>,
+) -> Result<()> {
+    selftest::sign_in_without_passphrase(browser)
+        .map_err(|e| windows_core::Error::new(E_FAIL, e))?;
+    select_category(preview, "SyncPanel")?;
+    settle().await;
+    let page = preview
+        .wired::<SyncPage>()
+        .ok_or_else(|| windows_core::Error::new(E_FAIL, "the Settings dialog has no Sync page"))?;
+    click(preview, "SyncSetPassphrase")?;
+    let flyout = until(|| page.passphrase()).await;
+    settle().await;
+    let shown = flyout.as_ref().map(|f| f.shown());
+    shoot(
+        window,
+        out_dir,
+        "14l-settings-sync-passphrase",
+        steps,
+        |_| json!({ "fields_problem_accept": shown, "ok": shown == Some((2, None, false)) }),
+    )
+    .await;
+    if let Some(flyout) = flyout {
+        flyout.close();
+    }
+    settle().await;
     Ok(())
 }
 

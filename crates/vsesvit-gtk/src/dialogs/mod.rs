@@ -7,6 +7,7 @@ pub(crate) mod bookmarks;
 pub(crate) mod downloads;
 pub(crate) mod extensions;
 pub(crate) mod history;
+pub(crate) mod passphrase;
 pub(crate) mod search_engines;
 pub(crate) mod settings;
 pub(crate) mod shortcut_settings;

@@ -44,6 +44,7 @@ pub(crate) use {
         Page as ShortcutsPage, extension_row_name as extension_shortcut_row_name,
         row_name as shortcut_row_name,
     },
+    sync_settings::Page as SyncPage,
     welcome::{PAGES as WELCOME_PAGES, Page as WelcomePage},
 };
 

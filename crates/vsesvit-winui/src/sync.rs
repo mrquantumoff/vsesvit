@@ -14,7 +14,9 @@ use vsesvit_core::extensions::toolbar;
 use vsesvit_core::prefs::keys;
 use vsesvit_core::sync::{Changed, DataType};
 use vsesvit_sync::status::{State, Status};
-use vsesvit_sync::{Account, Error, Http, Round, SignIn, now_secs};
+use vsesvit_sync::{
+    Account, Encryption, Error, Http, Passphrase, PassphraseJob, Round, SignIn, now_secs,
+};
 
 use crate::browser::Browser;
 use crate::exec;
@@ -143,6 +145,8 @@ enum Event {
         stored: Option<Signed>,
     },
     SignedOut,
+    /// What the stored account asks of the passphrase now, after a round or a passphrase step.
+    Encryption(Encryption),
 }
 
 /// What Settings shows of the account a profile is signed in with.
@@ -151,6 +155,7 @@ struct Signed {
     name: Option<String>,
     server: String,
     last_synced: Option<u64>,
+    encryption: Encryption,
 }
 
 /// Where a sync of the signed-in account is.
@@ -170,6 +175,7 @@ fn next(state: State, event: Event) -> State {
             name,
             server,
             last_synced,
+            encryption,
         }) => State::SignedIn {
             name,
             server,
@@ -177,6 +183,7 @@ fn next(state: State, event: Event) -> State {
             syncing: false,
             error: None,
             needs_sign_in: false,
+            encryption,
         },
         Event::SignedOut => State::SignedOut { error: None },
         Event::SignInFailed { error, stored } => match (state, stored) {
@@ -186,6 +193,7 @@ fn next(state: State, event: Event) -> State {
                     name,
                     server,
                     last_synced,
+                    encryption,
                 }),
             ) => State::SignedIn {
                 name,
@@ -194,6 +202,7 @@ fn next(state: State, event: Event) -> State {
                 syncing: false,
                 error,
                 needs_sign_in: true,
+                encryption,
             },
             (State::SigningIn, None) => State::SignedOut { error },
             (state, _) => state,
@@ -205,6 +214,7 @@ fn next(state: State, event: Event) -> State {
                 last_synced,
                 error,
                 needs_sign_in,
+                encryption,
                 ..
             } = state
             else {
@@ -223,8 +233,29 @@ fn next(state: State, event: Event) -> State {
                 syncing,
                 error,
                 needs_sign_in,
+                encryption,
             }
         }
+        Event::Encryption(encryption) => match state {
+            State::SignedIn {
+                name,
+                server,
+                last_synced,
+                syncing,
+                error,
+                needs_sign_in,
+                ..
+            } => State::SignedIn {
+                name,
+                server,
+                last_synced,
+                syncing,
+                error,
+                needs_sign_in,
+                encryption,
+            },
+            state => state,
+        },
     }
 }
 
@@ -233,6 +264,7 @@ fn signed(account: &Account) -> Signed {
         name: account.name().map(str::to_owned),
         server: account.server().to_owned(),
         last_synced: account.last_synced(),
+        encryption: account.encryption(),
     }
 }
 
@@ -374,6 +406,10 @@ async fn rounds(browser: &Weak<Browser>) -> Result<Option<u64>, Error> {
             (site_settings, exchanged.finish(&mut p.sync()))
         });
         account = finished.account;
+        // A round thrown away for a sign-out says nothing of the account signed in now.
+        if !matches!(finished.result, Err(Error::SignedOut)) {
+            b.sync().apply(Event::Encryption(account.encryption()));
+        }
         let synced = finished.result?;
         b.sync_applied(&synced.report.changed, &site_settings);
         // A refused upload waits for a later sync; it is what this one comes to.
@@ -598,6 +634,73 @@ pub(crate) fn delete_server_data(
     });
 }
 
+/// Sets, enters or changes the sync passphrase, as `asked` (the encryption the dialog was for)
+/// says and the stored account still asks, then syncs. A round running meanwhile would be thrown
+/// away, so this waits for a running sync to end and holds syncs off until it is done. `done`
+/// gets why it failed, if it did.
+pub(crate) fn set_passphrase(
+    browser: &Rc<Browser>,
+    asked: Encryption,
+    passphrase: Passphrase,
+    done: impl FnOnce(Option<String>) + 'static,
+) {
+    let browser = Rc::downgrade(browser);
+    exec::spawn(async move {
+        let idle = exec::wait_for(Duration::from_secs(120), Duration::from_millis(100), || {
+            let b = browser.upgrade()?;
+            (!b.sync().running.replace(true)).then_some(())
+        })
+        .await;
+        let Some(b) = browser.upgrade() else { return };
+        if idle.is_none() {
+            done(Some("a sync is still running; try again".to_owned()));
+            return;
+        }
+        let job = match b.core(|p| Account::load(&mut p.sync())) {
+            Ok(Some(account)) if account.encryption() == asked => {
+                PassphraseJob::new(account, passphrase).ok_or(Error::KeysChanged)
+            }
+            Ok(Some(_)) => Err(Error::KeysChanged),
+            Ok(None) => Err(Error::SignedOut),
+            Err(e) => Err(e),
+        };
+        drop(b);
+        let stored = match job {
+            Ok(job) => match exec::background(move || job.run()).await {
+                Ok(keys) => match browser.upgrade() {
+                    Some(b) => b.core(|p| keys.finish(&mut p.sync())),
+                    None => return,
+                },
+                Err(lost) => Err(lost.into()),
+            },
+            Err(e) => Err(e),
+        };
+        let Some(b) = browser.upgrade() else { return };
+        b.sync().running.set(false);
+        match stored {
+            Ok(account) => {
+                log::info!("sync: took the passphrase");
+                done(None);
+                b.sync().apply(Event::Encryption(account.encryption()));
+                sync_now(&b);
+            }
+            Err(e) => {
+                log::warn!("sync passphrase: {e}");
+                done(Some(e.to_string()));
+            }
+        }
+    });
+}
+
+/// The sync state again from the account the profile stores, after a scripted run stored one.
+#[cfg(feature = "self-test")]
+pub(crate) fn reload(browser: &Browser) {
+    browser.sync().apply(match stored_account(browser) {
+        Some(account) => signed_in(&account),
+        None => Event::SignedOut,
+    });
+}
+
 /// What the shell applies again after a sync changed a synced preference it holds or shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PrefEffect {
@@ -642,6 +745,7 @@ pub(crate) fn pref_effects(keys: &[String]) -> Vec<PrefEffect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vsesvit_sync::status::Action;
 
     fn signed_in_state() -> State {
         next(
@@ -650,6 +754,7 @@ mod tests {
                 name: Some("Demir".into()),
                 server: "https://sync.example.com".into(),
                 last_synced: Some(100),
+                encryption: Encryption::Ready,
             }),
         )
     }
@@ -672,6 +777,7 @@ mod tests {
             name: None,
             server: "https://sync.example.com".into(),
             last_synced: None,
+            encryption: Encryption::Checking,
         })
     }
 
@@ -749,9 +855,49 @@ mod tests {
             sign_in_failed(&Error::Cancelled, Some(&account)),
         );
         assert_eq!(fields(&cancelled), (Some(100), false, None, true));
+        assert!(
+            matches!(
+                cancelled,
+                State::SignedIn {
+                    encryption: Encryption::Checking,
+                    ..
+                }
+            ),
+            "the stored account has not looked for the account's key record"
+        );
         assert_eq!(
             cancelled.status(100).subtitle,
             "Sign in again to keep syncing."
+        );
+    }
+
+    #[test]
+    fn rounds_and_the_passphrase_step_change_only_what_the_device_asks_for() {
+        let checking = next(State::SigningIn, signed_in_event());
+        assert_eq!(
+            checking.status(0).actions,
+            [Action::SignOut, Action::DeleteServerData]
+        );
+        let syncing = next(checking, Event::Sync(Progress::Started));
+        let set = next(syncing, Event::Encryption(Encryption::Set));
+        assert_eq!(fields(&set), (None, true, None, false));
+        assert_eq!(set.status(0).actions[0], Action::SetPassphrase);
+        let ready = next(set, Event::Encryption(Encryption::Ready));
+        let synced = next(ready, Event::Sync(Progress::Synced(Some(200))));
+        assert_eq!(fields(&synced), (Some(200), false, None, false));
+        assert_eq!(
+            synced.status(200).actions,
+            [
+                Action::SyncNow,
+                Action::ChangePassphrase,
+                Action::SignOut,
+                Action::DeleteServerData
+            ]
+        );
+        let signed_out = State::SignedOut { error: None };
+        assert_eq!(
+            next(signed_out.clone(), Event::Encryption(Encryption::Ready)),
+            signed_out
         );
     }
 

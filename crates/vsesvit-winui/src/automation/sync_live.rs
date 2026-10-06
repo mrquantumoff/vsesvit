@@ -4,7 +4,8 @@
 //! runs with the same `VSESVIT_SYNC_LIVE_RUN`, so markers an earlier pair left there are not
 //! taken for this pair's; once `VSESVIT_SYNC_LIVE` is set, the run fails if any of the others
 //! is missing or empty. Both sign in by pressing Sign In on the Sync page, which opens the
-//! provider's page in a tab, as a user does.
+//! provider's page in a tab, as a user does. A then sets the sync passphrase in the Sync page's
+//! flyout, and B enters it there.
 //!
 //! A adds bookmarks and opens tabs; B sees them arrive, lists A's tabs under "Tabs from other
 //! devices", turns Bookmarks off and on again, and gets the bookmark A added just before it
@@ -20,22 +21,24 @@ use serde_json::{Value, json};
 use vsesvit_core::Url;
 use vsesvit_core::prefs::keys;
 use vsesvit_core::testkit::FixtureServer;
-use vsesvit_sync::status::State;
+use vsesvit_sync::Encryption;
+use vsesvit_sync::status::{Action, State};
 use windows_core::Interface;
 
 use super::{confirm_flyout, invoke, settings_on, shoot, wait_loaded};
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::dialogs::{self, Dialog};
-use crate::exec;
+use crate::dialogs::{self, Dialog, SyncPage};
 use crate::session::now_ms;
 use crate::window::BrowserWindow;
+use crate::{exec, sync};
 
 const POLL: Duration = Duration::from_millis(250);
 const SETTLE: Duration = Duration::from_millis(600);
 /// Long enough for a sync on the 60 s timer, and some.
 const ARRIVAL: Duration = Duration::from_secs(100);
 const PARTNER: Duration = Duration::from_secs(300);
+const PASSPHRASE: &str = "live sync passphrase";
 
 pub(super) struct Live {
     server: String,
@@ -234,6 +237,75 @@ async fn sign_in(
         .ok_or_else(|| "did not sign in within 60 s".to_owned())
 }
 
+/// Waits for the Sync page to offer `action` (Set or Enter Passphrase…), syncing meanwhile to
+/// look for the account's key record, then types the passphrase into its flyout and waits for a
+/// sync with it to complete.
+async fn take_passphrase(
+    live: &Live,
+    browser: &Rc<Browser>,
+    follow: &Follow,
+    window: &Rc<BrowserWindow>,
+    out_dir: &Path,
+    action: Action,
+    steps: &mut Vec<Value>,
+) -> std::result::Result<(), String> {
+    exec::wait_for(PARTNER, Duration::from_secs(2), || {
+        sync::sync_now(browser);
+        (browser.sync().status().actions.first() == Some(&action)).then_some(())
+    })
+    .await
+    .ok_or_else(|| format!("the Sync page never offered {}", action.label()))?;
+    let preview = settings_on(window, "SyncPanel")
+        .await
+        .map_err(|e| e.to_string())?;
+    let page = preview
+        .wired::<SyncPage>()
+        .ok_or("the Settings dialog has no Sync page")?;
+    invoke(
+        &preview
+            .find::<Button>(&format!("Sync{action:?}"))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let flyout = exec::wait_for(Duration::from_secs(10), POLL, || page.passphrase())
+        .await
+        .ok_or("the passphrase flyout did not open")?;
+    flyout
+        .fill(PASSPHRASE, PASSPHRASE)
+        .map_err(|e| e.to_string())?;
+    exec::sleep(SETTLE).await;
+    let shown = flyout.shown();
+    let name = format!("live-{}-passphrase", live.role);
+    shoot(
+        window,
+        out_dir,
+        &name,
+        steps,
+        |_| json!({ "action": action.label(), "fields_problem_accept": shown, "ok": shown.2 }),
+    )
+    .await;
+    let since = Instant::now();
+    flyout.accept();
+    drop(flyout);
+    let synced = synced_since(browser, follow, since, Duration::from_secs(60)).await;
+    let ready = matches!(
+        browser.sync().state(),
+        State::SignedIn {
+            encryption: Encryption::Ready,
+            ..
+        }
+    );
+    steps.push(json!({
+        "name": format!("live-{}-passphrase-taken", live.role),
+        "synced_at": synced,
+        "ok": synced.is_some() && ready,
+    }));
+    drop(preview);
+    ready
+        .then_some(())
+        .ok_or_else(|| format!("{} did not take the passphrase", action.label()))
+}
+
 /// Adds a bookmark the way the star does, and waits for this device's next sync to take it:
 /// how long that took after the change is what "sync soon after a change" promises.
 async fn bookmark_and_upload(
@@ -291,6 +363,17 @@ async fn role_a(
 ) -> std::result::Result<(), String> {
     let fixture = FixtureServer::start().map_err(|e| e.to_string())?;
     sign_in(live, browser, window, out_dir, steps).await?;
+    take_passphrase(
+        live,
+        browser,
+        follow,
+        window,
+        out_dir,
+        Action::SetPassphrase,
+        steps,
+    )
+    .await?;
+    live.mark("a-passphrase");
     for page in ["/index.html", "/page2.html"] {
         let tab = window
             .open_url_tab(fixture.url(page).as_str(), true)
@@ -337,6 +420,17 @@ async fn role_b(
     steps: &mut Vec<Value>,
 ) -> std::result::Result<(), String> {
     sign_in(live, browser, window, out_dir, steps).await?;
+    live.marked("a-passphrase").await?;
+    take_passphrase(
+        live,
+        browser,
+        follow,
+        window,
+        out_dir,
+        Action::EnterPassphrase,
+        steps,
+    )
+    .await?;
 
     let changed = live.marked("a-bookmark1").await?;
     live.marked("a-bookmark1-uploaded").await?;
@@ -517,6 +611,7 @@ mod tests {
             syncing,
             error: error.map(str::to_owned),
             needs_sign_in: false,
+            encryption: Encryption::Ready,
         }
     }
 

@@ -22,9 +22,9 @@ use vsesvit_core::sync::DataType;
 use vsesvit_core::https_only;
 use vsesvit_core::spellcheck;
 use vsesvit_core::trackers::TrackingProtection;
-use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
+use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State, passphrase_dialog};
 
-use super::{confirm, plain_toast};
+use super::{confirm, passphrase, plain_toast};
 use crate::browser::Browser;
 use crate::{engine, permissions};
 use crate::session::now_ms;
@@ -55,7 +55,15 @@ pub(crate) const SYNC_ICON: &str = "view-refresh-symbolic";
 
 /// The account row's buttons, in the order each state lists the ones it shows. Deleting the data
 /// on the server has a row of its own, apart from the everyday buttons.
-const SYNC_ACTIONS: [Action; 4] = [Action::SignIn, Action::Cancel, Action::SyncNow, Action::SignOut];
+const SYNC_ACTIONS: [Action; 7] = [
+    Action::SignIn,
+    Action::Cancel,
+    Action::SetPassphrase,
+    Action::EnterPassphrase,
+    Action::SyncNow,
+    Action::ChangePassphrase,
+    Action::SignOut,
+];
 
 const CHANNELS: [(UpdateChannel, &str); 4] = [
     (UpdateChannel::Stable, "Stable"),
@@ -261,6 +269,8 @@ fn delete_server_data_group(syncer: &Syncer) -> adw::PreferencesGroup {
 /// while the dialog is open.
 fn sync_account_row(syncer: &Syncer) -> adw::ActionRow {
     let row = adw::ActionRow::builder().use_markup(false).build();
+    let busy = adw::Spinner::builder().visible(false).build();
+    row.add_suffix(&busy);
     let buttons: Vec<(Action, glib::WeakRef<gtk::Button>)> = SYNC_ACTIONS
         .into_iter()
         .map(|action| {
@@ -271,7 +281,16 @@ fn sync_account_row(syncer: &Syncer) -> adw::ActionRow {
             button.connect_clicked(glib::clone!(
                 #[strong]
                 syncer,
-                move |_| syncer.act(action)
+                #[weak]
+                row,
+                #[weak]
+                busy,
+                move |_| match action {
+                    Action::SetPassphrase | Action::EnterPassphrase | Action::ChangePassphrase => {
+                        glib::spawn_future_local(ask_for_passphrase(row, busy, syncer.clone()));
+                    }
+                    _ => syncer.act(action),
+                }
             ));
             row.add_suffix(&button);
             (action, button.downgrade())
@@ -300,6 +319,29 @@ fn sync_account_row(syncer: &Syncer) -> adw::ActionRow {
         }
     ));
     row
+}
+
+/// The passphrase dialog for what the account asks, then the passphrase step, with `row` busy
+/// meanwhile. A step that fails asks again, saying why, while the account still asks.
+async fn ask_for_passphrase(row: adw::ActionRow, busy: adw::Spinner, syncer: Syncer) {
+    let mut failed = None;
+    while let Some(words) = syncer.encryption().and_then(passphrase_dialog) {
+        let Some(passphrase) = passphrase::ask(&row, words, failed.as_deref()).await else { return };
+        row.set_sensitive(false);
+        busy.set_visible(true);
+        let taken = syncer.passphrase(passphrase).await;
+        row.set_sensitive(true);
+        busy.set_visible(false);
+        match taken {
+            Ok(()) => return,
+            Err(e) => failed = Some(e),
+        }
+    }
+    if let Some(e) = failed
+        && let Some(dialog) = row.ancestor(adw::PreferencesDialog::static_type()).and_downcast::<adw::PreferencesDialog>()
+    {
+        dialog.add_toast(plain_toast(&format!("Could not use the sync passphrase: {e}")));
+    }
 }
 
 /// The server to sign in to, which only changes while signed out. An address that is not one is
@@ -1099,18 +1141,22 @@ fn index_of<T: PartialEq, const N: usize>(options: &[(T, &str); N], value: &T) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vsesvit_sync::Encryption;
 
     #[test]
     fn every_sync_state_lists_its_buttons_in_their_fixed_order() {
-        let signed_in = |needs_sign_in| State::SignedIn {
+        let signed_in = |needs_sign_in, encryption| State::SignedIn {
             name: None,
             server: "https://sync.example".to_owned(),
             last_synced: None,
             syncing: false,
             error: None,
             needs_sign_in,
+            encryption,
         };
-        for state in [State::SignedOut { error: None }, State::SigningIn, signed_in(false), signed_in(true)] {
+        let encryptions = [Encryption::Checking, Encryption::Set, Encryption::Enter, Encryption::Changed, Encryption::Ready];
+        let signed_in_states = encryptions.into_iter().flat_map(|e| [signed_in(false, e), signed_in(true, e)]);
+        for state in [State::SignedOut { error: None }, State::SigningIn].into_iter().chain(signed_in_states) {
             let actions = state.status(0).actions;
             let order: Vec<usize> = actions
                 .iter()

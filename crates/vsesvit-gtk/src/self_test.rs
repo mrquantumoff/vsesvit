@@ -28,6 +28,8 @@ use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::trackers::{self, Category, TrackerList, TrackingProtection};
 use vsesvit_core::{OpenOptions, Profile};
+use vsesvit_sync::status::{Action, passphrase_dialog};
+use vsesvit_sync::{Account, Encryption};
 use vsesvit_webext::menus::Target;
 use vsesvit_webext::notifications::{self, Activation};
 use webkit::prelude::*;
@@ -72,7 +74,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 50] = [
+const CHECKS: [&str; 51] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -121,6 +123,7 @@ const CHECKS: [&str; 50] = [
     "https_only",
     "cookies",
     "capture_in_use",
+    "sync_passphrase",
     "welcome",
     "screenshot",
 ];
@@ -2752,6 +2755,112 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             && camera_stored == Some(Setting::Block)
             && microphone_on;
         if ok { Ok(detail) } else { Err(detail) }
+    })
+    .await;
+
+    ctx.check("sync_passphrase", CHECK_TIMEOUT, |last| async move {
+        let syncer = browser.sync();
+        let account: Account = serde_json::from_value(serde_json::json!({
+            "sign_in": "self-test", "server": "http://127.0.0.1:9", "name": "Self-Test",
+            "limits": { "max_batch": 100, "max_record_bytes": 1_048_576, "max_request_bytes": 4_194_304 },
+            "download_cursor": 0, "upload_cursors": {}, "last_synced": null,
+            "server_keys": "missing", "plaintext_trusted": false,
+        }))
+        .map_err(|e| e.to_string())?;
+        account.save(&mut browser.core().borrow_mut().sync()).map_err(|e| e.to_string())?;
+        let _signed_in = Cleanup(|| syncer.act(Action::SignOut));
+        browser.core().borrow_mut().sync().set_secret_state("account.session", b"x").map_err(|e| e.to_string())?;
+        syncer.reload();
+
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let settings = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        let _settings_open = Cleanup(|| {
+            settings.close();
+        });
+        settings.set_visible_page_name("sync");
+        let shown = |action: Action| button_labelled(settings.upcast_ref(), action.label()).filter(|b| b.is_mapped());
+        let set = wait_for(&last, || shown(Action::SetPassphrase).ok_or_else(|| "Settings > Sync shows no Set Passphrase… button".to_owned())).await;
+        set.emit_clicked();
+        let dialog = wait_for(&last, || window.visible_dialog().and_downcast::<adw::AlertDialog>().ok_or_else(|| "Set Passphrase… opened no dialog".to_owned())).await;
+        let words = passphrase_dialog(Encryption::Set).ok_or_else(|| "core has no dialog for setting a passphrase".to_owned())?;
+        let fields = all::<adw::PasswordEntryRow>(dialog.upcast_ref());
+        let titles: Vec<String> = fields.iter().map(|f| f.title().to_string()).collect();
+        let (Some(accept), [passphrase, confirm]) = (button_labelled(dialog.upcast_ref(), words.accept), fields.as_slice()) else {
+            dialog.close();
+            return Err(format!("the dialog has the password fields {titles:?}, not two and a {:?} button", words.accept));
+        };
+        let accept_enabled = || dialog.is_response_enabled("accept");
+        let problem = || find::<gtk::Label>(dialog.upcast_ref(), |l| l.has_css_class("error") && l.is_visible()).map(|l| l.label().to_string());
+        let type_in = |first: &str, second: &str| {
+            passphrase.set_text(first);
+            confirm.set_text(second);
+            (accept_enabled(), problem())
+        };
+        let fresh = (accept_enabled(), problem());
+        let mismatched = type_in("correct horse", "correct hose");
+        let short = type_in("horse", "horse");
+        let valid = type_in("correct horse", "correct horse");
+        let heading = dialog.heading().map(|h| h.to_string());
+        let expected: Vec<&str> = std::iter::once(words.field).chain(words.confirm).collect();
+        if heading.as_deref() != Some(words.title)
+            || titles != expected
+            || fresh != (false, None)
+            || mismatched.0
+            || mismatched.1.is_none()
+            || short.0
+            || short.1.is_none()
+            || valid != (true, None)
+        {
+            dialog.close();
+            return Err(format!(
+                "{heading:?} with {titles:?}: ({:?} enabled, problem) fresh {fresh:?}, mismatched {mismatched:?}, short {short:?}, valid {valid:?}",
+                words.accept
+            ));
+        }
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("sync-passphrase.png")).await.map_err(|e| e.to_string())?;
+        accept.emit_clicked();
+        let ready = || match Account::load(&mut browser.core().borrow_mut().sync()) {
+            Ok(Some(account)) if account.encryption() == Encryption::Ready => Ok(()),
+            Ok(Some(account)) => Err(format!("the stored account is {:?}", account.encryption())),
+            Ok(None) => Err("no account is stored".to_owned()),
+            Err(e) => Err(e.to_string()),
+        };
+        wait_for(&last, ready).await;
+        wait_for(&last, || shown(Action::ChangePassphrase).map(drop).ok_or_else(|| "Settings shows no Change Passphrase… button".to_owned())).await;
+
+        browser.core().borrow_mut().sync().set_secret_state("account.keyring", b"").map_err(|e| e.to_string())?;
+        syncer.reload();
+        let enter = wait_for(&last, || shown(Action::EnterPassphrase).ok_or_else(|| "without its keys the account offers no Enter Passphrase…".to_owned())).await;
+        enter.emit_clicked();
+        let entering = passphrase_dialog(Encryption::Enter).ok_or_else(|| "core has no dialog for entering the passphrase".to_owned())?;
+        let asked = |previous: Option<adw::AlertDialog>| {
+            wait_for(&last, move || {
+                let dialog = window.visible_dialog().and_downcast::<adw::AlertDialog>().filter(|d| Some(d) != previous.as_ref());
+                let field = dialog.as_ref().and_then(|d| find::<adw::PasswordEntryRow>(d.upcast_ref(), |_| true));
+                let accept = dialog.as_ref().and_then(|d| button_labelled(d.upcast_ref(), entering.accept));
+                dialog.zip(field).zip(accept).map(|((d, f), a)| (d, f, a)).ok_or_else(|| format!("no dialog with a password field and {:?}", entering.accept))
+            })
+        };
+        let (wrong, field, accept) = asked(None).await;
+        field.set_text("wrong horse");
+        accept.emit_clicked();
+        let (again, field, accept) = asked(Some(wrong)).await;
+        let said = find::<gtk::Label>(again.upcast_ref(), |l| l.has_css_class("error") && l.is_visible()).map(|l| l.label().to_string());
+        if said.as_deref() != Some("The passphrase is wrong") {
+            again.close();
+            return Err(format!("a wrong passphrase asked again, saying {said:?}"));
+        }
+        field.set_text("correct horse");
+        accept.emit_clicked();
+        wait_for(&last, ready).await;
+        Ok(format!(
+            "Set Passphrase… opened {heading:?} with {titles:?}; {:?} was off when empty, mismatched ({:?}) and short ({:?}), on for a valid one; accepting stored a Ready account and Settings offers Change Passphrase… (sync-passphrase.png); without its keys Enter Passphrase… took a wrong one, asked again saying {said:?}, and took the right one",
+            words.accept, mismatched.1, short.1
+        ))
     })
     .await;
 

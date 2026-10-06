@@ -16,7 +16,7 @@ use vsesvit_core::Profile;
 use vsesvit_core::crdt::Seq;
 use vsesvit_core::prefs::keys;
 use vsesvit_sync::status::{Action, State};
-use vsesvit_sync::{Account, Error, Http, MAX_ROUNDS, Round, SignIn};
+use vsesvit_sync::{Account, Encryption, Error, Http, MAX_ROUNDS, Passphrase, PassphraseJob, Round, SignIn};
 
 use crate::browser::{self, Browser};
 use crate::window::Focus;
@@ -29,8 +29,8 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(60);
 const SYNC_SOON: Duration = Duration::from_secs(10);
 /// How long quitting waits for the final sync.
 const FINAL_SYNC_WAIT: Duration = Duration::from_secs(3);
-/// How long deleting the data on the server waits for a sync that is running.
-const DELETE_WAIT: Duration = Duration::from_secs(120);
+/// How long deleting the data on the server, or a passphrase step, waits for a running sync.
+const RUNNING_WAIT: Duration = Duration::from_secs(120);
 
 /// Called with the state after every change, and dropped once it returns false.
 type Watcher = Box<dyn Fn(&State) -> bool>;
@@ -42,8 +42,9 @@ struct Inner {
     browser: Weak<browser::Inner>,
     http: Http,
     state: RefCell<State>,
-    /// A sync, or the deletion of the data on the server, is running. Kept apart from
-    /// `State::SignedIn.syncing`, because a round can outlive the sign-in it started under.
+    /// A sync, a passphrase step, or the deletion of the data on the server is running. Kept
+    /// apart from `State::SignedIn.syncing`, because a round can outlive the sign-in it started
+    /// under.
     running: Cell<bool>,
     last_start: Cell<Option<Instant>>,
     /// `Profile::change_seq` when the last sync started; `None` asks for a sync at the next tick.
@@ -91,20 +92,37 @@ impl Syncer {
         }
     }
 
-    /// A button from [`vsesvit_sync::status::Status::actions`]. [`Action::DeleteServerData`] asks
-    /// first, so Settings calls [`Syncer::delete_server_data`] itself.
+    /// A button from [`vsesvit_sync::status::Status::actions`]. The passphrase actions and
+    /// [`Action::DeleteServerData`] ask first, so Settings calls [`Syncer::passphrase`] and
+    /// [`Syncer::delete_server_data`] itself.
     pub(crate) fn act(&self, action: Action) {
         match action {
             Action::SignIn => self.sign_in(),
             Action::Cancel => self.cancel(),
             Action::SyncNow => self.sync_now(),
             Action::SignOut => self.sign_out(),
-            Action::DeleteServerData => {}
+            Action::SetPassphrase | Action::EnterPassphrase | Action::ChangePassphrase | Action::DeleteServerData => {}
         }
     }
 
     pub(crate) fn is_signed_in(&self) -> bool {
         matches!(*self.0.state.borrow(), State::SignedIn { .. })
+    }
+
+    /// What the signed-in account asks of the sync passphrase, as last seen.
+    pub(crate) fn encryption(&self) -> Option<Encryption> {
+        match *self.0.state.borrow() {
+            State::SignedIn { encryption, .. } => Some(encryption),
+            _ => None,
+        }
+    }
+
+    /// Shows the account the profile stores now, which the self-test stores itself.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn reload(&self) {
+        let Some(browser) = self.browser() else { return };
+        let state = stored_state(&mut browser.core().borrow_mut(), None, false);
+        self.set_state(state);
     }
 
     /// The user chose other data types: sync them now, or at a tick once the running sync ends.
@@ -125,6 +143,12 @@ impl Syncer {
     fn update(&self, change: impl FnOnce(&mut State)) {
         change(&mut self.0.state.borrow_mut());
         self.notify();
+    }
+
+    fn show_encryption(&self, now: Encryption) {
+        if refresh(&mut self.0.state.borrow_mut(), now) {
+            self.notify();
+        }
     }
 
     fn notify(&self) {
@@ -191,6 +215,9 @@ impl Syncer {
             let exchanged = on_worker(move || round.run(&http)).await;
             let Some(browser) = self.browser() else { return Err(Error::SignedOut) };
             let finished = exchanged.finish(&mut browser.core().borrow_mut().sync());
+            if !matches!(finished.result, Err(Error::SignedOut)) {
+                self.show_encryption(finished.account.encryption());
+            }
             match finished.result {
                 Ok(synced) => {
                     *synced_at = finished.account.last_synced();
@@ -292,17 +319,24 @@ impl Syncer {
         Ok(())
     }
 
-    /// Deletes everything the server holds for the account, then signs out. On failure, or when
-    /// a sync is still running after [`DELETE_WAIT`], the profile stays signed in.
-    pub(crate) async fn delete_server_data(&self) -> Result<(), String> {
-        // A round running meanwhile could upload again what the deletion removes.
-        let deadline = Instant::now() + DELETE_WAIT;
+    /// Waits up to [`RUNNING_WAIT`] for a running sync to end, then keeps syncs from starting
+    /// until `running` is cleared.
+    async fn hold_syncs(&self) -> Result<(), String> {
+        let deadline = Instant::now() + RUNNING_WAIT;
         while self.0.running.replace(true) {
             if Instant::now() >= deadline {
                 return Err("a sync is still running; try again".to_owned());
             }
             glib::timeout_future(Duration::from_millis(100)).await;
         }
+        Ok(())
+    }
+
+    /// Deletes everything the server holds for the account, then signs out. On failure, or when
+    /// a sync is still running after [`RUNNING_WAIT`], the profile stays signed in.
+    pub(crate) async fn delete_server_data(&self) -> Result<(), String> {
+        // A round running meanwhile could upload again what the deletion removes.
+        self.hold_syncs().await?;
         let deleted = self.delete_and_forget().await;
         self.0.running.set(false);
         deleted.map_err(|e| e.to_string())
@@ -316,6 +350,30 @@ impl Syncer {
         let account = on_worker(move || account.delete_server_data(&http)).await?;
         let browser = self.browser().ok_or(Error::SignedOut)?;
         self.forget(&browser, Some(account))
+    }
+
+    /// Sets, enters or changes the sync passphrase, whichever the account asks for, then syncs
+    /// with it. A round running meanwhile would be thrown away, so this waits for a running sync
+    /// as deleting the data on the server does.
+    pub(crate) async fn passphrase(&self, passphrase: Passphrase) -> Result<(), String> {
+        self.hold_syncs().await?;
+        let taken = self.take_passphrase(passphrase).await;
+        self.0.running.set(false);
+        let encryption = taken.map_err(|e| e.to_string())?;
+        self.show_encryption(encryption);
+        self.sync_now();
+        Ok(())
+    }
+
+    async fn take_passphrase(&self, passphrase: Passphrase) -> Result<Encryption, Error> {
+        let browser = self.browser().ok_or(Error::SignedOut)?;
+        let account = Account::load(&mut browser.core().borrow_mut().sync())?.ok_or(Error::SignedOut)?;
+        drop(browser);
+        let job = PassphraseJob::new(account, passphrase).ok_or(Error::KeysChanged)?;
+        let keys = on_worker(move || job.run()).await;
+        let browser = self.browser().ok_or(Error::SignedOut)?;
+        let account = keys.finish(&mut browser.core().borrow_mut().sync())?;
+        Ok(account.encryption())
     }
 
     /// As the browser quits, after the session is saved: one round of what changed since the last
@@ -378,6 +436,7 @@ fn signed_in(account: &Account, syncing: bool, error: Option<String>, needs_sign
         syncing,
         error,
         needs_sign_in,
+        encryption: account.encryption(),
     }
 }
 
@@ -406,6 +465,14 @@ fn should_sync(state: &State, running: bool) -> bool {
 fn due(state: &State, running: bool, changed: bool, since_start: Option<Duration>) -> bool {
     should_sync(state, running)
         && since_start.is_none_or(|since| since >= SYNC_INTERVAL || (changed && since >= SYNC_SOON))
+}
+
+/// Shows `now` as what the signed-in account asks of the passphrase. Returns whether that changed.
+fn refresh(state: &mut State, now: Encryption) -> bool {
+    match state {
+        State::SignedIn { encryption, .. } => std::mem::replace(encryption, now) != now,
+        _ => false,
+    }
 }
 
 /// The state once a sync has ended with `result`. A profile that signed out meanwhile keeps the
@@ -480,6 +547,7 @@ mod tests {
             syncing,
             error: error.map(str::to_owned),
             needs_sign_in,
+            encryption: Encryption::Ready,
         }
     }
 
@@ -546,16 +614,31 @@ mod tests {
         let account: Account = serde_json::from_value(serde_json::json!({
             "sign_in": "s", "server": "https://sync.example", "name": null,
             "limits": { "max_batch": 1, "max_record_bytes": 1, "max_request_bytes": 1 },
-            "download_cursor": 0, "upload_cursors": {}, "last_synced": 100,
+            "download_cursor": 0, "upload_cursors": {}, "last_synced": 100, "server_keys": "missing",
         }))
         .expect("an account");
         account.save(&mut profile.sync()).expect("the account is saved");
         profile.sync().set_secret_state("account.session", b"session").expect("the session is saved");
         assert!(matches!(Account::load(&mut profile.sync()), Ok(Some(_))), "the account is stored");
 
+        let asking_to_set = |mut state: State| {
+            refresh(&mut state, Encryption::Set);
+            state
+        };
         let state = stored_state(&mut profile, FAILED.map(str::to_owned), true);
-        assert_eq!(state, with(100, false, FAILED, true));
-        assert_eq!(stored_state(&mut profile, None, true), with(100, false, None, true), "a cancel says nothing");
+        assert_eq!(state, asking_to_set(with(100, false, FAILED, true)));
+        assert_eq!(stored_state(&mut profile, None, true), asking_to_set(with(100, false, None, true)), "a cancel says nothing");
+    }
+
+    #[test]
+    fn a_round_or_a_passphrase_shows_what_the_account_asks_next() {
+        let mut state = signed_in_state(false, false);
+        assert!(!refresh(&mut state, Encryption::Ready), "nothing changed");
+        assert!(refresh(&mut state, Encryption::Changed));
+        assert!(matches!(state, State::SignedIn { encryption: Encryption::Changed, .. }), "{state:?}");
+        let mut state = State::SignedOut { error: None };
+        assert!(!refresh(&mut state, Encryption::Set), "a sign-out meanwhile stays");
+        assert_eq!(state, State::SignedOut { error: None });
     }
 
     #[test]

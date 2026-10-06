@@ -1,5 +1,8 @@
 //! What Settings shows for sync, in words both shells share.
 
+use crate::Encryption;
+use crate::crypto::Passphrase;
+
 /// Where a profile's sync stands, as the shell tracks it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum State {
@@ -17,6 +20,8 @@ pub enum State {
         error: Option<String>,
         /// The server no longer accepts the session; signing in again fixes it.
         needs_sign_in: bool,
+        /// Whether the device syncs, or what it asks of the sync passphrase first.
+        encryption: Encryption,
     },
 }
 
@@ -24,7 +29,11 @@ pub enum State {
 pub enum Action {
     SignIn,
     Cancel,
+    /// Asks for it first: [`passphrase_dialog`], as are the next two.
+    SetPassphrase,
+    EnterPassphrase,
     SyncNow,
+    ChangePassphrase,
     SignOut,
     /// Asks first: [`DELETE_CONFIRMATION`].
     DeleteServerData,
@@ -33,7 +42,7 @@ pub enum Action {
 /// The confirmation before [`Action::DeleteServerData`]: title, body, and the destructive button.
 pub const DELETE_CONFIRMATION: (&str, &str, &str) = (
     "Delete your data on the sync server?",
-    "Your bookmarks, history, open tabs, extensions and settings are deleted from the server, and all your devices sign out. They stay on your devices, which upload them again when they next sign in.",
+    "Your bookmarks, history, open tabs, extensions and settings are deleted from the server, along with your sync passphrase, and all your devices sign out. They stay on your devices, which upload them again when they next sign in and a passphrase is set.",
     "Delete",
 );
 
@@ -42,12 +51,73 @@ impl Action {
         match self {
             Action::SignIn => "Sign In",
             Action::Cancel => "Cancel",
+            Action::SetPassphrase => "Set Passphrase…",
+            Action::EnterPassphrase => "Enter Passphrase…",
             Action::SyncNow => "Sync Now",
+            Action::ChangePassphrase => "Change Passphrase…",
             Action::SignOut => "Sign Out",
             Action::DeleteServerData => "Delete Data on Server…",
         }
     }
 }
+
+/// What the dialog behind [`Action::SetPassphrase`], [`Action::EnterPassphrase`] or
+/// [`Action::ChangePassphrase`] says. A new passphrase is typed twice.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PassphraseDialog {
+    pub title: &'static str,
+    pub body: &'static str,
+    pub field: &'static str,
+    /// The second field's label, for a new passphrase.
+    pub confirm: Option<&'static str>,
+    pub accept: &'static str,
+}
+
+/// The dialog for what `encryption` asks for, or `None` when it asks nothing of the passphrase.
+pub fn passphrase_dialog(encryption: Encryption) -> Option<PassphraseDialog> {
+    Some(match encryption {
+        Encryption::Checking => return None,
+        Encryption::Set => PassphraseDialog {
+            title: "Set a Sync Passphrase",
+            body: "Vsesvit encrypts your bookmarks, history, open tabs, extensions and settings with this passphrase before they leave this device, so the sync server can't read them. You'll enter it on each device you sync. If you forget it, it can't be recovered. If you already set one on another device, don't set a new one: enter that one here once Vsesvit finds it.",
+            field: "Passphrase",
+            confirm: Some("Confirm passphrase"),
+            accept: "Set Passphrase",
+        },
+        Encryption::Enter => PassphraseDialog {
+            title: "Enter Your Sync Passphrase",
+            body: "Your synced data is encrypted with your sync passphrase. Enter it to start syncing on this device. If you've forgotten it, delete your data on the sync server and set a new one.",
+            field: "Passphrase",
+            confirm: None,
+            accept: "Start Syncing",
+        },
+        Encryption::Changed => PassphraseDialog {
+            title: "Enter Your New Sync Passphrase",
+            body: "Your sync passphrase was changed on another device. Enter the new one to keep syncing. Never enter an old passphrase here.",
+            field: "New passphrase",
+            confirm: None,
+            accept: "Start Syncing",
+        },
+        Encryption::Ready => PassphraseDialog {
+            title: "Change Your Sync Passphrase",
+            body: "Vsesvit encrypts your data again with the new passphrase. Your other devices stop syncing until you enter it on each of them. The sync server may keep copies it made earlier, which the old passphrase still opens.",
+            field: "New passphrase",
+            confirm: Some("Confirm new passphrase"),
+            accept: "Change Passphrase",
+        },
+    })
+}
+
+/// Checks what was typed in a [`PassphraseDialog`]: `confirm` is the second field's text, when the
+/// dialog has one. `Err` is what to show under the fields.
+pub fn check_passphrase(text: &str, confirm: Option<&str>) -> Result<Passphrase, &'static str> {
+    if confirm.is_some_and(|c| c != text) {
+        return Err("The passphrases don't match");
+    }
+    Passphrase::new(text.to_owned()).ok_or(TOO_SHORT)
+}
+
+const TOO_SHORT: &str = "Use at least 8 characters";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Status {
@@ -67,7 +137,7 @@ impl State {
             State::SignedOut { error } => Status {
                 title: "Not signed in".to_owned(),
                 subtitle: error.clone().unwrap_or_else(|| {
-                    "Sign in to sync bookmarks, history, open tabs, extensions and settings across your devices.".to_owned()
+                    "Sign in to sync bookmarks, history, open tabs, extensions and settings across your devices, encrypted with a passphrase only you know.".to_owned()
                 }),
                 actions: vec![Action::SignIn],
                 busy: false,
@@ -80,21 +150,30 @@ impl State {
                 busy: false,
                 server_editable: false,
             },
-            State::SignedIn { name, server, last_synced, syncing, error, needs_sign_in } => {
+            State::SignedIn { name, server, last_synced, syncing, error, needs_sign_in, encryption } => {
                 let host = crate::host_of(server);
                 let title = match name {
                     Some(name) => format!("Signed in as {name}"),
                     None => format!("Signed in to {host}"),
+                };
+                let asks = match encryption {
+                    Encryption::Checking => Some("Checking for a sync passphrase…"),
+                    Encryption::Set => Some("Set a sync passphrase to start syncing. Your data is encrypted with it before it leaves this device."),
+                    Encryption::Enter => Some("Enter your sync passphrase to start syncing on this device."),
+                    Encryption::Changed => Some("Your sync passphrase was changed on another device. Enter the new one to keep syncing."),
+                    Encryption::Ready => None,
                 };
                 let subtitle = if *needs_sign_in {
                     match error {
                         Some(error) => format!("Sign-in failed: {error}"),
                         None => "Sign in again to keep syncing.".to_owned(),
                     }
+                } else if let Some(error) = error.as_ref().filter(|_| !*syncing) {
+                    format!("Sync failed: {error}")
+                } else if let Some(asks) = asks {
+                    asks.to_owned()
                 } else if *syncing {
                     "Syncing…".to_owned()
-                } else if let Some(error) = error {
-                    format!("Sync failed: {error}")
                 } else {
                     match last_synced {
                         Some(at) => format!("Last synced {}", ago(now_secs.saturating_sub(*at))),
@@ -104,7 +183,12 @@ impl State {
                 let actions = if *needs_sign_in {
                     vec![Action::SignIn, Action::SignOut]
                 } else {
-                    vec![Action::SyncNow, Action::SignOut, Action::DeleteServerData]
+                    match encryption {
+                        Encryption::Checking => vec![Action::SignOut, Action::DeleteServerData],
+                        Encryption::Set => vec![Action::SetPassphrase, Action::SignOut, Action::DeleteServerData],
+                        Encryption::Enter | Encryption::Changed => vec![Action::EnterPassphrase, Action::SignOut, Action::DeleteServerData],
+                        Encryption::Ready => vec![Action::SyncNow, Action::ChangePassphrase, Action::SignOut, Action::DeleteServerData],
+                    }
                 };
                 Status { title, subtitle, actions, busy: *syncing, server_editable: false }
             }
@@ -136,7 +220,13 @@ mod tests {
             syncing: false,
             error: None,
             needs_sign_in: false,
+            encryption: Encryption::Ready,
         }
+    }
+
+    fn with_encryption(encryption: Encryption) -> State {
+        let State::SignedIn { name, server, last_synced, syncing, error, needs_sign_in, .. } = signed_in() else { unreachable!() };
+        State::SignedIn { name, server, last_synced, syncing, error, needs_sign_in, encryption }
     }
 
     #[test]
@@ -153,7 +243,7 @@ mod tests {
     fn signed_in_says_who_and_when() {
         let s = signed_in().status(1000 + 125);
         assert_eq!((s.title.as_str(), s.subtitle.as_str()), ("Signed in as Demir", "Last synced 2 minutes ago"));
-        assert_eq!(s.actions, [Action::SyncNow, Action::SignOut, Action::DeleteServerData]);
+        assert_eq!(s.actions, [Action::SyncNow, Action::ChangePassphrase, Action::SignOut, Action::DeleteServerData]);
         assert_eq!(signed_in().status(1030).subtitle, "Last synced just now");
         assert_eq!(signed_in().status(1000 + 3600).subtitle, "Last synced 1 hour ago");
         assert_eq!(signed_in().status(1000 + 3 * 86_400).subtitle, "Last synced 3 days ago");
@@ -163,11 +253,29 @@ mod tests {
     fn a_sync_in_progress_an_error_and_an_expired_sign_in_each_show() {
         let State::SignedIn { server, last_synced, .. } = signed_in() else { unreachable!() };
         let with = |syncing, error: Option<&str>, needs_sign_in| {
-            State::SignedIn { name: None, server: server.clone(), last_synced, syncing, error: error.map(str::to_owned), needs_sign_in }.status(1000)
+            State::SignedIn {
+                name: None,
+                server: server.clone(),
+                last_synced,
+                syncing,
+                error: error.map(str::to_owned),
+                needs_sign_in,
+                encryption: Encryption::Ready,
+            }
+            .status(1000)
         };
         let s = with(true, None, false);
         assert_eq!((s.title.as_str(), s.subtitle.as_str(), s.busy), ("Signed in to vsesvit-service.mrquantumoff.dev", "Syncing…", true));
-        let s = State::SignedIn { name: None, server: "not a url".to_owned(), last_synced, syncing: false, error: None, needs_sign_in: false }.status(1000);
+        let s = State::SignedIn {
+            name: None,
+            server: "not a url".to_owned(),
+            last_synced,
+            syncing: false,
+            error: None,
+            needs_sign_in: false,
+            encryption: Encryption::Ready,
+        }
+        .status(1000);
         assert_eq!(s.title, "Signed in to not a url");
         assert_eq!(with(false, Some("could not reach x"), false).subtitle, "Sync failed: could not reach x");
         let s = with(false, None, true);
@@ -178,13 +286,54 @@ mod tests {
     fn a_failed_sign_in_again_shows_why() {
         let State::SignedIn { name, server, last_synced, .. } = signed_in() else { unreachable!() };
         let expired = |error: Option<&str>| {
-            State::SignedIn { name: name.clone(), server: server.clone(), last_synced, syncing: false, error: error.map(str::to_owned), needs_sign_in: true }
-                .status(1000)
+            State::SignedIn {
+                name: name.clone(),
+                server: server.clone(),
+                last_synced,
+                syncing: false,
+                error: error.map(str::to_owned),
+                needs_sign_in: true,
+                encryption: Encryption::Ready,
+            }
+            .status(1000)
         };
         let s = expired(Some("could not reach sync.example"));
         assert!(s.subtitle.contains("could not reach sync.example"), "{}", s.subtitle);
         assert_eq!(s.actions, [Action::SignIn, Action::SignOut]);
         assert_eq!(expired(None).subtitle, "Sign in again to keep syncing.");
+    }
+
+    #[test]
+    fn until_it_syncs_a_device_asks_for_the_passphrase_and_offers_no_sync() {
+        let s = with_encryption(Encryption::Checking).status(1000);
+        assert_eq!((s.subtitle.as_str(), s.actions.as_slice()), ("Checking for a sync passphrase…", &[Action::SignOut, Action::DeleteServerData][..]));
+        let s = with_encryption(Encryption::Set).status(1000);
+        assert_eq!(s.actions, [Action::SetPassphrase, Action::SignOut, Action::DeleteServerData]);
+        assert!(s.subtitle.starts_with("Set a sync passphrase"), "{}", s.subtitle);
+        for encryption in [Encryption::Enter, Encryption::Changed] {
+            let s = with_encryption(encryption).status(1000);
+            assert_eq!(s.actions, [Action::EnterPassphrase, Action::SignOut, Action::DeleteServerData]);
+        }
+        assert!(with_encryption(Encryption::Changed).status(1000).subtitle.contains("changed on another device"));
+    }
+
+    #[test]
+    fn each_passphrase_step_has_its_dialog() {
+        assert_eq!(passphrase_dialog(Encryption::Checking), None);
+        let set = passphrase_dialog(Encryption::Set).unwrap();
+        assert_eq!((set.accept, set.confirm), ("Set Passphrase", Some("Confirm passphrase")));
+        assert_eq!(passphrase_dialog(Encryption::Enter).unwrap().confirm, None, "an existing passphrase is typed once");
+        assert_eq!(passphrase_dialog(Encryption::Changed).unwrap().field, "New passphrase");
+        assert_eq!(passphrase_dialog(Encryption::Ready).unwrap().accept, "Change Passphrase");
+    }
+
+    #[test]
+    fn a_new_passphrase_is_long_enough_and_typed_the_same_twice() {
+        assert_eq!(check_passphrase("short", None).unwrap_err(), "Use at least 8 characters");
+        assert!(TOO_SHORT.contains(&crate::MIN_PASSPHRASE_CHARS.to_string()));
+        assert_eq!(check_passphrase("long enough", Some("long enougj")).unwrap_err(), "The passphrases don't match");
+        assert!(check_passphrase("long enough", Some("long enough")).is_ok());
+        assert!(check_passphrase("long enough", None).is_ok());
     }
 
     #[test]
