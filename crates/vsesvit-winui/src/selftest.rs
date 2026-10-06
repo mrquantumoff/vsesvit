@@ -12,6 +12,7 @@ mod omnibox_checks;
 mod page_checks;
 mod private_checks;
 mod search_engine_checks;
+mod download_checks;
 mod shortcut_checks;
 mod sync_checks;
 mod tab_menu_checks;
@@ -1014,6 +1015,17 @@ async fn checks(
             && button
             && rows == 1;
         ok.then_some(detail.clone()).ok_or(detail)
+    })
+    .await;
+
+    check(report, "download_pause", DEFAULT_TIMEOUT, async |p| {
+        download_checks::download_pause(browser, &tab, &server.url("/stalled.bin"), p).await
+    })
+    .await;
+
+    check(report, "download_safety", DEFAULT_TIMEOUT, async |p| {
+        let (script, dir) = (server.url("/dangerous.bat"), out_dir.join("downloads"));
+        download_checks::download_safety(browser, &window, &tab, &script, &dir, p).await
     })
     .await;
 

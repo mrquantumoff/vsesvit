@@ -7376,6 +7376,19 @@ impl ICoreWebView2DownloadOperation {
             })
         }
     }
+    pub fn MimeType(&self) -> windows_core::Result<String> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).MimeType)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| {
+                let hstring: windows_core::HSTRING = core::mem::transmute(result__);
+                hstring.to_string_lossy()
+            })
+        }
+    }
     pub fn TotalBytesToReceive(&self) -> windows_core::Result<i64> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -7410,6 +7423,16 @@ impl ICoreWebView2DownloadOperation {
         unsafe {
             let mut result__ = core::mem::zeroed();
             (windows_core::Interface::vtable(self).InterruptReason)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn CanResume(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).CanResume)(
                 windows_core::Interface::as_raw(self),
                 &mut result__,
             )
@@ -7499,6 +7522,18 @@ impl ICoreWebView2DownloadOperation {
                 .ok()
         }
     }
+    pub fn Pause(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Pause)(windows_core::Interface::as_raw(self))
+                .ok()
+        }
+    }
+    pub fn Resume(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Resume)(windows_core::Interface::as_raw(self))
+                .ok()
+        }
+    }
 }
 #[repr(C)]
 pub struct ICoreWebView2DownloadOperation_Vtbl {
@@ -7508,7 +7543,10 @@ pub struct ICoreWebView2DownloadOperation_Vtbl {
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
     ContentDisposition: usize,
-    MimeType: usize,
+    pub MimeType: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
     pub TotalBytesToReceive:
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut i64) -> windows_core::HRESULT,
     pub BytesReceived:
@@ -7523,7 +7561,8 @@ pub struct ICoreWebView2DownloadOperation_Vtbl {
         *mut core::ffi::c_void,
         *mut CoreWebView2DownloadInterruptReason,
     ) -> windows_core::HRESULT,
-    CanResume: usize,
+    pub CanResume:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
     pub BytesReceivedChanged: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,
@@ -7541,6 +7580,8 @@ pub struct ICoreWebView2DownloadOperation_Vtbl {
     pub RemoveStateChanged:
         unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     pub Cancel: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+    pub Pause: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+    pub Resume: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
     ICoreWebView2DownloadStartingEventArgs,

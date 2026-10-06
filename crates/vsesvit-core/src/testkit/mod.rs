@@ -9,7 +9,7 @@ mod fixture_server;
 pub mod report;
 
 pub use crx_writer::{CrxKey, encode_crx3, sign_crx3, write_crx3, zip_files};
-pub use fixture_server::FixtureServer;
+pub use fixture_server::{FixtureServer, STALLED_SENT};
 
 /// The id `probe_crx()` installs as: derived from `tests/fixtures/keys/test-only-probe-key.pem`.
 pub const PROBE_ID: &str = "eonajgebgeenbhiiobbhmkafolkeghdb";

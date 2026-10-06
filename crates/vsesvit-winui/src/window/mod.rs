@@ -15,6 +15,7 @@
 mod address;
 mod chrome;
 mod cookies;
+mod download_warning;
 mod media;
 mod permissions;
 mod progress;
@@ -241,6 +242,8 @@ pub(crate) struct BrowserWindow {
     editor: RefCell<Option<Rc<Editor>>>,
     /// The security icon's popup opened last.
     connection: RefCell<Option<Flyout>>,
+    /// The warning about a downloaded file shown last.
+    download_warning: RefCell<Option<Flyout>>,
     /// The extension popup opened last.
     popup: RefCell<Option<Popup>>,
     /// Tab search while it is open.
@@ -322,6 +325,7 @@ impl BrowserWindow {
             toolbar,
             editor: RefCell::new(None),
             connection: RefCell::new(None),
+            download_warning: RefCell::new(None),
             popup: RefCell::new(None),
             tab_search: RefCell::new(None),
             permissions: permissions::PermissionUi::default(),

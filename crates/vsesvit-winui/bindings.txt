@@ -248,7 +248,7 @@ Microsoft.Web.WebView2.Core.ICoreWebView2_3::{TrySuspendAsync, Resume, get_IsSus
 Microsoft.Web.WebView2.Core.ICoreWebView2_4::DownloadStarting
 Microsoft.Web.WebView2.Core.ICoreWebView2_8::{get_IsMuted, put_IsMuted, get_IsDocumentPlayingAudio, IsMutedChanged, IsDocumentPlayingAudioChanged}
 Microsoft.Web.WebView2.Core.ICoreWebView2DownloadStartingEventArgs::{get_DownloadOperation, get_ResultFilePath, put_ResultFilePath, put_Cancel, put_Handled, GetDeferral}
-Microsoft.Web.WebView2.Core.ICoreWebView2DownloadOperation::{get_Uri, get_BytesReceived, get_TotalBytesToReceive, get_State, get_InterruptReason, BytesReceivedChanged, StateChanged, Cancel}
+Microsoft.Web.WebView2.Core.ICoreWebView2DownloadOperation::{get_Uri, get_MimeType, get_BytesReceived, get_TotalBytesToReceive, get_State, get_InterruptReason, get_CanResume, BytesReceivedChanged, StateChanged, Cancel, Pause, Resume}
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadState
 Microsoft.Web.WebView2.Core.CoreWebView2DownloadInterruptReason
 Microsoft.Web.WebView2.Core.ICoreWebView2_25::{ShowSaveAsUIAsync, SaveAsUIShowing}

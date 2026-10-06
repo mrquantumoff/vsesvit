@@ -1,6 +1,7 @@
 //! A tiny HTTP/1.1 server for `tests/fixtures/site/`, bound to 127.0.0.1 on a random
 //! port, plus `/suggest?q=<terms>`, a search engine's suggestions for the terms, and
-//! `/set-cookie`, a page that sets a cookie in its response header. It records
+//! `/set-cookie`, a page that sets a cookie in its response header, and `/stalled.bin`, a
+//! download that never finishes. It records
 //! the path of every request, so a test can prove that a request was made (`/allowed.png`)
 //! or was blocked before it left the engine (`/vsesvit-blocked/pixel.png`).
 
@@ -45,6 +46,9 @@ const SITE: &[(&str, &str, &[u8])] = &[
     // webNavigation checks.
     site_file!("frames.html", "text/html; charset=utf-8"),
     site_file!("download.bin", "application/octet-stream"),
+    // Scripts, a type that can run code on Windows and on Linux: their downloads wait for Keep.
+    ("/dangerous.bat", "application/octet-stream", b"@echo Vsesvit fixture\r\n"),
+    ("/dangerous.sh", "application/octet-stream", b"#!/bin/sh\necho Vsesvit fixture\n"),
     // A page that declares its icon, for favicon fetching.
     (
         "/icon.html",
@@ -52,6 +56,11 @@ const SITE: &[(&str, &str, &[u8])] = &[
         b"<!doctype html><html><head><title>Icon</title><link rel=\"icon\" href=\"allowed.png\"></head><body></body></html>",
     ),
 ];
+
+/// `/stalled.bin` announces this many bytes, sends [`STALLED_SENT`] and then nothing more until
+/// the client closes the connection: a download that stays in progress.
+const STALLED_SIZE: usize = 1_000_000;
+pub const STALLED_SENT: usize = 1_000;
 
 /// `/set-cookie`, served with `Set-Cookie: served=1; Path=/`.
 const COOKIE_SET_PAGE: &[u8] = b"<!doctype html><html><head><title>Cookie set</title></head><body></body></html>";
@@ -139,6 +148,9 @@ fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>) -> io::Result<()> {
 
     let lookup = if path == "/" { "/index.html" } else { path };
     let get = method == "GET" || method == "HEAD";
+    if get && path == "/stalled.bin" {
+        return stall(stream);
+    }
     let set_cookie = get && path == "/set-cookie";
     let (status, content_type, body) = match SITE.iter().find(|(p, _, _)| *p == lookup) {
         Some((_, content_type, body)) if get => ("200 OK", *content_type, Cow::Borrowed(*body)),
@@ -156,6 +168,18 @@ fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>) -> io::Result<()> {
         stream.write_all(&body)?;
     }
     stream.flush()
+}
+
+fn stall(mut stream: TcpStream) -> io::Result<()> {
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {STALLED_SIZE}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(&[0; STALLED_SENT])?;
+    stream.flush()?;
+    stream.set_read_timeout(None)?;
+    while stream.read(&mut [0; 512])? > 0 {}
+    Ok(())
 }
 
 /// OpenSearch suggestions for the `q` of `target`: `["<q>",["<q> one","<q> two"]]`.

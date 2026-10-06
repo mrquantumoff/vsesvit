@@ -1,5 +1,6 @@
-//! Downloads: the list newest first, each entry's actions, the download folder and clearing
-//! the list. Updates live while open.
+//! Downloads: the list newest first, each entry's actions (pausing and resuming, keeping or
+//! discarding a file that can run code), the download folder and clearing the list. Updates
+//! live while open.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -10,7 +11,7 @@ use windows_core::{Interface, Result};
 use super::{Wired, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::downloads::{Change, Subscriber};
+use crate::downloads::{Change, Subscriber, file_name};
 use crate::{exec, platform, xaml};
 
 pub(super) const MARKUP: &str = r#"
@@ -36,14 +37,22 @@ pub(super) const MARKUP: &str = r#"
 enum Action {
     Open,
     ShowInFolder,
+    Pause,
+    Resume,
     Cancel,
+    Keep,
+    Discard,
     Remove,
 }
 
-const ACTIONS: [(Action, &str, &str); 4] = [
+const ACTIONS: [(Action, &str, &str); 8] = [
     (Action::Open, "Open", "Open"),
     (Action::ShowInFolder, "ShowInFolder", "Show in folder"),
+    (Action::Pause, "Pause", "Pause"),
+    (Action::Resume, "Resume", "Resume"),
     (Action::Cancel, "Cancel", "Cancel"),
+    (Action::Keep, "Keep", "Keep"),
+    (Action::Discard, "Discard", "Discard"),
     (Action::Remove, "Remove", "Remove from list"),
 ];
 
@@ -52,14 +61,17 @@ impl Action {
     fn applies(self, state: State, exists: bool) -> bool {
         match self {
             Action::Open => state == State::Completed && exists,
-            Action::ShowInFolder => exists,
-            Action::Cancel => state == State::InProgress,
-            Action::Remove => state != State::InProgress,
+            Action::ShowInFolder => exists && state != State::Unconfirmed,
+            Action::Pause => state == State::InProgress,
+            Action::Resume => matches!(state, State::Paused | State::Interrupted),
+            Action::Cancel => state.is_live(),
+            Action::Keep | Action::Discard => state == State::Unconfirmed,
+            Action::Remove => state.is_final(),
         }
     }
 }
 
-/// A row whose status line and bar follow a running download.
+/// A row whose status line and bar follow a download the engine holds.
 struct Row {
     download: Download,
     status: TextBlock,
@@ -133,7 +145,7 @@ impl Page {
                 Ok(row)
             });
             match built {
-                Ok(row) if download.state == State::InProgress => running.push(row),
+                Ok(row) if download.state.is_live() => running.push(row),
                 Ok(_) => {}
                 Err(e) => log::warn!("download row: {e}"),
             }
@@ -157,10 +169,6 @@ impl Page {
 
     fn row(self: &Rc<Self>, download: &Download) -> Result<(UIElement, Row)> {
         let exists = download.path.exists();
-        let name = download
-            .path
-            .file_name()
-            .map_or_else(|| download.path.to_string_lossy(), |n| n.to_string_lossy());
         let element: FrameworkElement = xaml::load(&format!(
             r#"<Grid {{ns}} Padding="12,8" ColumnSpacing="12" CornerRadius="4"
                      Background="{{ThemeResource CardBackgroundFillColorDefaultBrush}}">
@@ -169,13 +177,16 @@ impl Page {
                    <TextBlock Text="{name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                    <TextBlock x:Name="Status" Text="{status}" Style="{{StaticResource CaptionTextBlockStyle}}"
                               Foreground="{{ThemeResource TextFillColorSecondaryBrush}}"/>
-                   <ProgressBar x:Name="Progress" Margin="0,4,0,0" Visibility="Collapsed"/>
+                   <ProgressBar x:Name="Progress" Margin="0,4,0,0" Visibility="Collapsed"
+                                ShowPaused="{paused}" ShowError="{interrupted}"/>
                  </StackPanel>
                  <StackPanel x:Name="Actions" Grid.Column="1" Orientation="Horizontal" Spacing="4"
                              VerticalAlignment="Center"/>
                </Grid>"#,
-            name = xaml::escape(&name),
+            name = xaml::escape(&file_name(&download.path)),
             status = xaml::escape(&status_line(download, None, exists)),
+            paused = download.state == State::Paused,
+            interrupted = download.state == State::Interrupted,
         ))?;
         let actions: Panel = xaml::find(&element, "Actions")?;
         let buttons = actions.Children()?;
@@ -204,7 +215,7 @@ impl Page {
             status: xaml::find(&element, "Status")?,
             progress: xaml::find(&element, "Progress")?,
         };
-        xaml::set_visible(&row.progress, download.state == State::InProgress)?;
+        xaml::set_visible(&row.progress, download.state.is_live())?;
         Ok((element.cast()?, row))
     }
 
@@ -215,7 +226,11 @@ impl Page {
         match action {
             Action::Open => platform::open_in_shell(download.path.as_os_str()),
             Action::ShowInFolder => platform::show_in_folder(&download.path),
+            Action::Pause => browser.pause_download(download.id),
+            Action::Resume => browser.resume_download(download.id),
             Action::Cancel => browser.cancel_download(download.id),
+            Action::Keep => browser.keep_download(download),
+            Action::Discard => browser.discard_download(download),
             Action::Remove => browser.remove_download(download.id),
         }
     }
@@ -241,7 +256,14 @@ mod tests {
     #[test]
     fn rows_offer_what_the_entry_allows() {
         use Action::*;
-        assert_eq!(offered(State::InProgress, false), [Cancel]);
+        assert_eq!(offered(State::InProgress, false), [Pause, Cancel]);
+        assert_eq!(offered(State::Paused, false), [Resume, Cancel]);
+        assert_eq!(offered(State::Interrupted, false), [Resume, Cancel]);
+        assert_eq!(
+            offered(State::Unconfirmed, true),
+            [Keep, Discard],
+            "another file has the name"
+        );
         assert_eq!(
             offered(State::Completed, true),
             [Open, ShowInFolder, Remove]
