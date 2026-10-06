@@ -160,8 +160,12 @@
 //!   `javascript:` and `file:`.
 //! - Private tabs only where the user allowed the extension in private windows (Chrome's
 //!   "Allow in Incognito"; [`Runtime::allowed_in_private_changed`] applies a change): elsewhere
-//!   a private tab gets none of its content scripts or rulesets, and `chrome.tabs` neither lists
-//!   it nor reports its events. `incognito` says which tabs are private.
+//!   a private tab gets none of its content scripts or rulesets, `chrome.tabs` neither lists it
+//!   nor reports its events, and `chrome.windows` does the same with private windows, focus
+//!   going to one reading as `WINDOW_ID_NONE`. `incognito` says which tabs and windows are
+//!   private. As in Chrome, `windows.create({incognito: true})` opens a private window for any
+//!   extension (not on its own pages where it does not run, and without telling it the window),
+//!   and no tab moves between a normal and a private window.
 //! - declarativeNetRequest: the enabled static rulesets with the dynamic and session rules
 //!   (`updateDynamicRules`, `updateSessionRules`, `updateEnabledRulesets`, their getters,
 //!   `isRegexSupported`, `getAvailableStaticRuleCount`; see [`dnr_rules`]) as one WebKit

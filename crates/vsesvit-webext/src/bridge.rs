@@ -546,7 +546,7 @@ fn key_list(v: &Value) -> Result<Option<Vec<String>>, String> {
 
 fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> Result<Option<Value>, String> {
     let host = &inner.host;
-    let scope = window_scope(inner, origin);
+    let scope = window_scope(inner, ext, origin);
     let find = |id: TabId| inner.tab_for(ext, id);
     let tab_or_active = || {
         TabId::from_json(call.arg(0))
@@ -570,7 +570,7 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
             let url = navigation_url(ext, call, props.get("url").and_then(Value::as_str).unwrap_or("about:blank"))?;
             let active = props.get("active").or(props.get("selected")).and_then(Value::as_bool).unwrap_or(true);
             let window = match props.get("windowId").and_then(Value::as_i64) {
-                Some(id) => Some(find_window(inner, &scope, id)?.id),
+                Some(id) => Some(find_window(inner, ext, &scope, id)?.id),
                 None => scope.current,
             };
             let index = props.get("index").and_then(Value::as_u64).map(|i| u32::try_from(i).unwrap_or(u32::MAX));
@@ -603,10 +603,13 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
             let ids = ids.ok_or("tabs.move: tabIds must be an integer or an array of integers")?;
             let props = call.arg(1);
             let mut index = props.get("index").and_then(Value::as_i64).ok_or("tabs.move: index must be an integer")?;
-            let target = props.get("windowId").and_then(Value::as_i64).map(|id| find_window(inner, &scope, id)).transpose()?;
+            let target = props.get("windowId").and_then(Value::as_i64).map(|id| find_window(inner, ext, &scope, id)).transpose()?;
             let mut moved = Vec::new();
             for id in ids {
                 let tab = find(id).ok_or_else(|| no_tab(id))?;
+                if target.as_ref().is_some_and(|w| w.browsing != tab.browsing) {
+                    return Err(windows::ONLY_SAME_PROFILE.into());
+                }
                 let window = target.as_ref().map_or(tab.window_id, |w| w.id);
                 if !host.move_tab(id, window, u32::try_from(index).ok()) {
                     return Err(no_tab(id));
@@ -644,29 +647,29 @@ fn tabs(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> 
 
 // --- windows ----------------------------------------------------------------------------
 
-/// The windows `WINDOW_ID_CURRENT` and the window filters mean for a call from `origin`: a
-/// page in a tab is in that tab's window, any other page in the last focused one.
-fn window_scope(inner: &Inner, origin: Origin) -> WindowScope {
-    let last_focused = inner.host.windows().first().map(|w| w.id);
-    let current = origin.tab().and_then(|tab| inner.tab_info(tab)).map(|t| t.window_id).or(last_focused);
+/// The windows `WINDOW_ID_CURRENT` and the window filters mean for `ext`'s call from `origin`:
+/// a page in a tab is in that tab's window, any other page in the last focused one it may know.
+fn window_scope(inner: &Inner, ext: &Extension, origin: Origin) -> WindowScope {
+    let last_focused = inner.windows_for(ext).first().map(|w| w.id);
+    let current = origin.tab().and_then(|tab| inner.tab_for(ext, tab)).map(|t| t.window_id).or(last_focused);
     WindowScope { current, last_focused }
 }
 
-/// The window an extension's `windowId` names, or Chrome's error.
-fn find_window(inner: &Inner, scope: &WindowScope, id: i64) -> Result<WindowInfo, String> {
-    let found = scope.resolve(id).and_then(|w| inner.host.windows().into_iter().find(|x| x.id == w));
+/// The window `ext`'s `windowId` names, or Chrome's error.
+fn find_window(inner: &Inner, ext: &Extension, scope: &WindowScope, id: i64) -> Result<WindowInfo, String> {
+    let found = scope.resolve(id).and_then(|w| inner.windows_for(ext).into_iter().find(|x| x.id == w));
     found.ok_or_else(|| if id == WINDOW_ID_CURRENT { windows::NO_CURRENT_WINDOW.to_owned() } else { windows::not_found(id) })
 }
 
 fn windows(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) -> Result<Option<Value>, String> {
     let host = &inner.host;
-    let scope = window_scope(inner, origin);
+    let scope = window_scope(inner, ext, origin);
     let window_id = |v: &Value| v.as_i64().ok_or_else(|| format!("{}: windowId must be an integer", call.method.name()));
     let shown = |w: &WindowInfo, populate: bool| {
         let tabs = populate.then(|| host.tabs().iter().filter(|t| t.window_id == w.id).map(|t| ext.tab_json(t)).collect());
         w.to_json(tabs)
     };
-    let admitted = |id: i64, query: &WindowQuery| find_window(inner, &scope, id).and_then(|w| if query.admits(&w) { Ok(w) } else { Err(windows::not_found(id)) });
+    let admitted = |id: i64, query: &WindowQuery| find_window(inner, ext, &scope, id).and_then(|w| if query.admits(&w) { Ok(w) } else { Err(windows::not_found(id)) });
     Ok(Some(match call.method {
         Method::WindowsGet => {
             let query = WindowQuery::parse(call.arg(1));
@@ -678,33 +681,43 @@ fn windows(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) 
         }
         Method::WindowsGetLastFocused => {
             let query = WindowQuery::parse(call.arg(0));
-            let window = host.windows().into_iter().find(|w| query.admits(w)).ok_or(windows::NO_LAST_FOCUSED_WINDOW)?;
+            let window = inner.windows_for(ext).into_iter().find(|w| query.admits(w)).ok_or(windows::NO_LAST_FOCUSED_WINDOW)?;
             shown(&window, query.populate)
         }
         Method::WindowsGetAll => {
             let query = WindowQuery::parse(call.arg(0));
-            let mut all: Vec<WindowInfo> = host.windows().into_iter().filter(|w| query.admits(w)).collect();
+            let mut all: Vec<WindowInfo> = inner.windows_for(ext).into_iter().filter(|w| query.admits(w)).collect();
             all.sort_by_key(|w| w.id);
             Value::Array(all.iter().map(|w| shown(w, query.populate)).collect())
         }
         Method::WindowsCreate => {
             let mut new = NewWindow::parse(call.arg(0))?;
-            // Chrome's answer where private windows are off, as they are for extensions here.
-            if new.incognito {
-                return Err(windows::INCOGNITO_DISABLED.into());
-            }
             new.urls = new.urls.iter().map(|url| navigation_url(ext, call, url)).collect::<Result<_, _>>()?;
-            if let Some(tab) = new.tab
-                && inner.tab_info(tab).is_none()
-            {
-                return Err(format!("No tab with id: {}.", tab.0));
+            // As in Chrome, an extension may open a private window where it does not run, but
+            // not its own pages in it, and it is not told about the window.
+            let unseen = !ext.runs_in(new.browsing);
+            if unseen {
+                let own = new.urls.iter().find(|url| ext.owns_url(url)).cloned();
+                new.urls.retain(|url| !ext.owns_url(url));
+                if let (true, Some(url)) = (new.urls.is_empty(), own) {
+                    return Err(windows::not_in_private(&url));
+                }
+            }
+            if let Some(id) = new.tab {
+                let tab = inner.tab_for(ext, id).ok_or_else(|| format!("No tab with id: {}.", id.0))?;
+                if tab.browsing != new.browsing {
+                    return Err(windows::ONLY_SAME_PROFILE.into());
+                }
             }
             let id = host.create_window(&new).ok_or("windows.create: the browser refused to open a window")?;
+            if unseen {
+                return Ok(None);
+            }
             let window = host.windows().into_iter().find(|w| w.id == id).ok_or("windows.create: the new window closed")?;
             shown(&window, true)
         }
         Method::WindowsUpdate => {
-            let window = find_window(inner, &scope, window_id(call.arg(0))?)?;
+            let window = find_window(inner, ext, &scope, window_id(call.arg(0))?)?;
             if !host.update_window(window.id, &WindowUpdate::parse(call.arg(1))?) {
                 return Err(windows::not_found(window.id.0.into()));
             }
@@ -712,7 +725,7 @@ fn windows(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call) 
             shown(&updated, false)
         }
         Method::WindowsRemove => {
-            let window = find_window(inner, &scope, window_id(call.arg(0))?)?;
+            let window = find_window(inner, ext, &scope, window_id(call.arg(0))?)?;
             if !host.remove_window(window.id) {
                 return Err(windows::not_found(window.id.0.into()));
             }

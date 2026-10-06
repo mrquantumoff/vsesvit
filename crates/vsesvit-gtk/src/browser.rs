@@ -1206,7 +1206,7 @@ fn window_info(window: &BrowserWindow) -> WindowInfo {
     WindowInfo {
         id: WindowId(window.id()),
         focused: window.is_active(),
-        incognito: false,
+        browsing: window.browsing(),
         state,
         width: width.max(0).cast_unsigned(),
         height: height.max(0).cast_unsigned(),
@@ -1324,7 +1324,7 @@ impl TabHost for Host {
 
     fn create_window(&self, spec: &NewWindow) -> Option<WindowId> {
         let browser = self.browser()?;
-        let window = BrowserWindow::new(&browser);
+        let window = BrowserWindow::with_browsing(&browser, spec.browsing);
         if let Some((from, tab)) = spec.tab.and_then(|id| browser.find_tab(id)) {
             from.move_tab(&tab, &window, None);
         }

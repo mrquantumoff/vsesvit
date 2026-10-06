@@ -324,12 +324,17 @@ impl Runtime {
     }
 
     /// The shell's windows changed: one opened or closed, took or lost the focus, or was
-    /// resized. Extensions hear what changed since the last report ([`windows::changes`]).
+    /// resized. Each extension hears what changed since the last report among the windows it
+    /// may know ([`windows::changes`]), so focus going to a private window it does not run in
+    /// reaches it as `WINDOW_ID_NONE`, as in Chrome.
     pub fn windows_changed(&self) {
         let now = self.0.host.windows();
         let before = self.0.windows.replace(now.clone());
-        for event in windows::changes(&before, &now) {
-            self.0.emit_to_all_pages(event.name(), &event.args());
+        for ext in self.0.loaded_extensions() {
+            let known = |windows: &[WindowInfo]| windows.iter().filter(|w| ext.runs_in(w.browsing)).cloned().collect::<Vec<_>>();
+            for event in windows::changes(&known(&before), &known(&now)) {
+                bridge::emit_to_pages(&self.0, &ext, event.name(), &event.args());
+            }
         }
     }
 
@@ -628,9 +633,16 @@ impl Inner {
         self.tab_info(tab).filter(|t| ext.runs_in(t.browsing))
     }
 
-    /// A selected tab at `url`, at the end of the last focused window.
+    /// The windows as `ext` may know them, most recently focused first: no private one unless
+    /// it runs there.
+    pub(crate) fn windows_for(&self, ext: &Extension) -> Vec<WindowInfo> {
+        self.host.windows().into_iter().filter(|w| ext.runs_in(w.browsing)).collect()
+    }
+
+    /// A selected tab at `url`, at the end of the last focused normal window, where Chrome
+    /// opens an extension's own pages and its views' links.
     pub(crate) fn open_tab(&self, url: &str) -> Option<TabId> {
-        let window = self.host.windows().first().map(|w| w.id);
+        let window = self.host.windows().into_iter().find(|w| w.browsing == Browsing::Normal).map(|w| w.id);
         self.host.create_tab(&NewTab { url: url.to_owned(), active: true, window, index: None })
     }
 
@@ -648,12 +660,6 @@ impl Inner {
     /// Fires a tab event in the pages of every extension that runs in tabs of the tab's kind.
     fn emit_about_tab(&self, browsing: Browsing, event: &str, args: &[Value]) {
         for ext in self.loaded_extensions().into_iter().filter(|ext| ext.runs_in(browsing)) {
-            bridge::emit_to_pages(self, &ext, event, args);
-        }
-    }
-
-    pub(crate) fn emit_to_all_pages(&self, event: &str, args: &[Value]) {
-        for ext in self.loaded_extensions() {
             bridge::emit_to_pages(self, &ext, event, args);
         }
     }

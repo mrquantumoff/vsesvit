@@ -5,6 +5,7 @@
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use vsesvit_core::private::Browsing;
 
 use crate::tabs::TabId;
 
@@ -25,8 +26,13 @@ pub const WINDOW_TYPE: &str = "normal";
 pub const INVALID_STATE: &str = "Invalid value for state";
 pub const NO_CURRENT_WINDOW: &str = "No current window";
 pub const NO_LAST_FOCUSED_WINDOW: &str = "No last-focused window";
-/// Chrome's error for a private window where the browser cannot open one.
-pub const INCOGNITO_DISABLED: &str = "Incognito mode is disabled.";
+/// Chrome's error for moving a tab into a window of the other kind, normal or private.
+pub const ONLY_SAME_PROFILE: &str = "Tabs can only be moved between windows in the same profile.";
+
+/// Chrome's error for a private window whose every URL is one a private window may not open.
+pub fn not_in_private(url: &str) -> String {
+    format!("Cannot open URL \"{url}\" in an incognito window.")
+}
 
 pub fn not_found(id: i64) -> String {
     format!("No window with id: {id}.")
@@ -72,8 +78,8 @@ impl WindowState {
 pub struct WindowInfo {
     pub id: WindowId,
     pub focused: bool,
-    /// A private window. A shell without them always says `false`.
-    pub incognito: bool,
+    /// Its kind, for its whole life: `incognito` when private.
+    pub browsing: Browsing,
     pub state: WindowState,
     pub width: u32,
     pub height: u32,
@@ -86,7 +92,7 @@ impl WindowInfo {
         let mut window = json!({
             "id": self.id,
             "focused": self.focused,
-            "incognito": self.incognito,
+            "incognito": self.browsing == Browsing::Private,
             "type": WINDOW_TYPE,
             "state": self.state.name(),
             "alwaysOnTop": false,
@@ -151,7 +157,8 @@ pub struct NewWindow {
     /// A tab to move into the window, ahead of `urls`.
     pub tab: Option<TabId>,
     pub focused: bool,
-    pub incognito: bool,
+    /// Private for `incognito: true`.
+    pub browsing: Browsing,
     pub state: WindowState,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -183,7 +190,7 @@ impl NewWindow {
             tab,
             // Minimized starts unfocused, as in Chrome; everything else focused.
             focused: focused.unwrap_or(state != WindowState::Minimized),
-            incognito: optional_bool(v, "incognito")?.unwrap_or(false),
+            browsing: if optional_bool(v, "incognito")? == Some(true) { Browsing::Private } else { Browsing::Normal },
             state,
             width: dimension(v, "width")?,
             height: dimension(v, "height")?,
@@ -296,7 +303,7 @@ mod tests {
     use super::*;
 
     fn window(id: u32, focused: bool) -> WindowInfo {
-        WindowInfo { id: WindowId(id), focused, incognito: false, state: WindowState::Normal, width: 1280, height: 820 }
+        WindowInfo { id: WindowId(id), focused, browsing: Browsing::Normal, state: WindowState::Normal, width: 1280, height: 820 }
     }
 
     #[test]
@@ -310,6 +317,7 @@ mod tests {
             })
         );
         assert!(window(3, false).to_json(None).get("tabs").is_none());
+        assert_eq!(WindowInfo { browsing: Browsing::Private, ..window(3, true) }.to_json(None)["incognito"], true);
     }
 
     #[test]
@@ -339,7 +347,8 @@ mod tests {
         assert_eq!(w.urls, ["a.html", "https://x.test/"]);
         assert_eq!((w.tab, w.focused, w.width, w.height), (Some(TabId(4)), false, Some(400), Some(300)));
         assert_eq!(NewWindow::parse(&json!({"url": "a.html"})).unwrap().urls, ["a.html"]);
-        assert!(NewWindow::parse(&json!({"incognito": true})).unwrap().incognito);
+        assert_eq!(NewWindow::parse(&json!({"incognito": true})).unwrap().browsing, Browsing::Private);
+        assert_eq!(NewWindow::parse(&json!({"incognito": false})).unwrap().browsing, Browsing::Normal);
         let minimized = NewWindow::parse(&json!({"state": "minimized"})).unwrap();
         assert_eq!((minimized.state, minimized.focused), (WindowState::Minimized, false));
         assert_eq!(NewWindow::parse(&json!({"type": "devtools"})).unwrap_err(), "Invalid enumeration value \"devtools\" for type");

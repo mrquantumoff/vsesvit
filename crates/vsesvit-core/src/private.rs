@@ -22,8 +22,9 @@ use crate::downloads::PrivateDownloads;
 use crate::permissions::{Origin, Permission, Setting};
 
 /// Which kind of window a tab is in, for its whole life.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum Browsing {
+    #[default]
     Normal,
     Private,
 }

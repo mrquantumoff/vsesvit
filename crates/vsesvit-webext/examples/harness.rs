@@ -368,8 +368,9 @@ mod linux {
             // 11. dynamic content scripts
             self.dynamic_scripts().await;
 
-            // 12. windows
+            // 12. windows, and private ones
             self.windows().await;
+            self.private_windows().await;
 
             // 13. lifecycle events
             self.lifecycle().await;
@@ -1440,7 +1441,6 @@ mod linux {
                 for (const call of [
                     () => chrome.windows.update(w.id, {{ state: "minimized", focused: true }}),
                     () => chrome.windows.create({{ state: "fullscreen", width: 300 }}),
-                    () => chrome.windows.create({{ incognito: true }}),
                     () => chrome.tabs.move({moving}, {{ windowId: 99, index: 0 }}),
                 ]) refused.push(await call().then(() => null, (e) => e.message));
                 const before = (await chrome.windows.getAll()).map((w) => w.id);
@@ -1455,7 +1455,7 @@ mod linux {
             let third = changed["window"][0].clone();
             let expected = serde_json::json!({
                 "window": [third, false, 500, 400, [moving]], "state": "maximized",
-                "refused": ["Invalid value for state", "Invalid value for state", "Incognito mode is disabled.", "No window with id: 99."],
+                "refused": ["Invalid value for state", "Invalid value for state", "No window with id: 99."],
                 "before": [first, third], "lastFocused": first, "after": [first], "tab": format!("No tab with id: {moving}."),
             });
             self.note("windows_update_and_remove", changed == expected, format!("{changed}"));
@@ -1488,6 +1488,91 @@ mod linux {
             let expected = serde_json::json!([window, first, [window], window]);
             self.note("windows_current_in_a_tab", seen.as_ref() == Some(&expected), format!("{seen:?}"));
             self.eval_async(&popup, &format!("await chrome.windows.remove({window});")).await;
+            events().await;
+        }
+
+        /// Private windows as an extension sees them: none, nor focus going to one, until the
+        /// user allows it in private windows; then they are `incognito`, and tabs stay in their
+        /// kind of window.
+        async fn private_windows(&self) {
+            let Some(popup) = self.popup(&self.windows_id, self.tab).await else {
+                self.note("windows_private_hidden", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Windows"), TIMEOUT).await;
+            let events = async || self.eval_async(&popup, r#"return chrome.runtime.sendMessage("events");"#).await.unwrap_or(Value::Null);
+            let heard = async || wait_for_async(async || Some(events().await).filter(|e| e.as_array().is_some_and(|e| !e.is_empty())), TIMEOUT).await;
+            events().await;
+            let (first, page2) = (FIRST_WINDOW.0, self.url("/page2.html"));
+            let Some(private) = self.host.create_window(&NewWindow { browsing: Browsing::Private, focused: true, ..NewWindow::default() }) else {
+                self.note("windows_private_hidden", false, "the host opened no private window");
+                return;
+            };
+            let script = format!(
+                r#"const opened = await chrome.windows.create({{ incognito: true, url: {page2:?} }});
+                const refused = [];
+                for (const call of [
+                    () => chrome.windows.get({private}),
+                    () => chrome.windows.create({{ incognito: true, url: chrome.runtime.getURL("popup.html") }}),
+                    () => chrome.windows.create({{ incognito: true, tabId: {tab} }}),
+                ]) refused.push(await call().then(() => null, (e) => e.message));
+                return {{
+                    all: (await chrome.windows.getAll()).map((w) => [w.id, w.incognito]),
+                    lastFocused: (await chrome.windows.getLastFocused()).id,
+                    privateTabs: (await chrome.tabs.query({{}})).filter((t) => t.incognito).length,
+                    opened: opened === undefined, refused, popup: chrome.runtime.getURL("popup.html"),
+                }};"#,
+                private = private.0,
+                tab = self.tab.0,
+            );
+            let seen = self.eval_async(&popup, &script).await;
+            let popup_url = seen.as_ref().and_then(|s| s["popup"].as_str()).unwrap_or_default().to_owned();
+            let expected = serde_json::json!({
+                "all": [[first, false]], "lastFocused": first, "privateTabs": 0, "opened": true, "popup": popup_url,
+                "refused": [format!("No window with id: {}.", private.0), format!("Cannot open URL \"{popup_url}\" in an incognito window."), "Tabs can only be moved between windows in the same profile."],
+            });
+            let privates: Vec<WindowId> = self.host.windows().into_iter().filter(|w| w.browsing == Browsing::Private).map(|w| w.id).collect();
+            self.note("windows_private_hidden", seen.as_ref() == Some(&expected) && privates.len() == 2, format!("{seen:?}, the host has private windows {privates:?}"));
+            for id in privates {
+                self.host.remove_window(id);
+            }
+            let focus = serde_json::json!([["windows.onFocusChanged", -1], ["windows.onFocusChanged", first]]);
+            let unseen = heard().await;
+            self.note("windows_private_events", unseen.as_ref() == Some(&focus), format!("{unseen:?}"));
+
+            let allow = |allowed: bool| {
+                let set = self.profile.borrow_mut().extensions().set_allowed_in_private(&self.windows_id, allowed);
+                self.runtime.allowed_in_private_changed();
+                set
+            };
+            if let Err(e) = allow(true) {
+                self.note("windows_private_allowed", false, format!("cannot allow it in private windows: {e}"));
+                return;
+            }
+            let script = format!(
+                r#"const w = await chrome.windows.create({{ incognito: true, url: {page2:?} }});
+                const moved = await chrome.tabs.move(w.tabs[0].id, {{ windowId: 1, index: -1 }}).then(() => null, (e) => e.message);
+                const all = (await chrome.windows.getAll()).map((x) => [x.id, x.incognito]);
+                await chrome.windows.remove(w.id);
+                return {{ id: w.id, tab: w.tabs[0].id, window: [w.incognito, w.tabs.map((t) => t.incognito)], moved, all }};"#
+            );
+            let allowed = self.eval_async(&popup, &script).await.unwrap_or(Value::Null);
+            let (window, tab) = (allowed["id"].clone(), allowed["tab"].clone());
+            let expected = serde_json::json!({
+                "id": window, "tab": tab, "window": [true, [true]],
+                "moved": "Tabs can only be moved between windows in the same profile.", "all": [[first, false], [window, true]],
+            });
+            let events_expected = serde_json::json!([
+                ["windows.onCreated", window], ["windows.onFocusChanged", window], ["tabs.onCreated", tab],
+                ["tabs.onRemoved", tab, { "windowId": window, "isWindowClosing": true }],
+                ["windows.onRemoved", window], ["windows.onFocusChanged", first],
+            ]);
+            let seen_events = heard().await;
+            self.note("windows_private_allowed", allowed == expected && seen_events.as_ref() == Some(&events_expected), format!("{allowed}; heard {seen_events:?}"));
+            if let Err(e) = allow(false) {
+                println!("[harness] cannot keep the windows extension out of private windows: {e}");
+            }
             events().await;
         }
 
@@ -1686,6 +1771,7 @@ mod linux {
     /// own: the views all live in the harness window.
     struct HostWindow {
         id: WindowId,
+        browsing: Browsing,
         state: WindowState,
         width: u32,
         height: u32,
@@ -1719,7 +1805,7 @@ mod linux {
                 session,
                 container,
                 tabs: RefCell::new(Vec::new()),
-                windows: RefCell::new(vec![HostWindow { id: FIRST_WINDOW, state: WindowState::Normal, width: 800, height: 600 }]),
+                windows: RefCell::new(vec![HostWindow { id: FIRST_WINDOW, browsing: Browsing::Normal, state: WindowState::Normal, width: 800, height: 600 }]),
                 runtime: RefCell::new(None),
                 created: RefCell::new(Vec::new()),
                 refused: Rc::new(RefCell::new(Vec::new())),
@@ -1855,16 +1941,17 @@ mod linux {
                 .borrow()
                 .iter()
                 .enumerate()
-                .map(|(i, w)| WindowInfo { id: w.id, focused: i == 0, incognito: false, state: w.state, width: w.width, height: w.height })
+                .map(|(i, w)| WindowInfo { id: w.id, focused: i == 0, browsing: w.browsing, state: w.state, width: w.width, height: w.height })
                 .collect()
         }
 
         fn tabs(&self) -> Vec<TabInfo> {
             let tabs = self.tabs.borrow();
-            let mut ids: Vec<WindowId> = self.windows.borrow().iter().map(|w| w.id).collect();
-            ids.sort();
-            ids.into_iter()
-                .flat_map(|window| {
+            let mut windows: Vec<(WindowId, Browsing)> = self.windows.borrow().iter().map(|w| (w.id, w.browsing)).collect();
+            windows.sort_by_key(|(id, _)| *id);
+            windows
+                .into_iter()
+                .flat_map(|(window, browsing)| {
                     tabs.iter().filter(move |t| t.window.get() == window).enumerate().map(move |(i, t)| TabInfo {
                         id: t.id,
                         window_id: window,
@@ -1872,7 +1959,7 @@ mod linux {
                         url: t.committed.borrow().clone(),
                         title: t.view.title().map(String::from).unwrap_or_default(),
                         active: i == 0,
-                        browsing: Browsing::Normal,
+                        browsing,
                     })
                 })
                 .collect()
@@ -1881,8 +1968,9 @@ mod linux {
         fn create_tab(&self, tab: &NewTab) -> Option<TabId> {
             let runtime = self.runtime.borrow().clone()?;
             let window = tab.window.unwrap_or(FIRST_WINDOW);
+            let browsing = self.windows.borrow().iter().find(|w| w.id == window).map_or(Browsing::Normal, |w| w.browsing);
             let id = self.next_id();
-            let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id, Browsing::Normal)).build();
+            let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id, browsing)).build();
             let gate = self.add(&runtime, id, &view, Gate::default(), window, tab.index);
             self.created.borrow_mut().push(tab.url.clone());
             println!("[harness] host: create_tab({}) -> tab {} in window {}", tab.url, id.0, window.0);
@@ -1929,7 +2017,7 @@ mod linux {
         fn create_window(&self, spec: &NewWindow) -> Option<WindowId> {
             let id = WindowId(self.next_window.get());
             self.next_window.set(id.0 + 1);
-            let window = HostWindow { id, state: spec.state, width: spec.width.unwrap_or(800), height: spec.height.unwrap_or(600) };
+            let window = HostWindow { id, browsing: spec.browsing, state: spec.state, width: spec.width.unwrap_or(800), height: spec.height.unwrap_or(600) };
             if spec.focused {
                 self.windows.borrow_mut().insert(0, window);
             } else {
