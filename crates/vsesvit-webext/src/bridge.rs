@@ -72,7 +72,7 @@ impl Reply {
         self.reply.return_error_message(message);
     }
 
-    fn finish(self, result: Result<Option<Value>, String>) {
+    pub(crate) fn finish(self, result: Result<Option<Value>, String>) {
         match result {
             Ok(v) => self.ok(v),
             Err(e) => self.err(&e),
@@ -199,6 +199,9 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         | Method::DnrGetAvailableStaticRuleCount
         | Method::DnrIsRegexSupported => reply.finish(rules(ext, &call)),
         Method::WebNavigationGetFrame | Method::WebNavigationGetAllFrames => reply.finish(web_navigation(inner, ext, &call)),
+        Method::CookiesGet | Method::CookiesGetAll | Method::CookiesSet | Method::CookiesRemove | Method::CookiesGetAllCookieStores => {
+            crate::cookie_jar::call(inner, ext, &call, reply)
+        }
     }
 }
 

@@ -599,6 +599,20 @@
         TransitionQualifier: values(["client_redirect", "server_redirect", "forward_back", "from_address_bar"]),
       };
     }
+    if (grantedPermissions.has("cookies")) {
+      const details = (args) => [args[0] || {}];
+      const values = (list) => Object.fromEntries(list.map((v) => [v.toUpperCase(), v]));
+      api.cookies = {
+        get: bridged("cookies.get", null, details),
+        getAll: bridged("cookies.getAll", null, details),
+        set: bridged("cookies.set", null, details),
+        remove: bridged("cookies.remove", null, details),
+        getAllCookieStores: bridged("cookies.getAllCookieStores"),
+        onChanged: new ExtensionEvent("cookies.onChanged"),
+        SameSiteStatus: values(["no_restriction", "lax", "strict", "unspecified"]),
+        OnChangedCause: values(["evicted", "expired", "explicit", "expired_overwrite", "overwrite"]),
+      };
+    }
     // In extension pages only, as Chrome's default access level has it.
     storage.session = Object.assign(storageArea("session", { QUOTA_BYTES: 10485760 }), { setAccessLevel: local(() => undefined) });
     const queryOptions = (args) => [args[0] || {}];

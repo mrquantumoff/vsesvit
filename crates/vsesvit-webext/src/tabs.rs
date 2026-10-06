@@ -137,6 +137,9 @@ pub trait TabHost {
     fn create_window(&self, window: &NewWindow) -> Option<WindowId>;
     fn update_window(&self, window: WindowId, update: &WindowUpdate) -> bool;
     fn remove_window(&self, window: WindowId) -> bool;
+    /// Whether a cookie under `domain` (a leading dot for a domain cookie) belongs to a site the
+    /// user set to Block, which extensions may not set cookies for.
+    fn cookies_blocked(&self, domain: &str) -> bool;
 }
 
 #[cfg(test)]

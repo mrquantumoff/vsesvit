@@ -246,6 +246,8 @@ mod bridge;
 #[cfg(target_os = "linux")]
 mod content;
 #[cfg(target_os = "linux")]
+mod cookie_jar;
+#[cfg(target_os = "linux")]
 mod extension;
 #[cfg(target_os = "linux")]
 mod filters;

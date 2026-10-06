@@ -26,7 +26,7 @@ use crate::protocol::Sender;
 use crate::tabs::{NewTab, TabHost, TabId, TabInfo};
 use crate::web_navigation::{Event, EventKind, FrameId, Frames, Load, Report};
 use crate::windows::{self, WindowId, WindowInfo};
-use crate::{filters, patterns, scheme, views};
+use crate::{cookie_jar, filters, patterns, scheme, views};
 
 /// One toolbar action, for the shell to render.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +71,7 @@ pub(crate) struct Inner {
     pub(crate) ports: RefCell<Ports<PortContext, Reply>>,
     /// The frame script every tab gets (see [`watch_frames`]).
     frames_script: webkit::UserScript,
+    pub(crate) cookie_watch: RefCell<cookie_jar::Watch>,
 }
 
 /// The frame script's world, which no extension can share: no extension id has a colon.
@@ -128,8 +129,17 @@ impl Runtime {
                 &[],
                 &[],
             ),
+            cookie_watch: RefCell::default(),
         });
         scheme::register(&inner);
+        if let Some(manager) = session.cookie_manager() {
+            let weak = Rc::downgrade(&inner);
+            manager.connect_changed(move |_| {
+                if let Some(inner) = weak.upgrade() {
+                    cookie_jar::changed(&inner);
+                }
+            });
+        }
         Runtime(inner)
     }
 
@@ -168,6 +178,9 @@ impl Runtime {
         filters::compile(&self.0, &ext);
         self.0.restore_menus(&ext, &event);
         views::start_background(&self.0, &ext, event);
+        if ext.has_permission("cookies") {
+            cookie_jar::changed(&self.0);
+        }
         self.0.notify_actions_changed();
         log::info!("{} {}: loaded from {}", ext.id.as_str(), ext.version, ext.dir.display());
         Ok(())

@@ -13,6 +13,7 @@ pub const SUPPORTED_PERMISSIONS: &[&str] = &[
     "activeTab",
     "alarms",
     "contextMenus",
+    "cookies",
     "declarativeNetRequest",
     "declarativeNetRequestWithHostAccess",
     "menus",
@@ -131,7 +132,7 @@ mod tests {
         let m = manifest(
             r#"{
                 "manifest_version": 3, "name": "x", "version": "1",
-                "permissions": ["webRequest", "storage", "nativeMessaging", "webRequest", "cookies", "contextMenus", "<all_urls>", "*://example.com/*"],
+                "permissions": ["webRequest", "storage", "nativeMessaging", "webRequest", "debugger", "contextMenus", "<all_urls>", "*://example.com/*"],
                 "optional_permissions": ["bookmarks", "tabs", "menus"],
                 "host_permissions": ["https://*/*"]
             }"#,
@@ -139,7 +140,7 @@ mod tests {
         assert_eq!(
             unsupported_features(&m),
             vec![
-                Unsupported::Permission("cookies".into()),
+                Unsupported::Permission("debugger".into()),
                 Unsupported::Permission("nativeMessaging".into()),
                 Unsupported::Permission("webRequest".into()),
                 Unsupported::OptionalPermission("bookmarks".into()),

@@ -142,11 +142,11 @@ impl Cookie {
 
     /// Two readings of the store hold the same cookie when these agree; any other difference
     /// is a new cookie in its place.
-    fn key(&self) -> (&str, &str, &str) {
+    pub fn key(&self) -> (&str, &str, &str) {
         (&self.name, &self.domain, &self.path)
     }
 
-    fn expired(&self, now: f64) -> bool {
+    pub fn expired(&self, now: f64) -> bool {
         self.expires.is_some_and(|at| at <= now)
     }
 
@@ -450,8 +450,9 @@ mod tests {
         let b2 = Cookie { value: "w".into(), ..b.clone() };
         let gone = Cookie { expires: Some(NOW - 1.0), ..cookie("c", "x.test", "/") };
         let ev = |removed, cause, cookie: &Cookie| Change { removed, cause, cookie: cookie.clone() };
-        assert_eq!(changes(&[a.clone()], &[a.clone()], NOW), vec![]);
-        assert_eq!(changes(&[], &[a.clone()], NOW), vec![ev(false, Cause::Explicit, &a)]);
+        let just_a = std::slice::from_ref(&a);
+        assert_eq!(changes(just_a, just_a, NOW), vec![]);
+        assert_eq!(changes(&[], just_a, NOW), vec![ev(false, Cause::Explicit, &a)]);
         assert_eq!(changes(&[a.clone(), gone.clone()], &[], NOW), vec![ev(true, Cause::Explicit, &a), ev(true, Cause::Expired, &gone)]);
         assert_eq!(changes(&[a.clone(), b.clone()], &[b2.clone(), a.clone()], NOW), vec![ev(true, Cause::Overwrite, &b), ev(false, Cause::Explicit, &b2)]);
         assert_eq!(ev(true, Cause::Overwrite, &b).to_json(Store::Normal), json!({ "removed": true, "cause": "overwrite", "cookie": b.to_json(Store::Normal) }));

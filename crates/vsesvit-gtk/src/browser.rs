@@ -1413,6 +1413,10 @@ impl TabHost for Host {
         window.close();
         true
     }
+
+    fn cookies_blocked(&self, _domain: &str) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
