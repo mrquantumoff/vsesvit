@@ -575,6 +575,36 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("extension_web_navigation", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let view = tab.web_view();
+        let ask = async |want: &str| {
+            let request = format!("delete document.documentElement.dataset.vsesvitProbeNavigation; document.documentElement.dataset.vsesvitNavigation = '{want}'");
+            eval_js(view, &request).await?;
+            let answer = wait_js(&last, view, "String(document.documentElement.dataset.vsesvitProbeNavigation)", |seen| seen != "undefined").await;
+            serde_json::from_str::<serde_json::Value>(&answer).map_err(|e| format!("asked to {want}, the probe answered {answer}: {e}"))
+        };
+        let watching = ask("watch").await?;
+        if watching["tab"] != tab.id().0 {
+            return Err(format!("asked to watch tab {}, the probe answered {watching}", tab.id().0));
+        }
+        eval_js(view, "window.stale = true").await?;
+        gio::prelude::ActionGroupExt::activate_action(window, "reload", None);
+        let ready = "String(!window.stale && document.readyState == 'complete' && document.documentElement.dataset.vsesvitProbe == 'background-replied')";
+        wait_js(&last, view, ready, |s| s == "true").await;
+        let heard = ask("report").await?;
+        let url = index_url.as_str();
+        let expected = serde_json::json!({
+            "events": [["onBeforeNavigate", 0, url, null], ["onCommitted", 0, url, "reload"], ["onDOMContentLoaded", 0, url, null], ["onCompleted", 0, url, null]],
+            "frames": [[0, -1, url]],
+        });
+        if heard != expected {
+            return Err(format!("after a reload the probe heard {heard}, expected {expected}"));
+        }
+        Ok(format!("a reload fired the page's onBeforeNavigate, onCommitted (reload), onDOMContentLoaded and onCompleted in the probe, and getAllFrames lists its one frame: {heard}"))
+    })
+    .await;
+
     ctx.check("bookmark", CHECK_TIMEOUT, |last| async move {
         gio::prelude::ActionGroupExt::activate_action(window, "bookmark-page", None);
         wait_for(&last, || {

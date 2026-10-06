@@ -111,6 +111,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// webNavigation's events in the tab the self-test names ("watch"), until it asks for them
+// ("report") once the tab's page has completed.
+let navigationTab = null;
+const navigation = [];
+let navigationCompleted = null;
+const navigationEvents = ["onBeforeNavigate", "onCommitted", "onDOMContentLoaded", "onCompleted", "onErrorOccurred", "onHistoryStateUpdated", "onReferenceFragmentUpdated"];
+for (const name of navigationEvents) {
+  chrome.webNavigation?.[name]?.addListener((details) => {
+    if (details.tabId !== navigationTab) return;
+    navigation.push([name, details.frameId, details.url, details.transitionType ?? null]);
+    if (name === "onCompleted" && details.frameId === 0) navigationCompleted?.();
+  });
+}
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "navigation") return false;
+  if (typeof chrome.webNavigation?.getAllFrames !== "function") {
+    sendResponse({ api: "undefined" });
+    return false;
+  }
+  if (message.want === "watch") {
+    navigationTab = sender.tab.id;
+    navigation.length = 0;
+    sendResponse({ tab: navigationTab });
+    return false;
+  }
+  (async () => {
+    if (!navigation.some(([name, frame]) => name === "onCompleted" && frame === 0)) {
+      await new Promise((resolve) => { navigationCompleted = resolve; setTimeout(resolve, 5000); });
+    }
+    const frames = await chrome.webNavigation.getAllFrames({ tabId: sender.tab.id });
+    return { events: navigation.splice(0), frames: frames.map((f) => [f.frameId, f.parentFrameId, f.url]) };
+  })().then(sendResponse, (e) => sendResponse({ error: String(e?.message ?? e) }));
+  return true;
+});
+
 if (chrome.notifications) {
   const notified = (event) => chrome.storage.local.set({ notification: { ...event, at: Date.now() } });
   chrome.notifications.onClicked.addListener((id) => notified({ event: "clicked", id }));

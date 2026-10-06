@@ -57,6 +57,17 @@
       root.dataset.vsesvitProbeWindows = JSON.stringify({ error: String(e) });
     }
   }).observe(root, { attributes: true, attributeFilter: ["data-vsesvit-windows"] });
+  // The self-test sets data-vsesvit-navigation: "watch", then "report" after a reload.
+  new MutationObserver(async () => {
+    const want = root.dataset.vsesvitNavigation;
+    if (!want) return;
+    delete root.dataset.vsesvitNavigation;
+    try {
+      root.dataset.vsesvitProbeNavigation = JSON.stringify(await chrome.runtime.sendMessage({ type: "navigation", want }));
+    } catch (e) {
+      root.dataset.vsesvitProbeNavigation = JSON.stringify({ error: String(e) });
+    }
+  }).observe(root, { attributes: true, attributeFilter: ["data-vsesvit-navigation"] });
   const port = chrome.runtime.connect({ name: "probe" });
   port.onMessage.addListener((message) => {
     root.dataset.vsesvitProbePort = message;
