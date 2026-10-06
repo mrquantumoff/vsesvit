@@ -1149,17 +1149,17 @@ fn web_navigation(inner: &Inner, ext: &Extension, call: &Call) -> Result<Option<
     let details = call.arg(0);
     if call.method == Method::WebNavigationGetAllFrames {
         let tab = TabId::from_json(&details["tabId"]).ok_or("webNavigation.getAllFrames: tabId must be an integer")?;
-        return Ok(Some(inner.frames(tab, |frames| Value::Array(frames.all_frames())).unwrap_or(Value::Null)));
+        return Ok(Some(inner.frames(ext, tab, |frames| Value::Array(frames.all_frames())).unwrap_or(Value::Null)));
     }
     let query = FrameQuery::parse(details)?;
     let found = match &query {
         FrameQuery::Frame { tab, frame } => Some((*tab, *frame)),
-        FrameQuery::Document { id, .. } => inner.find_document(id),
+        FrameQuery::Document { id, .. } => inner.find_document(id).filter(|(tab, _)| inner.frames(ext, *tab, |_| ()).is_some()),
     };
     if let Some((tab, frame)) = found {
         query.agrees(tab, frame)?;
     }
-    let frame = found.and_then(|(tab, frame)| inner.frames(tab, |frames| frames.frame_details(frame)).flatten());
+    let frame = found.and_then(|(tab, frame)| inner.frames(ext, tab, |frames| frames.frame_details(frame)).flatten());
     Ok(Some(frame.map_or(Value::Null, Value::Object)))
 }
 

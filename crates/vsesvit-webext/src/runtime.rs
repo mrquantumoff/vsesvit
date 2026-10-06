@@ -711,9 +711,9 @@ impl Inner {
         self.host.create_tab(&NewTab { url: url.to_owned(), active: true, window, index: None })
     }
 
-    /// `tab`'s frames, for `read`.
-    pub(crate) fn frames<T>(&self, tab: TabId, read: impl FnOnce(&Frames) -> T) -> Option<T> {
-        self.tabs.borrow().get(&tab).map(|state| read(&state.frames))
+    /// `tab`'s frames, for `read`, unless `ext` does not run in the tab's kind of window.
+    pub(crate) fn frames<T>(&self, ext: &Extension, tab: TabId, read: impl FnOnce(&Frames) -> T) -> Option<T> {
+        self.tabs.borrow().get(&tab).filter(|state| ext.runs_in(state.browsing)).map(|state| read(&state.frames))
     }
 
     /// The tab and frame showing the document `document_id`.
@@ -726,7 +726,7 @@ impl Inner {
     /// `tabs.onCreated` comes first, as in Chrome. The first top-frame navigation of a tab
     /// another one opened comes after `onCreatedNavigationTarget`.
     pub(crate) fn navigated(&self, tab: TabId, change: impl FnOnce(&mut Frames) -> Vec<Event>) {
-        let events = {
+        let (browsing, events) = {
             let mut tabs = self.tabs.borrow_mut();
             let Some(state) = tabs.get_mut(&tab) else { return };
             let events = change(&mut state.frames);
@@ -744,12 +744,12 @@ impl Inner {
                 }
                 ready.push(event);
             }
-            ready
+            (state.browsing, ready)
         };
         if events.is_empty() {
             return;
         }
-        let listeners: Vec<Rc<Extension>> = self.loaded_extensions().into_iter().filter(|ext| ext.has_permission("webNavigation")).collect();
+        let listeners: Vec<Rc<Extension>> = self.loaded_extensions().into_iter().filter(|ext| ext.has_permission("webNavigation") && ext.runs_in(browsing)).collect();
         for event in events {
             let mut details = event.details;
             details.insert("timeStamp".into(), json!(bridge::now_ms()));
