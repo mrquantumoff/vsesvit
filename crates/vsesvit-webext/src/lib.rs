@@ -169,6 +169,7 @@
 //! `<profile>/webext/`.
 
 pub mod dnr;
+pub mod dnr_rules;
 pub mod gate;
 pub mod i18n;
 pub mod lifecycle;
