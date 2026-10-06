@@ -77,7 +77,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 54] = [
+const CHECKS: [&str; 55] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -90,6 +90,7 @@ const CHECKS: [&str; 54] = [
     "dnr_site_allowed",
     "dynamic_content_script",
     "extension_windows",
+    "extension_web_navigation",
     "bookmark",
     "star_bubble",
     "bookmark_export",
