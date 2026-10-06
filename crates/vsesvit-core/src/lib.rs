@@ -33,6 +33,7 @@
 //! | [`onboarding`]   | the first-run welcome: when to show it, recommended extensions        |
 //! | [`permissions`]  | site permissions: stored choices, one-time grants, the prompt         |
 //! | [`private`]      | private windows: what a private session keeps in memory, never stored |
+//! | [`profiles`]     | the profile list: names, avatar colours, last used, startup picker    |
 //! | [`zoom`]         | page zoom per site (LOCAL)                                            |
 //! | [`session`]      | this device's windows/tabs (restore) = its published "tabs" record    |
 //! | [`prefs`]        | typed preferences                                                    |
@@ -73,6 +74,7 @@ pub mod onboarding;
 pub mod permissions;
 pub mod prefs;
 pub mod private;
+pub mod profiles;
 pub mod search;
 pub mod session;
 pub mod shortcuts;
@@ -206,6 +208,7 @@ impl Profile {
     /// Open or create a profile.
     ///
     /// 1. create `root`, take the exclusive lock on `root/LOCK` or fail with [`OpenError::Locked`]
+    ///    (after a short wait, in case another process is only checking whether it is held)
     /// 2. open `vsesvit.db`, set pragmas (WAL, synchronous=NORMAL, foreign_keys), migrate
     ///    (`PRAGMA user_version`), read or mint `meta.device_id`, restore the clock
     /// 3. load all bookmark records and materialize the tree
@@ -215,10 +218,16 @@ impl Profile {
     pub fn open(root: &Path, opts: OpenOptions) -> Result<Profile, OpenError> {
         std::fs::create_dir_all(root)?;
         let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(root.join("LOCK"))?;
-        match lock.try_lock() {
-            Ok(()) => {}
-            Err(std::fs::TryLockError::WouldBlock) => return Err(OpenError::Locked),
-            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        let patience = std::time::Instant::now() + profiles::LOCK_PATIENCE;
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < patience => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                Err(std::fs::TryLockError::WouldBlock) => return Err(OpenError::Locked),
+                Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+            }
         }
         let paths = ProfilePaths::new(root);
         for dir in [&paths.extensions, &paths.staging, &paths.engine_data] {
