@@ -23,7 +23,8 @@ chrome.commands.onCommand.addListener((command, tab) => {
   chrome.storage.local.set({ command: { name: command, tab: tab?.id ?? null, url: tab?.url ?? null, at: Date.now() } });
 });
 
-const PROBE_ICON = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="12" fill="#3584e4"/></svg>');
+// PNG: WebView2, like Chrome, cannot decode an SVG icon in a service worker.
+const PROBE_ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR42mMwbXnynxLMMGrAqAGjBgwXAwDUdZwfsK+3EAAAAABJRU5ErkJggg==";
 
 // The self-test asks through the content script, so a probe that merely loads shows nothing.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
