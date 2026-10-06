@@ -6,6 +6,7 @@ use gtk::gio::ActionEntry;
 use gtk::glib;
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
+use vsesvit_core::profiles::ProfileId;
 use webkit::prelude::*;
 
 use super::{BrowserWindow, Focus};
@@ -26,7 +27,23 @@ pub(super) fn install(window: &BrowserWindow) {
             .build()
     };
 
+    let profile = window.browser().home().map(|home| home.id.as_str().to_owned()).unwrap_or_default();
     window.add_action_entries([
+        ActionEntry::builder("open-profile")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .state(profile.to_variant())
+            .activate(|w: &BrowserWindow, _, id| {
+                if let Some(id) = id.and_then(|id| id.str()).and_then(ProfileId::parse) {
+                    w.browser().open_profile(w, &id);
+                }
+            })
+            .build(),
+        ActionEntry::builder("add-profile")
+            .activate(|w: &BrowserWindow, _, _| crate::profiles::add(w))
+            .build(),
+        ActionEntry::builder("manage-profiles")
+            .activate(|w: &BrowserWindow, _, _| crate::profiles::manage(w))
+            .build(),
         ActionEntry::builder("new-tab")
             .activate(|w: &BrowserWindow, _, _| w.new_tab())
             .build(),

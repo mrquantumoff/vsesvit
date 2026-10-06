@@ -1,8 +1,8 @@
-//! The Settings dialog, bound to core's preferences: General (startup, downloads, spell check,
-//! scrolling and the GPU, the profile folder, Memory Saver, updates), Sync (the account, what it
-//! syncs and its server), Appearance (theme, tabs, bars and buttons), Search (the engines in
-//! `search_engines`, the address bar and what it suggests), Privacy (tracking protection, cookies
-//! and site data in `site_data`, secure connections and DNS, pop-ups, passwords, site
+//! The Settings dialog, bound to core's preferences: General (startup, profiles, downloads, spell
+//! check, scrolling and the GPU, the profile folder, Memory Saver, updates), Sync (the account,
+//! what it syncs and its server), Appearance (theme, tabs, bars and buttons), Search (the engines
+//! in `search_engines`, the address bar and what it suggests), Privacy (tracking protection,
+//! cookies and site data in `site_data`, secure connections and DNS, pop-ups, passwords, site
 //! permissions, browsing data) and Shortcuts (`shortcut_settings`). Every change applies at once,
 //! in every window, and an open dialog follows what sync changes.
 //!
@@ -92,6 +92,9 @@ pub(crate) const SPELLING_LANGUAGES_ROW: &str = "Languages";
 /// The General page's row choosing how soon Memory Saver puts tabs to sleep: core's title in
 /// this page's capitalization.
 pub(crate) const MEMORY_SAVINGS_ROW: &str = "Memory Savings";
+
+/// The General page's switch for the profile picker at startup.
+pub(crate) const PROFILE_PICKER_ROW: &str = "Show Profile Picker at Startup";
 
 /// The Privacy page's row saying passwords are left to a password manager.
 pub(crate) const PASSWORDS_NOTICE: &str = "Vsesvit Doesn't Save Passwords";
@@ -467,7 +470,11 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
     memory.add(&saver);
     memory.add(&savings);
 
-    let mut groups = vec![startup, downloads, spelling, system, memory];
+    let mut groups = vec![startup];
+    if browser.home().is_some() {
+        groups.push(profiles_group(window));
+    }
+    groups.extend([downloads, spelling, system, memory]);
     // Only for a copy that updates itself; a package from a distribution or Flatpak has no group.
     if let Some(updates) = browser.updates() {
         let group = group("Updates");
@@ -490,6 +497,36 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
         groups.push(group);
     }
     page("general", "General", "preferences-system-symbolic", &groups)
+}
+
+/// The picker switch is the install's, as in Chrome, so it writes the profile list rather than
+/// this profile's preferences.
+fn profiles_group(window: &BrowserWindow) -> adw::PreferencesGroup {
+    let browser = window.browser();
+    let picker = adw::SwitchRow::builder()
+        .title(PROFILE_PICKER_ROW)
+        .subtitle("Ask which profile to open when Vsesvit starts and there is more than one")
+        .active(browser.profiles().show_picker())
+        .build();
+    picker.connect_active_notify(glib::clone!(
+        #[strong]
+        browser,
+        move |row| {
+            if browser.profiles().show_picker() != row.is_active() {
+                browser.set_show_profile_picker(row.is_active());
+            }
+        }
+    ));
+    let manage = adw::ButtonRow::builder().title("Manage Profiles…").build();
+    manage.connect_activated(glib::clone!(
+        #[weak]
+        window,
+        move |_| crate::profiles::manage(&window)
+    ));
+    let group = group("Profiles");
+    group.add(&picker);
+    group.add(&manage);
+    group
 }
 
 /// A switch for each installed dictionary, under a row naming the languages checked. Without

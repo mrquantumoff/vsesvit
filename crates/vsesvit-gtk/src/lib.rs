@@ -29,6 +29,7 @@ mod omnibox;
 mod page_menu;
 mod permissions;
 mod profile;
+mod profiles;
 mod save_page;
 pub mod screenshot;
 #[cfg(feature = "self-test")]
@@ -134,7 +135,7 @@ pub fn run() -> ExitCode {
             eprintln!("vsesvit: this build was made without the `self-test` feature");
             ExitCode::FAILURE
         }
-        Command::Browse { profile_dir, .. } => app::run(profile_dir, &args),
+        Command::Browse { profile_dir, targets } => app::run(profile_dir, !targets.is_empty(), &args),
     }
 }
 

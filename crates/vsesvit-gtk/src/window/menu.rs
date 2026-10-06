@@ -1,6 +1,7 @@
-//! The primary menu, with the zoom controls as a custom row.
+//! The primary menu, with the zoom controls as a custom row, and the profile menu.
 
 use gtk::{gio, prelude::*};
+use vsesvit_core::profiles::Registry;
 
 /// The menu button and the zoom-level button inside it, whose label follows the selected tab.
 pub(super) fn main_menu() -> (gtk::MenuButton, gtk::Button) {
@@ -85,4 +86,30 @@ fn zoom_controls() -> (gtk::Box, gtk::Button) {
     row.append(&level);
     row.append(&zoom_in);
     (row, level)
+}
+
+/// The profile button: the avatar `BrowserWindow::sync_profile` paints, and the menu it opens.
+pub(super) fn profile_button() -> (gtk::MenuButton, gtk::Label) {
+    let avatar = gtk::Label::new(None);
+    let button = gtk::MenuButton::builder().child(&avatar).css_classes(["flat"]).build();
+    (button, avatar)
+}
+
+/// Every profile, the current one checked, then adding and managing them, as in Chrome's
+/// profile menu.
+pub(super) fn profile_menu(registry: &Registry) -> gio::Menu {
+    let profiles = gio::Menu::new();
+    for profile in registry.profiles() {
+        // Menu labels take `_` as a mnemonic.
+        let item = gio::MenuItem::new(Some(&profile.name.replace('_', "__")), None);
+        item.set_action_and_target_value(Some("win.open-profile"), Some(&profile.id.as_str().to_variant()));
+        profiles.append_item(&item);
+    }
+    let manage = gio::Menu::new();
+    manage.append(Some("_Add Profile…"), Some("win.add-profile"));
+    manage.append(Some("_Manage Profiles…"), Some("win.manage-profiles"));
+    let menu = gio::Menu::new();
+    menu.append_section(None, &profiles);
+    menu.append_section(None, &manage);
+    menu
 }

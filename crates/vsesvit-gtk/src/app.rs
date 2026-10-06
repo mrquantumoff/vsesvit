@@ -18,14 +18,15 @@ use gtk::gio::ActionEntry;
 use gtk::{gdk, gio, glib};
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::private::Browsing;
+use vsesvit_core::profiles::Home;
 use vsesvit_core::{OpenError, OpenOptions, Profile};
 use vsesvit_webext::notifications::{self, Activation};
 
 use crate::browser::Browser;
 use crate::cli::{self, Command};
-use crate::profile::ProfileLocation;
+use crate::profile::Start;
 use crate::window::BrowserWindow;
-use crate::{dialogs, location};
+use crate::{dialogs, location, profiles};
 
 pub(crate) const CSS: &str = "
 .link-preview {
@@ -87,9 +88,10 @@ window.private toolbarview.browser-toolbar > .top-bar {
 /// application's closures hold keeps it alive past shutdown.
 pub(crate) type Slot = Rc<RefCell<Option<Browser>>>;
 
-pub(crate) fn run(profile_dir: Option<PathBuf>, args: &[OsString]) -> ExitCode {
-    let location = match ProfileLocation::resolve(profile_dir) {
-        Ok(location) => location,
+pub(crate) fn run(profile_dir: Option<PathBuf>, has_targets: bool, args: &[OsString]) -> ExitCode {
+    let location = match Start::resolve(profile_dir, has_targets) {
+        Ok(Start::Profile(location)) => location,
+        Ok(Start::Picker(dir)) => return profiles::run_picker(dir),
         Err(e) => {
             eprintln!("vsesvit: cannot use the profile directory: {e}");
             return ExitCode::FAILURE;
@@ -108,6 +110,17 @@ pub(crate) fn run(profile_dir: Option<PathBuf>, args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(home) = &location.home
+        && profile.is_some()
+        && home.dir.load().is_removed(&home.id)
+    {
+        // Removed while it ran; nothing opens it again, and its data can go now.
+        drop(profile);
+        home.dir.sweep();
+        eprintln!("vsesvit: the profile at {} was removed", location.root.display());
+        return ExitCode::FAILURE;
+    }
+    let home = location.home.clone();
 
     let app = adw::Application::builder()
         .application_id(&location.app_id)
@@ -121,7 +134,7 @@ pub(crate) fn run(profile_dir: Option<PathBuf>, args: &[OsString]) -> ExitCode {
         slot,
         move |app| {
             if let Some(profile) = pending.take() {
-                startup(app, &slot, profile);
+                startup(app, &slot, profile, home.clone());
             }
         }
     ));
@@ -160,6 +173,13 @@ pub(crate) fn run(profile_dir: Option<PathBuf>, args: &[OsString]) -> ExitCode {
     let status = app.run_with_args_os(args);
     // After `run`, so the new process becomes the primary instance instead of handing its
     // command line to this one.
+    if slot.borrow().as_ref().is_some_and(Browser::was_removed) {
+        release_profile(&app, &slot);
+        if let Some(home) = &location.home {
+            home.dir.sweep();
+        }
+        return status.into();
+    }
     let restart = slot.borrow().as_ref().and_then(Browser::restart_program);
     if let Some(program) = restart {
         release_profile(&app, &slot);
@@ -209,9 +229,9 @@ pub(crate) fn setup(app: &adw::Application, slot: &Slot) {
     install_actions(app, slot);
 }
 
-fn startup(app: &adw::Application, slot: &Slot, profile: Profile) {
+fn startup(app: &adw::Application, slot: &Slot, profile: Profile, home: Option<Home>) {
     setup(app, slot);
-    let browser = Browser::new(app, profile);
+    let browser = Browser::new(app, profile, home);
     browser.start();
     slot.replace(Some(browser));
 }
@@ -228,6 +248,9 @@ fn open_from_command_line(
     browser: &Browser,
     command_line: &gio::ApplicationCommandLine,
 ) -> glib::ExitCode {
+    if browser.close_if_removed() {
+        return glib::ExitCode::SUCCESS;
+    }
     let targets = match cli::parse(command_line.arguments().into_iter().skip(1)) {
         Ok(Command::Browse { targets, .. }) => targets,
         Ok(_) => Vec::new(),
@@ -484,12 +507,12 @@ fn apply_sync_file(browser: &Browser, path: &Path) -> Result<String, String> {
     ))
 }
 
-fn load_css() {
+pub(crate) fn load_css() {
     let Some(display) = gdk::Display::default() else {
         return;
     };
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(CSS);
+    provider.load_from_string(&format!("{CSS}{}", profiles::avatar_css()));
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
@@ -529,7 +552,7 @@ mod tests {
         let root = scratch_dir("restart");
         let profile = Profile::open(&root, OpenOptions::default()).expect("a scratch profile");
         let app = registered_app();
-        let browser = Browser::new(&app, profile);
+        let browser = Browser::new(&app, profile, None);
         browser.start();
         let window = BrowserWindow::new(&browser);
         window.new_tab();

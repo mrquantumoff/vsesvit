@@ -34,6 +34,7 @@ use vsesvit_core::new_tab;
 use vsesvit_core::permissions::{Answer, Permission};
 use vsesvit_core::prefs::TabsPosition;
 use vsesvit_core::private::Browsing;
+use vsesvit_core::profiles::{self, ProfileColor};
 use webkit::prelude::*;
 
 use crate::address_bar::{AddressBar, Anchor};
@@ -93,6 +94,9 @@ struct Ui {
     zoom_level: gtk::Button,
     /// Hidden until a download starts.
     downloads_button: gtk::Button,
+    /// The profile's avatar, opening the profile menu; hidden for a profile outside the list.
+    profile_button: gtk::MenuButton,
+    profile_avatar: gtk::Label,
     tab_view: adw::TabView,
     tab_bar: adw::TabBar,
     /// Search Tabs at the end of the tab bar, after the tabs.
@@ -199,6 +203,7 @@ impl BrowserWindow {
         window.apply_prefs();
         window.refresh_bookmarks_bar();
         window.refresh_extension_actions();
+        window.sync_profile();
         if browser.downloads().started_this_session() {
             window.show_downloads_button();
         }
@@ -218,9 +223,11 @@ impl BrowserWindow {
         *self.imp().browsing.get().expect("set in BrowserWindow::new")
     }
 
-    /// The window's title for a page titled `title`.
+    /// The window's title for a page titled `title`, with the profile's name when there is more
+    /// than one profile.
     fn show_title(&self, title: &str) {
-        self.set_title(Some(&window_title(title, self.browsing())));
+        let profile = self.browser().profile_title();
+        self.set_title(Some(&window_title(&profiles::with_profile(title, profile.as_deref()), self.browsing())));
     }
 
     fn ui(&self) -> &Ui {
@@ -303,6 +310,7 @@ impl BrowserWindow {
         let (menu_button, zoom_level) = menu::main_menu();
         let downloads_button = icon_button("folder-download-symbolic", "win.show-downloads", "Downloads");
         downloads_button.set_visible(false);
+        let (profile_button, profile_avatar) = menu::profile_button();
 
         let header_start = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header_start.append(&icon_button("go-previous-symbolic", "win.back", "Back"));
@@ -314,6 +322,7 @@ impl BrowserWindow {
         header_end.append(extension_actions.widget());
         header_end.append(&icon_button("tab-new-symbolic", "win.new-tab", "New Tab"));
         header_end.append(&downloads_button);
+        header_end.append(&profile_button);
         header_end.append(&menu_button);
         let header = adw::HeaderBar::new();
         header.pack_start(&header_start);
@@ -391,6 +400,8 @@ impl BrowserWindow {
             home,
             zoom_level,
             downloads_button,
+            profile_button,
+            profile_avatar,
             tab_view,
             tab_bar,
             tab_bar_search,
@@ -529,12 +540,14 @@ impl BrowserWindow {
         self.add_controller(clicks);
 
         self.connect_is_active_notify(|window| {
-            if window.is_active()
-                && let Some(tab) = window.selected_tab()
-            {
+            if !window.is_active() {
+                return;
+            }
+            if let Some(tab) = window.selected_tab() {
                 window.browser().tab_used(&tab);
             }
             window.browser().runtime().windows_changed();
+            window.browser().profile_used();
         });
         self.connect_realize(|window| {
             let Some(surface) = window.surface() else {
@@ -554,6 +567,14 @@ impl BrowserWindow {
                 move |_, _, _| window.report_bounds()
             ));
         });
+        self.ui().profile_button.set_create_popup_func(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_| {
+                window.browser().profile_used();
+                window.sync_profile();
+            }
+        ));
 
         self.connect_fullscreened_notify(|window| {
             window
@@ -1297,6 +1318,36 @@ impl BrowserWindow {
     }
 
     // Keeping the header in step with the selected tab.
+
+    /// The profile list changed: the avatar, the profile menu and the title follow.
+    pub(crate) fn profiles_changed(&self) {
+        self.sync_profile();
+        if let Some(tab) = self.selected_tab() {
+            self.show_title(&tab.display_title());
+        }
+    }
+
+    fn sync_profile(&self) {
+        let ui = self.ui();
+        let browser = self.browser();
+        let Some(home) = browser.home() else {
+            ui.profile_button.set_visible(false);
+            return;
+        };
+        let registry = browser.profiles();
+        let (name, color) = registry
+            .get(&home.id)
+            .map_or((home.id.as_str(), ProfileColor::Slate), |p| (p.name.as_str(), p.color));
+        crate::profiles::set_avatar(&ui.profile_avatar, name, color);
+        ui.profile_button.set_tooltip_text(Some(name));
+        ui.profile_button.set_menu_model(Some(&menu::profile_menu(&registry)));
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn profile_menu(&self) -> Option<gio::MenuModel> {
+        let button = &self.ui().profile_button;
+        button.is_visible().then(|| button.menu_model()).flatten()
+    }
 
     /// Called by a tab of this window whenever something about it changes.
     pub(crate) fn tab_changed(&self, tab: &Tab, change: TabChange) {

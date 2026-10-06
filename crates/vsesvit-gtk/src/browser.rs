@@ -35,6 +35,7 @@ use vsesvit_core::memory_saver::{self, Sweep, TabActivity};
 use vsesvit_core::onboarding;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::private::Browsing;
+use vsesvit_core::profiles::{self, Home, ProfileColor, ProfileId, Registry};
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
 use vsesvit_core::tab_search::{self, Listed, Row};
@@ -110,6 +111,15 @@ pub(crate) struct Inner {
     sync: Syncer,
     /// This run created the profile: the first window opens the welcome, once.
     welcome: Cell<bool>,
+    /// This profile's place in the profile list; none for a directory outside it.
+    home: Option<Home>,
+    /// The profile list as last read. Other profiles' processes change it too, so it is read
+    /// again whenever a window comes forward.
+    profiles: RefCell<Registry>,
+    /// Removed from the profile list: the windows close and nothing is saved.
+    removed: Cell<bool>,
+    /// Open views of the profile list, refreshed when it changes.
+    profile_views: RefCell<Vec<Weak<dyn Fn()>>>,
 }
 
 /// The engine side of the private session, made for its first tab and dropped when its last
@@ -147,7 +157,14 @@ pub(crate) type TabHit = tab_search::Hit<TabId, ClosedKey>;
 impl Browser {
     /// Wraps an open profile. The extension runtime is created here, before any tab web
     /// view exists, because every tab's view is built with the runtime's content manager.
-    pub(crate) fn new(app: &adw::Application, profile: Profile) -> Self {
+    pub(crate) fn new(app: &adw::Application, profile: Profile, home: Option<Home>) -> Self {
+        let profiles = match &home {
+            Some(home) => home.dir.opened(&home.id).unwrap_or_else(|e| {
+                log::warn!("the profile list: {e}");
+                home.dir.load()
+            }),
+            None => Registry::default(),
+        };
         let core: Core = Rc::new(RefCell::new(profile));
         let engine = Engine::new(&mut core.borrow_mut());
         let trackers = Trackers::new(core.clone());
@@ -186,6 +203,10 @@ impl Browser {
                 updates: Updates::new(app, updates_automatic, updates_channel),
                 sync,
                 welcome: Cell::new(welcome),
+                home,
+                profiles: RefCell::new(profiles),
+                removed: Cell::new(false),
+                profile_views: RefCell::new(Vec::new()),
             }
         });
         let weak = Rc::downgrade(&inner);
@@ -489,8 +510,129 @@ impl Browser {
     pub(crate) fn shutdown(&self) {
         self.save_session_now();
         self.0.shut_down.set(true);
+        if self.0.removed.get() {
+            return;
+        }
         self.cookies().clear_at_exit();
         self.0.sync.final_sync();
+    }
+
+    // Profiles.
+
+    pub(crate) fn home(&self) -> Option<&Home> {
+        self.0.home.as_ref()
+    }
+
+    pub(crate) fn profiles(&self) -> Registry {
+        self.0.profiles.borrow().clone()
+    }
+
+    /// What window titles add after the page title: the profile's name, when there is more
+    /// than one profile.
+    pub(crate) fn profile_title(&self) -> Option<String> {
+        let home = self.home()?;
+        self.0.profiles.borrow().title_name(&home.id).map(str::to_owned)
+    }
+
+    /// A window came forward: reads the profile list again, since other profiles' processes
+    /// change it, and makes this profile the last used. A profile removed elsewhere closes.
+    pub(crate) fn profile_used(&self) {
+        let Some(home) = self.home() else { return };
+        match home.dir.opened(&home.id) {
+            Ok(registry) if registry.is_removed(&home.id) => self.close_removed_profile(),
+            Ok(registry) => self.set_profiles(registry),
+            Err(e) => log::warn!("the profile list: {e}"),
+        }
+    }
+
+    /// Closes this profile's windows, without saving anything, when it was removed from the
+    /// profile list. True if it was.
+    pub(crate) fn close_if_removed(&self) -> bool {
+        let removed = self.home().is_some_and(|home| home.dir.load().is_removed(&home.id));
+        if removed {
+            self.close_removed_profile();
+        }
+        removed
+    }
+
+    pub(crate) fn was_removed(&self) -> bool {
+        self.0.removed.get()
+    }
+
+    fn close_removed_profile(&self) {
+        self.0.removed.set(true);
+        self.0.shut_down.set(true);
+        self.app().quit();
+    }
+
+    pub(crate) fn set_profiles(&self, registry: Registry) {
+        if *self.0.profiles.borrow() == registry {
+            return;
+        }
+        self.0.profiles.replace(registry);
+        for window in self.windows() {
+            window.profiles_changed();
+        }
+        refresh_views(&self.0.profile_views);
+    }
+
+    pub(crate) fn watch_profiles(&self, refresh: &Rc<dyn Fn()>) {
+        self.0.profile_views.borrow_mut().push(Rc::downgrade(refresh));
+    }
+
+    /// Starts profile `id`'s process, or brings its windows forward if it runs.
+    pub(crate) fn open_profile(&self, window: &BrowserWindow, id: &ProfileId) {
+        let Some(home) = self.home() else { return };
+        if *id == home.id {
+            window.present();
+        } else if let Err(e) = profile::launch(window, &home.dir.root(id)) {
+            window.toast(dialogs::plain_toast(&format!("Could not open the profile: {e}")));
+        }
+    }
+
+    /// Adds a profile and opens it in a new window, as Chrome does.
+    pub(crate) fn add_profile(&self, window: &BrowserWindow, name: &str, color: ProfileColor) -> Result<(), String> {
+        let home = self.home().ok_or("this profile is not in the profile list")?;
+        let (id, registry) = home.dir.add(name, color).map_err(|e| e.to_string())?;
+        self.set_profiles(registry);
+        self.open_profile(window, &id);
+        Ok(())
+    }
+
+    pub(crate) fn edit_profile(&self, id: &ProfileId, name: &str, color: ProfileColor) -> Result<(), String> {
+        let home = self.home().ok_or("this profile is not in the profile list")?;
+        let registry = home.dir.edit_profile(id, name, color).map_err(|e| e.to_string())?;
+        self.set_profiles(registry);
+        Ok(())
+    }
+
+    /// Removes profile `id` and deletes its data. Its windows close: this process quits after
+    /// opening the profile a launch would open next, and another profile's process is told
+    /// through its command line.
+    pub(crate) fn remove_profile(&self, window: &BrowserWindow, id: &ProfileId) -> Result<(), String> {
+        let home = self.home().ok_or("this profile is not in the profile list")?;
+        let running = *id != home.id && home.dir.is_running(id);
+        let registry = home.dir.remove(id).map_err(|e| e.to_string())?;
+        if *id == home.id {
+            if let profiles::Startup::Open(next) = registry.startup(true, false) {
+                self.open_profile(window, &next);
+            }
+            self.close_removed_profile();
+        } else {
+            if running {
+                profile::notify(&home.dir.root(id));
+            }
+            self.set_profiles(registry);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_show_profile_picker(&self, on: bool) {
+        let Some(home) = self.home() else { return };
+        match home.dir.set_show_picker(on) {
+            Ok(registry) => self.set_profiles(registry),
+            Err(e) => log::warn!("the profile list: {e}"),
+        }
     }
 
     // Tabs.

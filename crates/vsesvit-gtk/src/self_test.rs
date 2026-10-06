@@ -23,6 +23,7 @@ use vsesvit_core::memory_saver::{self, MemorySaverMode};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
 use vsesvit_core::private::Browsing;
+use vsesvit_core::profiles::{Home, ProfileColor, ProfileId, ProfilesDir};
 use vsesvit_core::search::{EngineForm, NavTarget, SearchEngineId};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::suggest::DEBOUNCE;
@@ -39,7 +40,7 @@ use webkit::prelude::*;
 use crate::address_bar::Security;
 use crate::browser::Browser;
 use crate::dialogs::settings::{
-    HTTPS_ONLY_ROW, MEMORY_SAVINGS_ROW, PASSWORDS_NOTICE, SECURE_DNS_ROW, SPELLCHECK_ROW, SPELLING_LANGUAGES_ROW,
+    HTTPS_ONLY_ROW, MEMORY_SAVINGS_ROW, PASSWORDS_NOTICE, PROFILE_PICKER_ROW, SECURE_DNS_ROW, SPELLCHECK_ROW, SPELLING_LANGUAGES_ROW,
     TRACKING_PROTECTION_ROW,
 };
 use crate::dialogs::site_data::SEE_ALL_ROW;
@@ -77,7 +78,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 57] = [
+const CHECKS: [&str; 58] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -133,6 +134,7 @@ const CHECKS: [&str; 57] = [
     "cookies",
     "capture_in_use",
     "sync_passphrase",
+    "profiles",
     "welcome",
     "screenshot",
 ];
@@ -221,6 +223,12 @@ pub(crate) fn run(out_dir: &Path, network: bool) -> ExitCode {
     }
     println!("[self-test] fixture server on {}", server.origin());
 
+    // The profile list sits next to the profile, here in OUT_DIR, never the user's.
+    let _ = std::fs::remove_file(out_dir.join("profiles.json"));
+    let home = Home {
+        dir: ProfilesDir::at(out_dir.to_path_buf()),
+        id: ProfileId::parse("profile").expect("a plain directory name"),
+    };
     let ctx = Rc::new(Context { out_dir: out_dir.to_path_buf(), crx_path, server, network, report: report.clone() });
     let app = adw::Application::builder()
         .application_id("dev.mrquantumoff.vsesvit.SelfTest")
@@ -236,7 +244,7 @@ pub(crate) fn run(out_dir: &Path, network: bool) -> ExitCode {
         move |app| {
             let Some(profile) = pending.take() else { return };
             crate::app::setup(app, &slot);
-            let browser = Browser::new(app, profile);
+            let browser = Browser::new(app, profile, Some(home.clone()));
             browser.start();
             browser.open_startup_windows(&[]);
             slot.replace(Some(browser.clone()));
@@ -3395,6 +3403,64 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             entering.accept,
             entering.dismiss
         ))
+    })
+    .await;
+
+    ctx.check("profiles", CHECK_TIMEOUT, |last| async move {
+        let home = browser.home().ok_or("the self-test profile is not in its profile list")?.clone();
+        let menu_names = || {
+            let menu = window.profile_menu().ok_or("the profile button is hidden")?;
+            let section = menu.item_link(0, gio::MENU_LINK_SECTION).ok_or("the profile menu has no profiles")?;
+            let names: Vec<String> = (0..section.n_items())
+                .filter_map(|i| section.item_attribute_value(i, gio::MENU_ATTRIBUTE_LABEL, Some(glib::VariantTy::STRING)))
+                .filter_map(|v| v.get::<String>())
+                .collect();
+            Ok::<_, String>(names)
+        };
+        let title = || window.title().unwrap_or_default().to_string();
+        let page_title = window.selected_tab().map(|t| t.display_title()).unwrap_or_default();
+        let alone = (menu_names()?, title());
+
+        let (work, registry) = home.dir.add("Work", ProfileColor::Green).map_err(|e| e.to_string())?;
+        browser.set_profiles(registry);
+        let together = (menu_names()?, title());
+        browser.edit_profile(&home.id, "Tester", ProfileColor::Teal).map_err(|e| e.to_string())?;
+        let renamed = title();
+        gio::prelude::ActionGroupExt::activate_action(window, "manage-profiles", None);
+        let manage = window.visible_dialog().ok_or("win.manage-profiles opened no dialog")?;
+        let manage_rows: Vec<String> = ["Tester", "Work"].into_iter().filter(|name| find::<adw::ActionRow>(manage.upcast_ref(), |r| r.title() == *name).is_some()).map(str::to_owned).collect();
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("profiles-manage.png")).await.map_err(|e| e.to_string())?;
+        manage.close();
+
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window.visible_dialog().and_downcast::<adw::PreferencesDialog>().ok_or("win.show-settings opened no preferences dialog")?;
+        let picker = find::<adw::SwitchRow>(dialog.upcast_ref(), |r| r.title() == PROFILE_PICKER_ROW).ok_or("Settings > General has no profile picker switch")?;
+        let picker_shown = picker.is_active();
+        picker.set_active(false);
+        let picker_stored = home.dir.load().show_picker();
+        dialog.close();
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("profiles.png")).await.map_err(|e| e.to_string())?;
+
+        browser.remove_profile(window, &work).map_err(|e| e.to_string())?;
+        let removed = wait_for(&last, || {
+            let gone = !home.dir.root(&work).exists();
+            if gone { Ok((menu_names()?, title())) } else { Err("the removed profile's directory is still there".to_owned()) }
+        })
+        .await;
+        let detail = format!(
+            "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}; renamed: {renamed:?}; Manage Profiles lists {manage_rows:?} (profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored on={picker_stored}; Work removed: menu {:?}, title {:?} (profiles.png)",
+            alone.0, alone.1, together.0, together.1, removed.0, removed.1
+        );
+        let ok = alone == (vec!["Person 1".to_owned()], page_title.clone())
+            && together == (vec!["Person 1".to_owned(), "Work".to_owned()], format!("{page_title} - Person 1"))
+            && renamed == format!("{page_title} - Tester")
+            && manage_rows == ["Tester", "Work"]
+            && picker_shown
+            && !picker_stored
+            && removed == (vec!["Tester".to_owned()], page_title);
+        if ok { Ok(detail) } else { Err(detail) }
     })
     .await;
 

@@ -232,6 +232,11 @@ impl Registry {
         self.last_used.as_ref()
     }
 
+    /// Removed while its process ran: that process closes, and its data goes once it has.
+    pub fn is_removed(&self, id: &ProfileId) -> bool {
+        self.removed.contains(id)
+    }
+
     /// The name window titles carry: only when there is more than one profile to tell apart.
     pub fn title_name(&self, id: &ProfileId) -> Option<&str> {
         if self.profiles.len() < 2 {
@@ -340,31 +345,22 @@ impl ProfilesDir {
         registry
     }
 
-    /// Lists `id` if it is not listed (named like Chrome's unnamed profiles), takes it back
-    /// from the removed ones, and marks it last used. The process that opens a profile calls
-    /// this, so every profile that runs is listed, an old install's `Default` included.
+    /// Lists `id` if it is not listed (named like Chrome's unnamed profiles) and marks it
+    /// last used, which a launch that names no profile opens. The process that has a profile
+    /// open calls this when it starts and whenever one of its windows comes forward, so every
+    /// profile that runs is listed, an old install's `Default` included. A removed profile
+    /// stays removed.
     pub fn opened(&self, id: &ProfileId) -> io::Result<Registry> {
         self.edit(|registry| {
-            let before = registry.clone();
-            registry.removed.retain(|r| r != id);
+            if registry.is_removed(id) || registry.last_used.as_ref() == Some(id) && registry.get(id).is_some() {
+                return Ok(false);
+            }
             if registry.get(id).is_none() {
                 let entry = ProfileEntry { id: id.clone(), name: registry.next_name(), color: registry.next_color() };
                 registry.profiles.push(entry);
             }
             registry.last_used = Some(id.clone());
-            Ok(*registry != before)
-        })
-        .map_err(into_io)
-    }
-
-    /// Marks `id` last used, which a launch that names no profile opens.
-    pub fn touch(&self, id: &ProfileId) -> io::Result<Registry> {
-        self.edit(|registry| {
-            let changed = registry.get(id).is_some() && registry.last_used.as_ref() != Some(id);
-            if changed {
-                registry.last_used = Some(id.clone());
-            }
-            Ok(changed)
+            Ok(true)
         })
         .map_err(into_io)
     }
@@ -693,7 +689,7 @@ mod tests {
 
         let registry = dir.remove(&default).unwrap();
         assert_eq!(names(&registry), ["Work"]);
-        assert_eq!(registry.removed, [default.clone()], "still open, so kept for later");
+        assert_eq!(registry.removed, std::slice::from_ref(&default), "still open, so kept for later");
         assert!(dir.root(&default).join("vsesvit.db").exists());
         assert!(matches!(dir.remove(&work), Err(EditError::LastProfile)));
         assert!(matches!(dir.remove(&default), Err(EditError::NotListed)));
@@ -707,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_removed_profile_takes_it_back() {
+    fn a_removed_profile_stays_removed_when_it_opens() {
         let dir = dir();
         let default = ProfileId::default_profile();
         let profile = Profile::open(&dir.root(&default), OpenOptions::default()).unwrap();
@@ -715,11 +711,11 @@ mod tests {
         dir.add("Work", ProfileColor::Green).unwrap();
         dir.remove(&default).unwrap();
         let registry = dir.opened(&default).unwrap();
-        assert!(registry.removed.is_empty());
-        assert_eq!(names(&registry), ["Work", "Person 1"]);
+        assert!(registry.is_removed(&default));
+        assert_eq!(names(&registry), ["Work"]);
         drop(profile);
         dir.sweep();
-        assert!(dir.root(&default).join("vsesvit.db").exists());
+        assert!(!dir.root(&default).exists());
     }
 
     #[test]

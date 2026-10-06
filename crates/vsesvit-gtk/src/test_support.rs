@@ -30,7 +30,7 @@ pub(crate) fn browser() -> Browser {
         cell.get_or_init(|| {
             let root = scratch_dir("shared");
             let profile = Profile::open(&root, OpenOptions::default()).expect("a scratch profile");
-            Browser::new(&registered_app(), profile)
+            Browser::new(&registered_app(), profile, None)
         })
         .clone()
     })
