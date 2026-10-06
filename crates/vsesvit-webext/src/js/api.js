@@ -492,6 +492,31 @@
         onShowSettings: new ExtensionEvent("notifications.onShowSettings"),
       };
     }
+    if (grantedPermissions.has("declarativeNetRequest") || grantedPermissions.has("declarativeNetRequestWithHostAccess")) {
+      const options = (args) => [args[0] || {}];
+      const enumOf = (values) => Object.fromEntries(values.map((v) => [v.replace(/[A-Z]/g, (c) => "_" + c).toUpperCase(), v]));
+      api.declarativeNetRequest = Object.assign({
+        updateDynamicRules: bridged("declarativeNetRequest.updateDynamicRules", null, options),
+        getDynamicRules: bridged("declarativeNetRequest.getDynamicRules", null, options),
+        updateSessionRules: bridged("declarativeNetRequest.updateSessionRules", null, options),
+        getSessionRules: bridged("declarativeNetRequest.getSessionRules", null, options),
+        updateEnabledRulesets: bridged("declarativeNetRequest.updateEnabledRulesets", null, options),
+        getEnabledRulesets: bridged("declarativeNetRequest.getEnabledRulesets"),
+        getAvailableStaticRuleCount: bridged("declarativeNetRequest.getAvailableStaticRuleCount"),
+        isRegexSupported: bridged("declarativeNetRequest.isRegexSupported", null, options),
+        // WebKit says nothing about the requests a content blocker matched, so there is no
+        // count to show on the badge.
+        setExtensionActionOptions: local(() => undefined),
+        ResourceType: enumOf(["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport", "webbundle", "other"]),
+        RequestMethod: enumOf(["connect", "delete", "get", "head", "options", "patch", "post", "put", "other"]),
+        RuleActionType: enumOf(["block", "redirect", "allow", "upgradeScheme", "modifyHeaders", "allowAllRequests"]),
+        DomainType: enumOf(["firstParty", "thirdParty"]),
+        HeaderOperation: enumOf(["append", "set", "remove"]),
+        UnsupportedRegexReason: enumOf(["syntaxError", "memoryLimitExceeded"]),
+      }, config.dnr);
+    }
+    // In extension pages only, as Chrome's default access level has it.
+    storage.session = Object.assign(storageArea("session", { QUOTA_BYTES: 10485760 }), { setAccessLevel: local(() => undefined) });
     const currentWindow = () => ({ id: 1, focused: true, incognito: false, type: "normal", state: "normal", alwaysOnTop: false });
     const windows = {
       WINDOW_ID_NONE: -1,
