@@ -400,12 +400,12 @@ impl BrowserWindow {
         }
     }
 
-    /// The tab the player follows, for scripted runs.
+    /// The tab the player follows.
     pub fn media_tab(&self) -> Option<TabId> {
         self.media.tab.get()
     }
 
-    /// The tab whose web view is in the picture-in-picture box, for scripted runs.
+    /// The tab whose web view is in the picture-in-picture box.
     pub fn pip_tab(&self) -> Option<TabId> {
         match *self.media.pip.borrow() {
             Some(Pip::Video(id)) => Some(id),

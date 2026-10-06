@@ -28,6 +28,7 @@ mod windowed;
 use std::borrow::Cow;
 use std::rc::Rc;
 
+use vsesvit_core::memory_saver;
 use vsesvit_core::prefs::Theme;
 use windows_core::{IInspectable, Interface, Result};
 
@@ -105,6 +106,9 @@ impl Dialog {
                 .replacen("{search_engines}", search_engines::MARKUP, 1)
                 .replacen("{shortcuts}", shortcut_settings::PANEL, 1)
                 .replacen("{sync}", &sync_settings::panel(), 1)
+                .replacen("{saver}", &xaml::escape(memory_saver::TITLE), 1)
+                .replacen("{saver_text}", &xaml::escape(memory_saver::DESCRIPTION), 1)
+                .replacen("{saver_mode}", &xaml::escape(memory_saver::MODE_TITLE), 1)
                 .into(),
             Self::About => about::MARKUP.into(),
             Self::Welcome => welcome::MARKUP.into(),

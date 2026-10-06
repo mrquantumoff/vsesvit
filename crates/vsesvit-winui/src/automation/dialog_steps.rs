@@ -13,6 +13,7 @@ use vsesvit_core::cookies::ThirdPartyCookies;
 use vsesvit_core::extensions::ExtensionId;
 use vsesvit_core::history::Transition;
 use vsesvit_core::import;
+use vsesvit_core::memory_saver::MemorySaverMode;
 use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::search::FormField;
 use vsesvit_core::testkit;
@@ -191,6 +192,30 @@ pub(super) async fn settings(
         "name": "14f-settings-engine-startup-switches",
         "arguments": [defaults, off, arguments()],
         "ok": defaults.is_empty() && off == "--disable-smooth-scrolling --disable-gpu" && arguments().is_empty(),
+    }));
+
+    let saver: ToggleSwitch = preview.find("MemorySaver")?;
+    let mode: ComboBox = preview.find("MemorySaverMode")?;
+    let stored = || browser.core(|p| p.prefs().get(&keys::MEMORY_SAVER));
+    let mode_enabled = || {
+        mode.cast::<Control>()
+            .and_then(|c| c.IsEnabled())
+            .unwrap_or(false)
+    };
+    let shown = dialogs::selected_index(&mode).and_then(|i| MemorySaverMode::ALL.get(i).copied());
+    let defaults = (saver.IsOn()?, stored(), mode_enabled());
+    saver.SetIsOn(false)?;
+    let off = (stored(), mode_enabled());
+    saver.SetIsOn(true)?;
+    let on = (stored(), mode_enabled());
+    steps.push(json!({
+        "name": "14l-settings-memory-saver",
+        "defaults": defaults,
+        "mode": format!("{shown:?}"),
+        "off": off,
+        "on": on,
+        "ok": defaults == (true, true, true) && shown == Some(MemorySaverMode::Balanced)
+            && off == (false, false) && on == (true, true),
     }));
 
     select_category(&preview, "PrivacyPanel")?;

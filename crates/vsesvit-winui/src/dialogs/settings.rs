@@ -9,6 +9,7 @@
 use std::rc::Rc;
 
 use vsesvit_core::cookies::ThirdPartyCookies;
+use vsesvit_core::memory_saver::MemorySaverMode;
 use vsesvit_core::prefs::{
     HomepageValue, Pref, Startup, TabsPosition, Theme, UpdateChannel, homepage_input, keys,
 };
@@ -74,6 +75,20 @@ pub(super) const MARKUP: &str = r#"
           </StackPanel>
           <TextBlock x:Name="ProfilePath" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
                      Foreground="{ThemeResource TextFillColorSecondaryBrush}" IsTextSelectionEnabled="True"/>
+        </StackPanel>
+        <StackPanel Spacing="12">
+          <TextBlock Text="Memory" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+          <StackPanel Spacing="4">
+            <ToggleSwitch x:Name="MemorySaver" Header="{saver}"/>
+            <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="{saver_text}"/>
+          </StackPanel>
+          <StackPanel Spacing="4">
+            <ComboBox x:Name="MemorySaverMode" Header="{saver_mode}" MinWidth="320"/>
+            <TextBlock x:Name="MemorySaverModeDescription" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+          </StackPanel>
         </StackPanel>
         <StackPanel Spacing="12">
           <TextBlock Text="Updates" Style="{StaticResource BodyStrongTextBlockStyle}"/>
@@ -473,6 +488,8 @@ pub(super) fn wire(
         show(choice);
     }));
 
+    follow.extend(wire_memory_saver(root, browser)?);
+
     let theme: ComboBox = xaml::find(root, "Theme")?;
     let w = weak.clone();
     let show = choices(&theme, &THEMES, browser.theme(), move |theme| {
@@ -587,6 +604,39 @@ fn followed_switch(
     Ok(Box::new(move |b| {
         let _ = switch.SetIsOn(current(b));
     }))
+}
+
+/// The Memory group: Memory Saver's switch, and its mode, which only applies while it is on.
+fn wire_memory_saver(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Follow> {
+    let mode: ComboBox = xaml::find(root, "MemorySaverMode")?;
+    let description: TextBlock = xaml::find(root, "MemorySaverModeDescription")?;
+    let modes = MemorySaverMode::ALL.map(|mode| (mode, mode.label()));
+    let current = browser.core(|p| p.prefs().get(&keys::MEMORY_SAVER_MODE));
+    description.SetText(current.description())?;
+    let (w, described) = (Rc::downgrade(browser), description.clone());
+    let show = choices(&mode, &modes, current, move |mode| {
+        let _ = described.SetText(mode.description());
+        if let Some(b) = w.upgrade() {
+            b.write_pref(&keys::MEMORY_SAVER_MODE, &mode);
+        }
+    })?;
+    let saving = mode.cast::<Control>()?;
+    let stored = |b: &Browser| b.core(|p| p.prefs().get(&keys::MEMORY_SAVER));
+    saving.SetIsEnabled(stored(browser))?;
+    let enabled = saving.clone();
+    let switch = followed_switch(root, browser, "MemorySaver", stored, move |b, on| {
+        b.write_pref(&keys::MEMORY_SAVER, &on);
+        let _ = enabled.SetIsEnabled(on);
+    })?;
+    Ok(vec![
+        switch,
+        Box::new(move |b| {
+            let current = b.core(|p| p.prefs().get(&keys::MEMORY_SAVER_MODE));
+            let _ = description.SetText(current.description());
+            show(current);
+            let _ = saving.SetIsEnabled(stored(b));
+        }),
+    ])
 }
 
 /// The Updates group. Its status line and button follow the update state while the dialog is

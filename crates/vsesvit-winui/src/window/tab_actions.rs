@@ -154,7 +154,8 @@ impl BrowserWindow {
         browser.session_changed();
     }
 
-    /// Shows the selected tab's web view, or both of its split view, and hides the rest.
+    /// Shows the selected tab's web view, or both of its split view, waking a sleeping one, and
+    /// hides the rest.
     pub(super) fn place_views(&self, active: Option<TabId>) {
         let split = self
             .split
@@ -178,6 +179,9 @@ impl BrowserWindow {
             }
             if xaml::is_visible(tab.view()) != visible {
                 let _ = xaml::set_visible(tab.view(), visible);
+            }
+            if visible {
+                tab.wake();
             }
         }
         let _ = xaml::set_visible(&self.ui.split_divider, split.is_some());

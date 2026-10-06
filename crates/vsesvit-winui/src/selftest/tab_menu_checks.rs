@@ -37,7 +37,7 @@ fn lines(lines: &[(&str, bool)]) -> Vec<(String, bool)> {
 }
 
 /// Waits until `tab` settles at `url` titled `title`.
-async fn loaded(tab: &Tab, url: &str, title: &str, p: &Probe) {
+pub(super) async fn loaded(tab: &Tab, url: &str, title: &str, p: &Probe) {
     until(p, |p| {
         let s = tab.state();
         p.observe(format!(

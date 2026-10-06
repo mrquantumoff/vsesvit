@@ -477,10 +477,18 @@ impl BrowserWindow {
     }
 
     /// A page's new-window request: a tab right after its opener, or in the background after
-    /// the tabs the page opened before.
+    /// the tabs the page opened before. A page's own (`Initial::Opener`) relates the two tabs.
     pub fn open_tab_from(&self, opener: TabId, initial: Initial, background: bool) {
-        if let Err(e) = self.open_tab(initial, Placement::FromPage(opener), !background, None) {
-            log::error!("open tab: {e}");
+        let related = matches!(initial, Initial::Opener(_));
+        match self.open_tab(initial, Placement::FromPage(opener), !background, None) {
+            Ok(tab) if related => {
+                tab.set_related();
+                if let Some(opener) = self.tab(opener) {
+                    opener.set_related();
+                }
+            }
+            Ok(_) => {}
+            Err(e) => log::error!("open tab: {e}"),
         }
     }
 

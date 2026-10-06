@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::hash::{BuildHasher, RandomState};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
 use vsesvit_core::extensions::commands::extension_commands;
@@ -22,6 +22,7 @@ use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Reach};
+use vsesvit_core::memory_saver::{SWEEP_EVERY, Sweep};
 use vsesvit_core::permissions::SiteSetting;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, homepage_url, keys};
 use vsesvit_core::private::Browsing;
@@ -331,7 +332,17 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         exec::spawn(updates::schedule(Rc::downgrade(&browser)));
     }
     exec::spawn(sync::schedule(Rc::downgrade(&browser)));
+    exec::spawn(sweep_tabs(Rc::downgrade(&browser)));
     Ok(())
+}
+
+/// Memory Saver's sweep over the tabs, every [`SWEEP_EVERY`] while the browser runs.
+async fn sweep_tabs(browser: Weak<Browser>) {
+    loop {
+        exec::sleep(SWEEP_EVERY).await;
+        let Some(b) = browser.upgrade() else { return };
+        b.sleep_idle_tabs(Instant::now());
+    }
 }
 
 /// The welcome over the first window, once that window can hold a dialog.
@@ -759,6 +770,17 @@ impl Browser {
         self.closed_tabs.borrow_mut().private.clear();
         self.core(Profile::end_private_session);
         self.engine.private_session_ended();
+    }
+
+    /// Puts to sleep the tabs Memory Saver says have been left alone long enough at `now` (see
+    /// `memory_saver`).
+    pub(crate) fn sleep_idle_tabs(&self, now: Instant) {
+        let sweep = self.core(|p| Sweep::new(p, now));
+        for tab in self.windows().iter().flat_map(|w| w.tabs_in_order()) {
+            if tab.sleeps(&sweep) {
+                exec::spawn(tab.sleep());
+            }
+        }
     }
 
     // ---- startup and session ----

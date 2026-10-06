@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Cause, Next, Upgrades};
+use vsesvit_core::memory_saver::{self, IdleClock, Sweep, TabActivity};
 use vsesvit_core::permissions::{Origin, Permission};
 use vsesvit_core::private::Browsing;
 use vsesvit_core::trackers::{self, TrackerList, TrackingProtection};
@@ -153,6 +154,13 @@ pub(crate) struct Tab {
     security: RefCell<connection::Reports>,
     /// Pinned tabs lead the tab list.
     pinned: Cell<bool>,
+    /// Memory Saver's clock for the tab (see `memory_saver`).
+    idle: Cell<IdleClock>,
+    /// Memory Saver put the tab to sleep: WebView2 suspended its engine view.
+    asleep: Cell<bool>,
+    /// A page in another tab reaches this one's through `window.opener`, or this one's reaches
+    /// it; Memory Saver keeps both awake, as Chrome does.
+    related: Cell<bool>,
     permissions: TabPermissions,
     /// The page's capture is being polled (see `capturing`).
     capture_polled: Cell<bool>,
@@ -201,6 +209,9 @@ impl Tab {
             favicon_generation: Cell::new(0),
             security: RefCell::default(),
             pinned: Cell::new(false),
+            idle: Cell::new(IdleClock::new(Instant::now())),
+            asleep: Cell::new(false),
+            related: Cell::new(false),
             permissions: TabPermissions::new(browsing),
             capture_polled: Cell::new(false),
             shortcut_worlds: RefCell::default(),
@@ -223,6 +234,7 @@ impl Tab {
             audio: Audio::of(state.audible, state.muted),
             pinned: self.pinned.get(),
             capturing: self.permissions.capturing(),
+            asleep: self.asleep.get(),
         }
     }
 
@@ -1037,6 +1049,107 @@ impl Tab {
         }
     }
 
+    pub fn set_related(&self) {
+        self.related.set(true);
+    }
+
+    /// Whether Memory Saver's `sweep` puts the tab to sleep now; what keeps it awake restarts its
+    /// clock. A tab the engine woke by itself is awake again.
+    pub fn sleeps(&self, sweep: &Sweep) -> bool {
+        if self.asleep.get() {
+            if self.suspended() {
+                return false;
+            }
+            self.wake();
+        }
+        let state = self.state();
+        if state.url.is_empty() {
+            return false;
+        }
+        let media = self.window().and_then(|w| w.media_tab());
+        let tab = TabActivity {
+            url: &state.url,
+            shown: self.shown(),
+            pinned: self.pinned.get(),
+            audible: state.audible || media == Some(self.id),
+            capturing: self.permissions.capturing().any(),
+            related: self.related.get(),
+        };
+        let mut clock = self.idle.get();
+        let sleeps = sweep.sleeps(&tab, &mut clock);
+        self.idle.set(clock);
+        sleeps
+    }
+
+    /// Puts the tab to sleep with WebView2's own sleeping tabs, unless its page holds form input
+    /// not yet submitted, which keeps it awake for another delay, or it came on screen meanwhile.
+    pub async fn sleep(self: Rc<Self>) {
+        let unsaved = self
+            .eval(memory_saver::UNSAVED_INPUT_SCRIPT)
+            .await
+            .is_ok_and(|result| memory_saver::has_unsaved_input(&result));
+        if unsaved {
+            self.idle.set(IdleClock::new(Instant::now()));
+            return;
+        }
+        if self.closed.get() || self.asleep.get() || self.shown() {
+            return;
+        }
+        let Some(core) = self
+            .core
+            .get()
+            .and_then(|c| c.cast::<ICoreWebView2_3>().ok())
+        else {
+            return;
+        };
+        let suspended = match core.TrySuspendAsync() {
+            Ok(operation) => operation.await,
+            Err(e) => Err(e),
+        };
+        match suspended {
+            Ok(true) => {
+                log::info!("tab {}: asleep", self.id);
+                self.asleep.set(true);
+                // It came on screen while the engine suspended it.
+                if self.shown() {
+                    self.wake();
+                } else {
+                    self.notify();
+                }
+            }
+            Ok(false) => log::info!("tab {}: the engine kept it awake", self.id),
+            Err(e) => log::warn!("tab {}: sleep: {e}", self.id),
+        }
+    }
+
+    /// Wakes the tab Memory Saver put to sleep, as it comes on screen or starts a navigation.
+    pub fn wake(&self) {
+        if !self.asleep.replace(false) {
+            return;
+        }
+        log::info!("tab {}: awake", self.id);
+        if let Some(core) = self.core.get()
+            && let Err(e) = core.cast::<ICoreWebView2_3>().and_then(|c| c.Resume())
+        {
+            log::warn!("tab {}: wake: {e}", self.id);
+        }
+        self.idle.set(IdleClock::new(Instant::now()));
+        self.notify();
+    }
+
+    /// Whether WebView2 holds the engine view suspended.
+    pub fn suspended(&self) -> bool {
+        self.core
+            .get()
+            .and_then(|c| c.cast::<ICoreWebView2_3>().ok())
+            .is_some_and(|c| c.IsSuspended().unwrap_or(false))
+    }
+
+    /// On screen: its web view shows in the page grid or in picture-in-picture.
+    fn shown(&self) -> bool {
+        xaml::is_visible(&self.view) || self.window().is_some_and(|w| w.pip_tab() == Some(self.id))
+    }
+
     fn window(&self) -> Option<Rc<BrowserWindow>> {
         self.window.upgrade()
     }
@@ -1070,6 +1183,7 @@ impl Tab {
                     tab.cookies.navigation_starting(core, blocked);
                 }
                 *tab.requested.borrow_mut() = uri;
+                tab.wake();
                 tab.transition.borrow_mut().starting();
                 tab.state.borrow_mut().load = Load::Started;
                 tab.security.borrow_mut().navigation_starting();

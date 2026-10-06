@@ -7,6 +7,7 @@
 //! a timeout reports the last value the check saw.
 
 mod cookie_checks;
+mod memory_saver_checks;
 mod omnibox_checks;
 mod page_checks;
 mod private_checks;
@@ -579,6 +580,13 @@ async fn checks(
         tab_search_checks::tab_search(browser, &window, &tab, &server, p).await
     })
     .await;
+    tab_menu_checks::tidy(browser, &windows, &window, &tab);
+
+    check(report, "memory_saver", DEFAULT_TIMEOUT, async |p| {
+        memory_saver_checks::memory_saver(browser, &window, &tab, &server, p).await
+    })
+    .await;
+    browser.write_pref(&keys::MEMORY_SAVER, &true);
     tab_menu_checks::tidy(browser, &windows, &window, &tab);
 
     check(report, "zoom_is_remembered_per_site", DEFAULT_TIMEOUT, async |p| {

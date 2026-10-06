@@ -9428,6 +9428,54 @@ pub struct ICoreWebView2_28_Vtbl {
     ) -> windows_core::HRESULT,
 }
 windows_core::imp::define_interface!(
+    ICoreWebView2_3,
+    ICoreWebView2_3_Vtbl,
+    0xa8c76ae7_6170_5dfe_8f00_79cd76a9b4d9
+);
+impl windows_core::RuntimeType for ICoreWebView2_3 {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+impl ICoreWebView2_3 {
+    pub fn IsSuspended(&self) -> windows_core::Result<bool> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).IsSuspended)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .map(|| result__)
+        }
+    }
+    pub fn TrySuspendAsync(&self) -> windows_core::Result<windows_future::IAsyncOperation<bool>> {
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(self).TrySuspendAsync)(
+                windows_core::Interface::as_raw(self),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        }
+    }
+    pub fn Resume(&self) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).Resume)(windows_core::Interface::as_raw(self))
+                .ok()
+        }
+    }
+}
+#[repr(C)]
+pub struct ICoreWebView2_3_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub IsSuspended:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut bool) -> windows_core::HRESULT,
+    pub TrySuspendAsync: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+    pub Resume: unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     ICoreWebView2_4,
     ICoreWebView2_4_Vtbl,
     0x4ac595ce_1502_5775_b2c8_22c11a369c25

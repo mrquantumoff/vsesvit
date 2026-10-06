@@ -1,10 +1,10 @@
 //! How one tab looks in a tab list: favicon (or a spinner while loading), title, a camera,
 //! microphone or screen while the page captures one, a speaker while the page plays sound (it
-//! mutes the tab), a pin for pinned tabs, and in the vertical pane a close button. Each list
-//! builds its own header per tab from a `TabLook`.
+//! mutes the tab), a pin for pinned tabs, and in the vertical pane a close button; a sleeping
+//! tab's icon is faded. Each list builds its own header per tab from a `TabLook`.
 
 use vsesvit_core::permissions::{Capturing, Permission};
-use windows_core::Result;
+use windows_core::{Interface, Result};
 
 use crate::bindings::*;
 use crate::permissions::glyph;
@@ -48,6 +48,8 @@ pub(crate) struct TabLook {
     pub audio: Audio,
     pub pinned: bool,
     pub capturing: Capturing,
+    /// Memory Saver put it to sleep: its icon shows faded, as in Chrome.
+    pub asleep: bool,
 }
 
 /// The in-use icon's glyph, and whether it is a recording (camera or microphone, shown red as
@@ -169,6 +171,12 @@ impl TabHeader {
         let _ = xaml::set_visible(&self.spinner, look.loading);
         let _ = xaml::set_visible(&self.favicon, favicon);
         let _ = xaml::set_visible(&self.default_icon, !look.loading && !favicon);
+        let opacity = if look.asleep { 0.5 } else { 1.0 };
+        let _ = self
+            .favicon
+            .cast::<UIElement>()
+            .and_then(|f| f.SetOpacity(opacity));
+        let _ = self.default_icon.SetOpacity(opacity);
         let _ = xaml::set_visible(&self.pin, look.pinned);
         self.show_capture(look.capturing);
         let button = look.audio.button();
