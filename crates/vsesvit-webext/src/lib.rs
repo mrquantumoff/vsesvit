@@ -10,7 +10,7 @@
 //! [`protocol`] (the JS/Rust wire format), [`messaging`] (port channels), [`menus`] (context
 //! menu items), [`notifications`] (what an extension notification shows), [`patterns`],
 //! [`mime`], [`i18n`], the tab
-//! types in [`tabs`] and [`support`] (which of a manifest's requests this runtime lacks).
+//! types in [`tabs`], the window types and events in [`windows`] and [`support`] (which of a manifest's requests this runtime lacks).
 //! The WebKit glue ([`Runtime`]) is Linux only.
 //!
 //! # API for the GTK shell (Linux)
@@ -56,11 +56,15 @@
 //! runtime.unload(&id);
 //! let ids: Vec<ExtensionId> = runtime.loaded();
 //!
-//! // The shell reports tab events; the runtime turns them into chrome.tabs events and
-//! // forgets closed tabs.
+//! // The shell reports tab and window events; the runtime turns them into chrome.tabs and
+//! // chrome.windows events and forgets closed tabs. `TabHost` answers with the windows
+//! // (most recently focused first) and their tabs, and opens, moves and closes them.
+//! runtime.tab_attached(tab_id);     // a window took it: new (onCreated) or from another window
+//! runtime.tab_moved(tab_id);        // reordered within its window
 //! runtime.tab_updated(tab_id);      // after a committed navigation or a title change
 //! runtime.tab_activated(tab_id);    // on tab switch
-//! runtime.tab_closed(tab_id);      // also closes the ports of its documents
+//! runtime.tab_closed(tab_id, window_closing);   // also closes the ports of its documents
+//! runtime.windows_changed();        // a window opened, closed, took or lost focus, or resized
 //!
 //! // Toolbar actions. `activate_action` hands the popup WebView to put in a popover to its
 //! // callback, possibly later (the shell owns it; drop it to close, which closes its
@@ -118,8 +122,12 @@
 //!   `storage.local/sync` with `storage.onChanged`, `i18n`. Extension pages (background,
 //!   popup, and any of the extension's documents shown in a tab: the options page,
 //!   `tabs.create(getURL(..))`, links) additionally get
-//!   `storage.session`, `tabs.query/get/getCurrent/create/update/remove/reload/sendMessage` with
-//!   `onUpdated/onActivated/onRemoved`, `scripting.executeScript/insertCSS/removeCSS` and
+//!   `storage.session`, `tabs.query/get/getCurrent/create/update/move/remove/reload/sendMessage`
+//!   with `onCreated/onUpdated/onActivated/onMoved/onDetached/onAttached/onRemoved`,
+//!   `windows.get/getCurrent/getLastFocused/getAll/create/update/remove` with
+//!   `onCreated/onRemoved/onFocusChanged/onBoundsChanged` over the shell's windows (see
+//!   [`windows`]; a page in a tab is in that tab's window, any other page in the last focused
+//!   one), `scripting.executeScript/insertCSS/removeCSS` and
 //!   `registerContentScripts/getRegisteredContentScripts/updateContentScripts/unregisterContentScripts`,
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
 //!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
@@ -167,7 +175,9 @@
 //! claiming its URL); `getBackgroundPage` cannot reach the background from an extension
 //! page in a tab; a context menu click in a subframe has no `frameId`; WebKit's menus show
 //! a radio item with a check mark; an image notification shows no image, and
-//! `requireInteraction` and `silent` change nothing; GNotification does not tell when the
+//! `requireInteraction` and `silent` change nothing; every window is a normal one at the
+//! screen's origin (a `popup` or `panel` opens as a normal window, and Wayland neither tells
+//! nor sets a window's position), and no window can be unfocused or made to draw attention; GNotification does not tell when the
 //! user dismisses a notification, so it stays in `notifications.getAll` until cleared or
 //! replaced, as with Chrome on the portal; WebKit reports no content-blocker matches, so
 //! `setExtensionActionOptions` shows no count and there is no `getMatchedRules`; no

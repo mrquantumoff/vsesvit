@@ -82,8 +82,8 @@
 //!     another window, whose last tab it was, so it closes; `create` with a `tabId`, `update`
 //!     and `remove` work, and Chrome's errors refuse a state at odds with the focus or a size,
 //!     a private window and an unknown window; the events come in Chrome's order, a tab going
-//!     with its window says so; a page in a tab's current window is the tab's, not the
-//!     focused one;
+//!     with its window says so; a page in a tab has that tab's window as its current one,
+//!     not the focused one;
 //! 15. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
