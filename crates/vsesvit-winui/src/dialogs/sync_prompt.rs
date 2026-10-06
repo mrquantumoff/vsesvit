@@ -8,6 +8,7 @@ use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use vsesvit_sync::Encryption;
 use vsesvit_sync::status::{OFFER, PassphraseDialog, Prompt, State, passphrase_dialog, prompt};
 use windows_core::{Interface, Result};
@@ -64,9 +65,10 @@ pub(crate) fn follow(browser: &Rc<Browser>) {
     });
 }
 
-/// Shows, keeps or closes the prompt as the sync state now asks.
+/// Shows, keeps or closes the prompt as the sync state now asks, over a normal window: never a
+/// private one.
 pub(crate) fn update(browser: &Browser) {
-    let windows = browser.windows();
+    let windows = browser.windows_of(Browsing::Normal);
     let slot = &browser.sync_prompt().shown;
     let shown = slot.borrow().clone().filter(|shown| {
         shown
@@ -100,16 +102,18 @@ pub(crate) fn update(browser: &Browser) {
 }
 
 /// Settings' Enter Passphrase…: the prompt asking for it, brought forward, or shown over
-/// `window`.
+/// `window`, or the last normal window when that is private.
 pub(crate) fn enter_passphrase(browser: &Browser, window: Option<Rc<BrowserWindow>>) {
     let shown = browser.sync_prompt().shown.borrow().clone();
     let host = match shown {
         Some(shown) => shown.window.upgrade(),
         None => {
-            let windows = browser.windows();
+            let windows = browser.windows_of(Browsing::Normal);
             let held = windows.iter().any(|w| w.has_dialog());
             let state = browser.sync().state();
-            let window = window.or_else(|| windows.last().cloned());
+            let window = window
+                .filter(|w| w.browsing() == Browsing::Normal)
+                .or_else(|| windows.last().cloned());
             if let (Step::Show(asks), Some(window)) = (step(&state, true, None, held), &window) {
                 show(window, asks);
             }

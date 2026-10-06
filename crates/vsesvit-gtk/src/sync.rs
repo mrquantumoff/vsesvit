@@ -15,6 +15,7 @@ use gtk::{gio, glib};
 use vsesvit_core::Profile;
 use vsesvit_core::crdt::Seq;
 use vsesvit_core::prefs::keys;
+use vsesvit_core::private::Browsing;
 use vsesvit_sync::status::{self, Action, Prompt, State};
 use vsesvit_sync::{Account, Encryption, Error, Http, MAX_ROUNDS, Passphrase, PassphraseJob, Round, SignIn};
 
@@ -197,15 +198,15 @@ impl Syncer {
         });
     }
 
-    /// Shows the prompt the state asks for over the active browser window and runs it to its
-    /// end, then the next one. `asked` (Settings' Enter Passphrase…) shows it while a welcome is
-    /// open too.
+    /// Shows the prompt the state asks for over the active normal window, never a private one,
+    /// and runs it to its end, then the next one. `asked` (Settings' Enter Passphrase…) shows it
+    /// while a welcome is open too.
     fn prompt(&self, asked: bool) {
         let Some(browser) = self.browser() else { return };
         let offered = browser.pref(&keys::SYNC_PASSPHRASE_OFFERED);
         let welcome = !asked && self.0.welcomes.get() > 0;
         let Some(prompt) = prompt_due(&self.0.state.borrow(), offered, self.0.prompting.get(), welcome) else { return };
-        let Some(window) = browser.windows().into_iter().next() else { return };
+        let Some(window) = browser.windows_of(Browsing::Normal).into_iter().next() else { return };
         self.0.prompting.set(true);
         let syncer = self.clone();
         glib::spawn_future_local(async move {
