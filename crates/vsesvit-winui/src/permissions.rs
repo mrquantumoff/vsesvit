@@ -30,11 +30,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use vsesvit_core::Url;
-use vsesvit_core::private::Browsing;
 use vsesvit_core::permissions::{
     Answer, Capturing, Decision, Origin, Permission, Prompt, Setting, SiteSetting, TabGrants,
     prompt,
 };
+use vsesvit_core::private::Browsing;
 use windows_core::{Interface, Result};
 
 use crate::bindings::*;

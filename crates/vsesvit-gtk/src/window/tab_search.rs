@@ -1,8 +1,8 @@
 //! Tab search (Chrome's Ctrl+Shift+A): a popover with a search entry over the open tabs of
 //! every window and the recently closed ones, of the window's kind only (normal or private),
-//! listed again from core on every edit. The first
-//! row is selected; Up and Down move the selection, wrapping around at the ends, Enter or a
-//! click goes to the row's tab, and Escape closes the popover.
+//! listed again from core on every edit. The first row is selected; Up and Down move the
+//! selection, wrapping around at the ends, Enter or a click goes to the row's tab, and Escape
+//! closes the popover.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};

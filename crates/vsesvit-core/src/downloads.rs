@@ -100,10 +100,6 @@ impl PrivateDownloads {
     pub(crate) fn forget(&mut self) {
         self.rows.clear();
     }
-
-    fn row(&mut self, id: DownloadId) -> Option<&mut Download> {
-        self.rows.iter_mut().find(|d| d.id == id)
-    }
 }
 
 impl Downloads<'_> {
@@ -144,7 +140,7 @@ impl Downloads<'_> {
     pub fn finish(&mut self, id: DownloadId, state: State, received: u64, total: Option<u64>) -> Result<(), Error> {
         debug_assert_ne!(state, State::InProgress, "finish takes a final state");
         if id.is_private() {
-            if let Some(d) = self.p.private.downloads.row(id) {
+            if let Some(d) = self.p.private.downloads.rows.iter_mut().find(|d| d.id == id) {
                 (d.state, d.received, d.total) = (state, received, total);
             }
             return Ok(());

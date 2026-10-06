@@ -174,7 +174,7 @@ fn private_downloads_are_listed_with_the_others_until_the_session_ends() {
     let mut dl = p.downloads();
     let stored_old = dl.start("https://old.example/", path, None, T0, Normal).unwrap();
     let private_a = dl.start("https://a.example/", path, None, T0 + 1, Private).unwrap();
-        let private_b = dl.start("https://b.example/", path, Some(5), T0 + 2, Private).unwrap();
+    let private_b = dl.start("https://b.example/", path, Some(5), T0 + 2, Private).unwrap();
     let private_c = dl.start("https://c.example/", path, Some(5), T0 + 2, Private).unwrap();
     let stored_new = dl.start("https://new.example/", path, None, T0 + 3, Normal).unwrap();
     assert!(private_a.id.0 < 0 && private_b.id.0 < 0 && stored_old.id.0 > 0);

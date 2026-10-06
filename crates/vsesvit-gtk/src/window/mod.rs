@@ -33,7 +33,6 @@ use vsesvit_core::new_tab;
 use vsesvit_core::permissions::{Answer, Permission};
 use vsesvit_core::prefs::TabsPosition;
 use vsesvit_core::private::Browsing;
-use vsesvit_webext::ActionInfo;
 use webkit::prelude::*;
 
 use crate::address_bar::{AddressBar, Anchor};
@@ -931,14 +930,13 @@ impl BrowserWindow {
     /// private window has only those of the extensions allowed there.
     pub(crate) fn refresh_extension_actions(&self) {
         let browser = self.browser();
-        let actions: Vec<ActionInfo> = browser
+        let actions: Vec<_> = browser
             .extension_actions()
             .into_iter()
             .filter(|action| browser.runtime().runs_in(&action.extension, self.browsing()))
             .collect();
         let available: Vec<String> = actions.iter().map(|a| a.extension.as_str().to_owned()).collect();
-        let pinned: Vec<ExtensionId> = self
-            .browser()
+        let pinned: Vec<ExtensionId> = browser
             .extension_toolbar(&available)
             .pinned
             .iter()

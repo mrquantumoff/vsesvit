@@ -2,10 +2,9 @@
 //!
 //! Every tab hands its `DownloadStarting` here. The file goes to the download folder under a
 //! name no file or running download has, or where the user says when they asked to be asked;
-//! core records the start and the outcome, a private window's in its private session. Byte counts
-//! stay in memory while a download runs.
-//! Views subscribe while they are open, and every window's toolbar shows the downloads button
-//! once a download started this session.
+//! core records the start and the outcome, a private window's in its private session. Byte
+//! counts stay in memory while a download runs. Views subscribe while they are open, and every
+//! window's toolbar shows the downloads button once a download started this session.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

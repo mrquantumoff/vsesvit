@@ -123,7 +123,7 @@ pub(super) async fn private_window(
         "tab search lists it in a normal window {normal_lists}, in the private one {private_lists}"
     ));
 
-    let closed_before: HashSet<_> = closed_in(browser, Browsing::Normal);
+    let closed_before = closed_in(browser, Browsing::Normal);
     private.close_tab(tab.id);
     until(p, |p| {
         p.observe("the private window is still open");
