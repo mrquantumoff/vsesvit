@@ -38,6 +38,9 @@ const SITE: &[(&str, &str, &[u8])] = &[
     site_file!("cookies.html", "text/html; charset=utf-8"),
     // The frame `cookies.html` embeds.
     site_file!("cookie-frame.html", "text/html; charset=utf-8"),
+    // A page whose images say which of the extension harness's declarativeNetRequest rules
+    // blocked them.
+    site_file!("dnr.html", "text/html; charset=utf-8"),
     site_file!("download.bin", "application/octet-stream"),
     // A page that declares its icon, for favicon fetching.
     (

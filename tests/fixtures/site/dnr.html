@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>DNR</title></head>
+<body style="font: 16px system-ui; margin: 32px">
+  <h1>declarativeNetRequest fixture</h1>
+  <p>The extension harness loads this page with <code>?run=name</code> after changing the test extension's rules. Each image
+  below asks for <code>/dnr/name/&lt;kind&gt;.png</code>, so the fixture server shows which a content blocker let through. The
+  title becomes <code>done:name</code> once every image has loaded or failed.</p>
+  <script>
+    const run = new URLSearchParams(location.search).get('run');
+    const kinds = ['static', 'extra', 'dynamic', 'session', 'browser'];
+    let left = kinds.length;
+    const settled = () => { if (--left === 0) document.title = 'done:' + run; };
+    for (const kind of kinds) {
+      const img = new Image(16, 16);
+      img.onload = img.onerror = settled;
+      img.src = '/dnr/' + run + '/' + kind + '.png';
+      document.body.append(img);
+    }
+  </script>
+</body>
+</html>

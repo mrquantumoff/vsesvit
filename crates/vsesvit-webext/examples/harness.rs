@@ -97,8 +97,8 @@ mod linux {
     use vsesvit_webext::menus::{Entry, ItemId, Target};
     use vsesvit_webext::notifications::{Activation, Priority, Shown};
     use vsesvit_webext::{Gate, LoadReason, Runtime, TabHost, TabId, TabInfo};
-    use webkit::glib;
     use webkit::prelude::*;
+    use webkit::{gio, glib};
 
     const TIMEOUT: Duration = Duration::from_secs(20);
     const TWIN_ID: &str = "twin@vsesvit.test";
@@ -107,6 +107,7 @@ mod linux {
     const MENUS_ID: &str = "menus@vsesvit.test";
     const COMMANDS_ID: &str = "commands@vsesvit.test";
     const NOTIFICATIONS_ID: &str = "notifications@vsesvit.test";
+    const DNR_ID: &str = "dnr@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -160,6 +161,8 @@ mod linux {
         write_xpi(&commands_xpi, &fixture_files("commands"));
         let notifications_xpi = out_dir.join("notifications.xpi");
         write_xpi(&notifications_xpi, &fixture_files("notifications"));
+        let dnr_xpi = out_dir.join("dnr.xpi");
+        write_xpi(&dnr_xpi, &fixture_files("dnr"));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -175,7 +178,9 @@ mod linux {
         assert_eq!(commands.id.as_str(), COMMANDS_ID);
         let notifications = install(&profile, &notifications_xpi);
         assert_eq!(notifications.id.as_str(), NOTIFICATIONS_ID);
-        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications] {
+        let dnr = install(&profile, &dnr_xpi);
+        assert_eq!(dnr.id.as_str(), DNR_ID);
+        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -203,6 +208,8 @@ mod linux {
             classic_id: classic.id.clone(),
             commands_id: commands.id.clone(),
             notifications_id: notifications.id.clone(),
+            dnr,
+            out_dir: out_dir.clone(),
             window: window.clone(),
             results: RefCell::new(Vec::new()),
         };
@@ -247,6 +254,8 @@ mod linux {
         classic_id: ExtensionId,
         commands_id: ExtensionId,
         notifications_id: ExtensionId,
+        dnr: InstalledExtension,
+        out_dir: PathBuf,
         window: gtk::Window,
         results: RefCell<Vec<(&'static str, bool)>>,
     }
@@ -311,7 +320,10 @@ mod linux {
             // 9. notifications
             self.notifications().await;
 
-            // 10. lifecycle events
+            // 10. declarativeNetRequest dynamic and session rules
+            self.declarative_net_request().await;
+
+            // 11. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -952,6 +964,149 @@ mod linux {
             let mut profile = self.profile.borrow_mut();
             let items = profile.ext_storage().get(&self.notifications_id, Area::Local, Some(&["log".to_owned()])).unwrap_or_default();
             items.get("log").and_then(Value::as_array).cloned().unwrap_or_default()
+        }
+
+        async fn declarative_net_request(&self) {
+            // The shell's own content blockers (tracking protection, cookie rules) share each
+            // tab's manager with the extensions'; this one blocks every run's browser.png.
+            let ucm = self.runtime.user_content_manager(self.tab);
+            let store = webkit::UserContentFilterStore::new(&self.out_dir.join("browser-filters").to_string_lossy());
+            let compiled = Rc::new(RefCell::new(None));
+            let slot = compiled.clone();
+            let json = r#"[{"trigger": {"url-filter": "/browser\\.png"}, "action": {"type": "block"}}]"#;
+            store.save("vsesvit-tracking-protection", &glib::Bytes::from_static(json.as_bytes()), None::<&gio::Cancellable>, move |r| *slot.borrow_mut() = Some(r));
+            let browser_filter = match wait_for_value(|| compiled.borrow_mut().take(), TIMEOUT).await {
+                Some(Ok(filter)) => filter,
+                other => {
+                    self.note("dnr_enabled_rulesets", false, format!("the browser's blocker did not compile: {other:?}"));
+                    return;
+                }
+            };
+            ucm.add_filter(&browser_filter);
+
+            let id = self.dnr.id.clone();
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("dnr_enabled_rulesets", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit DNR"), TIMEOUT).await;
+            let mut runs = Vec::new();
+            let fixed = self.dnr_run("start").await;
+            runs.push(fixed.clone());
+            self.note("dnr_static_rulesets", fixed == ["dynamic", "extra", "session"], format!("loaded {fixed:?}: base blocks static.png, extra is off"));
+
+            let enabled = self
+                .eval_async(
+                    &popup,
+                    r#"const d = chrome.declarativeNetRequest;
+                    const before = await d.getEnabledRulesets();
+                    await d.updateEnabledRulesets({ disableRulesetIds: ["base"], enableRulesetIds: ["extra"] });
+                    let refused;
+                    try { await d.updateEnabledRulesets({ enableRulesetIds: ["nope"] }); } catch (e) { refused = e.message; }
+                    return { before, after: await d.getEnabledRulesets(), refused, available: await d.getAvailableStaticRuleCount(), limit: d.MAX_NUMBER_OF_ENABLED_STATIC_RULESETS };"#,
+                )
+                .await;
+            let swapped = self.dnr_run("swapped").await;
+            runs.push(swapped.clone());
+            let expected = serde_json::json!({ "before": ["base"], "after": ["extra"], "refused": "Invalid ruleset id: nope.", "available": 329_999, "limit": 50 });
+            self.note("dnr_enabled_rulesets", enabled.as_ref() == Some(&expected) && swapped == ["dynamic", "session", "static"], format!("{enabled:?}; then loaded {swapped:?}"));
+
+            let added = self
+                .eval_async(
+                    &popup,
+                    r#"const d = chrome.declarativeNetRequest;
+                    const block = (id, path) => ({ id, action: { type: "block" }, condition: { urlFilter: path, resourceTypes: ["image"] } });
+                    await d.updateDynamicRules({ addRules: [block(1, "/dynamic.png")] });
+                    await new Promise((resolve) => d.updateSessionRules({ addRules: [block(1, "/session.png")] }, resolve));
+                    let refused;
+                    try { await d.updateDynamicRules({ addRules: [block(1, "/again.png")] }); } catch (e) { refused = e.message; }
+                    return { dynamic: await d.getDynamicRules(), session: (await d.getSessionRules({ ruleIds: [1, 2] })).map((r) => r.condition.urlFilter), refused };"#,
+                )
+                .await;
+            let blocked = self.dnr_run("added").await;
+            runs.push(blocked.clone());
+            let expected = serde_json::json!({
+                "dynamic": [{ "id": 1, "priority": 1, "action": { "type": "block" }, "condition": { "urlFilter": "/dynamic.png", "resourceTypes": ["image"] } }],
+                "session": ["/session.png"],
+                "refused": "Rule with id 1 does not have a unique ID.",
+            });
+            self.note("dnr_dynamic_and_session_rules", added.as_ref() == Some(&expected) && blocked == ["static"], format!("{added:?}; then loaded {blocked:?}"));
+
+            // uBlock Origin Lite's "no filtering" on a site, then everywhere but that site.
+            let site = self
+                .eval_async(&popup, r#"await chrome.declarativeNetRequest.updateDynamicRules({ addRules: [{ id: 2, priority: 2000000, action: { type: "allowAllRequests" }, condition: { requestDomains: ["127.0.0.1"], resourceTypes: ["main_frame"] } }] }); return "allowed";"#)
+                .await;
+            let allowed = self.dnr_run("site-off").await;
+            runs.push(allowed.clone());
+            let reverse = self
+                .eval_async(&popup, r#"await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [2], addRules: [{ id: 2, priority: 2000000, action: { type: "allowAllRequests" }, condition: { excludedRequestDomains: ["127.0.0.1"], resourceTypes: ["main_frame"] } }] }); return "reversed";"#)
+                .await;
+            let elsewhere = self.dnr_run("site-on").await;
+            runs.push(elsewhere.clone());
+            let removed = self.eval_async(&popup, r#"await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [2] }); return "removed";"#).await;
+            let toggle_ok = (site, reverse, removed) == (Some(serde_json::json!("allowed")), Some(serde_json::json!("reversed")), Some(serde_json::json!("removed")))
+                && allowed == ["dynamic", "extra", "session", "static"]
+                && elsewhere == ["static"];
+            self.note("dnr_allow_all_requests_for_a_site", toggle_ok, format!("with the site's rule loaded {allowed:?}; with every other site's, {elsewhere:?}"));
+
+            let regex = self
+                .eval_async(&popup, r#"const d = chrome.declarativeNetRequest; return [await d.isRegexSupported({ regex: "^https?://[a-z]+\.test/" }), await d.isRegexSupported({ regex: "ads|track" })];"#)
+                .await;
+            let regex_ok = regex == Some(serde_json::json!([{ "isSupported": true }, { "isSupported": false, "reason": "syntaxError" }]));
+            self.note("dnr_is_regex_supported", regex_ok, format!("{regex:?}"));
+
+            let session = self
+                .eval_async(
+                    &popup,
+                    r#"const changed = new Promise((resolve) => chrome.storage.onChanged.addListener((changes, area) => area === "session" && resolve(changes.toggle.newValue)));
+                    await chrome.storage.session.set({ toggle: "off" });
+                    return { changed: await changed, items: await chrome.storage.session.get(null) };"#,
+                )
+                .await;
+
+            // A restart keeps the dynamic rules and the rulesets the extension chose, and drops
+            // the session rules and storage.
+            self.runtime.unload(&id);
+            if let Err(e) = self.runtime.load(&self.dnr) {
+                self.note("dnr_rules_kept", false, format!("load: {e}"));
+                return;
+            }
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("dnr_rules_kept", false, "no popup view after the restart");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit DNR"), TIMEOUT).await;
+            let kept = self
+                .eval_async(
+                    &popup,
+                    r#"const d = chrome.declarativeNetRequest;
+                    return { dynamic: (await d.getDynamicRules()).map((r) => r.id), session: await d.getSessionRules(), enabled: await d.getEnabledRulesets(), storage: await chrome.storage.session.get(null) };"#,
+                )
+                .await;
+            let restarted = self.dnr_run("restarted").await;
+            runs.push(restarted.clone());
+            let kept_ok = kept == Some(serde_json::json!({ "dynamic": [1], "session": [], "enabled": ["extra"], "storage": {} })) && restarted == ["session", "static"];
+            self.note("dnr_rules_kept", kept_ok, format!("after a restart: {kept:?}; loaded {restarted:?}"));
+            let session_ok = session == Some(serde_json::json!({ "changed": "off", "items": { "toggle": "off" } })) && kept.as_ref().is_some_and(|k| k["storage"] == serde_json::json!({}));
+            self.note("storage_session", session_ok, format!("{session:?}; after the restart: {:?}", kept.as_ref().map(|k| &k["storage"])));
+
+            let unblocked = runs.iter().any(|run| run.iter().any(|kind| kind == "browser"));
+            self.note("dnr_coexists_with_browser_blockers", !unblocked && runs.len() == 6, format!("loaded per run: {runs:?}"));
+            ucm.remove_filter(&browser_filter);
+        }
+
+        /// Loads the declarativeNetRequest fixture page as `run` in the first tab, once the
+        /// rules changed so far are on it, and returns which of its images reached the server.
+        async fn dnr_run(&self, run: &str) -> Vec<String> {
+            self.view.load_uri(&self.url(&format!("/dnr.html?run={run}")));
+            let done = format!("done:{run}");
+            wait_until(|| self.view.title().as_deref() == Some(done.as_str()), TIMEOUT).await;
+            let prefix = format!("/dnr/{run}/");
+            let mut loaded: Vec<String> = self.server.hits().iter().filter_map(|p| p.strip_prefix(&prefix)?.strip_suffix(".png").map(str::to_owned)).collect();
+            loaded.sort();
+            loaded
         }
 
         async fn lifecycle(&self) {

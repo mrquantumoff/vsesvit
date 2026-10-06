@@ -1,0 +1,1 @@
+[{ "id": 1, "action": { "type": "block" }, "condition": { "urlFilter": "/extra.png", "resourceTypes": ["image"] } }]

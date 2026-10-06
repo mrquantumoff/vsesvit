@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Vsesvit DNR",
+  "version": "1.0.0",
+  "description": "Test extension for declarativeNetRequest dynamic and session rules.",
+  "browser_specific_settings": { "gecko": { "id": "dnr@vsesvit.test" } },
+  "permissions": ["declarativeNetRequest", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "action": { "default_title": "Vsesvit DNR", "default_popup": "popup.html" },
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "base", "enabled": true, "path": "base.json" },
+      { "id": "extra", "enabled": false, "path": "extra.json" }
+    ]
+  }
+}
