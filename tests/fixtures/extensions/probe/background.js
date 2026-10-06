@@ -146,6 +146,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// A cookie for the page the self-test is on: set ("set"), then removed ("remove"), with the
+// onChanged events in between.
+const cookieEvents = [];
+chrome.cookies?.onChanged.addListener(({ removed, cause, cookie }) => {
+  if (cookie.name === "vsesvit-probe") cookieEvents.push([removed, cause, cookie.value]);
+});
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "cookies") return false;
+  (async () => {
+    const url = sender.tab.url;
+    if (message.want === "set") {
+      cookieEvents.length = 0;
+      const cookie = await chrome.cookies.set({ url, name: "vsesvit-probe", value: "1" });
+      const stores = await chrome.cookies.getAllCookieStores();
+      return { cookie: [cookie.name, cookie.value, cookie.domain, cookie.storeId], inStore: stores.some((s) => s.id === "0" && s.tabIds.includes(sender.tab.id)) };
+    }
+    await chrome.cookies.remove({ url, name: "vsesvit-probe" });
+    const left = await chrome.cookies.get({ url, name: "vsesvit-probe" });
+    for (let i = 0; i < 50 && cookieEvents.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    return { left, events: cookieEvents.splice(0) };
+  })().then(sendResponse, (e) => sendResponse({ error: String(e?.message ?? e) }));
+  return true;
+});
+
 if (chrome.notifications) {
   const notified = (event) => chrome.storage.local.set({ notification: { ...event, at: Date.now() } });
   chrome.notifications.onClicked.addListener((id) => notified({ event: "clicked", id }));

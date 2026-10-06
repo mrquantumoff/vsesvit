@@ -77,7 +77,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 56] = [
+const CHECKS: [&str; 57] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -91,6 +91,7 @@ const CHECKS: [&str; 56] = [
     "dynamic_content_script",
     "extension_windows",
     "extension_web_navigation",
+    "extension_cookies",
     "bookmark",
     "star_bubble",
     "bookmark_export",
@@ -604,6 +605,32 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             return Err(format!("after a reload the probe heard {heard}, expected {expected}"));
         }
         Ok(format!("a reload fired the page's onBeforeNavigate, onCommitted (reload), onDOMContentLoaded and onCompleted in the probe, and getAllFrames lists its one frame: {heard}"))
+    })
+    .await;
+
+    ctx.check("extension_cookies", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        let view = tab.web_view();
+        let ask = async |want: &str| {
+            let request = format!("delete document.documentElement.dataset.vsesvitProbeCookies; document.documentElement.dataset.vsesvitCookies = '{want}'");
+            eval_js(view, &request).await?;
+            let answer = wait_js(&last, view, "String(document.documentElement.dataset.vsesvitProbeCookies)", |seen| seen != "undefined").await;
+            serde_json::from_str::<serde_json::Value>(&answer).map_err(|e| format!("asked to {want}, the probe answered {answer}: {e}"))
+        };
+        let host = index_url.host_str().unwrap_or_default();
+        let set = ask("set").await?;
+        let expected = serde_json::json!({ "cookie": ["vsesvit-probe", "1", host, "0"], "inStore": true });
+        if set != expected {
+            return Err(format!("asked to set a cookie, the probe answered {set}, expected {expected}"));
+        }
+        wait_js(&last, view, "String(document.cookie.split('; ').includes('vsesvit-probe=1'))", |s| s == "true").await;
+        let removed = ask("remove").await?;
+        let expected = serde_json::json!({ "left": null, "events": [[false, "explicit", "1"], [true, "explicit", "1"]] });
+        if removed != expected {
+            return Err(format!("asked to remove the cookie, the probe answered {removed}, expected {expected}"));
+        }
+        wait_js(&last, view, "String(document.cookie.includes('vsesvit-probe='))", |s| s == "false").await;
+        Ok(format!("cookies.set put vsesvit-probe=1 in store 0, which lists the tab, and the page's document.cookie has it; cookies.remove took it away and onChanged reported both: {removed}"))
     })
     .await;
 

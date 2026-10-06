@@ -68,6 +68,17 @@
       root.dataset.vsesvitProbeNavigation = JSON.stringify({ error: String(e) });
     }
   }).observe(root, { attributes: true, attributeFilter: ["data-vsesvit-navigation"] });
+  // The self-test sets data-vsesvit-cookies: "set", then "remove".
+  new MutationObserver(async () => {
+    const want = root.dataset.vsesvitCookies;
+    if (!want) return;
+    delete root.dataset.vsesvitCookies;
+    try {
+      root.dataset.vsesvitProbeCookies = JSON.stringify(await chrome.runtime.sendMessage({ type: "cookies", want }));
+    } catch (e) {
+      root.dataset.vsesvitProbeCookies = JSON.stringify({ error: String(e) });
+    }
+  }).observe(root, { attributes: true, attributeFilter: ["data-vsesvit-cookies"] });
   const port = chrome.runtime.connect({ name: "probe" });
   port.onMessage.addListener((message) => {
     root.dataset.vsesvitProbePort = message;
