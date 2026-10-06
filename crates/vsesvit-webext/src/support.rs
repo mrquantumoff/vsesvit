@@ -21,6 +21,7 @@ pub const SUPPORTED_PERMISSIONS: &[&str] = &[
     "storage",
     "tabs",
     "unlimitedStorage",
+    "webNavigation",
 ];
 
 /// Top-level manifest keys that declare a surface the runtime does not build.

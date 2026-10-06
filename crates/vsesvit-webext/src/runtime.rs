@@ -24,6 +24,7 @@ use crate::messaging::Ports;
 use crate::notifications::{self, Activation, Shown};
 use crate::protocol::Sender;
 use crate::tabs::{NewTab, TabHost, TabId, TabInfo};
+use crate::web_navigation::{Event, EventKind, FrameId, Frames, Load, Report};
 use crate::windows::{self, WindowId, WindowInfo};
 use crate::{filters, patterns, scheme, views};
 
@@ -68,7 +69,13 @@ pub(crate) struct Inner {
     pub(crate) filters_waiters: RefCell<Vec<Box<dyn FnOnce()>>>,
     pub(crate) next_view: Cell<u64>,
     pub(crate) ports: RefCell<Ports<PortContext, Reply>>,
+    /// The frame script every tab gets (see [`watch_frames`]).
+    frames_script: webkit::UserScript,
 }
+
+/// The frame script's world, which no extension can share: no extension id has a colon.
+const FRAMES_WORLD: &str = "vsesvit:frames";
+const FRAMES_HANDLER: &str = "vsesvitFrames";
 
 struct TabState {
     ucm: webkit::UserContentManager,
@@ -79,6 +86,11 @@ struct TabState {
     /// Where the tab was after the last change to any tab's place; `None` until the shell
     /// first puts it in a window.
     placed: Option<(WindowId, u32)>,
+    frames: Frames,
+    /// webNavigation events from before the shell put the tab in a window.
+    held: Vec<Event>,
+    /// The tab whose page opened this one, until its first navigation says so.
+    opener: Option<TabId>,
 }
 
 impl Runtime {
@@ -108,6 +120,14 @@ impl Runtime {
             filters_waiters: RefCell::new(Vec::new()),
             next_view: Cell::new(1),
             ports: RefCell::new(Ports::default()),
+            frames_script: webkit::UserScript::for_world(
+                include_str!("js/frames.js"),
+                webkit::UserContentInjectedFrames::AllFrames,
+                webkit::UserScriptInjectionTime::Start,
+                FRAMES_WORLD,
+                &[],
+                &[],
+            ),
         });
         scheme::register(&inner);
         Runtime(inner)
@@ -212,7 +232,17 @@ impl Runtime {
         if let Some(state) = self.0.tabs.borrow().get(&tab) {
             return state.ucm.clone();
         }
-        let mut state = TabState { ucm: webkit::UserContentManager::new(), browsing, handlers: BTreeMap::new(), last: None, placed: None };
+        let mut state = TabState {
+            ucm: webkit::UserContentManager::new(),
+            browsing,
+            handlers: BTreeMap::new(),
+            last: None,
+            placed: None,
+            frames: Frames::new(tab),
+            held: Vec::new(),
+            opener: None,
+        };
+        watch_frames(&self.0, &state.ucm, tab);
         for ext in self.0.loaded_extensions().iter().filter(|ext| ext.runs_in(browsing)) {
             attach(&self.0, ext, tab, &mut state);
         }
@@ -285,6 +315,10 @@ impl Runtime {
                 for ext in self.0.loaded_extensions().into_iter().filter(|ext| ext.runs_in(info.browsing)) {
                     bridge::emit_to_pages(&self.0, &ext, "tabs.onCreated", &[ext.tab_json(&info)]);
                 }
+                self.0.place_tabs();
+                // What it loaded meanwhile.
+                self.0.navigated(tab, |_| Vec::new());
+                return;
             }
             Some(Some((window, index))) if window != info.window_id => {
                 self.0.emit_about_tab(info.browsing, "tabs.onDetached", &[json!(tab.0), json!({ "oldWindowId": window, "oldPosition": index })]);
@@ -305,6 +339,21 @@ impl Runtime {
             self.0.emit_about_tab(info.browsing, "tabs.onMoved", &[json!(tab.0), json!({ "windowId": window, "fromIndex": from, "toIndex": info.index })]);
         }
         self.0.place_tabs();
+    }
+
+    /// The shell reports each load of `tab`'s top frame, which, with what the frames' own
+    /// script says, `chrome.webNavigation` tells extensions (see [`crate::web_navigation`]).
+    pub fn tab_load(&self, tab: TabId, load: Load) {
+        self.0.navigated(tab, |frames| frames.load(load));
+    }
+
+    /// `tab` holds a page that `opener`'s page opened: a link to a new tab or window, or a
+    /// `window.open`. Report it before the shell puts the tab in a window; its first
+    /// navigation then fires `webNavigation.onCreatedNavigationTarget`.
+    pub fn tab_opened_by(&self, tab: TabId, opener: TabId) {
+        if let Some(state) = self.0.tabs.borrow_mut().get_mut(&tab) {
+            state.opener = Some(opener);
+        }
     }
 
     /// `window_closing` when the tab goes with its window, which extensions are told. A tab
@@ -520,6 +569,22 @@ pub(crate) fn reload(inner: &Rc<Inner>, id: &ExtensionId) {
     }
 }
 
+/// The frame script, in a world of its own, reports to the runtime from every frame of the
+/// tab.
+fn watch_frames(inner: &Rc<Inner>, ucm: &webkit::UserContentManager, tab: TabId) {
+    ucm.add_script(&inner.frames_script);
+    ucm.register_script_message_handler(FRAMES_HANDLER, Some(FRAMES_WORLD));
+    let weak = Rc::downgrade(inner);
+    ucm.connect_script_message_received(Some(FRAMES_HANDLER), move |_, value| {
+        let Some(inner) = weak.upgrade() else { return };
+        let text = value.to_json(0).map(String::from).unwrap_or_default();
+        match serde_json::from_str::<Report>(&text) {
+            Ok(report) => inner.navigated(tab, |frames| frames.report(&report)),
+            Err(e) => log::debug!("frame report {text}: {e}"),
+        }
+    });
+}
+
 /// Content scripts (the manifest's and the dynamic ones) in the extension's world, the
 /// page shim (default world, the extension's own documents only) and one handler for each,
 /// so an extension page the tab navigates to has its API.
@@ -644,6 +709,55 @@ impl Inner {
     pub(crate) fn open_tab(&self, url: &str) -> Option<TabId> {
         let window = self.host.windows().into_iter().find(|w| w.browsing == Browsing::Normal).map(|w| w.id);
         self.host.create_tab(&NewTab { url: url.to_owned(), active: true, window, index: None })
+    }
+
+    /// `tab`'s frames, for `read`.
+    pub(crate) fn frames<T>(&self, tab: TabId, read: impl FnOnce(&Frames) -> T) -> Option<T> {
+        self.tabs.borrow().get(&tab).map(|state| read(&state.frames))
+    }
+
+    /// The tab and frame showing the document `document_id`.
+    pub(crate) fn find_document(&self, document_id: &str) -> Option<(TabId, FrameId)> {
+        self.tabs.borrow().iter().find_map(|(tab, state)| Some((*tab, state.frames.find_document(document_id)?)))
+    }
+
+    /// Applies `change` to `tab`'s frames and fires the webNavigation events it returns, with
+    /// the ones held back, once the shell has put the tab in a window, so that
+    /// `tabs.onCreated` comes first, as in Chrome. The first top-frame navigation of a tab
+    /// another one opened comes after `onCreatedNavigationTarget`.
+    pub(crate) fn navigated(&self, tab: TabId, change: impl FnOnce(&mut Frames) -> Vec<Event>) {
+        let events = {
+            let mut tabs = self.tabs.borrow_mut();
+            let Some(state) = tabs.get_mut(&tab) else { return };
+            let events = change(&mut state.frames);
+            if state.placed.is_none() {
+                state.held.extend(events);
+                return;
+            }
+            let mut ready = Vec::new();
+            for event in std::mem::take(&mut state.held).into_iter().chain(events) {
+                if event.kind == EventKind::BeforeNavigate
+                    && event.frame == FrameId::TOP
+                    && let Some(source) = state.opener.take()
+                {
+                    ready.push(Event::created_navigation_target(source, tab, event.details["url"].as_str().unwrap_or_default()));
+                }
+                ready.push(event);
+            }
+            ready
+        };
+        if events.is_empty() {
+            return;
+        }
+        let listeners: Vec<Rc<Extension>> = self.loaded_extensions().into_iter().filter(|ext| ext.has_permission("webNavigation")).collect();
+        for event in events {
+            let mut details = event.details;
+            details.insert("timeStamp".into(), json!(bridge::now_ms()));
+            let args = [Value::Object(details)];
+            for ext in &listeners {
+                bridge::emit_to_pages(self, ext, event.kind.name(), &args);
+            }
+        }
     }
 
     /// Notes where every tab now is, which the next move is told from.

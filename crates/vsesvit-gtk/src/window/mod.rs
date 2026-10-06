@@ -1213,6 +1213,9 @@ impl BrowserWindow {
     }
 
     fn insert_tab(&self, tab: &Tab, opener: Option<&Tab>, focus: Focus) {
+        if let Some(opener) = opener {
+            self.browser().runtime().tab_opened_by(tab.id(), opener.id());
+        }
         let view = &self.ui().tab_view;
         let parent = opener.and_then(|opener| self.page_of(opener));
         let page = view.add_page(tab, parent.as_ref());

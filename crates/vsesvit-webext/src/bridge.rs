@@ -30,6 +30,7 @@ use crate::notifications::{self, Activation, Priority, Shown};
 use crate::protocol::{self, Call, Dispatch, Dispatched, Method, NO_RECEIVER, Replies, Sender};
 use crate::runtime::Inner;
 use crate::tabs::{NewTab, TabId, TabInfo};
+use crate::web_navigation::FrameQuery;
 use crate::windows::{self, NewWindow, WINDOW_ID_CURRENT, WindowInfo, WindowQuery, WindowScope, WindowUpdate};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -197,6 +198,7 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         | Method::DnrGetEnabledRulesets
         | Method::DnrGetAvailableStaticRuleCount
         | Method::DnrIsRegexSupported => reply.finish(rules(ext, &call)),
+        Method::WebNavigationGetFrame | Method::WebNavigationGetAllFrames => reply.finish(web_navigation(inner, ext, &call)),
     }
 }
 
@@ -1136,9 +1138,34 @@ fn rules(ext: &Extension, call: &Call) -> Result<Option<Value>, String> {
     }))
 }
 
+// --- webNavigation ----------------------------------------------------------------------
+
+/// `webNavigation.getFrame(details)` and `getAllFrames(details)`, which answer `null` for a
+/// tab or frame that does not exist, as in Chrome.
+fn web_navigation(inner: &Inner, ext: &Extension, call: &Call) -> Result<Option<Value>, String> {
+    if !ext.has_permission("webNavigation") {
+        return Err(format!("{} requires the \"webNavigation\" permission", call.method));
+    }
+    let details = call.arg(0);
+    if call.method == Method::WebNavigationGetAllFrames {
+        let tab = TabId::from_json(&details["tabId"]).ok_or("webNavigation.getAllFrames: tabId must be an integer")?;
+        return Ok(Some(inner.frames(tab, |frames| Value::Array(frames.all_frames())).unwrap_or(Value::Null)));
+    }
+    let query = FrameQuery::parse(details)?;
+    let found = match &query {
+        FrameQuery::Frame { tab, frame } => Some((*tab, *frame)),
+        FrameQuery::Document { id, .. } => inner.find_document(id),
+    };
+    if let Some((tab, frame)) = found {
+        query.agrees(tab, frame)?;
+    }
+    let frame = found.and_then(|(tab, frame)| inner.frames(tab, |frames| frames.frame_details(frame)).flatten());
+    Ok(Some(frame.map_or(Value::Null, Value::Object)))
+}
+
 // --- alarms -----------------------------------------------------------------------------
 
-fn now_ms() -> f64 {
+pub(crate) fn now_ms() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
 }
 

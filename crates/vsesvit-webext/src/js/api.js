@@ -41,10 +41,63 @@
     removeListener(fn) { this.listeners.delete(fn); }
     hasListener(fn) { return this.listeners.has(fn); }
     hasListeners() { return this.listeners.size > 0; }
+    accepts() { return true; }
     dispatch(...args) {
       for (const fn of Array.from(this.listeners)) {
+        if (!this.accepts(fn, ...args)) continue;
         try { fn(...args); } catch (e) { console.error("Vsesvit: listener for " + this.name + " threw", e); }
       }
+    }
+  }
+  // An event whose listener may name `{ url: [UrlFilter, ...] }`: it then hears only the
+  // events whose `details.url` one of the filters matches. As Chrome documents for
+  // webNavigation, a filter's `schemes` and `ports` are ignored.
+  const urlTests = {
+    hostContains: (u, v) => ("." + u.host).includes(v.toLowerCase()),
+    hostEquals: (u, v) => u.host === v.toLowerCase(),
+    hostPrefix: (u, v) => u.host.startsWith(v.toLowerCase()),
+    hostSuffix: (u, v) => u.host.endsWith(v.toLowerCase()),
+    pathContains: (u, v) => u.path.includes(v),
+    pathEquals: (u, v) => u.path === v,
+    pathPrefix: (u, v) => u.path.startsWith(v),
+    pathSuffix: (u, v) => u.path.endsWith(v),
+    queryContains: (u, v) => u.query.includes(v),
+    queryEquals: (u, v) => u.query === v,
+    queryPrefix: (u, v) => u.query.startsWith(v),
+    querySuffix: (u, v) => u.query.endsWith(v),
+    urlContains: (u, v) => u.url.includes(v),
+    urlEquals: (u, v) => u.url === v,
+    urlPrefix: (u, v) => u.url.startsWith(v),
+    urlSuffix: (u, v) => u.url.endsWith(v),
+    urlMatches: (u, v) => new RegExp(v).test(u.url),
+    originAndPathMatches: (u, v) => new RegExp(v).test(u.url.split("?")[0]),
+    schemes: () => true,
+    ports: () => true,
+  };
+  // The URL without its fragment, and its parts, as Chrome matches them.
+  function urlParts(href) {
+    let parsed;
+    try { parsed = new URL(href); } catch (_) { return null; }
+    const url = parsed.href.split("#")[0];
+    return { url, host: parsed.hostname, path: parsed.pathname, query: parsed.search.slice(1) };
+  }
+  class UrlFilteredEvent extends ExtensionEvent {
+    constructor(name) { super(name); this.filters = new Map(); }
+    addListener(fn, filters) {
+      if (typeof fn !== "function") return;
+      if (filters != null) {
+        const ok = Array.isArray(filters.url) && filters.url.every((f) => f && typeof f === "object" && Object.keys(f).every((k) => k in urlTests));
+        if (!ok) throw new TypeError("Error in invocation of " + this.name + ".addListener: filters.url must be a list of events.UrlFilter");
+      }
+      super.addListener(fn);
+      this.filters.set(fn, filters == null ? null : filters.url);
+    }
+    removeListener(fn) { super.removeListener(fn); this.filters.delete(fn); }
+    accepts(fn, details) {
+      const filters = this.filters.get(fn);
+      if (!filters) return true;
+      const parts = urlParts(details && details.url);
+      return !!parts && filters.some((f) => Object.keys(f).every((k) => urlTests[k](parts, String(f[k]))));
     }
   }
 
@@ -525,6 +578,26 @@
         HeaderOperation: enumOf(["append", "set", "remove"]),
         UnsupportedRegexReason: enumOf(["syntaxError", "memoryLimitExceeded"]),
       }, config.dnr);
+    }
+    if (grantedPermissions.has("webNavigation")) {
+      const details = (args) => [args[0] || {}];
+      const values = (list) => Object.fromEntries(list.map((v) => [v.toUpperCase(), v]));
+      api.webNavigation = {
+        getFrame: bridged("webNavigation.getFrame", null, details),
+        getAllFrames: bridged("webNavigation.getAllFrames", null, details),
+        onBeforeNavigate: new UrlFilteredEvent("webNavigation.onBeforeNavigate"),
+        onCommitted: new UrlFilteredEvent("webNavigation.onCommitted"),
+        onDOMContentLoaded: new UrlFilteredEvent("webNavigation.onDOMContentLoaded"),
+        onCompleted: new UrlFilteredEvent("webNavigation.onCompleted"),
+        onErrorOccurred: new UrlFilteredEvent("webNavigation.onErrorOccurred"),
+        onCreatedNavigationTarget: new UrlFilteredEvent("webNavigation.onCreatedNavigationTarget"),
+        onReferenceFragmentUpdated: new UrlFilteredEvent("webNavigation.onReferenceFragmentUpdated"),
+        onHistoryStateUpdated: new UrlFilteredEvent("webNavigation.onHistoryStateUpdated"),
+        // Chrome fires it for a prerendered page swapped in, which WebKit has none of.
+        onTabReplaced: new ExtensionEvent("webNavigation.onTabReplaced"),
+        TransitionType: values(["link", "typed", "auto_bookmark", "auto_subframe", "manual_subframe", "generated", "start_page", "form_submit", "reload", "keyword", "keyword_generated"]),
+        TransitionQualifier: values(["client_redirect", "server_redirect", "forward_back", "from_address_bar"]),
+      };
     }
     // In extension pages only, as Chrome's default access level has it.
     storage.session = Object.assign(storageArea("session", { QUOTA_BYTES: 10485760 }), { setAccessLevel: local(() => undefined) });

@@ -21,6 +21,7 @@ use vsesvit_core::permissions::{Capturing, Origin};
 use vsesvit_core::private::Browsing;
 use vsesvit_core::session::TabId as SessionTabId;
 use vsesvit_core::{Url, view_source};
+use vsesvit_webext::web_navigation::{Load, NetError};
 use vsesvit_webext::{Gate, Runtime, TabId};
 use webkit::prelude::*;
 
@@ -640,6 +641,8 @@ impl Tab {
             #[upgrade_or]
             false,
             move |_, uri, _certificate, errors| {
+                let failed = Load::Failed(uri, NetError::CertificateInvalid);
+                tab.runtime().tab_load(tab.id(), failed);
                 if tab.https_failed() {
                     return true;
                 }
@@ -789,6 +792,16 @@ impl Tab {
                     self.notify(TabChange::Sleep);
                 }
                 imp.load.set(LoadPhase::Provisional);
+                // An error page in place of a failed load is no navigation of the page's.
+                if imp.error_page_pending.get().is_none() {
+                    let uri = self.web_view().uri().map(String::from).unwrap_or_default();
+                    let load = if event == webkit::LoadEvent::Started {
+                        Load::Started(&uri)
+                    } else {
+                        Load::Redirected(&uri)
+                    };
+                    self.runtime().tab_load(self.id(), load);
+                }
                 self.https_started(event == webkit::LoadEvent::Redirected);
             }
             webkit::LoadEvent::Committed => {
@@ -798,6 +811,11 @@ impl Tab {
                 imp.gate.borrow_mut().committed(self.runtime(), uri.as_deref().unwrap_or_default());
                 let error_page = imp.error_page_pending.take();
                 imp.error_page_shown.set(error_page);
+                if error_page.is_none() {
+                    let transition = imp.pending_transition.get().unwrap_or(Transition::Link);
+                    let load = Load::Committed(uri.as_deref().unwrap_or_default(), transition);
+                    self.runtime().tab_load(self.id(), load);
+                }
                 let commit = if error_page.is_some() {
                     Commit::ErrorPage
                 } else {
@@ -809,6 +827,9 @@ impl Tab {
             }
             webkit::LoadEvent::Finished => {
                 imp.load.set(LoadPhase::Idle);
+                if imp.error_page_shown.get().is_none() {
+                    self.runtime().tab_load(self.id(), Load::Finished);
+                }
                 // A fragment or History API navigation made while the page still loaded
                 // (images, say) was waiting for this.
                 self.check_same_document_commit();
@@ -848,6 +869,9 @@ impl Tab {
         // An error page that itself fails to load (for example under a port WebKit refuses)
         // is not replaced by another one, which would fail the same way.
         let error_page_failed = self.imp().error_page_pending.take().is_some();
+        if !error_page_failed {
+            self.runtime().tab_load(self.id(), Load::Failed(uri, NetError::of(error)));
+        }
         let benign = error.matches(webkit::NetworkError::Cancelled)
             || error.matches(webkit::PolicyError::FrameLoadInterruptedByPolicyChange)
             || error.matches(webkit::MediaError::Load);
