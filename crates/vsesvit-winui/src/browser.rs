@@ -391,7 +391,7 @@ impl Browser {
         self.config.profile_dir.clone()
     }
 
-    fn show_mode(&self) -> Show {
+    pub(crate) fn show_mode(&self) -> Show {
         if self.config.mode.is_interactive() {
             Show::Activate
         } else {
@@ -569,6 +569,10 @@ impl Browser {
 
     pub fn take_closed(&self) -> Option<ClosedTab> {
         self.closed_tabs.borrow_mut().pop()
+    }
+
+    pub fn can_reopen_closed_tab(&self) -> bool {
+        !self.closed_tabs.borrow().is_empty()
     }
 
     // ---- startup and session ----

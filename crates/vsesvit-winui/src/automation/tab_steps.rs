@@ -60,29 +60,6 @@ fn width_if_shown(tab: &Tab) -> Option<f64> {
         .flatten()
 }
 
-/// The menu's labels, a submenu's as `label > child, child`.
-fn menu_labels(window: &BrowserWindow, tab: &Tab) -> Result<Vec<String>, String> {
-    let menu = MenuFlyout::new().map_err(|e| e.to_string())?;
-    window.fill_tab_menu(tab.id, &menu);
-    let items = menu.Items().map_err(|e| e.to_string())?;
-    let label = |item: &MenuFlyoutItemBase| -> Option<String> {
-        if let Ok(item) = item.cast::<MenuFlyoutItem>() {
-            return item.Text().ok().map(|t| t.to_string());
-        }
-        let submenu = item.cast::<MenuFlyoutSubItem>().ok()?;
-        let children = submenu.Items().ok()?;
-        let children: Vec<String> = (0..children.Size().unwrap_or(0))
-            .filter_map(|i| children.GetAt(i).ok()?.cast::<MenuFlyoutItem>().ok()?.Text().ok())
-            .map(|t| t.to_string())
-            .collect();
-        Some(format!("{} > {}", submenu.Text().ok()?, children.join(", ")))
-    };
-    Ok((0..items.Size().unwrap_or(0))
-        .filter_map(|i| items.GetAt(i).ok())
-        .filter_map(|item| label(&item))
-        .collect())
-}
-
 async fn clipboard_text() -> String {
     async {
         let text = Clipboard::GetContent()?.GetTextAsync()?.await?;
@@ -212,7 +189,11 @@ pub(super) async fn run(
     })
     .await;
 
-    let labels = menu_labels(window, &media)?;
+    let labels: Vec<String> = window
+        .tab_menu_lines(media.id)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
     let others: Vec<String> = window
         .tabs_in_order()
         .iter()
@@ -223,7 +204,20 @@ pub(super) async fn run(
     steps.push(json!({
         "name": "31-tab-menu",
         "labels": labels,
-        "ok": labels == [split_with.as_str(), "Pin tab", "Unmute tab", "Copy link", "Close tab"],
+        "ok": labels == [
+            "New tab below",
+            split_with.as_str(),
+            "Move tab to new window",
+            "Reload",
+            "Duplicate",
+            "Pin tab",
+            "Unmute tab",
+            "Copy link",
+            "Close tab",
+            "Close other tabs",
+            "Close tabs below",
+            "Reopen closed tab",
+        ],
     }));
 
     window.tab_action(media.id, TabAction::Pin(true));

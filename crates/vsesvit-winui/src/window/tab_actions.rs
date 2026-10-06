@@ -1,18 +1,28 @@
-//! What a tab's context menu and the copy-link commands do: split view, pinning, muting and
-//! copying a tab's address.
+//! What a tab's context menu and the copy-link commands do: a new tab beside it, split view,
+//! moving it to a new window, reloading, duplicating, pinning, muting, copying its address,
+//! closing it or the tabs around it, and reopening a closed tab.
 //!
 //! Split view shows two tabs side by side in the page grid's outer columns. It stays while
 //! either of them is selected; selecting another tab shows that one alone until one of the pair
 //! is selected again. Dragging the divider shares the width; letting it go with a page squeezed
 //! under [`MIN_SPLIT_SHARE`] ends the split and keeps the other page. Pinned tabs lead the tab
 //! list, in the order they were pinned.
+//!
+//! WebView2's XAML control never lets its engine move to another window, so moving a tab opens
+//! its address in the new window, and duplicating one opens its address again; WebView2 cannot
+//! restore a back/forward history, so neither keeps it.
 
+use std::rc::Rc;
+
+use vsesvit_core::tab_place::TabPlace;
 use windows_core::{Interface, Result};
 
 use super::tab_menu::TabAction;
 use super::{BrowserWindow, Placement};
 use crate::bindings::*;
 use crate::omnibox::has_link;
+use crate::session::{TabPlan, WindowPlan};
+use crate::shortcuts::Command;
 use crate::tab::{Initial, Tab, TabId};
 use crate::{exec, platform, xaml};
 
@@ -71,6 +81,12 @@ impl BrowserWindow {
     pub(crate) fn tab_action(&self, id: TabId, action: TabAction) {
         let Some(tab) = self.tab(id) else { return };
         match action {
+            TabAction::NewTabNext => {
+                match self.open_tab(Initial::Blank, Placement::After(id), true, None) {
+                    Ok(_) => self.focus_address(),
+                    Err(e) => log::error!("new tab: {e}"),
+                }
+            }
             TabAction::SplitWith(other) => {
                 if other != id && self.tab(other).is_some() {
                     self.show_split(Split::new(id, other));
@@ -91,11 +107,51 @@ impl BrowserWindow {
                 self.split.set(None);
                 self.sync_selection();
             }
+            TabAction::MoveToNewWindow => self.move_to_new_window(&tab),
+            TabAction::Reload => tab.reload(),
+            TabAction::Duplicate => {
+                let plan = plan_of(&tab, None);
+                let initial = plan.url.clone().map_or(Initial::Blank, Initial::Url);
+                if let Err(e) = self.open_tab(initial, Placement::After(id), true, Some(&plan)) {
+                    log::error!("duplicate tab: {e}");
+                }
+            }
             TabAction::Pin(pinned) => self.set_pinned(&tab, pinned),
             TabAction::Mute(muted) => tab.set_muted(muted),
             TabAction::CopyLink => self.copy_link(&tab, true),
             TabAction::Close => self.close_tab(id),
+            TabAction::CloseOthers | TabAction::CloseAfter => {
+                let Some(place) = self.place_of(id) else { return };
+                let closes = if action == TabAction::CloseOthers {
+                    place.closes_others()
+                } else {
+                    place.closes_after()
+                };
+                let order = self.strip().order();
+                for &other in closes.iter().filter_map(|&i| order.get(i)) {
+                    self.close_tab(other);
+                }
+            }
+            TabAction::ReopenClosed => self.run(Command::ReopenClosedTab),
         }
+    }
+
+    /// Opens `tab`'s address in a new window, pinned if it was, and takes the tab out of this
+    /// one. It moved rather than closed, so it is not one to reopen.
+    fn move_to_new_window(&self, tab: &Rc<Tab>) {
+        let Some(browser) = self.browser() else { return };
+        if !self.place_of(tab.id).is_some_and(TabPlace::can_move_out) {
+            return;
+        }
+        let plan = WindowPlan::with_tabs(vec![plan_of(tab, Some(tab.session_id))]);
+        if let Err(e) = browser.open_window(&plan, browser.show_mode()) {
+            log::error!("move tab to new window: {e}");
+            return;
+        }
+        if let Err(e) = self.remove_tab(tab) {
+            log::warn!("move tab {}: {e}", tab.id);
+        }
+        browser.session_changed();
     }
 
     /// Shows the selected tab's web view, or both of its split view, and hides the rest.
@@ -260,6 +316,16 @@ impl BrowserWindow {
             .count()
     }
 
+    /// Where a tab is in the tab list.
+    pub(super) fn place_of(&self, id: TabId) -> Option<TabPlace> {
+        let order = self.strip().order();
+        Some(TabPlace {
+            index: order.iter().position(|t| *t == id)?,
+            count: order.len(),
+            pinned: self.pinned_count(None),
+        })
+    }
+
     /// After a drag in a tab list: pinned tabs move back in front of the others.
     pub(super) fn keep_pinned_first(&self) {
         let order = self.strip().order();
@@ -323,6 +389,18 @@ impl BrowserWindow {
             exec::sleep(COPIED_FOR).await;
             let _ = glyph.SetGlyph("\u{E8C8}");
         });
+    }
+}
+
+/// What opens `tab` again: its address (none for a blank tab), its title until the page reports
+/// one, and its pin; `id` keeps naming it in the saved session.
+fn plan_of(tab: &Tab, id: Option<vsesvit_core::session::TabId>) -> TabPlan {
+    let url = tab.session_url();
+    TabPlan {
+        url: has_link(&url).then_some(url),
+        id,
+        title: tab.state().title,
+        pinned: tab.is_pinned(),
     }
 }
 
