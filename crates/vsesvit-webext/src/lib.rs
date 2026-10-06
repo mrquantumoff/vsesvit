@@ -5,7 +5,8 @@
 //! from a custom URI scheme, and declarativeNetRequest translated to content blockers.
 //!
 //! Platform-neutral pieces compile and test everywhere: [`dnr`] (the translator),
-//! [`dnr_rules`] (the rules the declarativeNetRequest API changes),
+//! [`dnr_rules`] (the rules the declarativeNetRequest API changes), [`dynamic_scripts`]
+//! (the content scripts `scripting.registerContentScripts` adds),
 //! [`protocol`] (the JS/Rust wire format), [`messaging`] (port channels), [`menus`] (context
 //! menu items), [`notifications`] (what an extension notification shows), [`patterns`],
 //! [`mime`], [`i18n`], the tab
@@ -108,14 +109,18 @@
 //!   classic worker's `importScripts` of string literals is loaded by the page ahead of it).
 //! - Content scripts with `matches`, `exclude_matches`, `run_at`, `all_frames` and `css`,
 //!   each extension in its own isolated world (named by its id); `"world": "MAIN"` ones in
-//!   the page's world, without the extension API, as in Chrome.
+//!   the page's world, without the extension API, as in Chrome. The same for those an
+//!   extension registers (see [`dynamic_scripts`]), which run only where it has host
+//!   permissions, from the next load on, as in Chrome; the ones that persist across sessions
+//!   last until the extension is installed afresh or updated.
 //! - `chrome.*` and `browser.*` (promise and callback styles, `chrome.runtime.lastError`)
 //!   in content scripts: `runtime.sendMessage/onMessage/connect/onConnect/getURL/id/getManifest`,
 //!   `storage.local/sync` with `storage.onChanged`, `i18n`. Extension pages (background,
 //!   popup, and any of the extension's documents shown in a tab: the options page,
 //!   `tabs.create(getURL(..))`, links) additionally get
 //!   `storage.session`, `tabs.query/get/getCurrent/create/update/remove/reload/sendMessage` with
-//!   `onUpdated/onActivated/onRemoved`, `scripting.executeScript/insertCSS`,
+//!   `onUpdated/onActivated/onRemoved`, `scripting.executeScript/insertCSS/removeCSS` and
+//!   `registerContentScripts/getRegisteredContentScripts/updateContentScripts/unregisterContentScripts`,
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
 //!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
 //!   `permissions.contains/getAll`, `contextMenus` (also as Firefox's `menus`, see [`menus`]),
@@ -166,15 +171,18 @@
 //! user dismisses a notification, so it stays in `notifications.getAll` until cleared or
 //! replaced, as with Chrome on the portal; WebKit reports no content-blocker matches, so
 //! `setExtensionActionOptions` shows no count and there is no `getMatchedRules`; no
-//! `webRequest`; one runtime per process;
+//! `webRequest`; content-script CSS is a user-level style sheet (WebKitGTK ignores
+//! author-level ones on standards-mode pages), so a page's own rules beat it unless it is
+//! `!important`; a registered script's `matchOriginAsFallback` changes nothing; one runtime
+//! per process;
 //! `about:blank` frames inside extension pages get no API; in a background or popup view,
 //! an `http(s)` iframe loads only for an extension without host permissions (WebKitGTK
 //! applies the view's CORS allowlist to every frame); WebKitGTK does not say which frame
 //! requests a file, so a request without a `Referer` is judged by its view's top document:
 //! an extension frame inside a web page loads only web-accessible files (extension
 //! documents send no `Referer`), and a frame whose referrer policy sends none passes for
-//! its top document. Runtime state (compiled filters, dynamic rules, install markers) lives in
-//! `<profile>/webext/`.
+//! its top document. Runtime state (compiled filters, dynamic rules, registered content
+//! scripts, install markers) lives in `<profile>/webext/`.
 
 pub mod dnr;
 pub mod dnr_rules;
