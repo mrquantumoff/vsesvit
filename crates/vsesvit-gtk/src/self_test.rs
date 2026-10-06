@@ -33,10 +33,12 @@ use webkit::prelude::*;
 
 use crate::address_bar::Security;
 use crate::browser::Browser;
-use crate::dialogs::settings::{HTTPS_ONLY_ROW, PASSWORDS_NOTICE, SECURE_DNS_ROW, TRACKING_PROTECTION_ROW};
+use crate::dialogs::settings::{
+    HTTPS_ONLY_ROW, PASSWORDS_NOTICE, SECURE_DNS_ROW, SPELLCHECK_ROW, SPELLING_LANGUAGES_ROW, TRACKING_PROTECTION_ROW,
+};
 use crate::dialogs::site_data::SEE_ALL_ROW;
 use crate::dialogs::{Windowed, shortcut_settings};
-use crate::keymap;
+use crate::{engine, keymap, page_menu};
 use crate::tab::Tab;
 use crate::window::{BrowserWindow, Focus, classify_layout};
 
@@ -69,7 +71,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 44] = [
+const CHECKS: [&str; 45] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -98,6 +100,7 @@ const CHECKS: [&str; 44] = [
     "new_tab_page",
     "address_progress",
     "settings",
+    "spellcheck",
     "search_engines",
     "bookmarks_bar_menus",
     "ctrl_s_toggles_sidebar",
@@ -1330,6 +1333,85 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         Ok(format!(
             "engine (pop-ups, smooth, GPU) = {engine:?}; Home opened {page2_url}; Privacy shows {PASSWORDS_NOTICE:?}; home-button.png and {} written",
             shots.join(", ")
+        ))
+    })
+    .await;
+
+    ctx.check("spellcheck", CHECK_TIMEOUT, |_| async move {
+        let context = webkit::WebContext::default().ok_or_else(|| "no default web context".to_owned())?;
+        let state = || {
+            let languages = context.spell_checking_languages().iter().map(|l| l.to_string()).collect::<Vec<_>>();
+            (context.is_spell_checking_enabled(), languages)
+        };
+        // Off, the languages WebKit holds do not matter.
+        let checks = |languages: &[String]| {
+            let (on, held) = state();
+            on == !languages.is_empty() && (!on || held == languages)
+        };
+        let dictionaries = engine::dictionaries();
+        let system = dictionaries.checked(None);
+        let fresh = state();
+        if !checks(&system) {
+            return Err(format!("with {:?} installed a fresh profile checks (on, languages) = {fresh:?}, not the system's {system:?}", dictionaries.installed()));
+        }
+        browser.set_engine_switch(&keys::SPELLCHECK, false);
+        let off = state();
+        browser.set_engine_switch(&keys::SPELLCHECK, true);
+        if off.0 || !checks(&system) {
+            return Err(format!("Check Spelling off gave {off:?}, back on {:?}", state()));
+        }
+        let toggled = match dictionaries.installed().first() {
+            Some(language) => {
+                let on = !system.contains(language);
+                browser.set_spellcheck_language(language, on);
+                let chosen = dictionaries.checked(Some(&dictionaries.choose(None, language, on)));
+                let after = state();
+                let chose = checks(&chosen);
+                browser.reset_pref(&keys::SPELLCHECK_LANGUAGES);
+                browser.engine().apply_prefs(&mut browser.core().borrow_mut());
+                if !chose || !checks(&system) {
+                    return Err(format!("turning {language} on={on} gave {after:?}, not {chosen:?}; reset gave {:?}", state()));
+                }
+                format!("turning {language} on={on} checked {chosen:?}")
+            }
+            None => "no dictionary to choose".to_owned(),
+        };
+
+        let menu = webkit::ContextMenu::new();
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::IgnoreSpelling));
+        menu.append(&webkit::ContextMenuItem::from_stock_action(webkit::ContextMenuAction::LearnSpelling));
+        page_menu::name_add_to_dictionary(&menu);
+        let items: Vec<_> = menu.items().iter().map(|item| (item.stock_action(), item.title().map(String::from))).collect();
+        if items.get(1) != Some(&(webkit::ContextMenuAction::LearnSpelling, Some("_Add to Dictionary".to_owned()))) {
+            return Err(format!("the spelling items became {items:?}"));
+        }
+
+        gio::prelude::ActionGroupExt::activate_action(window, "show-settings", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .ok_or_else(|| "win.show-settings opened no preferences dialog".to_owned())?;
+        let _dialog = Cleanup(|| {
+            dialog.close();
+        });
+        dialog.set_visible_page_name("general");
+        glib::timeout_future(Duration::from_millis(500)).await;
+        let check = find::<adw::SwitchRow>(dialog.upcast_ref(), |r| r.title() == SPELLCHECK_ROW && r.is_mapped())
+            .ok_or_else(|| format!("General shows no {SPELLCHECK_ROW:?} switch"))?;
+        let languages = find::<adw::PreferencesRow>(dialog.upcast_ref(), |r| r.title() == SPELLING_LANGUAGES_ROW && r.is_mapped())
+            .ok_or_else(|| format!("General shows no {SPELLING_LANGUAGES_ROW:?} row"))?;
+        if !check.is_active() || !languages.is_sensitive() {
+            return Err(format!("{SPELLCHECK_ROW:?} is on={}, {SPELLING_LANGUAGES_ROW:?} sensitive={}", check.is_active(), languages.is_sensitive()));
+        }
+        if let Some(expander) = languages.downcast_ref::<adw::ExpanderRow>() {
+            expander.set_expanded(true);
+        }
+        languages.grab_focus();
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("settings-spell-check.png")).await.map_err(|e| e.to_string())?;
+        Ok(format!(
+            "installed {:?}; a fresh profile checks {system:?}; the switch turns it off and on; {toggled}; Learn Spelling reads Add to Dictionary; settings-spell-check.png written",
+            dictionaries.installed()
         ))
     })
     .await;
