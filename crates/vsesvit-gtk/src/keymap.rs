@@ -25,7 +25,7 @@ pub(crate) fn binding(cmd: Command) -> Option<Binding> {
         NewTab => Action("win.new-tab"),
         CloseTab => Action("win.close-tab"),
         ReopenClosedTab => Action("win.reopen-closed-tab"),
-        SearchTabs => return None,
+        SearchTabs => Action("win.search-tabs"),
         NextTab => BuiltIn("<Control>Tab"),
         PreviousTab => BuiltIn("<Control><Shift>Tab"),
         SelectTab1 | SelectTab2 | SelectTab3 | SelectTab4 | SelectTab5 | SelectTab6 | SelectTab7 | SelectTab8

@@ -1,7 +1,8 @@
 //! A browser window: the header bar with the navigation buttons at the start, the address
 //! bar in the middle, and the extension actions and the menu at the end; the tabs as a
 //! vertical list in an `AdwOverlaySplitView` sidebar (left or right) or as an `AdwTabBar` on
-//! top; the bookmarks bar, the find bar, and the tab view holding one web view per tab.
+//! top, each with a Search Tabs button; the bookmarks bar, the find bar, and the tab view
+//! holding one web view per tab.
 
 mod actions;
 mod ext_actions;
@@ -9,6 +10,7 @@ mod layout;
 mod menu;
 mod tab_list;
 mod tab_menu;
+mod tab_search;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
@@ -16,7 +18,7 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 use vsesvit_core::bookmarks::BookmarkNode;
 use vsesvit_core::clean_url;
 use vsesvit_core::extensions::ExtensionId;
@@ -46,6 +48,7 @@ use layout::Layout;
 #[cfg(feature = "self-test")]
 use layout::Rect;
 use tab_list::TabList;
+pub(crate) use tab_search::TabSearch;
 
 #[cfg(feature = "self-test")]
 pub(crate) use layout::{LayoutProbe, classify as classify_layout};
@@ -81,8 +84,8 @@ struct Ui {
     downloads_button: gtk::Button,
     tab_view: adw::TabView,
     tab_bar: adw::TabBar,
-    /// Held because only it owns the list's rows.
-    #[cfg_attr(not(any(test, feature = "self-test")), allow(dead_code))]
+    /// Search Tabs at the end of the tab bar, after the tabs.
+    tab_bar_search: gtk::Button,
     tab_list: TabList,
     split: adw::OverlaySplitView,
     bookmarks_bar: BookmarksBar,
@@ -120,6 +123,7 @@ mod imp {
         pub(super) prompt: RefCell<Option<ShownPrompt>>,
         pub(super) fullscreen_notice_timeout: RefCell<Option<glib::SourceId>>,
         pub(super) tab_menu: tab_menu::TabMenu,
+        pub(super) tab_search: RefCell<Option<TabSearch>>,
     }
 
     #[glib::object_subclass]
@@ -232,6 +236,9 @@ impl BrowserWindow {
             .autohide(false)
             .build();
         let tab_list = TabList::new(&tab_view);
+        let tab_bar_search = icon_button("system-search-symbolic", "win.search-tabs", "Search Tabs");
+        tab_bar_search.add_css_class("flat");
+        tab_bar.set_end_action_widget(Some(&tab_bar_search));
 
         let address = AddressBar::new();
         let title = adw::Clamp::builder().hexpand(true).child(&address).build();
@@ -327,6 +334,7 @@ impl BrowserWindow {
             downloads_button,
             tab_view,
             tab_bar,
+            tab_bar_search,
             tab_list,
             split,
             bookmarks_bar,
@@ -449,6 +457,14 @@ impl BrowserWindow {
             move |_, _, _, _| window.clicked_while_prompting()
         ));
         self.add_controller(clicks);
+
+        self.connect_is_active_notify(|window| {
+            if window.is_active()
+                && let Some(tab) = window.selected_tab()
+            {
+                window.browser().tab_used(&tab);
+            }
+        });
 
         self.connect_fullscreened_notify(|window| {
             window
@@ -768,6 +784,51 @@ impl BrowserWindow {
     #[cfg(feature = "self-test")]
     pub(crate) fn tab_row_buttons(&self, tab: &Tab) -> Option<(bool, bool)> {
         self.ui().tab_list.row_buttons(&self.page_of(tab)?)
+    }
+
+    /// Ctrl+Shift+A and the Search Tabs buttons: opens tab search, or closes it if open. It
+    /// opens from the Search Tabs button on screen, else from the sidebar's toggle, else (full
+    /// screen) from the top of the page.
+    pub(crate) fn toggle_tab_search(&self) {
+        if let Some(open) = self.imp().tab_search.take() {
+            open.close();
+            return;
+        }
+        let search = TabSearch::new(self);
+        search.popover().connect_closed(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |popover| {
+                let mut open = window.imp().tab_search.borrow_mut();
+                if open.as_ref().is_some_and(|search| search.popover() == popover) {
+                    open.take();
+                }
+            }
+        ));
+        let ui = self.ui();
+        // A sidebar sliding away is still on screen for a moment.
+        let sidebar = ui.split.shows_sidebar().then(|| ui.tab_list.search_button().upcast_ref::<gtk::Widget>());
+        let buttons = [sidebar, Some(ui.tab_bar_search.upcast_ref()), Some(ui.sidebar_toggle.upcast_ref())];
+        match buttons.into_iter().flatten().find(|button| button.is_mapped()) {
+            Some(button) => search.open(button, None),
+            None => {
+                let page: &gtk::Widget = ui.toasts.upcast_ref();
+                search.open(page, Some(&gdk::Rectangle::new(page.width() / 2, 0, 1, 1)));
+            }
+        }
+        self.imp().tab_search.replace(Some(search));
+    }
+
+    /// Tab search while it is open.
+    #[cfg(feature = "self-test")]
+    pub(crate) fn tab_search(&self) -> Option<TabSearch> {
+        self.imp().tab_search.borrow().clone()
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn tab_search_buttons(&self) -> (gtk::Widget, gtk::Widget) {
+        let ui = self.ui();
+        (ui.tab_list.search_button().clone().upcast(), ui.tab_bar_search.clone().upcast())
     }
 
     // Extension actions.

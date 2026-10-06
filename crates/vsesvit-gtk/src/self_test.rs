@@ -41,7 +41,7 @@ use crate::dialogs::site_data::SEE_ALL_ROW;
 use crate::dialogs::{Windowed, shortcut_settings};
 use crate::{engine, keymap, page_menu};
 use crate::tab::Tab;
-use crate::window::{BrowserWindow, Focus, classify_layout};
+use crate::window::{BrowserWindow, Focus, TabSearch, classify_layout};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 /// The Web Store install downloads about 10 MB; it gets longer than the default.
@@ -72,7 +72,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 49] = [
+const CHECKS: [&str; 50] = [
     "profile_open",
     "install_crx",
     "engine_loaded_extension",
@@ -91,6 +91,7 @@ const CHECKS: [&str; 49] = [
     "tab_animation",
     "tab_layout",
     "tab_menu",
+    "tab_search",
     "popup",
     "extension_toolbar",
     "context_menus",
@@ -836,6 +837,153 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             return Err(format!("after Move Tab to New Window (alone there, pinned, left alone here): {moved_tabs:?}"));
         }
         details.push("Move Tab to New Window moved it, still pinned".to_owned());
+        Ok(details.join("; "))
+    })
+    .await;
+
+    ctx.check("tab_search", CHECK_TIMEOUT, |last| async move {
+        let first = window.selected_tab().filter(|_| window.tabs().len() == 1).ok_or_else(|| "this window has not one tab".to_owned())?;
+        let media_url = ctx.server.url("/media.html?vsesvit-tab-search");
+        // Not shown until the search raises it: over this window it would keep this one from
+        // being drawn for the screenshot.
+        let other = BrowserWindow::new(browser);
+        other.open_tabs(&[page2_url.as_str(), media_url.as_str()]);
+        let _other = Cleanup(|| {
+            if browser.windows().contains(&other) {
+                other.close();
+            }
+        });
+        let (page2, media) = match other.tabs().as_slice() {
+            [page2, media] => (page2.clone(), media.clone()),
+            tabs => return Err(format!("the other window opened {} tabs", tabs.len())),
+        };
+        wait_for(&last, || match (title_of(page2.web_view()), title_of(media.web_view())) {
+            (page2, media) if page2 == "Vsesvit fixture 2" && media == "Media" => Ok(()),
+            titles => Err(format!("the other window's tabs are titled {titles:?}")),
+        })
+        .await;
+        // Selected last in its window, so listed before page2.html, which is not selected again.
+        other.select_tab(&media);
+        let open = || -> Result<TabSearch, String> {
+            gio::prelude::ActionGroupExt::activate_action(window, "search-tabs", None);
+            window.tab_search().ok_or_else(|| "win.search-tabs opened no tab search".to_owned())
+        };
+        let rows = |search: &TabSearch| -> Vec<(String, String, String)> {
+            let mut section = String::new();
+            search
+                .shown()
+                .into_iter()
+                .map(|(heading, title, site)| {
+                    if let Some(heading) = heading {
+                        section = heading;
+                    }
+                    (section.clone(), title, site)
+                })
+                .collect()
+        };
+        let row = |section: &str, title: &str| (section.to_owned(), title.to_owned(), "127.0.0.1".to_owned());
+        let mut details = Vec::new();
+
+        let accels = browser.app().accels_for_action("win.search-tabs");
+        let search = open()?;
+        let anchored = search.anchor() == Some(window.tab_search_buttons().0);
+        if !accels.iter().any(|a| gtk::accelerator_parse(a) == gtk::accelerator_parse("<Control><Shift>a")) || !anchored {
+            return Err(format!("win.search-tabs is on {accels:?}; opened on the sidebar's Search Tabs: {anchored}"));
+        }
+        search.set_query("vsesvit");
+        let found = rows(&search);
+        let headings: Vec<usize> = search.shown().iter().enumerate().filter(|(_, (h, _, _))| h.is_some()).map(|(i, _)| i).collect();
+        let by_title = [row("Open tabs", "Vsesvit fixture"), row("Open tabs", "Vsesvit fixture 2")];
+        let listed = found.len() > 3
+            && by_title.iter().all(|tab| found[..2].contains(tab))
+            && found[2] == row("Open tabs", "Media")
+            && found[3..].iter().all(|(section, _, _)| section == "Recently closed")
+            && headings == [0, 3];
+        let mut moves = vec![search.selected()];
+        for by in [1, -1, -1] {
+            search.step(by);
+            moves.push(search.selected());
+        }
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[search.popover().clone()], &ctx.out_dir.join("tab-search.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        let bottom = i32::try_from(found.len()).map_err(|e| e.to_string())? - 1;
+        if !listed || moves != [Some(0), Some(1), Some(0), Some(bottom)] {
+            return Err(format!("\"vsesvit\" lists {found:?} with headings at {headings:?}; the selection went {moves:?}"));
+        }
+        details.push(format!(
+            "Ctrl+Shift+A opened it on the sidebar's Search Tabs; \"vsesvit\" lists both fixture pages by title, then media.html by its address though used later, then the closed ones ({}) under Recently closed; Down and Up moved the selection, and Up from the top went round to the last row (tab-search.png)",
+            found.len() - 3
+        ));
+
+        search.set_query("");
+        let all = rows(&search);
+        let at = |title: &str| all.iter().position(|(section, t, _)| section == "Open tabs" && t == title);
+        let open_tabs = all.iter().filter(|(section, _, _)| section == "Open tabs").count();
+        let (media_at, page2_at) = (at("Media"), at("Vsesvit fixture 2"));
+        search.set_query("no tab is called this");
+        let nothing = (search.shown().len(), search.says_no_results());
+        if open_tabs != 3 || media_at.is_none() || page2_at.is_none() || media_at > page2_at || nothing != (0, true) {
+            return Err(format!(
+                "with no text, {open_tabs} open tabs, Media at {media_at:?}, page2.html at {page2_at:?}; with no match (rows, says No results found) {nothing:?}"
+            ));
+        }
+        details.push("with no text every tab is listed, the more recently used first; with no match it says No results found".to_owned());
+
+        search.set_query("fixture 2");
+        let top = rows(&search).first().cloned();
+        let clicked = search.click(0);
+        let switched = (other.selected_tab().as_ref() == Some(&page2), window.tabs().len(), search.is_open(), window.tab_search().is_some());
+        if top != Some(row("Open tabs", "Vsesvit fixture 2")) || !clicked || switched != (true, 1, false, false) {
+            return Err(format!(
+                "\"fixture 2\" lists {top:?} first; clicking it ({clicked}) left (selected in its window, tabs here, popover open, kept) {switched:?}"
+            ));
+        }
+        details.push("clicking page2.html's row selected it in the other window and closed the popover".to_owned());
+
+        other.close_tab(&media);
+        let search = open()?;
+        search.set_query("tab-search");
+        let closed = rows(&search);
+        search.press_enter();
+        let reopened = window.selected_tab().filter(|t| *t != first).ok_or_else(|| "Enter selected no new tab here".to_owned())?;
+        wait_for(&last, || match (reopened.committed_uri(), title_of(reopened.web_view())) {
+            (Some(uri), title) if uri == media_url.as_str() && title == "Media" => Ok(()),
+            seen => Err(format!("the reopened tab shows {seen:?}")),
+        })
+        .await;
+        let search = open()?;
+        search.set_query("tab-search");
+        let after = rows(&search);
+        gio::prelude::ActionGroupExt::activate_action(window, "search-tabs", None);
+        let toggled = (search.is_open(), window.tab_search().is_some());
+
+        let on_tab_bar = {
+            let _left = Cleanup(|| browser.set_tabs_position(TabsPosition::Left));
+            browser.set_tabs_position(TabsPosition::Top);
+            let button = window.tab_search_buttons().1;
+            wait_for(&last, || if button.is_mapped() { Ok(()) } else { Err("the tab bar's Search Tabs is not on screen".to_owned()) }).await;
+            let search = open()?;
+            gio::prelude::ActionGroupExt::activate_action(window, "search-tabs", None);
+            search.anchor() == Some(button)
+        };
+
+        window.close_tab(&reopened);
+        window.select_tab(&first);
+        other.close();
+        wait_for(&last, || match browser.windows().len() {
+            1 => Ok(()),
+            open => Err(format!("{open} windows after closing the other")),
+        })
+        .await;
+        window.present();
+        if closed != [row("Recently closed", "Media")] || after != [row("Open tabs", "Media")] || toggled != (false, false) || !on_tab_bar {
+            return Err(format!(
+                "\"tab-search\" listed {closed:?} after the close and {after:?} once Enter reopened it; after win.search-tabs again (open, kept) {toggled:?}; on the tab bar's Search Tabs: {on_tab_bar}"
+            ));
+        }
+        details.push("the closed media.html was listed under Recently closed, Enter reopened it here on its page, and it left the closed tabs; win.search-tabs again closed the popover; with tabs on top it opens on the tab bar's Search Tabs".to_owned());
         Ok(details.join("; "))
     })
     .await;

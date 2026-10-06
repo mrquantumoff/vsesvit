@@ -13,7 +13,7 @@ use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
@@ -27,12 +27,13 @@ use vsesvit_core::onboarding;
 use vsesvit_core::prefs::{Pref, Startup, TabsPosition, Theme, UpdateChannel, keys};
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
+use vsesvit_core::tab_search::{self, Listed, Row};
 use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_core::{Profile, Url};
 use vsesvit_webext::{ActionInfo, Runtime, TabHost, TabId, TabInfo};
 use webkit::prelude::*;
 
-use crate::closed_tabs::ClosedTabs;
+use crate::closed_tabs::{ClosedKey, ClosedTabs};
 use crate::cookies::Cookies;
 use crate::dialogs::Windowed;
 use crate::downloads::Downloads;
@@ -72,6 +73,9 @@ pub(crate) struct Inner {
     extension_errors: RefCell<HashMap<ExtensionId, String>>,
     next_tab_id: Cell<u32>,
     next_window_id: Cell<u32>,
+    /// The clock of tabs' use, for tab search's order: ticks each time a tab is opened or
+    /// selected, its window activated, or it is closed.
+    last_use: Cell<u64>,
     /// The pending debounced session save, if any.
     session_save: RefCell<Option<glib::SourceId>>,
     /// Set once the application has shut down: the session saved then is final.
@@ -101,13 +105,20 @@ enum FetchState {
     RunningStale,
 }
 
-/// Enough of a closed tab to bring it back with its history.
+/// Enough of a closed tab to bring it back with its history, and to find it in tab search.
 pub(crate) struct ClosedTab {
     pub(crate) uri: String,
+    pub(crate) title: String,
+    pub(crate) favicon: Option<gdk::Texture>,
     pub(crate) state: Option<webkit::WebViewSessionState>,
     pub(crate) position: i32,
     pub(crate) pinned: bool,
+    /// When it was closed, on the clock of [`Tab::used`].
+    pub(crate) used: u64,
 }
+
+/// What a tab search row leads to: an open tab, or a closed one in the stack.
+pub(crate) type TabHit = tab_search::Hit<TabId, ClosedKey>;
 
 impl Browser {
     /// Wraps an open profile. The extension runtime is created here, before any tab web
@@ -138,6 +149,7 @@ impl Browser {
                 extension_errors: RefCell::new(HashMap::new()),
                 next_tab_id: Cell::new(1),
                 next_window_id: Cell::new(1),
+                last_use: Cell::new(0),
                 session_save: RefCell::new(None),
                 shut_down: Cell::new(false),
                 favicon_fetch: Cell::new(FetchState::Idle),
@@ -394,13 +406,17 @@ impl Browser {
         let Some(uri) = tab.committed_uri().filter(|uri| uri != "about:blank") else {
             return;
         };
-        let state = tab.web_view().session_state();
-        self.0.closed_tabs.borrow_mut().push(ClosedTab {
+        let web_view = tab.web_view();
+        let closed = ClosedTab {
             uri,
-            state,
+            title: tab.display_title(),
+            favicon: web_view.favicon(),
+            state: web_view.session_state(),
             position,
             pinned,
-        });
+            used: self.tick(),
+        };
+        self.0.closed_tabs.borrow_mut().push(closed);
     }
 
     /// A tab that goes away with its window, without being closed one by one.
@@ -410,8 +426,20 @@ impl Browser {
     }
 
     pub(crate) fn tab_activated(&self, tab: &Tab) {
+        self.tab_used(tab);
         self.runtime().tab_activated(tab.id());
         self.schedule_session_save();
+    }
+
+    /// The tab was opened or selected, or its window activated: tab search lists it first now.
+    pub(crate) fn tab_used(&self, tab: &Tab) {
+        tab.set_used(self.tick());
+    }
+
+    fn tick(&self) -> u64 {
+        let now = self.0.last_use.get() + 1;
+        self.0.last_use.set(now);
+        now
     }
 
     pub(crate) fn can_reopen_closed_tab(&self) -> bool {
@@ -422,6 +450,59 @@ impl Browser {
         let closed = self.0.closed_tabs.borrow_mut().pop();
         if let Some(closed) = closed {
             window.restore_closed(&closed);
+        }
+    }
+
+    // Tab search.
+
+    /// Tab search's rows for `query`: the tabs of every window, then the closed ones, as core
+    /// narrows and orders them.
+    pub(crate) fn search_tabs(&self, query: &str) -> Vec<Row<TabId, ClosedKey>> {
+        let open = self
+            .windows()
+            .iter()
+            .flat_map(BrowserWindow::tabs)
+            .map(|tab| Listed {
+                key: tab.id(),
+                title: tab.display_title(),
+                url: tab.session_uri().unwrap_or_default(),
+                used: tab.used(),
+            })
+            .collect();
+        let closed = self
+            .0
+            .closed_tabs
+            .borrow()
+            .iter()
+            .map(|(key, tab)| Listed { key, title: tab.title.clone(), url: tab.uri.clone(), used: tab.used })
+            .collect();
+        tab_search::rows(query, open, closed)
+    }
+
+    /// The icon of the tab `hit` leads to, as its tab shows it or showed it when closed.
+    pub(crate) fn tab_icon(&self, hit: TabHit) -> Option<gdk::Texture> {
+        match hit {
+            tab_search::Hit::Open(id) => self.find_tab(id).and_then(|(_, tab)| tab.web_view().favicon()),
+            tab_search::Hit::Closed(key) => self.0.closed_tabs.borrow().get(key).and_then(|tab| tab.favicon.clone()),
+        }
+    }
+
+    /// Tab search's choice: selects an open tab in its window and raises that window, or
+    /// reopens a closed one in `window`. Nothing happens for a tab gone since it was listed.
+    pub(crate) fn go_to_tab(&self, window: &BrowserWindow, hit: TabHit) {
+        match hit {
+            tab_search::Hit::Open(id) => {
+                if let Some((owner, tab)) = self.find_tab(id) {
+                    owner.select_tab(&tab);
+                    owner.present();
+                }
+            }
+            tab_search::Hit::Closed(key) => {
+                let closed = self.0.closed_tabs.borrow_mut().take(key);
+                if let Some(closed) = closed {
+                    window.restore_closed(&closed);
+                }
+            }
         }
     }
 

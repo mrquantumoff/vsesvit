@@ -3,7 +3,8 @@
 //! Each row shows the favicon (or a spinner while loading), the title, the in-use icon
 //! while the page captures or its speaker while it plays sound, and a close button, or a
 //! pin for a pinned tab; rows can be dragged to reorder, a middle click closes a tab, and a
-//! right click, a long press or the Menu key opens the tab view's menu for it.
+//! right click, a long press or the Menu key opens the tab view's menu for it. Search Tabs
+//! heads the list and New Tab ends it.
 //!
 //! A `GtkListBox` rather than a `GtkListView`, because the list owns its rows: a new tab's
 //! row grows in, and a closed tab's row shrinks out after its page is gone. The tab view
@@ -21,6 +22,7 @@ use crate::motion;
 
 pub(crate) struct TabList {
     root: gtk::Box,
+    search: gtk::Button,
     /// Owned here; the signal handlers that update it hold it weakly.
     #[cfg_attr(not(any(test, feature = "self-test")), allow(dead_code))]
     rows: Rc<Rows>,
@@ -90,33 +92,24 @@ impl TabList {
             .child(&list)
             .build();
 
-        let new_tab = gtk::Button::builder()
-            .child(
-                &adw::ButtonContent::builder()
-                    .icon_name("tab-new-symbolic")
-                    .label("New Tab")
-                    .build(),
-            )
-            .action_name("win.new-tab")
-            .tooltip_text("New Tab")
-            .css_classes(["flat"])
-            .halign(gtk::Align::Fill)
-            .margin_start(6)
-            .margin_end(6)
-            .margin_top(6)
-            .margin_bottom(6)
-            .build();
-
+        let search = sidebar_button("system-search-symbolic", "Search Tabs", "win.search-tabs");
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("tab-sidebar");
+        root.append(&search);
+        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         root.append(&scroller);
         root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        root.append(&new_tab);
-        TabList { root, rows }
+        root.append(&sidebar_button("tab-new-symbolic", "New Tab", "win.new-tab"));
+        TabList { root, search, rows }
     }
 
     pub(crate) fn widget(&self) -> &gtk::Box {
         &self.root
+    }
+
+    /// Tab search opens from it while the sidebar shows.
+    pub(crate) fn search_button(&self) -> &gtk::Button {
+        &self.search
     }
 
     /// The rows the list shows now, `(live, leaving)`, and whether every live row has
@@ -171,6 +164,20 @@ impl TabList {
             .find(|slot| slot.page().as_ref() == Some(page))
             .map(|slot| slot.0.revealer.opacity())
     }
+}
+
+fn sidebar_button(icon: &str, label: &str, action: &str) -> gtk::Button {
+    gtk::Button::builder()
+        .child(&adw::ButtonContent::builder().icon_name(icon).label(label).build())
+        .action_name(action)
+        .tooltip_text(label)
+        .css_classes(["flat"])
+        .halign(gtk::Align::Fill)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build()
 }
 
 impl Rows {

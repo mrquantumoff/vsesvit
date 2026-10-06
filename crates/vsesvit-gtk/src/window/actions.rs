@@ -36,6 +36,9 @@ pub(super) fn install(window: &BrowserWindow) {
         ActionEntry::builder("reopen-closed-tab")
             .activate(|w: &BrowserWindow, _, _| w.browser().reopen_closed_tab(w))
             .build(),
+        ActionEntry::builder("search-tabs")
+            .activate(|w: &BrowserWindow, _, _| w.toggle_tab_search())
+            .build(),
         ActionEntry::builder("focus-location")
             .activate(|w: &BrowserWindow, _, _| w.address_bar().focus_for_typing())
             .build(),

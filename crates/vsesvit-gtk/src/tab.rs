@@ -90,6 +90,9 @@ mod imp {
         pub(super) gate: RefCell<Gate>,
         pub(super) session_id: Cell<SessionTabId>,
         pub(super) last_active_ms: Cell<i64>,
+        /// When the tab was opened, last selected or its window activated, on the browser's clock
+        /// (`Browser::tab_used`): tab search lists the most recently used tabs first.
+        pub(super) used: Cell<u64>,
         /// How the next committed navigation reached this tab, when the shell knows
         /// (typed in the address bar, chosen from bookmarks); otherwise it is a link.
         pub(super) pending_transition: Cell<Option<Transition>>,
@@ -196,6 +199,7 @@ impl Tab {
         imp.web_view.set(web_view).expect("wrap runs once");
         tab.connect_web_view();
         page_menu::attach(&tab);
+        browser.tab_used(&tab);
         tab
     }
 
@@ -223,6 +227,14 @@ impl Tab {
 
     pub(crate) fn mark_active(&self, now_ms: i64) {
         self.imp().last_active_ms.set(now_ms);
+    }
+
+    pub(crate) fn used(&self) -> u64 {
+        self.imp().used.get()
+    }
+
+    pub(crate) fn set_used(&self, used: u64) {
+        self.imp().used.set(used);
     }
 
     pub(crate) fn set_pending_transition(&self, transition: Transition) {
