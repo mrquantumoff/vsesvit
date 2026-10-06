@@ -36,7 +36,7 @@ use crate::closed_tabs::ClosedTabs;
 use crate::cookies::Cookies;
 use crate::dialogs::Windowed;
 use crate::downloads::Downloads;
-use crate::engine::Engine;
+use crate::engine::{self, Engine};
 use crate::profile::{self, Core};
 use crate::sync::Syncer;
 use crate::tab::{Commit, Tab};
@@ -783,10 +783,17 @@ impl Browser {
         }
     }
 
-    /// Pop-ups, smooth scrolling and hardware acceleration: the engine's one settings
-    /// object applies them to every view.
+    /// Pop-ups, smooth scrolling, hardware acceleration and spell checking: the engine applies
+    /// them to every view.
     pub(crate) fn set_engine_switch(&self, pref: &Pref<bool>, on: bool) {
         self.set_pref(pref, &on);
+        self.engine().apply_prefs(&mut self.core().borrow_mut());
+    }
+
+    /// Turns spell checking in `language`, an installed dictionary, on or off.
+    pub(crate) fn set_spellcheck_language(&self, language: &str, on: bool) {
+        let chosen = engine::dictionaries().choose(self.pref(&keys::SPELLCHECK_LANGUAGES), language, on);
+        self.set_pref(&keys::SPELLCHECK_LANGUAGES, &Some(chosen));
         self.engine().apply_prefs(&mut self.core().borrow_mut());
     }
 

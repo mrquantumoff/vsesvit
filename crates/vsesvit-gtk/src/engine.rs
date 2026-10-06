@@ -1,7 +1,8 @@
 //! The one WebKit network session and settings object every web view shares. Its data
 //! and cache directories are the profile's (`ProfilePaths::engine_data`, `engine_cache`).
-//! The settings object carries the preferences for pop-ups, scrolling and the GPU, so
-//! changing one reaches every open view at once.
+//! The settings object carries the preferences for pop-ups, scrolling and the GPU, and the
+//! process's web context those for spell checking, so changing one reaches every open view at
+//! once.
 
 use std::path::PathBuf;
 use std::sync::Once;
@@ -9,6 +10,7 @@ use std::sync::Once;
 use gtk::glib;
 use vsesvit_core::Profile;
 use vsesvit_core::prefs::keys;
+use vsesvit_core::spellcheck::{self, Dictionaries};
 
 #[derive(Clone)]
 pub(crate) struct Engine {
@@ -39,6 +41,18 @@ fn add_appimage_to_sandbox() {
             context.add_path_to_sandbox(path, true);
         }
     });
+}
+
+/// Where Enchant's Hunspell provider, which WebKit checks spelling with, finds dictionaries.
+fn dictionary_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![glib::user_config_dir().join("enchant/hunspell")];
+    dirs.extend(["/usr/share/hunspell", "/usr/share/myspell", "/usr/share/myspell/dicts"].map(PathBuf::from));
+    dirs
+}
+
+/// The spelling dictionaries installed now, so one added while the browser runs is offered.
+pub(crate) fn dictionaries() -> Dictionaries {
+    Dictionaries::new(spellcheck::installed_in(&dictionary_dirs()), &spellcheck::system_locales())
 }
 
 impl Engine {
@@ -78,6 +92,15 @@ impl Engine {
         } else {
             webkit::HardwareAccelerationPolicy::Never
         });
+
+        let languages = dictionaries().checked(prefs.get(&keys::SPELLCHECK_LANGUAGES).as_deref());
+        // Given no languages WebKit checks the system's, so none chosen turns checking off.
+        let check = prefs.get(&keys::SPELLCHECK) && !languages.is_empty();
+        let context = webkit::WebContext::default().expect("WebKit default web context");
+        if check && context.spell_checking_languages() != languages {
+            context.set_spell_checking_languages(&languages.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+        context.set_spell_checking_enabled(check);
     }
 
     #[cfg(any(test, feature = "self-test"))]

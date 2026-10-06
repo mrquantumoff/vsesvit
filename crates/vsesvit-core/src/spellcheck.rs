@@ -307,10 +307,9 @@ fn dictionary_for<'a>(locale: &str, installed: &'a [String]) -> Option<&'a str> 
     if language.is_empty() {
         return None;
     }
-    let likely = LANGUAGES.iter().find(|(code, ..)| *code == language).map(|(.., region)| *region).filter(|r| !r.is_empty());
-    let likely = likely.map_or_else(|| language.to_uppercase(), str::to_owned);
+    let region = LANGUAGES.iter().find(|(code, ..)| *code == language).map_or("", |(.., region)| *region);
     let prefix = format!("{language}_");
-    [base.clone(), language.to_owned(), format!("{language}_{likely}")]
+    [base.clone(), language.to_owned(), format!("{prefix}{region}")]
         .iter()
         .find_map(|tag| installed.iter().find(|installed| *installed == tag))
         .or_else(|| installed.iter().find(|installed| installed.starts_with(&prefix)))

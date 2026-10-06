@@ -1,7 +1,7 @@
-//! The Settings dialog, bound to core's preferences: General (startup, downloads, scrolling and
-//! the GPU, updates, the profile folder), Sync (the account, what it syncs and its server),
-//! Appearance (theme, tabs, bars and buttons), Search (the engines in `search_engines`, the
-//! address bar and what it suggests), Privacy (tracking protection, cookies and site data in
+//! The Settings dialog, bound to core's preferences: General (startup, downloads, spell check,
+//! scrolling and the GPU, updates, the profile folder), Sync (the account, what it syncs and its
+//! server), Appearance (theme, tabs, bars and buttons), Search (the engines in `search_engines`,
+//! the address bar and what it suggests), Privacy (tracking protection, cookies and site data in
 //! `site_data`, secure connections and DNS, pop-ups, passwords, site permissions, browsing data)
 //! and Shortcuts (`shortcut_settings`). Every change applies at once, in every window, and an open
 //! dialog follows what sync changes.
@@ -20,12 +20,13 @@ use vsesvit_core::prefs::{
 };
 use vsesvit_core::sync::DataType;
 use vsesvit_core::https_only;
+use vsesvit_core::spellcheck;
 use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_sync::status::{Action, DELETE_CONFIRMATION, State};
 
 use super::{confirm, plain_toast};
 use crate::browser::Browser;
-use crate::permissions;
+use crate::{engine, permissions};
 use crate::session::now_ms;
 use crate::sync::Syncer;
 use crate::updates::{Status, StatusButton, Updates};
@@ -72,6 +73,12 @@ pub(crate) const HTTPS_ONLY_ROW: &str = "Always Use Secure Connections";
 
 /// The Privacy page's row saying the system resolves names: WebKitGTK uses its resolver.
 pub(crate) const SECURE_DNS_ROW: &str = "Secure DNS";
+
+/// The General page's switch for spell checking.
+pub(crate) const SPELLCHECK_ROW: &str = "Check Spelling";
+
+/// The General page's row listing the dictionaries spell checking can use.
+pub(crate) const SPELLING_LANGUAGES_ROW: &str = "Languages";
 
 /// The Privacy page's row saying passwords are left to a password manager.
 pub(crate) const PASSWORDS_NOTICE: &str = "Vsesvit Doesn't Save Passwords";
@@ -379,6 +386,19 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
         |b, pref, on| b.set_pref(pref, &on),
     ));
 
+    let spelling = group("Spell Check");
+    let check = pref_switch_row(
+        browser,
+        SPELLCHECK_ROW,
+        Some("Underline misspelled words as you type on web pages"),
+        &keys::SPELLCHECK,
+        Browser::set_engine_switch,
+    );
+    let languages = spelling_languages_row(browser);
+    check.bind_property("active", &languages, "sensitive").sync_create().build();
+    spelling.add(&check);
+    spelling.add(&languages);
+
     let system = group("System");
     system.add(&pref_switch_row(
         browser,
@@ -396,7 +416,7 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
     ));
     system.add(&profile_folder_row(browser));
 
-    let mut groups = vec![startup, downloads, system];
+    let mut groups = vec![startup, downloads, spelling, system];
     // Only for a copy that updates itself; a package from a distribution or Flatpak has no group.
     if let Some(updates) = browser.updates() {
         let group = group("Updates");
@@ -419,6 +439,69 @@ fn general_page(window: &BrowserWindow) -> adw::PreferencesPage {
         groups.push(group);
     }
     page("general", "General", "preferences-system-symbolic", &groups)
+}
+
+/// A switch for each installed dictionary, under a row naming the languages checked. Without
+/// dictionaries the row says how to get them.
+fn spelling_languages_row(browser: &Browser) -> adw::PreferencesRow {
+    let dictionaries = Rc::new(engine::dictionaries());
+    if dictionaries.installed().is_empty() {
+        return adw::ActionRow::builder()
+            .title(SPELLING_LANGUAGES_ROW)
+            .subtitle("No dictionaries are installed. Install your distribution's Hunspell dictionaries for your languages.")
+            .build()
+            .upcast();
+    }
+    let row = adw::ExpanderRow::builder().title(SPELLING_LANGUAGES_ROW).build();
+    let switches: Vec<(String, adw::SwitchRow)> = dictionaries
+        .installed()
+        .iter()
+        .map(|language| {
+            let switch = adw::SwitchRow::builder().title(spellcheck::display_name(language)).build();
+            row.add_row(&switch);
+            (language.clone(), switch)
+        })
+        .collect();
+    // False once the row is gone.
+    let show = Rc::new(glib::clone!(
+        #[weak]
+        row,
+        #[strong]
+        dictionaries,
+        #[strong]
+        switches,
+        #[upgrade_or]
+        false,
+        move |browser: &Browser| {
+            let checked = dictionaries.checked(browser.pref(&keys::SPELLCHECK_LANGUAGES).as_deref());
+            for (language, switch) in &switches {
+                switch.set_active(checked.contains(language));
+            }
+            let names: Vec<String> = checked.iter().map(|language| spellcheck::display_name(language)).collect();
+            row.set_subtitle(&if names.is_empty() { "None".to_owned() } else { names.join(", ") });
+            true
+        }
+    ));
+    show(browser);
+    for (language, switch) in switches {
+        switch.connect_active_notify(glib::clone!(
+            #[strong]
+            browser,
+            #[strong]
+            dictionaries,
+            #[strong]
+            show,
+            move |switch| {
+                let checked = dictionaries.checked(browser.pref(&keys::SPELLCHECK_LANGUAGES).as_deref());
+                if checked.contains(&language) != switch.is_active() {
+                    browser.set_spellcheck_language(&language, switch.is_active());
+                    show(&browser);
+                }
+            }
+        ));
+    }
+    browser.watch_prefs(move |browser| show(browser));
+    row.upcast()
 }
 
 /// What the updater is doing, kept current while the dialog is open, with a button to check

@@ -2,7 +2,8 @@
 //! searches the default engine for the text, or goes to it when it is an address, in a new tab
 //! next to the page. On a link, Copy Link Without Tracking follows Copy Link Address. On the
 //! page itself, Print and View Page Source come before Inspect Element. Extensions' items
-//! (`chrome.contextMenus`) come last, before Inspect Element.
+//! (`chrome.contextMenus`) come last, before Inspect Element. On a misspelled word, WebKit's
+//! spelling suggestions stay and its Learn Spelling is Chrome's Add to Dictionary.
 //!
 //! WebKit hands over no selected text with the menu and does not say which frame it is for, so
 //! a script in a world of its own tells the tab whenever the selection changes, in any frame,
@@ -67,6 +68,7 @@ pub(crate) fn attach(tab: &Tab) {
         move |_, menu, hit| {
             // A report left over from a menu the page cancelled must not stand for this one.
             let clicked = clicked.take();
+            name_add_to_dictionary(menu);
             if let Some(link) = hit.link_uri().filter(|_| hit.context_is_link()) {
                 add_link_item(&tab, menu, &link);
             }
@@ -155,6 +157,16 @@ pub(crate) fn add_link_item(tab: &Tab, menu: &webkit::ContextMenu, link: &str) -
         None => menu.append(&item),
     }
     item
+}
+
+/// Renames WebKit's Learn Spelling, which adds the word to the user's dictionary, in its place.
+pub(crate) fn name_add_to_dictionary(menu: &webkit::ContextMenu) {
+    let learn = webkit::ContextMenuAction::LearnSpelling;
+    let items = menu.items();
+    let Some(index) = items.iter().position(|item| item.stock_action() == learn) else { return };
+    let Ok(at) = i32::try_from(index) else { return };
+    menu.remove(&items[index]);
+    menu.insert(&webkit::ContextMenuItem::from_stock_action_with_label(learn, "_Add to Dictionary"), at);
 }
 
 /// A click on the page itself, not on a link, an image, media, a field or a scrollbar.
