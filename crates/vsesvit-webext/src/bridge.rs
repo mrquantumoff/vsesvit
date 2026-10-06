@@ -153,7 +153,11 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         Method::TabsQuery | Method::TabsGet | Method::TabsGetCurrent | Method::TabsCreate | Method::TabsUpdate | Method::TabsRemove | Method::TabsReload => {
             reply.finish(tabs(inner, ext, origin, &call));
         }
-        Method::ScriptingInsertCss => reply.finish(insert_css(inner, ext, &call)),
+        Method::ScriptingInsertCss | Method::ScriptingRemoveCss => css(inner, ext, &call, reply),
+        Method::ScriptingRegisterContentScripts
+        | Method::ScriptingGetRegisteredContentScripts
+        | Method::ScriptingUpdateContentScripts
+        | Method::ScriptingUnregisterContentScripts => reply.finish(dynamic_scripts(inner, ext, &call)),
         Method::ActionSetBadgeText
         | Method::ActionGetBadgeText
         | Method::ActionSetTitle
@@ -683,18 +687,72 @@ fn execute_script(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: Re
     }
 }
 
-fn insert_css(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<Value>, String> {
+/// The style sheets a `scripting.insertCSS` or `removeCSS` injection names, each with the
+/// key Chrome tells them apart by (its file, or its text) and, when `read`, its text.
+fn css_sources(ext: &Extension, injection: &Value, read: bool) -> Result<Vec<(String, String)>, String> {
+    let given = |name: &str| injection.get(name).filter(|v| !v.is_null());
+    match (given("css"), given("files")) {
+        (Some(css), None) => {
+            let css = css.as_str().ok_or("css must be a string")?;
+            Ok(vec![(format!("css:{css}"), css.to_owned())])
+        }
+        (None, Some(files)) => files
+            .as_array()
+            .ok_or("files must be an array")?
+            .iter()
+            .map(|file| {
+                let reference = file.as_str().ok_or("files must be strings")?;
+                let missing = || format!("Could not load file: '{reference}'.");
+                let path = ext.resource(reference).map_err(|_| missing())?;
+                let text = if read { std::fs::read_to_string(path.resolve(&ext.dir)).map_err(|_| missing())? } else { String::new() };
+                Ok((format!("file:{}", path.as_str()), text))
+            })
+            .collect(),
+        _ => Err("Exactly one of 'css' and 'files' must be specified.".into()),
+    }
+}
+
+/// `scripting.insertCSS` and `removeCSS`, answered once the page has the change. Each sheet
+/// is a `<style>` that the extension's world keeps under its key, so `removeCSS` takes out
+/// the last one inserted with the same file or text, as in Chrome.
+fn css(inner: &Inner, ext: &Extension, call: &Call, reply: Reply) {
+    let insert = call.method == Method::ScriptingInsertCss;
     let injection = call.arg(0);
-    let (view, guard) = injection_target(inner, ext, injection, "scripting.insertCSS")?;
-    let css = match injection.get("css").and_then(Value::as_str) {
-        Some(css) => css.to_owned(),
-        None => read_files(ext, &injection["files"])?,
+    let prepared = css_sources(ext, injection, insert).and_then(|sources| Ok((sources, injection_target(inner, ext, injection, call.method.name())?)));
+    let (sources, (view, guard)) = match prepared {
+        Ok(prepared) => prepared,
+        Err(e) => return reply.err(&e),
+    };
+    let change = if insert {
+        "for(const[key,css]of sources){const s=document.createElement('style');s.textContent=css;(document.head||document.documentElement).appendChild(s);if(!sheets.has(key))sheets.set(key,[]);sheets.get(key).push(s);}"
+    } else {
+        "for(const[key]of sources){const s=sheets.has(key)&&sheets.get(key).pop();if(s)s.remove();}"
     };
     let source = format!(
-        "(function(){{if(!{guard})return;const s=document.createElement('style');s.textContent={};(document.head||document.documentElement).appendChild(s);}})();",
-        protocol::js_string(&css)
+        "(function(){{if(!{guard})return;const sources={};const sheets=globalThis.__vsesvitCss||(globalThis.__vsesvitCss=new Map());{change}}})();",
+        protocol::js_literal(&json!(sources))
     );
-    view.evaluate_javascript(&source, Some(&ext.world), None, None::<&gio::Cancellable>, |_| {});
+    view.evaluate_javascript(&source, Some(&ext.world), None, None::<&gio::Cancellable>, move |result| reply.finish(result.map(|_| None).map_err(|e| e.to_string())));
+}
+
+/// `scripting.registerContentScripts`, `getRegisteredContentScripts`, `updateContentScripts`
+/// and `unregisterContentScripts` (see [`crate::dynamic_scripts`]).
+fn dynamic_scripts(inner: &Inner, ext: &Extension, call: &Call) -> Result<Option<Value>, String> {
+    if !ext.has_permission("scripting") {
+        return Err(format!("{} requires the \"scripting\" permission", call.method));
+    }
+    let files = |reference: &str| ext.script_file(reference);
+    {
+        let mut scripts = ext.dynamic_scripts.borrow_mut();
+        match call.method {
+            Method::ScriptingGetRegisteredContentScripts => return Ok(Some(json!(scripts.get(call.arg(0))?))),
+            Method::ScriptingRegisterContentScripts => scripts.register(call.arg(0), &files)?,
+            Method::ScriptingUpdateContentScripts => scripts.update(call.arg(0), &files)?,
+            Method::ScriptingUnregisterContentScripts => scripts.unregister(call.arg(0))?,
+            _ => unreachable!("not a dynamic content scripts method"),
+        }
+    }
+    inner.dynamic_scripts_changed(ext);
     Ok(None)
 }
 

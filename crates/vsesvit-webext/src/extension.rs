@@ -10,9 +10,10 @@ use vsesvit_core::extensions::{ExtensionId, InstalledExtension};
 use vsesvit_core::html::escape as html_escape;
 use webkit::glib;
 
-use crate::content;
+use crate::content::UserContent;
 use crate::dnr::Grants;
 use crate::dnr_rules::{Rules, Saved};
+use crate::dynamic_scripts::Scripts;
 use crate::filters::Compiles;
 use crate::i18n;
 use crate::menus::Menus;
@@ -88,13 +89,16 @@ pub(crate) struct Extension {
     /// `protocol`): the default-world handler is reachable by any document in the same
     /// view, the bootstrap only by this extension's documents.
     pub page_token: String,
-    pub scripts: Vec<webkit::UserScript>,
-    pub styles: Vec<webkit::UserStyleSheet>,
+    /// The manifest's content scripts.
+    pub content: UserContent,
+    /// The content scripts `scripting.registerContentScripts` added, and their user content.
+    pub dynamic_scripts: RefCell<Scripts>,
+    pub dynamic_content: RefCell<UserContent>,
     /// The page shim, injected into this extension's documents (and no others) in the
     /// default world of every view.
     pub page_script: webkit::UserScript,
     /// The content-script shim, for isolated-world code the manifest did not declare
-    /// (`scripting.executeScript`).
+    /// (`scripting.executeScript`, dynamic content scripts).
     pub content_bootstrap: String,
     pub csp: String,
     pub host_permissions: Vec<String>,
@@ -152,7 +156,7 @@ impl Extension {
         let content_bootstrap = protocol::bootstrap(&config("content", &handler, None));
         let page_bootstrap = protocol::bootstrap(&config("page", &page_handler, Some(&page_token)));
 
-        let (scripts, styles) = content::user_content(&installed.dir, manifest, &world, &content_bootstrap)?;
+        let content = UserContent::build(&installed.dir, &manifest.content_scripts, &world, &content_bootstrap)?;
         let own_documents = format!("{base_url}*");
         let page_script = webkit::UserScript::new(
             &page_bootstrap,
@@ -184,8 +188,9 @@ impl Extension {
             handler,
             page_handler,
             page_token,
-            scripts,
-            styles,
+            content,
+            dynamic_scripts: RefCell::new(Scripts::default()),
+            dynamic_content: RefCell::new(UserContent::default()),
             page_script,
             content_bootstrap,
             csp: content_security_policy(manifest),
@@ -221,6 +226,21 @@ impl Extension {
     /// extension, accepting Chrome's spellings (leading `/`, the extension's own URL).
     pub fn resource(&self, reference: &str) -> Result<RelPath, String> {
         RelPath::parse(patterns::resource_path(&self.base_url, reference)).map_err(|e| e.to_string())
+    }
+
+    /// A file a `scripting` call names, if the extension has it.
+    pub fn script_file(&self, reference: &str) -> Option<RelPath> {
+        self.resource(reference).ok().filter(|path| path.resolve(&self.dir).is_file())
+    }
+
+    /// The user content of the dynamic content scripts. A file gone since they were
+    /// registered leaves them all out, which is logged.
+    pub fn build_dynamic_content(&self) -> UserContent {
+        let entries = self.dynamic_scripts.borrow().content_scripts(&self.manifest.host_permissions);
+        UserContent::build(&self.dir, &entries, &self.world, &self.content_bootstrap).unwrap_or_else(|e| {
+            log::warn!("{}: dynamic content scripts left out: {e}", self.id.as_str());
+            UserContent::default()
+        })
     }
 
     pub fn has_permission(&self, name: &str) -> bool {

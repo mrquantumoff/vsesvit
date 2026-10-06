@@ -15,6 +15,7 @@ use webkit::prelude::*;
 
 use crate::bridge::{self, Origin, PortContext, Reply};
 use crate::dnr_rules::{Rules, Saved};
+use crate::dynamic_scripts::Scripts;
 use crate::extension::Extension;
 use crate::lifecycle::{self, InstallEvent, LoadReason};
 use crate::menus::{Entry, ItemId, Target};
@@ -76,7 +77,7 @@ impl Runtime {
     /// Registers the `chrome-extension` scheme on the default `WebContext`. One per process.
     pub fn new(profile: Rc<RefCell<Profile>>, session: &webkit::NetworkSession, host: Rc<dyn TabHost>) -> Runtime {
         let state_dir = profile.borrow().paths().root.join("webext");
-        for sub in ["dnr", "filters", "installed", "menus"] {
+        for sub in ["dnr", "filters", "installed", "menus", "scripts"] {
             if let Err(e) = std::fs::create_dir_all(state_dir.join(sub)) {
                 log::warn!("{}: {e}", state_dir.join(sub).display());
             }
@@ -124,6 +125,8 @@ impl Runtime {
             self.unload(&installed.id);
         }
         let ext = Rc::new(Extension::build(installed, &self.0.ui_locale)?);
+        let event = self.0.install_event(&ext, reason);
+        self.0.restore_scripts(&ext, &event);
         self.0.extensions.borrow_mut().insert(ext.id.clone(), ext.clone());
         {
             let mut tabs = self.0.tabs.borrow_mut();
@@ -131,7 +134,6 @@ impl Runtime {
                 attach(&self.0, &ext, *tab, state);
             }
         }
-        let event = self.0.install_event(&ext, reason);
         self.0.restore_rules(&ext, &event);
         filters::compile(&self.0, &ext);
         self.0.restore_menus(&ext, &event);
@@ -429,16 +431,12 @@ pub(crate) fn reload(inner: &Rc<Inner>, id: &ExtensionId) {
     }
 }
 
-/// Content scripts in the extension's world, the page shim (default world, the
-/// extension's own documents only) and one handler for each, so an extension page the
-/// tab navigates to has its API.
+/// Content scripts (the manifest's and the dynamic ones) in the extension's world, the
+/// page shim (default world, the extension's own documents only) and one handler for each,
+/// so an extension page the tab navigates to has its API.
 fn attach(inner: &Rc<Inner>, ext: &Rc<Extension>, tab: TabId, state: &mut TabState) {
-    for script in &ext.scripts {
-        state.ucm.add_script(script);
-    }
-    for style in &ext.styles {
-        state.ucm.add_style_sheet(style);
-    }
+    ext.content.add_to(&state.ucm);
+    ext.dynamic_content.borrow().add_to(&state.ucm);
     state.ucm.add_script(&ext.page_script);
     if let Some(filter) = ext.filter.borrow().as_ref() {
         state.ucm.add_filter(filter);
@@ -449,12 +447,8 @@ fn attach(inner: &Rc<Inner>, ext: &Rc<Extension>, tab: TabId, state: &mut TabSta
 }
 
 fn detach(ext: &Extension, state: &mut TabState) {
-    for script in &ext.scripts {
-        state.ucm.remove_script(script);
-    }
-    for style in &ext.styles {
-        state.ucm.remove_style_sheet(style);
-    }
+    ext.content.remove_from(&state.ucm);
+    ext.dynamic_content.borrow().remove_from(&state.ucm);
     state.ucm.remove_script(&ext.page_script);
     if let Some(filter) = ext.filter.borrow().as_ref() {
         state.ucm.remove_filter(filter);
@@ -582,6 +576,43 @@ impl Inner {
     pub(crate) fn save_rules(&self, ext: &Extension) {
         let file = self.rules_file(ext);
         let written = serde_json::to_string(&ext.dnr.borrow().saved()).map_err(std::io::Error::other).and_then(|json| std::fs::write(&file, json));
+        if let Err(e) = written {
+            log::warn!("{}: {e}", file.display());
+        }
+    }
+
+    fn scripts_file(&self, ext: &Extension) -> PathBuf {
+        self.state_dir.join("scripts").join(format!("{}.json", ext.host))
+    }
+
+    /// As in Chrome, the dynamic content scripts registered to persist across sessions last
+    /// until the extension is installed afresh or updated.
+    fn restore_scripts(&self, ext: &Extension, event: &InstallEvent) {
+        let file = self.scripts_file(ext);
+        if matches!(event, InstallEvent::Installed | InstallEvent::Updated { .. }) {
+            remove_file(&file);
+            return;
+        }
+        let saved: Vec<Value> = read_json(&file).unwrap_or_default();
+        let (scripts, skipped) = Scripts::restore(&saved, &|reference| ext.script_file(reference));
+        for reason in skipped {
+            log::warn!("{}: saved dynamic content script left out: {reason}", file.display());
+        }
+        *ext.dynamic_scripts.borrow_mut() = scripts;
+        *ext.dynamic_content.borrow_mut() = ext.build_dynamic_content();
+    }
+
+    /// `ext`'s dynamic content scripts changed: every tab gets their new user content, which
+    /// applies from the next load as in Chrome, and the ones that persist are saved.
+    pub(crate) fn dynamic_scripts_changed(&self, ext: &Extension) {
+        let content = ext.build_dynamic_content();
+        let previous = ext.dynamic_content.replace(content);
+        for ucm in self.tab_managers() {
+            previous.remove_from(&ucm);
+            ext.dynamic_content.borrow().add_to(&ucm);
+        }
+        let file = self.scripts_file(ext);
+        let written = serde_json::to_string(&ext.dynamic_scripts.borrow().saved()).map_err(std::io::Error::other).and_then(|json| std::fs::write(&file, json));
         if let Err(e) = written {
             log::warn!("{}: {e}", file.display());
         }

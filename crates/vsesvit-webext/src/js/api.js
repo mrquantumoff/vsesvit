@@ -361,6 +361,7 @@
       onCreated: new ExtensionEvent("tabs.onCreated"),
       TAB_ID_NONE: -1,
     };
+    const filter = (args) => [args[0] || null];
     const scripting = {
       executeScript(injection, callback) {
         const copy = Object.assign({}, injection);
@@ -369,7 +370,13 @@
         return settle(post("scripting.executeScript", [copy]), callback);
       },
       insertCSS: bridged("scripting.insertCSS"),
-      removeCSS: local(() => undefined),
+      removeCSS: bridged("scripting.removeCSS"),
+      registerContentScripts: bridged("scripting.registerContentScripts"),
+      getRegisteredContentScripts: bridged("scripting.getRegisteredContentScripts", null, filter),
+      updateContentScripts: bridged("scripting.updateContentScripts"),
+      unregisterContentScripts: bridged("scripting.unregisterContentScripts", null, filter),
+      ExecutionWorld: { ISOLATED: "ISOLATED", MAIN: "MAIN" },
+      StyleOrigin: { AUTHOR: "AUTHOR", USER: "USER" },
     };
     const action = {
       setBadgeText: bridged("action.setBadgeText"),
