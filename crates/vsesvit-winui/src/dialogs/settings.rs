@@ -579,11 +579,21 @@ pub(super) fn wire(
 /// Sets the switch `name` to `on`, and calls `toggled` when the user flips it.
 /// The picker switch is the install's, as in Chrome, so it writes the profile list rather than
 /// this profile's preferences. A profile outside the list has neither row.
-fn wire_profiles(root: &FrameworkElement, browser: &Rc<Browser>, window: &Rc<BrowserWindow>) -> Result<()> {
+fn wire_profiles(
+    root: &FrameworkElement,
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+) -> Result<()> {
     if browser.home().is_none() {
         return xaml::set_visible(&xaml::find::<UIElement>(root, "ProfilesSection")?, false);
     }
-    switch(root, browser, "ProfilePicker", browser.profiles().show_picker(), Browser::set_show_profile_picker)?;
+    switch(
+        root,
+        browser,
+        "ProfilePicker",
+        browser.profiles().show_picker(),
+        Browser::set_show_profile_picker,
+    )?;
     let w = Rc::downgrade(window);
     on_click(&xaml::find::<Button>(root, "ManageProfiles")?, move || {
         if let Some(window) = w.upgrade() {

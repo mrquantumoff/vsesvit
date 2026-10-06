@@ -91,7 +91,10 @@ fn zoom_controls() -> (gtk::Box, gtk::Button) {
 /// The profile button: the avatar `BrowserWindow::sync_profile` paints, and the menu it opens.
 pub(super) fn profile_button() -> (gtk::MenuButton, gtk::Label) {
     let avatar = gtk::Label::new(None);
-    let button = gtk::MenuButton::builder().child(&avatar).css_classes(["flat"]).build();
+    let button = gtk::MenuButton::builder()
+        .child(&avatar)
+        .css_classes(["flat"])
+        .build();
     (button, avatar)
 }
 
@@ -102,7 +105,10 @@ pub(super) fn profile_menu(registry: &Registry) -> gio::Menu {
     for profile in registry.profiles() {
         // Menu labels take `_` as a mnemonic.
         let item = gio::MenuItem::new(Some(&profile.name.replace('_', "__")), None);
-        item.set_action_and_target_value(Some("win.open-profile"), Some(&profile.id.as_str().to_variant()));
+        item.set_action_and_target_value(
+            Some("win.open-profile"),
+            Some(&profile.id.as_str().to_variant()),
+        );
         profiles.append_item(&item);
     }
     let manage = gio::Menu::new();

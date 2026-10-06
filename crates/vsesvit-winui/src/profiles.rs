@@ -105,7 +105,9 @@ pub(crate) fn ask(
     let content: FrameworkElement = flyout.Content()?.cast()?;
     let entry: TextBox = xaml::find(&content, "ProfileName")?;
     let accept: Button = xaml::find(&content, "ProfileAccept")?;
-    accept.cast::<Control>()?.SetIsEnabled(!name.trim().is_empty())?;
+    accept
+        .cast::<Control>()?
+        .SetIsEnabled(!name.trim().is_empty())?;
     let accept_control = accept.cast::<Control>()?;
     entry
         .TextChanged(move |source, _| {
@@ -125,8 +127,8 @@ pub(crate) fn ask(
     );
     for (i, choice) in ProfileColor::ALL.into_iter().enumerate() {
         toggles[i].SetIsChecked(Some(choice == color))?;
-        let (toggles, chosen) = (toggles.clone(), chosen.clone());
-        on_click(&toggles.clone()[i], move || {
+        let (toggle, toggles, chosen) = (toggles[i].clone(), toggles.clone(), chosen.clone());
+        on_click(&toggle, move || {
             chosen.set(choice);
             for (j, toggle) in toggles.iter().enumerate() {
                 let _ = toggle.SetIsChecked(Some(i == j));
@@ -158,10 +160,13 @@ fn ask_remove(anchor: &FrameworkElement, name: &str, done: impl Fn() + 'static) 
     ))?;
     let content: FrameworkElement = flyout.Content()?.cast()?;
     let shown = flyout.clone();
-    on_click(&xaml::find::<Button>(&content, "ProfileRemove")?, move || {
-        let _ = shown.cast::<FlyoutBase>().and_then(|f| f.Hide());
-        done();
-    })?;
+    on_click(
+        &xaml::find::<Button>(&content, "ProfileRemove")?,
+        move || {
+            let _ = shown.cast::<FlyoutBase>().and_then(|f| f.Hide());
+            done();
+        },
+    )?;
     flyout.cast::<FlyoutBase>()?.ShowAt(anchor)
 }
 
@@ -212,7 +217,9 @@ pub(crate) fn wire_manage(
 
 /// "Add profile": names the new profile, then opens it in a window of its own, as Chrome does.
 pub(crate) fn add_profile(window: &Rc<BrowserWindow>, anchor: &FrameworkElement) {
-    let Some(browser) = window.browser() else { return };
+    let Some(browser) = window.browser() else {
+        return;
+    };
     let registry = browser.profiles();
     let w = Rc::downgrade(window);
     let shown = ask(
@@ -251,7 +258,8 @@ impl Manage {
     }
 
     fn try_fill(self: &Rc<Self>) -> Result<()> {
-        let (Some(browser), Some(rows)) = (self.browser.upgrade(), self.rows.borrow().clone()) else {
+        let (Some(browser), Some(rows)) = (self.browser.upgrade(), self.rows.borrow().clone())
+        else {
             return Ok(());
         };
         let children = rows.Children()?;
@@ -313,23 +321,43 @@ impl Manage {
         })?;
 
         let edit: FrameworkElement = xaml::find(row, "ProfileEdit")?;
-        let (me, edit_id, anchor, old) = (Rc::downgrade(self), id.clone(), edit.clone(), name.to_owned());
+        let (me, edit_id, anchor, old) = (
+            Rc::downgrade(self),
+            id.clone(),
+            edit.clone(),
+            name.to_owned(),
+        );
         on_click(&edit, move || {
             let (me, id) = (me.clone(), edit_id.clone());
-            let shown = ask(&anchor, "Edit profile", "Save", &old, color, move |name, color| {
-                let Some(manage) = me.upgrade() else { return };
-                let result = manage.browser.upgrade().map(|b| b.edit_profile(&id, &name, color));
-                if let (Some(Err(e)), Some(window)) = (result, manage.window.upgrade()) {
-                    window.show_failure("Could not change the profile", &e);
-                }
-            });
+            let shown = ask(
+                &anchor,
+                "Edit profile",
+                "Save",
+                &old,
+                color,
+                move |name, color| {
+                    let Some(manage) = me.upgrade() else { return };
+                    let result = manage
+                        .browser
+                        .upgrade()
+                        .map(|b| b.edit_profile(&id, &name, color));
+                    if let (Some(Err(e)), Some(window)) = (result, manage.window.upgrade()) {
+                        window.show_failure("Could not change the profile", &e);
+                    }
+                },
+            );
             if let Err(e) = shown {
                 log::warn!("the edit profile flyout: {e}");
             }
         })?;
 
         let remove: FrameworkElement = xaml::find(row, "ProfileRemove")?;
-        let (me, remove_id, anchor, name) = (Rc::downgrade(self), id.clone(), remove.clone(), name.to_owned());
+        let (me, remove_id, anchor, name) = (
+            Rc::downgrade(self),
+            id.clone(),
+            remove.clone(),
+            name.to_owned(),
+        );
         on_click(&remove, move || {
             let (me, id) = (me.clone(), remove_id.clone());
             let shown = ask_remove(&anchor, &name, move || {
@@ -396,12 +424,17 @@ pub(crate) fn show_picker(dir: ProfilesDir) -> Result<()> {
     on_click(&add, move || {
         let registry = picker_dir.load();
         let dir = picker_dir.clone();
-        let shown = ask(&anchor, "Add profile", "Add", &registry.next_name(), registry.next_color(), move |name, color| {
-            match dir.add(&name, color) {
+        let shown = ask(
+            &anchor,
+            "Add profile",
+            "Add",
+            &registry.next_name(),
+            registry.next_color(),
+            move |name, color| match dir.add(&name, color) {
                 Ok((id, _)) => pick(&dir.root(&id)),
                 Err(e) => log::warn!("adding a profile: {e}"),
-            }
-        });
+            },
+        );
         if let Err(e) = shown {
             log::warn!("the add profile flyout: {e}");
         }
@@ -463,7 +496,13 @@ fn pick(root: &Path) {
 
 /// Fills the profile menu: every profile, the current one checked, then adding and managing
 /// them, as in Chrome's profile menu.
-pub(crate) fn fill_menu(menu: &MenuFlyout, registry: &Registry, current: &ProfileId, window: &Rc<BrowserWindow>, anchor: &FrameworkElement) -> Result<()> {
+pub(crate) fn fill_menu(
+    menu: &MenuFlyout,
+    registry: &Registry,
+    current: &ProfileId,
+    window: &Rc<BrowserWindow>,
+    anchor: &FrameworkElement,
+) -> Result<()> {
     let items = menu.Items()?;
     items.Clear()?;
     for entry in registry.profiles() {

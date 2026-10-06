@@ -437,11 +437,11 @@ impl ProfilesDir {
     /// deleted. Idempotent; runs at every start and after every removal, so a profile removed
     /// while it ran goes once its process has quit.
     pub fn sweep(&self) -> Registry {
-        let pending = self.load().removed;
-        if pending.is_empty() {
-            return self.load();
+        let registry = self.load();
+        if registry.removed.is_empty() {
+            return registry;
         }
-        let deleted: Vec<ProfileId> = pending.into_iter().filter(|id| self.delete(id)).collect();
+        let deleted: Vec<ProfileId> = registry.removed.into_iter().filter(|id| self.delete(id)).collect();
         let result = self.edit(|registry| {
             let before = registry.removed.len();
             registry.removed.retain(|id| !deleted.contains(id));
@@ -475,9 +475,10 @@ impl ProfilesDir {
         });
         drop(lock);
         let result = result.and_then(|()| fs::remove_dir_all(&root));
-        if cache.starts_with(&root) || !cache.exists() {
-            // Inside the root, or never made.
-        } else if let Err(e) = fs::remove_dir_all(&cache) {
+        if !cache.starts_with(&root)
+            && cache.exists()
+            && let Err(e) = fs::remove_dir_all(&cache)
+        {
             log::warn!("deleting {}: {e}", cache.display());
         }
         match result {

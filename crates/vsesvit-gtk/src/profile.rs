@@ -56,7 +56,11 @@ impl Start {
         let root = fs::canonicalize(&dir)?;
         let default = profiles.root(&ProfileId::default_profile());
         let home = profiles.locate(&root).map(|id| Home { dir: profiles, id });
-        Ok(Start::Profile(ProfileLocation { app_id: app_id_for_profile(&root, &default), root, home }))
+        Ok(Start::Profile(ProfileLocation {
+            app_id: app_id_for_profile(&root, &default),
+            root,
+            home,
+        }))
     }
 }
 
@@ -91,7 +95,8 @@ fn hashed_app_id(dir: &Path) -> String {
 /// running one. It is launched through the display, so on Wayland it carries an activation
 /// token that lets whichever process shows the window take the focus.
 pub(crate) fn launch(widget: &impl IsA<gtk::Widget>, root: &Path) -> Result<(), glib::Error> {
-    let program = program().map_err(|e| glib::Error::new(gio::IOErrorEnum::Failed, &e.to_string()))?;
+    let program =
+        program().map_err(|e| glib::Error::new(gio::IOErrorEnum::Failed, &e.to_string()))?;
     let command = [program.as_os_str(), PROFILE_DIR.as_ref(), root.as_os_str()]
         .map(|arg| glib::shell_quote(arg).to_string_lossy().into_owned())
         .join(" ");
@@ -124,7 +129,10 @@ pub(crate) fn notify(root: &Path) {
             .spawn()
     });
     if let Err(e) = spawned {
-        log::warn!("telling the profile at {} to look at the profile list: {e}", root.display());
+        log::warn!(
+            "telling the profile at {} to look at the profile list: {e}",
+            root.display()
+        );
     }
 }
 

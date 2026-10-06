@@ -23,7 +23,11 @@ pub(crate) fn avatar_css() -> String {
          .profile-card { padding: 12px; }\n",
     );
     for color in ProfileColor::ALL {
-        css += &format!(".profile-avatar.{} {{ background-color: {}; }}\n", color_class(color), color.css());
+        css += &format!(
+            ".profile-avatar.{} {{ background-color: {}; }}\n",
+            color_class(color),
+            color.css()
+        );
     }
     css
 }
@@ -122,7 +126,15 @@ pub(crate) fn add(window: &BrowserWindow) {
     let registry = window.browser().profiles();
     let window = window.clone();
     glib::spawn_future_local(async move {
-        let Some((name, color)) = ask(&window, "Add Profile", "_Add", &registry.next_name(), registry.next_color()).await else {
+        let Some((name, color)) = ask(
+            &window,
+            "Add Profile",
+            "_Add",
+            &registry.next_name(),
+            registry.next_color(),
+        )
+        .await
+        else {
             return;
         };
         if let Err(e) = window.browser().add_profile(&window, &name, color) {
@@ -251,8 +263,13 @@ impl Manage {
     fn edit(self: &Rc<Self>, id: ProfileId, name: String, color: ProfileColor) {
         let view = self.clone();
         glib::spawn_future_local(async move {
-            let Some(dialog) = view.dialog.upgrade() else { return };
-            let Some((name, color)) = ask(&dialog, "Edit Profile", "_Save", &name, color).await else { return };
+            let Some(dialog) = view.dialog.upgrade() else {
+                return;
+            };
+            let Some((name, color)) = ask(&dialog, "Edit Profile", "_Save", &name, color).await
+            else {
+                return;
+            };
             if let Err(e) = view.window.browser().edit_profile(&id, &name, color) {
                 view.toasts.add_toast(plain_toast(&e));
             }
@@ -263,7 +280,9 @@ impl Manage {
         let view = self.clone();
         glib::spawn_future_local(async move {
             let body = "Its bookmarks, history, settings, extensions and sync sign-in are deleted from this device, and its windows close. What it synced stays on the sync server.";
-            let Some(dialog) = view.dialog.upgrade() else { return };
+            let Some(dialog) = view.dialog.upgrade() else {
+                return;
+            };
             if !confirm(&dialog, &format!("Remove {name}?"), body, "_Remove").await {
                 return;
             }
@@ -312,7 +331,10 @@ pub(crate) fn picker(app: &adw::Application, dir: &ProfilesDir) -> adw::Applicat
         .row_spacing(12)
         .build();
     for entry in registry.profiles() {
-        let card = card(&avatar(&entry.name, entry.color, true).upcast(), &entry.name);
+        let card = card(
+            &avatar(&entry.name, entry.color, true).upcast(),
+            &entry.name,
+        );
         let root = dir.root(&entry.id);
         card.connect_clicked(glib::clone!(
             #[weak]
@@ -341,7 +363,15 @@ pub(crate) fn picker(app: &adw::Application, dir: &ProfilesDir) -> adw::Applicat
             let registry = dir.load();
             let dir = dir.clone();
             glib::spawn_future_local(async move {
-                let Some((name, color)) = ask(&window, "Add Profile", "_Add", &registry.next_name(), registry.next_color()).await else {
+                let Some((name, color)) = ask(
+                    &window,
+                    "Add Profile",
+                    "_Add",
+                    &registry.next_name(),
+                    registry.next_color(),
+                )
+                .await
+                else {
                     return;
                 };
                 match dir.add(&name, color) {
@@ -444,7 +474,10 @@ mod tests {
         let window = picker(crate::test_support::browser().app(), &dir);
         let shown = labels(window.upcast_ref());
         for expected in ["Who's Using Vsesvit?", "Person 1", "P", "Work", "W", "Add"] {
-            assert!(shown.iter().any(|s| s == expected), "{expected:?} in {shown:?}");
+            assert!(
+                shown.iter().any(|s| s == expected),
+                "{expected:?} in {shown:?}"
+            );
         }
         window.destroy();
         let _ = fs::remove_dir_all(&path);
@@ -454,7 +487,11 @@ mod tests {
     fn every_colour_has_its_avatar_class() {
         let css = avatar_css();
         for color in ProfileColor::ALL {
-            assert!(css.contains(&format!(".profile-avatar.{} {{ background-color: {}; }}", color_class(color), color.css())));
+            assert!(css.contains(&format!(
+                ".profile-avatar.{} {{ background-color: {}; }}",
+                color_class(color),
+                color.css()
+            )));
         }
     }
 }

@@ -509,7 +509,10 @@ impl Browser {
     /// than one profile.
     pub fn profile_title(&self) -> Option<String> {
         let home = self.home()?;
-        self.profiles.borrow().title_name(&home.id).map(str::to_owned)
+        self.profiles
+            .borrow()
+            .title_name(&home.id)
+            .map(str::to_owned)
     }
 
     /// A window came forward: reads the profile list again, since other profiles' processes
@@ -581,16 +584,28 @@ impl Browser {
 
     /// Adds a profile and opens it in a new window, as Chrome does.
     pub fn add_profile(&self, name: &str, color: ProfileColor) -> Result<(), String> {
-        let home = self.home().ok_or("this profile is not in the profile list")?;
+        let home = self
+            .home()
+            .ok_or("this profile is not in the profile list")?;
         let (id, registry) = home.dir.add(name, color).map_err(|e| e.to_string())?;
         self.set_profiles(registry);
         self.open_profile(&id);
         Ok(())
     }
 
-    pub fn edit_profile(&self, id: &ProfileId, name: &str, color: ProfileColor) -> Result<(), String> {
-        let home = self.home().ok_or("this profile is not in the profile list")?;
-        let registry = home.dir.edit_profile(id, name, color).map_err(|e| e.to_string())?;
+    pub fn edit_profile(
+        &self,
+        id: &ProfileId,
+        name: &str,
+        color: ProfileColor,
+    ) -> Result<(), String> {
+        let home = self
+            .home()
+            .ok_or("this profile is not in the profile list")?;
+        let registry = home
+            .dir
+            .edit_profile(id, name, color)
+            .map_err(|e| e.to_string())?;
         self.set_profiles(registry);
         Ok(())
     }
@@ -599,7 +614,9 @@ impl Browser {
     /// opening the profile a launch would open next, and another profile's process is told
     /// through its command line.
     pub fn remove_profile(&self, id: &ProfileId) -> Result<(), String> {
-        let home = self.home().ok_or("this profile is not in the profile list")?;
+        let home = self
+            .home()
+            .ok_or("this profile is not in the profile list")?;
         let running = *id != home.id && home.dir.is_running(id);
         let registry = home.dir.remove(id).map_err(|e| e.to_string())?;
         if *id == home.id {

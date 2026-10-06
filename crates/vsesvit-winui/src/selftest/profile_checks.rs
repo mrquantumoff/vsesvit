@@ -12,9 +12,9 @@ use super::{Probe, until};
 use windows_core::Interface;
 
 use crate::bindings::{FlyoutBase, TextBlock, ToggleSwitch};
-use crate::exec;
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog};
+use crate::exec;
 use crate::window::BrowserWindow;
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -24,7 +24,10 @@ fn err(e: impl std::fmt::Display) -> String {
 /// Saves the window as `name`, a moment after what it shows has opened.
 async fn shoot(window: &BrowserWindow, out_dir: &Path, name: &str) -> Result<(), String> {
     exec::sleep(Duration::from_millis(500)).await;
-    let shot = window.capture().await.map_err(|e| format!("capture: {e}"))?;
+    let shot = window
+        .capture()
+        .await
+        .map_err(|e| format!("capture: {e}"))?;
     let path = out_dir.join(name);
     std::fs::write(&path, &shot.png).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -35,9 +38,15 @@ pub(super) async fn profiles(
     out_dir: &Path,
     p: &Probe,
 ) -> Result<String, String> {
-    let home = browser.home().ok_or("the self-test profile is not in its profile list")?.clone();
+    let home = browser
+        .home()
+        .ok_or("the self-test profile is not in its profile list")?
+        .clone();
     let menu = || window.profile_menu_lines().map_err(err);
-    let page = window.active_tab().map(|t| t.state().title).unwrap_or_default();
+    let page = window
+        .active_tab()
+        .map(|t| t.state().title)
+        .unwrap_or_default();
     let alone = (menu()?, window.title());
 
     let (work, registry) = home.dir.add("Work", ProfileColor::Green).map_err(err)?;
@@ -89,10 +98,18 @@ pub(super) async fn profiles(
         alone.0, alone.1, together.0, together.1, after.1, after.2
     );
     let checked = |names: &[&str], current: usize| -> Vec<(String, bool)> {
-        names.iter().enumerate().map(|(i, n)| ((*n).to_owned(), i == current)).collect()
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| ((*n).to_owned(), i == current))
+            .collect()
     };
     let ok = alone == (checked(&["Person 1"], 0), format!("{page} - Vsesvit"))
-        && together == (checked(&["Person 1", "Work"], 0), format!("{page} - Person 1 - Vsesvit"))
+        && together
+            == (
+                checked(&["Person 1", "Work"], 0),
+                format!("{page} - Person 1 - Vsesvit"),
+            )
         && renamed == format!("{page} - Tester - Vsesvit")
         && rows == ["Tester", "Work"]
         && picker_shown

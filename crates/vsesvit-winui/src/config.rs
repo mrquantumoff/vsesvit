@@ -172,7 +172,10 @@ mod tests {
 
     #[test]
     fn a_launch_naming_no_profile_opens_what_the_profile_list_chooses() {
-        let config = resolve(args(RunKind::Browse, None), Startup::Open(ProfileId::default_profile()));
+        let config = resolve(
+            args(RunKind::Browse, None),
+            Startup::Open(ProfileId::default_profile()),
+        );
         assert_eq!(
             config.profile_dir,
             PathBuf::from(r"C:\L\Vsesvit\data\profiles\Default")
