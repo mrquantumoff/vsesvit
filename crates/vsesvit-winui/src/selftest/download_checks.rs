@@ -7,10 +7,11 @@ use std::path::Path;
 use vsesvit_core::Url;
 use vsesvit_core::downloads::{Download, DownloadId, State, unconfirmed_path, zone_identifier};
 use vsesvit_core::testkit::STALLED_SENT;
+use windows_core::Interface;
 
 use super::{Probe, until};
 use crate::automation::invoke;
-use crate::bindings::Button;
+use crate::bindings::{Button, UIElement};
 use crate::browser::Browser;
 use crate::downloads::Indicator;
 use crate::tab::Tab;
@@ -74,7 +75,10 @@ pub(super) async fn download_safety(
     let held_at_name = first.path.exists();
     let warning = until(p, |p| {
         p.observe("waiting for the warning under the downloads button");
-        window.download_warning()
+        // A flyout is open before its content is in the tree, where its buttons can be invoked.
+        window
+            .download_warning()
+            .filter(|w| w.cast::<UIElement>().and_then(|w| w.XamlRoot()).is_ok())
     })
     .await;
     let keep = xaml::find::<Button>(&warning, "WarningKeep").map_err(|e| format!("Keep: {e}"))?;
@@ -89,7 +93,9 @@ pub(super) async fn download_safety(
     let second = unconfirmed(browser, script, Some(first.id), p).await;
     let warning = until(p, |p| {
         p.observe("waiting for the second warning");
-        window.download_warning()
+        window
+            .download_warning()
+            .filter(|w| w.cast::<UIElement>().and_then(|w| w.XamlRoot()).is_ok())
     })
     .await;
     let discard =
