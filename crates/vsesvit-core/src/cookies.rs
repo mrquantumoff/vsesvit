@@ -64,8 +64,6 @@ pub enum Browsing {
     Private,
 }
 
-/// The title of the Settings row.
-pub const TITLE: &str = "Third-party cookies";
 /// The title of the site-info popup's section, the same as [`Permission::Cookies`]' label.
 pub const SITE_TITLE: &str = "Cookies and site data";
 
@@ -147,16 +145,11 @@ impl SiteRules {
         &self.blocked_hosts
     }
 
-    /// Whether a document or request on `host` may not use cookies.
-    pub fn blocks(&self, host: &str) -> bool {
-        self.blocked_hosts.iter().any(|d| covers(d, host))
-    }
-
-    /// Whether a cookie under `domain` (leading dot or not) reaches a site set to Block: the
-    /// domain covers a blocked host, as `.example.com` does `www.example.com`, or one covers it.
+    /// Whether a cookie under `domain` reaches a site set to Block or is one of its
+    /// subdomains': a domain cookie (`.example.com`) reaches `www.example.com`, a host-only one
+    /// (`example.com`) only `example.com`.
     pub fn blocks_cookie(&self, domain: &str) -> bool {
-        let domain = domain.strip_prefix('.').unwrap_or(domain);
-        self.blocked_hosts.iter().any(|h| covers(domain, h) || covers(h, domain))
+        self.blocked_hosts.iter().any(|h| belongs(domain, h))
     }
 
     /// Sites whose data is deleted at exit and at the next start, those set to Block and to
@@ -165,12 +158,26 @@ impl SiteRules {
         &self.to_clear
     }
 
-    /// Whether data an engine keeps under `domain` (a cookie's domain, leading dot or not, or a
-    /// WebKit website-data record name such as `example.com`) belongs to a site to clear: the
-    /// domain covers one of those sites' hosts, or one of them covers it.
-    pub fn clears(&self, domain: &str) -> bool {
-        let domain = domain.strip_prefix('.').unwrap_or(domain);
-        self.clear_hosts.iter().any(|h| covers(domain, h) || covers(h, domain))
+    /// Whether a cookie under `domain` belongs to a site to clear, as [`SiteRules::blocks_cookie`]
+    /// matches blocked sites.
+    pub fn clears_cookie(&self, domain: &str) -> bool {
+        self.clear_hosts.iter().any(|h| belongs(domain, h))
+    }
+
+    /// Whether the data WebKit keeps under website-data record `name` (a registrable domain such
+    /// as `example.com`) holds a site to clear's: the name covers one of those sites' hosts, or
+    /// one of them covers it.
+    pub fn clears(&self, name: &str) -> bool {
+        self.clear_hosts.iter().any(|h| covers(name, h) || covers(h, name))
+    }
+}
+
+/// Whether a cookie under `domain` (a leading dot for a domain cookie) reaches `host`, or is
+/// set by one of its subdomains.
+fn belongs(domain: &str, host: &str) -> bool {
+    match domain.strip_prefix('.') {
+        Some(parent) => covers(parent, host) || covers(host, parent),
+        None => covers(host, domain),
     }
 }
 

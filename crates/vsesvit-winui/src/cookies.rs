@@ -36,6 +36,9 @@ const NETWORK_ENABLE: &str = r#"{"maxTotalBufferSize":0,"maxResourceBufferSize":
 
 /// How long closing the browser waits for the engine to clear sites.
 const EXIT_CLEARING: Duration = Duration::from_secs(2);
+/// How long the first web view waits for the engine to clear sites at startup, holding back
+/// every page meanwhile.
+const START_CLEARING: Duration = Duration::from_secs(5);
 
 fn cookie_controls(blocked: bool) -> String {
     json!({ "enableThirdPartyCookieRestriction": blocked }).to_string()
@@ -240,7 +243,7 @@ pub(crate) fn delete_blocked(browser: &Browser, rules: SiteRules) {
         return;
     };
     exec::spawn(async move {
-        match delete_cookies(&core, |domain| rules.blocks_cookie(domain)).await {
+        match delete_cookies(&core, |c| rules.blocks_cookie(&c.domain)).await {
             Ok(0) => {}
             Ok(n) => log::info!("deleted {n} cookie(s) of sites set to Block"),
             Err(e) => log::warn!("deleting the cookies of sites set to Block: {e}"),
@@ -291,15 +294,15 @@ pub(crate) async fn all_cookies(core: &CoreWebView2) -> Result<Vec<Cookie>> {
     ))
 }
 
-/// Deletes the cookies whose site (`Cookie::site`) `which` picks; how many it deleted.
+/// Deletes the cookies `which` picks; how many it deleted.
 pub(crate) async fn delete_cookies(
     core: &CoreWebView2,
-    which: impl Fn(&str) -> bool,
+    which: impl Fn(&Cookie) -> bool,
 ) -> Result<usize> {
     let picked: Vec<Cookie> = all_cookies(core)
         .await?
         .into_iter()
-        .filter(|c| which(c.site()))
+        .filter(|c| which(c))
         .collect();
     for cookie in &picked {
         let mut params =
@@ -334,9 +337,20 @@ pub(crate) async fn clear_sites(core: &CoreWebView2, rules: &SiteRules) -> Resul
     for call in start_clearing(core, rules)? {
         call.await?;
     }
-    delete_cookies(core, |domain| rules.clears(domain)).await?;
+    delete_cookies(core, |c| rules.clears_cookie(&c.domain)).await?;
     log::info!("cleared the data of {} site(s)", rules.to_clear().len());
     Ok(())
+}
+
+/// Deletes the data of the sites to clear at startup, before any page loads, through the first
+/// web view, a bounded while: the view can close before the engine answers.
+pub(crate) async fn clear_at_start(browser: &Browser, core: &CoreWebView2) {
+    let rules = browser.core(cookies::site_rules);
+    match exec::timeout(START_CLEARING, clear_sites(core, &rules)).await {
+        Some(Ok(())) => {}
+        Some(Err(e)) => log::warn!("clearing site data: {e}"),
+        None => log::warn!("clearing site data: no answer from the engine"),
+    }
 }
 
 /// Clearing the sites to clear as the browser closes, started through a tab still open.

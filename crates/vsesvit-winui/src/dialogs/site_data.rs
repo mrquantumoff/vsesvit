@@ -103,7 +103,7 @@ async fn delete(list: Rc<List>, site: Option<String>) {
                 devtools_in(&core, "", "Storage.clearDataForOrigin", &params.to_string()).await?;
             }
         }
-        cookies::delete_cookies(&core, |s| sites.contains(&s)).await
+        cookies::delete_cookies(&core, |c| sites.contains(&c.site())).await
     }
     .await;
     match deleted {

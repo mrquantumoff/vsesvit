@@ -57,7 +57,6 @@ fn third_party_cookies_are_blocked_in_private_windows_by_default_and_the_choice_
     let labels: Vec<&str> = ThirdPartyCookies::ALL.iter().map(|c| c.label()).collect();
     assert_eq!(labels, ["Allow third-party cookies", "Block third-party cookies in private windows", "Block third-party cookies"]);
     assert!(ThirdPartyCookies::ALL.iter().all(|c| !c.description().is_empty() && !c.description().ends_with('.')));
-    assert_eq!(cookies::TITLE, "Third-party cookies");
     assert_eq!(cookies::SITE_TITLE, Permission::Cookies.label());
 }
 
@@ -143,36 +142,39 @@ fn site_rules_cover_a_site_and_its_subdomains() {
 
     let rules = cookies::site_rules(&mut p);
     assert_eq!(rules.blocked_hosts(), ["ads.example", "example.com"]);
-    assert!(rules.blocks("example.com"));
-    assert!(rules.blocks("www.example.com"));
-    assert!(rules.blocks("a.b.ads.example"));
-    assert!(!rules.blocks("com"), "not a parent");
-    assert!(!rules.blocks("notexample.com"), "domains match whole labels");
-    assert!(!rules.blocks("www.cleared.example"), "clear on exit lets the site use cookies");
-    assert!(!rules.blocks("allowed.example"));
-    assert!(!rules.blocks("camera.example"));
-    assert!(rules.blocks_cookie(".www.example.com") && rules.blocks_cookie("ads.example"));
-    assert!(!rules.blocks_cookie(".cleared.example") && !rules.blocks_cookie("notexample.com"));
+    assert!(rules.blocks_cookie("example.com"));
+    assert!(rules.blocks_cookie("www.example.com"));
+    assert!(rules.blocks_cookie(".www.example.com"));
+    assert!(rules.blocks_cookie("a.b.ads.example"));
+    assert!(!rules.blocks_cookie("com"), "not a parent");
+    assert!(!rules.blocks_cookie("notexample.com"), "domains match whole labels");
+    assert!(!rules.blocks_cookie("www.cleared.example"), "clear on exit lets the site use cookies");
+    assert!(!rules.blocks_cookie("allowed.example"));
+    assert!(!rules.blocks_cookie("camera.example"));
+    assert!(!rules.blocks_cookie(".cleared.example"));
 
     assert_eq!(
         rules.to_clear(),
         [origin("http://example.com"), origin("https://ads.example"), origin("https://example.com"), origin("https://www.cleared.example")]
     );
-    assert!(rules.clears(".example.com"));
+    assert!(rules.clears_cookie(".example.com"));
+    assert!(rules.clears_cookie("www.example.com"));
+    assert!(rules.clears_cookie(".www.cleared.example"));
+    assert!(rules.clears_cookie(".cleared.example"), "a domain cookie that reaches the rule's host");
+    assert!(!rules.clears_cookie("cleared.example"), "the parent's own cookie");
+    assert!(rules.clears_cookie("img.www.cleared.example"));
+    assert!(!rules.clears_cookie("other.cleared.example"), "a sibling of the rule's host");
+    assert!(!rules.clears_cookie("notexample.com"));
+    assert!(!rules.clears_cookie("allowed.example"));
     assert!(rules.clears("example.com"));
-    assert!(rules.clears("www.example.com"));
     assert!(rules.clears("cleared.example"), "a website-data record of the rule's parent domain");
-    assert!(rules.clears(".www.cleared.example"));
-    assert!(rules.clears("img.www.cleared.example"));
-    assert!(!rules.clears("other.cleared.example"), "a sibling of the rule's host");
-    assert!(!rules.clears("notexample.com"));
-    assert!(!rules.clears("allowed.example"));
+    assert!(!rules.clears("other.example"));
     assert!(!rules.clears("camera.example"));
 
     let (mut empty, _dir) = open(2);
     let rules = cookies::site_rules(&mut empty);
     assert!(rules.blocked_hosts().is_empty() && rules.to_clear().is_empty());
-    assert!(!rules.blocks("example.com") && !rules.clears("example.com"));
+    assert!(!rules.blocks_cookie("example.com") && !rules.clears("example.com"));
 }
 
 #[test]
@@ -180,8 +182,8 @@ fn a_parent_domains_cookie_reaches_a_blocked_subdomain() {
     let (mut p, _dir) = open(1);
     cookies::set(&mut p, &origin("https://www.shop.example"), Some(Block)).unwrap();
     let rules = cookies::site_rules(&mut p);
-    assert!(!rules.blocks("shop.example"), "the parent site may use cookies");
-    assert!(rules.blocks_cookie(".shop.example"), "but its domain cookies reach www.shop.example");
+    assert!(!rules.blocks_cookie("shop.example"), "the parent site keeps its own cookies");
+    assert!(rules.blocks_cookie(".shop.example"), "but not its domain cookies, which reach www.shop.example");
     assert!(!rules.blocks_cookie("mail.shop.example"));
 }
 

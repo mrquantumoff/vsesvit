@@ -341,12 +341,7 @@ impl Tab {
         settings.SetIsWebMessageEnabled(false)?;
         if let Some(browser) = self.browser() {
             self.apply_autofill(&settings, browser.autofill_forms());
-            let rules = browser.core(vsesvit_core::cookies::site_rules);
-            let clear = async || {
-                if let Err(e) = cookies::clear_sites(&core, &rules).await {
-                    log::warn!("clearing site data: {e}");
-                }
-            };
+            let clear = async || cookies::clear_at_start(&browser, &core).await;
             if let Err(e) = browser.engine().set_up_profile(&core, clear).await {
                 log::warn!("tab {}: engine profile: {e}", self.id);
             }

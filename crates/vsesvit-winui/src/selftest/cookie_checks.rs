@@ -45,7 +45,7 @@ pub(super) async fn cookies(
         ));
     }
 
-    cookies::delete_cookies(&core, |site| site == FRAME_HOST)
+    cookies::delete_cookies(&core, |c| c.site() == FRAME_HOST)
         .await
         .map_err(|e| e.to_string())?;
     browser.write_pref(&keys::THIRD_PARTY_COOKIES, &ThirdPartyCookies::Block);
