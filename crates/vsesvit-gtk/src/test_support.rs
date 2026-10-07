@@ -15,6 +15,7 @@ use gtk::{gio, glib};
 use vsesvit_core::{OpenOptions, Profile};
 
 use crate::browser::Browser;
+use crate::window::BrowserWindow;
 
 const WAIT: Duration = Duration::from_secs(15);
 pub(crate) const STALLED_FILE_SIZE: u64 = 1_000_000;
@@ -80,6 +81,24 @@ pub(crate) fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 pub(crate) fn settle(duration: Duration) {
     let deadline = Instant::now() + duration;
     wait_until("nothing", || Instant::now() >= deadline);
+}
+
+/// A test's window, destroyed however the test ends: one a failed wait left open would be
+/// in the next test's way.
+pub(crate) struct TestWindow(pub(crate) BrowserWindow);
+
+impl std::ops::Deref for TestWindow {
+    type Target = BrowserWindow;
+
+    fn deref(&self) -> &BrowserWindow {
+        &self.0
+    }
+}
+
+impl Drop for TestWindow {
+    fn drop(&mut self) {
+        self.0.destroy();
+    }
 }
 
 /// What the test server does with a request.

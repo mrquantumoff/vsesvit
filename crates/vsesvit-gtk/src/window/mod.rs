@@ -1544,7 +1544,7 @@ fn icon_button(icon: &str, action: &str, tooltip: &str) -> gtk::Button {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{Reply, Server, browser, wait_until};
+    use crate::test_support::{Reply, Server, TestWindow, browser, wait_until};
     use vsesvit_core::prefs::keys;
 
     #[gtk::test]
@@ -1616,7 +1616,7 @@ mod tests {
         let page = "<script>document.onfullscreenchange = () => \
                     document.title = document.fullscreenElement ? 'full' : 'windowed'</script>";
         let server = Server::start("127.0.0.1", |_| Reply::Body("text/html", page.into()));
-        let window = BrowserWindow::new(&browser());
+        let window = TestWindow(BrowserWindow::new(&browser()));
         window.present();
         let url = server.url("/");
         let tab = window.open_tab(Some(&url), None, Focus::Foreground);
@@ -1627,12 +1627,18 @@ mod tests {
         let title = || tab.web_view().title().unwrap_or_default();
         run("document.documentElement.requestFullscreen()");
         wait_until("full screen", || window.is_fullscreen() && title() == "full");
+        // Weston drops a request to leave full screen made before the window drew a frame at
+        // full screen (it compares with the state last drawn); the window draws one before
+        // anyone could press Esc.
+        let clock = window.frame_clock().expect("a shown window's frame clock");
+        let drawn = clock.frame_counter();
+        window.queue_draw();
+        wait_until("a frame at full screen", || clock.frame_counter() > drawn);
         let notice = &window.ui().fullscreen_notice;
         let shown = (notice.reveals_child(), window.ui().fullscreen_text.label());
         run("document.exitFullscreen()");
         wait_until("the window back", || !window.is_fullscreen() && title() == "windowed");
         let hidden = !notice.reveals_child();
-        window.destroy();
         assert!(shown.0, "the notice shows");
         let site = url.trim_start_matches("http://").trim_end_matches('/');
         assert!(shown.1.contains(site) && shown.1.contains("Esc"), "{}", shown.1);
