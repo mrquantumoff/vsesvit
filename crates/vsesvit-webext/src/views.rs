@@ -144,10 +144,6 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
     view
 }
 
-/// An action popup at `url`, handed to `show` once it exists (already loading). A page
-/// background opens it with `window.open`, so the popup's `opener` is the background page:
-/// WebKit lets a page reach another view's window only through that relationship, and
-/// `runtime.getBackgroundPage` needs it. Any other popup is a plain view.
 /// Lets `view` fetch across origins from the hosts `ext` holds now. WebKit adds the hosts to
 /// its web process for good, so one taken back stays reachable until that process ends.
 pub(crate) fn set_cors_allowlist(view: &webkit::WebView, ext: &Extension) {
@@ -155,6 +151,10 @@ pub(crate) fn set_cors_allowlist(view: &webkit::WebView, ext: &Extension) {
     view.set_cors_allowlist(&allowlist.iter().map(String::as_str).collect::<Vec<_>>());
 }
 
+/// An action popup at `url`, handed to `show` once it exists (already loading). A page
+/// background opens it with `window.open`, so the popup's `opener` is the background page:
+/// WebKit lets a page reach another view's window only through that relationship, and
+/// `runtime.getBackgroundPage` needs it. Any other popup is a plain view.
 pub(crate) fn open_popup(inner: &Rc<Inner>, ext: &Rc<Extension>, url: String, show: Box<dyn FnOnce(webkit::WebView)>) {
     let background = ext.background.borrow().clone().filter(|_| ext.background_is_page());
     let Some(background) = background else {
