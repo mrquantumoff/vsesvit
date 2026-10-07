@@ -32,9 +32,15 @@ const OPEN_CAMERA: &str = "window.__gum = ''; window.__ended = 0; \
       for (const t of s.getTracks()) t.addEventListener('ended', () => window.__ended++); \
       window.__gum = 'ok'; }, e => window.__gum = e.name); 0";
 
-const SHARE_SCREEN: &str = "window.__gdm = ''; \
+const SHARE_SCREEN: &str = "window.__gdm = ''; window.__ended = 0; \
     navigator.mediaDevices.getDisplayMedia({ video: true }).then(s => { \
-      window.__screen = s; window.__gdm = 'ok'; }, e => window.__gdm = e.name); 0";
+      window.__screen = s; \
+      for (const t of s.getTracks()) t.addEventListener('ended', () => window.__ended++); \
+      window.__gdm = 'ok'; }, e => window.__gdm = e.name); 0";
+
+/// The shared screen's track: `live`, `ended`, or `none` in a document without a share.
+const SHARE_STATE: &str =
+    "window.__screen ? window.__screen.getVideoTracks()[0].readyState : 'none'";
 
 /// A screenshot of what these steps show, which the address box's suggestion list must not
 /// cover.
@@ -532,12 +538,18 @@ async fn screen_share(
         })
     })
     .await;
-    eval(
-        tab,
-        "window.__ended = 0; window.__screen && window.__screen.getTracks()\
-        .forEach(t => t.addEventListener('ended', () => window.__ended++)); 0",
-    )
-    .await?;
+    // Stop needs a live share, and one run saw the share end before Stop without the shell
+    // (no `ended` from Stop, the bar gone all the same): share again then.
+    let before_stop = page_value(tab, SHARE_STATE).await;
+    let shared_again = before_stop.as_deref() != Some("live");
+    if shared_again {
+        devtools(tab, "Runtime.evaluate", &gesture).await?;
+        page_value(tab, "window.__gdm").await;
+        exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
+            window.share_bar_shown()
+        })
+        .await;
+    }
     super::dialog_steps::invoke(&window.stop_sharing_button()).map_err(|e| e.to_string())?;
     let gone = exec::wait_for(STEP_TIMEOUT, Duration::from_millis(100), || {
         window.share_bar_shown().is_none().then_some(())
@@ -546,6 +558,8 @@ async fn screen_share(
     let ended = page_value(tab, "String(window.__ended)").await;
     steps.push(json!({
         "name": "24l-stop-sharing",
+        "before_stop": before_stop,
+        "shared_again": shared_again,
         "ended_events": ended,
         "bar_gone": gone.is_some(),
         "ok": ended.as_deref() == Some("1") && gone.is_some(),
