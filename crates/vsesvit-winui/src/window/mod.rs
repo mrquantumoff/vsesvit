@@ -1089,8 +1089,14 @@ impl BrowserWindow {
             .unwrap_or(0.0)
     }
 
+    /// The text in the address box's text box. The box's own `Text` takes it up only when the
+    /// box reports the change, a moment after the keys.
     pub fn address_text(&self) -> String {
-        self.ui.address.Text().unwrap_or_default()
+        match self.address_text_box() {
+            Some(text_box) => text_box.Text(),
+            None => self.ui.address.Text(),
+        }
+        .unwrap_or_default()
     }
 
     pub fn tab_count(&self) -> usize {

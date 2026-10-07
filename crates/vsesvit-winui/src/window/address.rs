@@ -286,6 +286,11 @@ impl BrowserWindow {
     /// A key pressed in the address box, before its text box sees it. True when the address
     /// box handled the key, which the text box then never gets.
     pub fn address_key_down(&self, vk: u16, mods: Mods) -> bool {
+        // The box reports typing a moment after it: the keys just typed may not be in the edit
+        // yet, and a key handled here acts on all of them, as Enter opens all that was typed.
+        if omnibox::key(vk, mods, true).is_some() {
+            self.address_changed();
+        }
         self.address_deleting.set(omnibox::deletes(vk, mods));
         let list_open = self.suggestions_open() && !self.suggestion_labels().is_empty();
         match omnibox::key(vk, mods, list_open) {
