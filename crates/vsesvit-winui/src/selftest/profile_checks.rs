@@ -1,14 +1,15 @@
 //! The `profiles` check: the profile menu, window titles with the profile's name, a private
-//! window's too, Manage profiles and the picker switch in Settings, on a profile list in the
-//! output directory. No process is started: adding goes through core, as the Add profile flyout's
-//! answer does.
+//! window's too, the name and picture a sync sign-in gives the profile, Manage profiles and the
+//! picker switch in Settings, on a profile list in the output directory. No process is started:
+//! adding goes through core, as the Add profile flyout's answer does. The account picture is the
+//! one a sign-in would fetch, decoded here: the self-test reaches no network.
 
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
 use vsesvit_core::private::Browsing;
-use vsesvit_core::profiles::ProfileColor;
+use vsesvit_core::profiles::{AccountDetails, AccountPicture, ProfileColor};
 
 use super::{Probe, until};
 use windows_core::Interface;
@@ -18,7 +19,13 @@ use crate::browser::Browser;
 use crate::dialogs::{self, Dialog};
 use crate::exec;
 use crate::session::{TabPlan, WindowPlan};
+use crate::sync::take_account_details;
 use crate::window::BrowserWindow;
+
+const PICTURE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/fixtures/site/allowed.png"
+));
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -89,8 +96,23 @@ pub(super) async fn profiles(
     browser.set_profiles(registry);
     let together = (menu()?, window.title());
     let private = private_title(browser, window, p).await?;
+    let account = |name: &str| AccountDetails {
+        name: Some(name.to_owned()),
+        picture: None,
+    };
+    take_account_details(browser, account("Alex"));
+    let picture = AccountPicture::decode(PICTURE).ok_or("the fixture picture does not decode")?;
+    let registry = home
+        .dir
+        .take_account_details(&home.id, None, Some(&picture))
+        .map_err(err)?;
+    browser.set_profiles(registry);
+    let from_account = (menu()?, window.shows_profile_picture());
+    shoot(window, out_dir, "profile-account.png").await?;
     browser.edit_profile(&home.id, "Tester", ProfileColor::Teal)?;
     let renamed = window.title();
+    take_account_details(browser, account("Sam"));
+    let by_hand = (menu()?, window.shows_profile_picture());
     let shown = window.show_profile_menu().map_err(err)?;
     let shot = shoot(window, out_dir, "profile-menu.png").await;
     let _ = shown.cast::<FlyoutBase>().and_then(|m| m.Hide());
@@ -129,7 +151,9 @@ pub(super) async fn profiles(
     let after = (removed, menu()?, window.title());
 
     let detail = format!(
-        "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile button {private:?}; renamed: {renamed:?}; \
+        "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile button {private:?}; \
+         signed in to sync as Alex: menu and account picture {from_account:?} (profile-account.png); renamed and recoloured by hand: {renamed:?}, \
+         then a sync sign-in as Sam left menu and picture {by_hand:?}; \
          Manage profiles lists {rows:?} (profile-menu.png, profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored \
          on={picker_stored}; Work removed: menu {:?}, title {:?}",
         alone.0, alone.1, together.0, together.1, after.1, after.2
@@ -148,7 +172,9 @@ pub(super) async fn profiles(
                 format!("{page} - Person 1 - Vsesvit"),
             )
         && private == (format!("{page} - Person 1 - Vsesvit (Private)"), false)
+        && from_account == (checked(&["Alex", "Work"], 0), true)
         && renamed == format!("{page} - Tester - Vsesvit")
+        && by_hand == (checked(&["Tester", "Work"], 0), false)
         && rows == ["Tester", "Work"]
         && picker_shown
         && !picker_stored

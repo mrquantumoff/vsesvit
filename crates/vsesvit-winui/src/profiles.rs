@@ -6,7 +6,10 @@ use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::{Rc, Weak};
 
-use vsesvit_core::profiles::{self, NAME_MAX, ProfileColor, ProfileId, ProfilesDir, Registry};
+use vsesvit_core::Url;
+use vsesvit_core::profiles::{
+    self, NAME_MAX, ProfileColor, ProfileEntry, ProfileId, ProfilesDir, Registry,
+};
 use windows_core::{Interface, Result};
 
 use crate::bindings::*;
@@ -15,22 +18,50 @@ use crate::dialogs::{Wired, on_click};
 use crate::window::{self, Backdrop, BrowserWindow};
 use crate::{app, platform, xaml};
 
-/// A coloured circle with the profile's initial.
-pub(crate) fn avatar_markup(name: &str, color: ProfileColor, size: u32) -> String {
+/// The profile's sync account picture in a circle, else a coloured circle with its initial.
+pub(crate) fn avatar_markup(
+    name: &str,
+    color: ProfileColor,
+    picture: Option<&Path>,
+    size: u32,
+) -> String {
+    let radius = size / 2;
+    if let Some(uri) = picture.and_then(|p| Url::from_file_path(p).ok()) {
+        return format!(
+            r#"<Border x:Name="ProfilePicture" Width="{size}" Height="{size}" CornerRadius="{radius}">
+  <Border.Background><ImageBrush ImageSource="{uri}" Stretch="UniformToFill"/></Border.Background>
+</Border>"#,
+            uri = xaml::escape(uri.as_str()),
+        );
+    }
     format!(
         r#"<Border Width="{size}" Height="{size}" CornerRadius="{radius}" Background="{css}">
   <TextBlock Text="{initial}" Foreground="White" FontWeight="SemiBold" FontSize="{font}"
              HorizontalAlignment="Center" VerticalAlignment="Center"/>
 </Border>"#,
-        radius = size / 2,
         css = color.css(),
         initial = xaml::escape(&profiles::avatar_initial(name)),
         font = size * 11 / 20,
     )
 }
 
-pub(crate) fn avatar(name: &str, color: ProfileColor, size: u32) -> Result<UIElement> {
-    xaml::load(&avatar_markup(name, color, size).replacen("<Border", "<Border {ns}", 1))
+/// [`avatar_markup`] for a listed profile.
+pub(crate) fn entry_avatar_markup(dir: &ProfilesDir, entry: &ProfileEntry, size: u32) -> String {
+    avatar_markup(
+        &entry.name,
+        entry.color,
+        dir.picture(entry).as_deref(),
+        size,
+    )
+}
+
+pub(crate) fn avatar(
+    name: &str,
+    color: ProfileColor,
+    picture: Option<&Path>,
+    size: u32,
+) -> Result<UIElement> {
+    xaml::load(&avatar_markup(name, color, picture, size).replacen("<Border", "<Border {ns}", 1))
 }
 
 /// Starts `root`'s profile, or brings its windows forward when its process already runs: the
@@ -265,9 +296,11 @@ impl Manage {
         let children = rows.Children()?;
         children.Clear()?;
         let registry = browser.profiles();
-        let current = browser.home().map(|home| home.id.clone());
+        let Some(home) = browser.home() else {
+            return Ok(());
+        };
         for (i, entry) in registry.profiles().iter().enumerate() {
-            let this = Some(&entry.id) == current.as_ref();
+            let this = entry.id == home.id;
             let row: FrameworkElement = xaml::load(&format!(
                 r#"<Grid {{ns}} ColumnSpacing="12" Padding="12,8" CornerRadius="4"
        Background="{{ThemeResource CardBackgroundFillColorDefaultBrush}}">
@@ -294,7 +327,7 @@ impl Manage {
     <FontIcon Glyph="&#xE74D;" FontSize="14"/>
   </Button>
 </Grid>"#,
-                avatar = avatar_markup(&entry.name, entry.color, 32),
+                avatar = entry_avatar_markup(&home.dir, entry, 32),
                 name = xaml::escape(&entry.name),
                 this = if this { "Visible" } else { "Collapsed" },
                 others = if this { "Collapsed" } else { "Visible" },
@@ -410,7 +443,7 @@ pub(crate) fn show_picker(dir: ProfilesDir) -> Result<()> {
 
     let cards = xaml::find::<Panel>(&root, "PickerCards")?.Children()?;
     for entry in registry.profiles() {
-        let card = card(&avatar_markup(&entry.name, entry.color, 72), &entry.name)?;
+        let card = card(&entry_avatar_markup(&dir, entry, 72), &entry.name)?;
         let (dir, id) = (dir.clone(), entry.id.clone());
         on_click(&card, move || pick(&dir.root(&id)))?;
         cards.Append(&card.cast::<UIElement>()?)?;
@@ -550,9 +583,27 @@ mod tests {
 
     #[test]
     fn an_avatar_is_its_colour_and_initial() {
-        let markup = avatar_markup("<work>", ProfileColor::Teal, 24);
+        let markup = avatar_markup("<work>", ProfileColor::Teal, None, 24);
         assert!(markup.contains(r##"Background="#2190a4""##), "{markup}");
         assert!(markup.contains(r#"Text="W""#), "{markup}");
         assert!(markup.contains(r#"CornerRadius="12""#), "{markup}");
+    }
+
+    #[test]
+    fn an_avatar_with_a_picture_is_the_picture_in_a_circle() {
+        let markup = avatar_markup(
+            "Work",
+            ProfileColor::Teal,
+            Some(Path::new(r"C:\Profiles\A & B\Account Picture 1.png")),
+            72,
+        );
+        assert!(
+            markup.contains(
+                r#"ImageSource="file:///C:/Profiles/A%20&amp;%20B/Account%20Picture%201.png""#
+            ),
+            "{markup}"
+        );
+        assert!(markup.contains(r#"CornerRadius="36""#), "{markup}");
+        assert!(!markup.contains("TextBlock"), "{markup}");
     }
 }

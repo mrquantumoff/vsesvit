@@ -820,10 +820,11 @@ impl BrowserWindow {
             return;
         };
         let registry = browser.profiles();
-        let (name, color) = registry
-            .get(&home.id)
-            .map_or((home.id.as_str(), ProfileColor::Slate), |p| (p.name.as_str(), p.color));
-        let shown = crate::profiles::avatar(name, color, 22).and_then(|avatar| {
+        let entry = registry.get(&home.id);
+        let name = entry.map_or(home.id.as_str(), |p| p.name.as_str());
+        let color = entry.map_or(ProfileColor::Slate, |p| p.color);
+        let picture = entry.and_then(|entry| home.dir.picture(entry));
+        let shown = crate::profiles::avatar(name, color, picture.as_deref(), 22).and_then(|avatar| {
             let children = self.ui.profile_avatar.Children()?;
             children.Clear()?;
             children.Append(&avatar)?;
@@ -862,6 +863,17 @@ impl BrowserWindow {
             }
         }
         Ok(lines)
+    }
+
+    /// Whether the profile button shows the sync account's picture.
+    #[cfg(feature = "self-test")]
+    pub fn shows_profile_picture(&self) -> bool {
+        self.ui
+            .profile_avatar
+            .Children()
+            .and_then(|children| children.GetAt(0))
+            .and_then(|avatar| avatar.cast::<FrameworkElement>()?.Name())
+            .is_ok_and(|name| name == "ProfilePicture")
     }
 
     #[cfg(feature = "self-test")]
