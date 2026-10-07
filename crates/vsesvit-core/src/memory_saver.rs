@@ -7,7 +7,8 @@
 //! screen, pinned, playing sound, capturing, its site may notify, a page it opened or that opened
 //! it can reach it) restarts its clock, so it sleeps only once it has been left alone for the
 //! whole delay. Before putting a tab to sleep, the shell runs [`UNSAVED_INPUT_SCRIPT`] in it and
-//! keeps it awake (restarting its clock) when the page has form input not yet submitted.
+//! keeps it awake (restarting its clock) when the page has form input not yet submitted. Where
+//! sleeping reloads the page (Linux), a page edited in any frame stays awake too.
 //!
 //! The shells put tabs to sleep and wake them with their engine's means; a sleeping tab keeps its
 //! address, title, icon and history, so the session, tab search and sync's open tabs still list
@@ -147,15 +148,19 @@ impl Sweep {
 }
 
 /// Run in a tab's page before it sleeps: `true` when a text field, check box, radio button or
-/// list on the page holds something other than what the page loaded with, as when the user has
-/// typed into a form and not submitted it. Chrome keeps such tabs awake.
+/// list on the page holds something other than what the page loaded with, or a file field holds
+/// a file, as when the user has filled in a form and not submitted it. Chrome keeps such tabs
+/// awake. It sees the main frame's form fields only; a shell whose sleep reloads the page also
+/// keeps a tab awake once any of its frames was edited.
 pub const UNSAVED_INPUT_SCRIPT: &str = r#"(() => {
-  const skipped = new Set(['hidden', 'submit', 'button', 'reset', 'image', 'file']);
+  const skipped = new Set(['hidden', 'submit', 'button', 'reset', 'image']);
   for (const field of document.querySelectorAll('input, textarea')) {
     if (skipped.has(field.type) || field.disabled || field.readOnly) continue;
     const changed = field.type === 'checkbox' || field.type === 'radio'
       ? field.checked !== field.defaultChecked
-      : field.value !== field.defaultValue;
+      : field.type === 'file'
+        ? field.files.length > 0
+        : field.value !== field.defaultValue;
     if (changed) return true;
   }
   for (const list of document.querySelectorAll('select')) {

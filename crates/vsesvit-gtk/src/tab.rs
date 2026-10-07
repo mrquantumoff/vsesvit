@@ -33,6 +33,15 @@ use crate::page_menu;
 use crate::permissions::{self, TabPermissions};
 use crate::window::{BrowserWindow, Focus};
 
+/// The world and the message handler of [`TRACK_EDITS`].
+const EDITS_WORLD: &str = "vsesvit-edits";
+const EDITS_HANDLER: &str = "vsesvitEdited";
+/// Tells the tab of a document's first edit: an `input` (typing in a field or an editable
+/// region) or a `change` (a list, a box, a file chosen), as Chrome counts form interaction and
+/// user edits.
+const TRACK_EDITS: &str = "for (const kind of ['input', 'change']) \
+    addEventListener(kind, () => webkit.messageHandlers.vsesvitEdited.postMessage(0), { capture: true, once: true });";
+
 /// Something about a tab the window may need to show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabChange {
@@ -143,6 +152,8 @@ mod imp {
         pub(super) rest: RefCell<Rest>,
         /// It opened a tab, or a page opened it, that can reach its page (`window.opener`).
         pub(super) related: Cell<bool>,
+        /// A frame of its page was edited ([`TRACK_EDITS`]) since the page committed.
+        pub(super) edited: Cell<bool>,
         /// Every target whose navigation this view refused, for tests to wait on.
         #[cfg(test)]
         pub(super) refused: RefCell<Vec<String>>,
@@ -236,6 +247,7 @@ impl Tab {
         imp.web_view.set(web_view).expect("wrap runs once");
         tab.connect_web_view();
         page_menu::attach(&tab);
+        tab.track_edits();
         browser.tab_used(&tab);
         tab
     }
@@ -534,6 +546,34 @@ impl Tab {
         }
     }
 
+    /// Listens for the first edit of each document in any frame: Memory Saver keeps an edited
+    /// page awake, since sleeping ends its web process and waking loads it again.
+    fn track_edits(&self) {
+        let Some(content) = self.web_view().user_content_manager() else { return };
+        content.add_script(&webkit::UserScript::for_world(
+            TRACK_EDITS,
+            webkit::UserContentInjectedFrames::AllFrames,
+            webkit::UserScriptInjectionTime::Start,
+            EDITS_WORLD,
+            &[],
+            &[],
+        ));
+        content.register_script_message_handler(EDITS_HANDLER, Some(EDITS_WORLD));
+        content.connect_script_message_received(
+            Some(EDITS_HANDLER),
+            glib::clone!(
+                #[weak(rename_to = tab)]
+                self,
+                move |_, _| tab.imp().edited.set(true)
+            ),
+        );
+    }
+
+    /// Whether a frame of the page was edited since it committed.
+    pub(crate) fn has_edits(&self) -> bool {
+        self.imp().edited.get()
+    }
+
     /// Starts its idle clock again, as for a page with unsaved input.
     pub(crate) fn keep_awake(&self, now: Instant) {
         if let Rest::Awake(clock) = &mut *self.imp().rest.borrow_mut() {
@@ -806,6 +846,7 @@ impl Tab {
             }
             webkit::LoadEvent::Committed => {
                 imp.load.set(LoadPhase::Committed);
+                imp.edited.set(false);
                 imp.https.borrow_mut().committed();
                 let uri = self.web_view().uri().map(String::from);
                 imp.gate.borrow_mut().committed(self.runtime(), uri.as_deref().unwrap_or_default());
@@ -1552,6 +1593,48 @@ mod tests {
         assert!(released, "the view still shows the page");
         assert_eq!(asleep, ("Two".to_owned(), Some(two.clone()), true, false));
         assert_eq!(awake, (Some(two), true));
+    }
+
+    #[gtk::test]
+    fn memory_saver_keeps_a_page_edited_in_any_frame_awake() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/editor" => Reply::Body("text/html", b"<!doctype html><title>Editor</title><div contenteditable>Draft</div>".to_vec()),
+            "/framed" => Reply::Body("text/html", b"<!doctype html><title>Framed</title><iframe src=\"/form\"></iframe>".to_vec()),
+            "/form" => Reply::Body("text/html", b"<!doctype html><title>Form</title><input type=file>".to_vec()),
+            "/plain" => Reply::Page("Plain"),
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.open_tab(None, None, Focus::Foreground);
+        let open = |path: &str, title: &str| {
+            let tab = window.open_tab(Some(&server.url(path)), None, Focus::Background);
+            wait_until(title, || tab.web_view().title().as_deref() == Some(title));
+            tab
+        };
+        let (editor, framed, chosen, plain) = (open("/editor", "Editor"), open("/framed", "Framed"), open("/form", "Form"), open("/plain", "Plain"));
+        let run = |tab: &Tab, script: &str| {
+            let value = glib::MainContext::default().block_on(tab.web_view().evaluate_javascript_future(script, None, None));
+            value.expect("the script runs").to_str().to_string()
+        };
+        run(&editor, "document.querySelector('div').dispatchEvent(new InputEvent('input', { bubbles: true })); 0");
+        wait_until("the frame", || run(&framed, "String(!!frames[0]?.document?.querySelector('input'))") == "true");
+        run(&framed, "frames[0].document.querySelector('input').dispatchEvent(new Event('change', { bubbles: true })); 0");
+        run(&chosen, "const files = new DataTransfer(); files.items.add(new File(['x'], 'draft.pdf')); document.querySelector('input').files = files.files; 0");
+        wait_until("the edits", || editor.has_edits() && framed.has_edits());
+        let unreported = chosen.has_edits();
+
+        browser.sleep_idle_tabs(Instant::now() + std::time::Duration::from_secs(7 * 60 * 60));
+        wait_until("the plain tab to sleep", || plain.is_asleep());
+        crate::test_support::settle(std::time::Duration::from_millis(500));
+        let awake = [&editor, &framed, &chosen].map(|tab| !tab.is_asleep());
+        editor.reload();
+        wait_until("the editor again", || !editor.web_view().is_loading() && editor.web_view().title().as_deref() == Some("Editor"));
+        let edits_after_reload = editor.has_edits();
+        window.destroy();
+        assert!(!unreported, "a file set by the page is no edit");
+        assert_eq!(awake, [true; 3], "the edited region, the frame's chosen file and the file field kept their tabs awake");
+        assert!(!edits_after_reload, "a new document starts unedited");
     }
 
     #[gtk::test]

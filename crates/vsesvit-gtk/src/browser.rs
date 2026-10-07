@@ -741,14 +741,15 @@ impl Browser {
         }
     }
 
-    /// Puts `tab` to sleep unless its page holds form input not yet submitted, which keeps it
-    /// awake for another delay, and unless it was selected or closed while the page answered.
+    /// Puts `tab` to sleep unless its page was edited or holds form input not yet submitted,
+    /// which keeps it awake for another delay, and unless it was selected or closed while the
+    /// page answered.
     fn sleep_unless_unsaved(&self, tab: Tab) {
         let weak = Rc::downgrade(&self.0);
         glib::spawn_future_local(async move {
             let script = memory_saver::UNSAVED_INPUT_SCRIPT;
             let answer = tab.web_view().evaluate_javascript_future(script, None, None).await;
-            if answer.is_ok_and(|value| memory_saver::has_unsaved_input(&value.to_str())) {
+            if tab.has_edits() || answer.is_ok_and(|value| memory_saver::has_unsaved_input(&value.to_str())) {
                 tab.keep_awake(Instant::now());
                 return;
             }
