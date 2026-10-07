@@ -106,7 +106,8 @@ pub(super) async fn private_window(
         popup.hide();
     }
     detail.push(format!(
-        "the probe's action shortcut ({shortcut:?}) there opened a popup {shortcut_popup};          opening its popup there: {refusal:?}"
+        "the probe's action shortcut ({shortcut:?}) there opened a popup {shortcut_popup}; \
+         opening its popup there: {refusal:?}"
     ));
 
     let in_history = browser
