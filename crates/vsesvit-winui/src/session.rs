@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use vsesvit_core::Url;
 use vsesvit_core::prefs::Startup;
 use vsesvit_core::session::{SessionSnapshot, TabId, TabSnapshot, WindowSnapshot};
+use vsesvit_core::tab_groups::TabGroup;
 
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
@@ -31,6 +32,8 @@ pub(crate) struct TabPlan {
     /// A restored tab's title, shown until its page reports one; empty otherwise.
     pub title: String,
     pub pinned: bool,
+    /// A restored tab's group, as its record carries it.
+    pub group: Option<TabGroup>,
 }
 
 impl TabPlan {
@@ -40,6 +43,7 @@ impl TabPlan {
             id: None,
             title: String::new(),
             pinned: false,
+            group: None,
         }
     }
 
@@ -49,6 +53,7 @@ impl TabPlan {
             id: None,
             title: String::new(),
             pinned: false,
+            group: None,
         }
     }
 }
@@ -111,6 +116,7 @@ fn restore_window(window: WindowSnapshot) -> Option<WindowPlan> {
             id: Some(tab.id),
             title: tab.title,
             pinned: tab.pinned,
+            group: tab.group,
         })
         .collect();
     Some(WindowPlan {
@@ -121,13 +127,15 @@ fn restore_window(window: WindowSnapshot) -> Option<WindowPlan> {
     })
 }
 
-/// One tab in a snapshot. A tab that has not committed a URL yet is saved as the blank page.
+/// One tab in a snapshot, with its group if it is in one. A tab that has not committed a URL
+/// yet is saved as the blank page.
 pub(crate) fn tab_snapshot(
     id: TabId,
     url: &str,
     title: &str,
     pinned: bool,
     last_active_ms: i64,
+    group: Option<TabGroup>,
 ) -> TabSnapshot {
     let url = Url::parse(url).unwrap_or_else(|_| Url::parse("about:blank").expect("a valid URL"));
     TabSnapshot {
@@ -136,7 +144,7 @@ pub(crate) fn tab_snapshot(
         title: title.to_owned(),
         pinned,
         last_active_ms,
-        group: None,
+        group,
         restore_state: None,
     }
 }
@@ -173,7 +181,7 @@ mod tests {
     }
 
     fn tab(url: &str) -> TabSnapshot {
-        tab_snapshot(TabId::new(), url, "t", false, 1)
+        tab_snapshot(TabId::new(), url, "t", false, 1, None)
     }
 
     #[test]
@@ -211,12 +219,14 @@ mod tests {
                         id: Some(a.id),
                         title: "t".into(),
                         pinned: true,
+                        group: None,
                     },
                     TabPlan {
                         url: None,
                         id: Some(blank.id),
                         title: "t".into(),
                         pinned: false,
+                        group: None,
                     },
                 ],
                 active: 1,
@@ -224,6 +234,32 @@ mod tests {
                 maximized: true,
             }]
         );
+    }
+
+    #[test]
+    fn a_tabs_group_is_saved_with_it_and_restored_into_its_plan() {
+        use vsesvit_core::tab_groups::{GroupColor, GroupId};
+
+        let group = TabGroup {
+            id: GroupId::new(),
+            title: "Work".into(),
+            color: GroupColor::Green,
+            collapsed: true,
+        };
+        let grouped = TabSnapshot {
+            group: Some(group.clone()),
+            ..tab("https://a.test/")
+        };
+        let window =
+            window_snapshot(vec![grouped, tab("https://b.test/")], None, None, false).unwrap();
+        let plan = startup_plan(
+            Startup::RestoreSession,
+            Some(snapshot(vec![window])),
+            None,
+            vec![],
+        );
+        assert_eq!(plan[0].tabs[0].group, Some(group));
+        assert_eq!(plan[0].tabs[1].group, None);
     }
 
     #[test]
@@ -269,9 +305,7 @@ mod tests {
         assert!(window_snapshot(vec![], Some(0), None, false).is_none());
         let w = window_snapshot(vec![tab("https://a.test/")], Some(7), None, false).unwrap();
         assert_eq!(w.active_tab, 0);
-        assert_eq!(
-            tab_snapshot(TabId::new(), "", "", false, 0).url.as_str(),
-            "about:blank"
-        );
+        let blank = tab_snapshot(TabId::new(), "", "", false, 0, None);
+        assert_eq!(blank.url.as_str(), "about:blank");
     }
 }

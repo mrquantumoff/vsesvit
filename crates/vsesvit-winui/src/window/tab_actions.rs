@@ -117,6 +117,9 @@ impl BrowserWindow {
                 }
             }
             TabAction::Pin(pinned) => self.set_pinned(&tab, pinned),
+            TabAction::NewGroup => self.new_group(id),
+            TabAction::JoinGroup(group) => self.join_group(id, group),
+            TabAction::LeaveGroup => self.leave_group(id),
             TabAction::Mute(muted) => tab.set_muted(muted),
             TabAction::CopyLink => self.copy_link(&tab, true),
             TabAction::Close => self.close_tab(id),
@@ -294,7 +297,7 @@ impl BrowserWindow {
         }
     }
 
-    fn set_pinned(&self, tab: &Tab, pinned: bool) {
+    pub(super) fn set_pinned(&self, tab: &Tab, pinned: bool) {
         if tab.is_pinned() == pinned {
             return;
         }
@@ -346,7 +349,7 @@ impl BrowserWindow {
         }
     }
 
-    fn move_tab(&self, id: TabId, index: usize) -> Result<()> {
+    pub(super) fn move_tab(&self, id: TabId, index: usize) -> Result<()> {
         let strip = self.strip();
         if strip.order().iter().position(|t| *t == id) == Some(index) {
             return Ok(());
@@ -397,7 +400,8 @@ impl BrowserWindow {
 }
 
 /// What opens `tab` again: its address (none for a blank tab), its title until the page reports
-/// one, and its pin; `id` keeps naming it in the saved session.
+/// one, and its pin; `id` keeps naming it in the saved session. Not its group: a copy joins
+/// the group by being opened beside the tab, and a moved tab leaves its window's groups.
 fn plan_of(tab: &Tab, id: Option<vsesvit_core::session::TabId>) -> TabPlan {
     let url = tab.session_url();
     TabPlan {
@@ -405,6 +409,7 @@ fn plan_of(tab: &Tab, id: Option<vsesvit_core::session::TabId>) -> TabPlan {
         id,
         title: tab.state().title,
         pinned: tab.is_pinned(),
+        group: None,
     }
 }
 

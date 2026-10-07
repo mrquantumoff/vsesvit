@@ -20,6 +20,7 @@ mod media;
 mod permissions;
 mod progress;
 mod tab_actions;
+mod tab_groups;
 mod tab_layout;
 mod tab_menu;
 mod tab_search;
@@ -38,6 +39,7 @@ use vsesvit_core::prefs::{TabsPosition, Theme};
 use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles::ProfileColor;
 use vsesvit_core::suggest::Queries;
+use vsesvit_core::tab_groups::TabGroups;
 use vsesvit_core::view_source;
 use windows_core::{IInspectable, Interface, Result};
 
@@ -215,6 +217,12 @@ pub(crate) struct BrowserWindow {
     tabs: RefCell<Vec<Rc<Tab>>>,
     /// The tab whose page opened each tab, while that still places the tabs it opens next.
     openers: RefCell<HashMap<TabId, TabId>>,
+    /// The window's tab groups (see `tab_groups`).
+    groups: RefCell<TabGroups<TabId>>,
+    /// A group action is applying its steps, or the groups are being redrawn: no settling.
+    groups_busy: Cell<bool>,
+    /// The tab order as of the last settle, to tell which tab a drag moved.
+    order_seen: RefCell<Vec<TabId>>,
     /// The page's URL in the address box, or the user's edit and its suggestions.
     address: RefCell<Address>,
     /// The last key pressed in the address box deletes text (see `omnibox::deletes`).
@@ -309,6 +317,9 @@ impl BrowserWindow {
             tabs_position: Cell::new(prefs.tabs),
             tabs: RefCell::new(Vec::new()),
             openers: RefCell::new(HashMap::new()),
+            groups: RefCell::new(TabGroups::default()),
+            groups_busy: Cell::new(false),
+            order_seen: RefCell::new(Vec::new()),
             address: RefCell::new(Address::Page(String::new())),
             address_deleting: Cell::new(false),
             search_queries: Queries::default(),
@@ -458,12 +469,15 @@ impl BrowserWindow {
 
     // ---- tabs ----
 
-    /// Opens a window's tabs from a startup plan and selects its active tab.
+    /// Opens a window's tabs from a startup plan, in their groups, and selects its active tab.
     pub fn open_planned(&self, plan: &WindowPlan) -> Result<()> {
+        let mut grouped = Vec::with_capacity(plan.tabs.len());
         for (index, tab) in plan.tabs.iter().enumerate() {
             let initial = tab.url.clone().map_or(Initial::Blank, Initial::Url);
-            self.open_tab(initial, Placement::End, index == plan.active, Some(tab))?;
+            let opened = self.open_tab(initial, Placement::End, index == plan.active, Some(tab))?;
+            grouped.push((opened.id, tab.group.clone()));
         }
+        self.restore_groups(grouped);
         if let Some(bounds) = plan.bounds {
             self.apply_bounds(bounds, plan.maximized);
         }
@@ -562,6 +576,8 @@ impl BrowserWindow {
         } else {
             index.max(pinned_before)
         };
+        // The groups wait until the tab is in place and has joined its opener's group, if any.
+        let groups_were_busy = self.groups_busy.replace(true);
         let placed = self
             .strip()
             .insert(index, tab.id, &tab.look())
@@ -572,10 +588,16 @@ impl BrowserWindow {
                 Ok(())
             });
         if let Err(e) = placed {
+            self.groups_busy.set(groups_were_busy);
             // Leaves nothing of a tab that never starts; dropping `initial` cancels a request.
             let _ = self.remove_tab(&tab);
             return Err(e);
         }
+        if let Placement::After(opener) | Placement::FromPage(opener) = placement {
+            self.groups.borrow_mut().adopt(tab.id, &opener);
+        }
+        self.groups_busy.set(groups_were_busy);
+        self.settle_groups(Some(tab.id));
         self.sync_selection();
         exec::spawn(tab.clone().start(browser.page_script(), initial));
         browser.session_changed();
@@ -672,8 +694,10 @@ impl BrowserWindow {
         self.select_index((current + step).rem_euclid(count) as usize);
     }
 
-    /// Shows the selected tab's web view, hides the rest, and refreshes the toolbar.
+    /// Shows the selected tab's web view, hides the rest, and refreshes the toolbar. The groups
+    /// follow the selection too: a selected tab's group expands.
     fn sync_selection(&self) {
+        self.settle_groups(None);
         let active = self.active_tab();
         if self.shown_tab.get() != active.as_ref().map(|t| t.id) {
             self.media_selection_moved();
@@ -1858,6 +1882,7 @@ impl BrowserWindow {
 
     pub fn apply_theme(&self, theme: Theme) {
         set_theme(&self.window, &self.ui.root, self.theme_for(theme));
+        self.settle_groups(None);
     }
 
     /// The theme the window shows under the app's `theme`: a private window is always dark.

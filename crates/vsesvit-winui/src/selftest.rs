@@ -17,6 +17,7 @@ mod search_engine_checks;
 mod download_checks;
 mod shortcut_checks;
 mod sync_checks;
+mod tab_groups_checks;
 mod tab_menu_checks;
 mod tab_search_checks;
 
@@ -578,6 +579,12 @@ async fn checks(
     let windows = browser.windows();
     check(report, "tab_menu", DEFAULT_TIMEOUT, async |p| {
         tab_menu_checks::tab_menu(browser, &window, &tab, &server, p).await
+    })
+    .await;
+    tab_menu_checks::tidy(browser, &windows, &window, &tab);
+
+    check(report, "tab_groups", DEFAULT_TIMEOUT, async |p| {
+        tab_groups_checks::tab_groups(browser, &window, &tab, &server, p).await
     })
     .await;
     tab_menu_checks::tidy(browser, &windows, &window, &tab);

@@ -1039,6 +1039,7 @@ impl Browser {
                             &t.state().title,
                             t.is_pinned(),
                             t.last_active_ms(),
+                            window.group_of(t.id),
                         )
                     })
                     .collect();

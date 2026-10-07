@@ -1,7 +1,11 @@
 //! How one tab looks in a tab list: favicon (or a spinner while loading), title, a camera,
 //! microphone or screen while the page captures one, a speaker while the page plays sound (it
 //! mutes the tab), a pin for pinned tabs, and in the vertical pane a close button; a sleeping
-//! tab's icon is faded. Each list builds its own header per tab from a `TabLook`.
+//! tab's icon is faded. Each list builds its own header per tab from a `TabLook`. A tab in a
+//! group carries a thin line in the group's colour: along the bottom in the top strip, as
+//! Chrome's group line runs, and at the leading edge in the pane.
+
+use std::cell::Cell;
 
 use vsesvit_core::permissions::{Capturing, Permission};
 use windows_core::{Interface, Result};
@@ -71,17 +75,21 @@ pub(crate) fn capture_glyph(capturing: Capturing) -> Option<(&'static str, bool)
 const HEADER_XAML: &str = r#"
 <Grid {ns} Background="Transparent">
   <Grid.ColumnDefinitions>
+    <ColumnDefinition Width="Auto"/>
     <ColumnDefinition Width="16"/>
     <ColumnDefinition Width="*"/>
     <ColumnDefinition Width="Auto"/>
   </Grid.ColumnDefinitions>
-  <FontIcon x:Name="DefaultIcon" Glyph="&#xE774;" FontSize="14" VerticalAlignment="Center"/>
-  <Image x:Name="Favicon" Width="16" Height="16" VerticalAlignment="Center" Visibility="Collapsed"/>
-  <ProgressRing x:Name="Spinner" Width="16" Height="16" MinWidth="16" MinHeight="16"
+  <Grid x:Name="GroupEdge" Width="3" Margin="0,4,7,4" Visibility="Collapsed"/>
+  <Grid x:Name="GroupLine" Grid.ColumnSpan="4" Height="3" Margin="0,0,0,-4" VerticalAlignment="Bottom"
+        Visibility="Collapsed"/>
+  <FontIcon x:Name="DefaultIcon" Grid.Column="1" Glyph="&#xE774;" FontSize="14" VerticalAlignment="Center"/>
+  <Image x:Name="Favicon" Grid.Column="1" Width="16" Height="16" VerticalAlignment="Center" Visibility="Collapsed"/>
+  <ProgressRing x:Name="Spinner" Grid.Column="1" Width="16" Height="16" MinWidth="16" MinHeight="16"
                 VerticalAlignment="Center" IsActive="False" Visibility="Collapsed"/>
-  <TextBlock x:Name="Title" Grid.Column="1" Margin="8,0,0,0" Text="New tab"
+  <TextBlock x:Name="Title" Grid.Column="2" Margin="8,0,0,0" Text="New tab"
              TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" VerticalAlignment="Center"/>
-  <StackPanel x:Name="Buttons" Grid.Column="2" Orientation="Horizontal" Margin="4,0,0,0">
+  <StackPanel x:Name="Buttons" Grid.Column="3" Orientation="Horizontal" Margin="4,0,0,0">
     <FontIcon x:Name="Pin" Glyph="&#xE718;" FontSize="10" Margin="0,0,6,0" Visibility="Collapsed"
               VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
     <Grid x:Name="Capture" Width="20" VerticalAlignment="Center" Visibility="Collapsed" Background="Transparent">
@@ -115,6 +123,9 @@ pub(crate) struct TabHeader {
     audio: Button,
     audio_glyph: FontIcon,
     close: Option<Button>,
+    /// The group line: at the leading edge in the pane, along the bottom in the top strip.
+    group_line: Panel,
+    group_color: Cell<Option<[u8; 3]>>,
 }
 
 impl TabHeader {
@@ -123,7 +134,10 @@ impl TabHeader {
         let root: FrameworkElement = xaml::load(HEADER_XAML)?;
         let close: Button = xaml::find(&root, "Close")?;
         xaml::set_visible(&close, closable)?;
+        let group_line = if closable { "GroupEdge" } else { "GroupLine" };
         let header = Self {
+            group_line: xaml::find(&root, group_line)?,
+            group_color: Cell::new(None),
             default_icon: xaml::find(&root, "DefaultIcon")?,
             favicon: xaml::find(&root, "Favicon")?,
             spinner: xaml::find(&root, "Spinner")?,
@@ -195,6 +209,19 @@ impl TabHeader {
         xaml::is_visible(&self.capture)
     }
 
+    /// Shows the tab in its group's colour, or in none.
+    pub fn set_group_color(&self, color: Option<[u8; 3]>) -> Result<()> {
+        if self.group_color.replace(color) == color {
+            return Ok(());
+        }
+        let children = self.group_line.Children()?;
+        children.Clear()?;
+        if let Some(rgb) = color {
+            children.Append(&color_fill(rgb)?)?;
+        }
+        xaml::set_visible(&self.group_line, color.is_some())
+    }
+
     fn show_capture(&self, capturing: Capturing) {
         let glyph = capture_glyph(capturing);
         let _ = xaml::set_visible(&self.capture, glyph.is_some());
@@ -221,9 +248,29 @@ impl TabHeader {
     }
 }
 
+/// `#RRGGBB`, as markup writes a colour.
+pub(crate) fn hex(rgb: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+}
+
+/// A rounded rectangle filled with `rgb`, which fills the panel it is put in. (The bindings
+/// carry no brushes, so a colour is set by markup.)
+pub(crate) fn color_fill(rgb: [u8; 3]) -> Result<UIElement> {
+    xaml::load(&format!(
+        r#"<Border {{ns}} Background="{}" CornerRadius="1.5"/>"#,
+        hex(rgb)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colours_are_written_as_markup_hex() {
+        assert_eq!(hex([0x1a, 0x73, 0xe8]), "#1A73E8");
+        assert_eq!(hex([0, 0, 0]), "#000000");
+    }
 
     #[test]
     fn capture_glyph_prefers_camera_then_microphone_and_uses_the_permission_glyphs() {

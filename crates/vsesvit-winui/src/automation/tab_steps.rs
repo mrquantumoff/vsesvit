@@ -208,6 +208,7 @@ pub(super) async fn run(
         "labels": labels,
         "ok": labels == [
             "New tab below",
+            "Add tab to new group",
             split_with.as_str(),
             "Move tab to new window",
             "Reload",
@@ -220,6 +221,35 @@ pub(super) async fn run(
             "Close tabs below",
             "Reopen closed tab",
         ],
+    }));
+
+    // Add tab to new group puts a header before the tab and opens the group's editor; Remove
+    // from group takes both away again.
+    window.tab_action(media.id, TabAction::NewGroup);
+    exec::sleep(Duration::from_millis(300)).await;
+    shoot(window, out_dir, "31b-tab-group", steps, |w| {
+        let lines = w.group_lines();
+        let group = w.group_of(media.id);
+        let header = group.as_ref().map(|g| format!("[{}]", g.name()));
+        let at = lines.iter().position(|l| l == &media.id.to_string());
+        let headed = at.is_some_and(|at| at > 0 && Some(&lines[at - 1]) == header.as_ref());
+        let offers_removal = w
+            .tab_menu_lines(media.id)
+            .contains(&("Remove from group".to_owned(), true));
+        json!({
+            "lines": lines,
+            "group": header,
+            "ok": headed && offers_removal,
+        })
+    })
+    .await;
+    window.tab_action(media.id, TabAction::LeaveGroup);
+    exec::sleep(Duration::from_millis(300)).await;
+    let lines = window.group_lines();
+    steps.push(json!({
+        "name": "31c-remove-from-group",
+        "lines": lines,
+        "ok": window.group_of(media.id).is_none() && !lines.iter().any(|l| l.starts_with('[')),
     }));
 
     window.tab_action(media.id, TabAction::Pin(true));

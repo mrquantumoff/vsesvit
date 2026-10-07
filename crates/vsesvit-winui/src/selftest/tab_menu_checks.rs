@@ -69,6 +69,7 @@ pub(super) async fn tab_menu(
     let split = format!("Split view with > New tab, {}", second.state().title);
     let want = lines(&[
         ("New tab below", true),
+        ("Add tab to new group", true),
         (split.as_str(), true),
         ("Move tab to new window", true),
         ("Reload", true),

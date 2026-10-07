@@ -207,6 +207,7 @@ impl BrowserWindow {
         self.side.set_compact(collapsed);
         self.player.set_compact(collapsed);
         self.update_pip();
+        self.settle_groups(None);
     }
 
     /// Window-relative bounds of the vertical pane, the horizontal strip and the active web view

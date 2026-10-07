@@ -319,14 +319,10 @@ pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
     let w = on(slot);
     let new_tab = Box::new(move || w(&|w| w.run(Command::NewTab)));
     let w = on(slot);
-    let reordered = Box::new(move || {
-        w(&|w| {
-            w.keep_pinned_first();
-            if let Some(browser) = w.browser() {
-                browser.session_changed();
-            }
-        });
-    });
+    let reordered = Box::new(move || w(&BrowserWindow::tabs_reordered));
+    // A header's editor may remove the header it belongs to.
+    let group_action = later(slot, BrowserWindow::group_action);
+    let group = Box::new(move |group, event| group_action((group, event)));
     let w = on(slot);
     let toggle_collapsed = Box::new(move || {
         w(&|w| {
@@ -366,6 +362,7 @@ pub(super) fn strip_events(slot: &WindowSlot) -> StripEvents {
         search_tabs,
         toggle_muted,
         menu,
+        group,
         pane_space_changed,
         pane_resized,
     }

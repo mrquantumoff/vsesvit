@@ -70,6 +70,7 @@ mod engine;
 mod exec;
 mod extension_toolbar;
 mod extensions;
+mod group_header;
 mod instance;
 mod layout;
 mod logging;

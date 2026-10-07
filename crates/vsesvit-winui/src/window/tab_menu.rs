@@ -1,15 +1,18 @@
 //! A tab's context menu, with Chrome's items, the same in both tab lists. The menu is filled
-//! as it opens, so its labels follow the tab (Pin or Unpin, to the right or below).
+//! as it opens, so its labels follow the tab (Pin or Unpin, to the right or below, the groups
+//! it can join).
 
 use vsesvit_core::prefs::TabsPosition;
+use vsesvit_core::tab_groups::{GroupColor, GroupId, TabGroup};
 use vsesvit_core::tab_place::TabPlace;
 use windows_core::{Interface, Result};
 
 use super::BrowserWindow;
 use crate::bindings::*;
 use crate::omnibox::has_link;
-use crate::exec;
 use crate::tab::TabId;
+use crate::tab_header::hex;
+use crate::{exec, xaml};
 
 /// What a tab's menu does to its tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +27,10 @@ pub(crate) enum TabAction {
     Reload,
     Duplicate,
     Pin(bool),
+    /// Puts the tab alone in a new group.
+    NewGroup,
+    JoinGroup(GroupId),
+    LeaveGroup,
     Mute(bool),
     /// Copies the tab's address without its tracking parameters.
     CopyLink,
@@ -44,6 +51,8 @@ pub(super) struct TabFacts {
     /// The tab shows a page with an address worth copying.
     pub has_link: bool,
     pub can_reopen: bool,
+    /// The tab's group.
+    pub group: Option<GroupId>,
 }
 
 /// Another open tab, as the "Split view with" submenu lists it.
@@ -65,11 +74,18 @@ pub(super) enum Entry {
     },
     /// The "Split view with" submenu: a new tab, then the other open tabs.
     SplitWith(Vec<SplitTarget>),
+    /// The "Add tab to group" submenu: a new group, then the window's other groups.
+    AddToGroup(Vec<TabGroup>),
     Separator,
 }
 
-/// A tab's menu in Chrome's order; `others` are the window's other tabs, in tab list order.
-pub(super) fn entries(facts: TabFacts, others: Vec<SplitTarget>) -> Vec<Entry> {
+/// A tab's menu in Chrome's order; `others` are the window's other tabs and `groups` its
+/// groups, both in tab list order.
+pub(super) fn entries(
+    facts: TabFacts,
+    others: Vec<SplitTarget>,
+    groups: Vec<TabGroup>,
+) -> Vec<Entry> {
     use TabAction::*;
     let place = facts.place;
     let item = |label, glyph, action, enabled| Entry::Action {
@@ -99,9 +115,21 @@ pub(super) fn entries(facts: TabFacts, others: Vec<SplitTarget>) -> Vec<Entry> {
     } else {
         on("Mute tab", "\u{E74F}", Mute(true))
     };
+    let other_groups: Vec<TabGroup> = groups
+        .into_iter()
+        .filter(|g| Some(g.id) != facts.group)
+        .collect();
+    let group = if other_groups.is_empty() {
+        item("Add tab to new group", None, NewGroup, true)
+    } else {
+        Entry::AddToGroup(other_groups)
+    };
     let move_out = place.can_move_out();
-    let mut entries = vec![
-        on(new_tab, "\u{E710}", NewTabNext),
+    let mut entries = vec![on(new_tab, "\u{E710}", NewTabNext), group];
+    if facts.group.is_some() {
+        entries.push(item("Remove from group", None, LeaveGroup, true));
+    }
+    entries.extend([
         split,
         item("Move tab to new window", Some("\u{E78B}"), MoveToNewWindow, move_out),
         Entry::Separator,
@@ -109,7 +137,7 @@ pub(super) fn entries(facts: TabFacts, others: Vec<SplitTarget>) -> Vec<Entry> {
         on("Duplicate", "\u{E8C8}", Duplicate),
         pin,
         mute,
-    ];
+    ]);
     if facts.has_link {
         entries.push(on("Copy link", "\u{E71B}", CopyLink));
     }
@@ -139,6 +167,7 @@ impl BrowserWindow {
             can_reopen: self
                 .browser()
                 .is_some_and(|b| b.can_reopen_closed_tab(self.browsing)),
+            group: self.group_of(id).map(|g| g.id),
         };
         let others = self
             .tabs_in_order()
@@ -153,7 +182,8 @@ impl BrowserWindow {
                 }
             })
             .collect();
-        if let Err(e) = self.fill_menu(menu, id, &entries(facts, others)) {
+        let groups = self.groups_in_order();
+        if let Err(e) = self.fill_menu(menu, id, &entries(facts, others, groups)) {
             log::warn!("tab menu: {e}");
         }
     }
@@ -232,6 +262,25 @@ impl BrowserWindow {
                     }
                     submenu.cast()?
                 }
+                Entry::AddToGroup(groups) => {
+                    let submenu = MenuFlyoutSubItem::new()?;
+                    submenu.SetText("Add tab to group")?;
+                    let children = submenu.Items()?;
+                    children.Append(
+                        &self
+                            .menu_item(id, "New group", None, TabAction::NewGroup)?
+                            .cast::<MenuFlyoutItemBase>()?,
+                    )?;
+                    children.Append(&MenuFlyoutSeparator::new()?.cast::<MenuFlyoutItemBase>()?)?;
+                    let dark = self.dark();
+                    for group in groups {
+                        let dot = dot_icon(group.color, dark)?;
+                        let action = TabAction::JoinGroup(group.id);
+                        let item = self.menu_item(id, &group.name(), Some(&dot), action)?;
+                        children.Append(&item.cast::<MenuFlyoutItemBase>()?)?;
+                    }
+                    submenu.cast()?
+                }
                 Entry::Separator => MenuFlyoutSeparator::new()?.cast()?,
             };
             items.Append(&element)?;
@@ -272,8 +321,18 @@ fn glyph_icon(glyph: &str) -> Result<IconElement> {
     icon.cast()
 }
 
+/// A dot in a group's colour, as the menu shows the group.
+fn dot_icon(color: GroupColor, dark: bool) -> Result<IconElement> {
+    xaml::load(&format!(
+        r#"<FontIcon {{ns}} Glyph="&#xE91F;" FontSize="12" Foreground="{}"/>"#,
+        hex(color.rgb(dark))
+    ))
+}
+
 #[cfg(test)]
 mod tests {
+    use vsesvit_core::tab_groups::GroupColor;
+
     use super::*;
 
     fn other(tab: TabId) -> SplitTarget {
@@ -281,6 +340,15 @@ mod tests {
             tab,
             title: format!("Tab {tab}"),
             favicon: None,
+        }
+    }
+
+    fn group(title: &str, color: GroupColor) -> TabGroup {
+        TabGroup {
+            id: GroupId::new(),
+            title: title.to_owned(),
+            color,
+            collapsed: false,
         }
     }
 
@@ -297,6 +365,7 @@ mod tests {
             muted: false,
             has_link: true,
             can_reopen: true,
+            group: None,
         }
     }
 
@@ -305,24 +374,31 @@ mod tests {
         facts(1, 3, 0)
     }
 
-    fn labels(facts: TabFacts) -> Vec<&'static str> {
-        entries(facts, vec![])
+    fn labels_with(facts: TabFacts, groups: Vec<TabGroup>) -> Vec<&'static str> {
+        entries(facts, vec![], groups)
             .into_iter()
             .map(|e| match e {
                 Entry::Action { label, .. } => label,
                 Entry::SplitWith(_) => "Split view with",
+                Entry::AddToGroup(_) => "Add tab to group",
                 Entry::Separator => "-",
             })
             .collect()
     }
 
+    fn labels(facts: TabFacts) -> Vec<&'static str> {
+        labels_with(facts, vec![])
+    }
+
     fn enabled(facts: TabFacts, wanted: TabAction) -> Option<bool> {
-        entries(facts, vec![]).into_iter().find_map(|e| match e {
-            Entry::Action {
-                action, enabled, ..
-            } if action == wanted => Some(enabled),
-            _ => None,
-        })
+        entries(facts, vec![], vec![])
+            .into_iter()
+            .find_map(|e| match e {
+                Entry::Action {
+                    action, enabled, ..
+                } if action == wanted => Some(enabled),
+                _ => None,
+            })
     }
 
     #[test]
@@ -331,6 +407,7 @@ mod tests {
             labels(typical()),
             [
                 "New tab to the right",
+                "Add tab to new group",
                 "Split view with",
                 "Move tab to new window",
                 "-",
@@ -364,15 +441,46 @@ mod tests {
     #[test]
     fn split_lists_the_other_tabs_unless_the_tab_is_split() {
         let others = vec![other(2), other(3)];
-        assert!(entries(typical(), others.clone()).contains(&Entry::SplitWith(others.clone())));
+        assert!(
+            entries(typical(), others.clone(), vec![]).contains(&Entry::SplitWith(others.clone()))
+        );
         let split = TabFacts {
             in_split: true,
             ..typical()
         };
-        let menu = entries(split, others);
+        let menu = entries(split, others, vec![]);
         assert!(!menu.iter().any(|e| matches!(e, Entry::SplitWith(_))));
         assert_eq!(enabled(split, TabAction::CloseSplit), Some(true));
-        assert_eq!(labels(split)[1], "Close split view");
+        assert_eq!(labels(split)[2], "Close split view");
+    }
+
+    #[test]
+    fn a_window_with_other_groups_offers_them_in_a_submenu() {
+        let (work, blue) = (group("Work", GroupColor::Red), group("", GroupColor::Blue));
+        let menu = entries(typical(), vec![], vec![work.clone(), blue.clone()]);
+        assert_eq!(menu[1], Entry::AddToGroup(vec![work.clone(), blue.clone()]));
+        assert_eq!(labels_with(typical(), vec![work.clone()])[1], "Add tab to group");
+        // The tab's own group is not one to add it to; alone, it leaves only a new group.
+        let in_work = TabFacts {
+            group: Some(work.id),
+            ..typical()
+        };
+        assert_eq!(
+            labels_with(in_work, vec![work.clone()])[1..3],
+            ["Add tab to new group", "Remove from group"]
+        );
+        assert_eq!(
+            entries(in_work, vec![], vec![work, blue.clone()])[1],
+            Entry::AddToGroup(vec![blue])
+        );
+        assert!(!labels(typical()).contains(&"Remove from group"));
+    }
+
+    #[test]
+    fn pinned_tabs_get_the_group_items_too() {
+        let pinned = facts(0, 2, 1);
+        assert_eq!(enabled(pinned, TabAction::NewGroup), Some(true));
+        assert_eq!(labels(pinned)[1], "Add tab to new group");
     }
 
     #[test]

@@ -5,14 +5,22 @@
 //! The order of tabs and the selection live in the live list's XAML items, which the user
 //! reorders by dragging. No `RefCell` borrow is held across a XAML call, because XAML raises
 //! `SelectionChanged` synchronously from inside item changes.
+//!
+//! A tab group's header is an item of the list too, before the group's first tab, so that the
+//! list lays it out and scrolls it with the tabs; it is not a tab: `order` skips it, and a
+//! selection that lands on it (an arrow key) goes on to the tab past it. The window puts the
+//! headers where its groups say (`show_groups`), hides the tabs of collapsed groups there and
+//! colours grouped tabs.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use vsesvit_core::tab_groups::{GroupId, Row as GroupRow};
 use windows_collections::IVector;
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
+use crate::group_header::{GroupEvent, GroupHeader, OnGroup};
 use crate::layout::StripKind;
 use crate::tab::TabId;
 use crate::tab_header::{TabHeader, TabLook};
@@ -32,6 +40,8 @@ pub(crate) struct StripEvents {
     pub toggle_muted: Box<dyn Fn(TabId)>,
     /// The tab's context menu is opening: fill it.
     pub menu: Box<FillMenu>,
+    /// A group's header or editor was used.
+    pub group: Box<dyn Fn(GroupId, GroupEvent)>,
     /// The empty space under the vertical pane's tabs changed.
     pub pane_space_changed: Box<dyn Fn()>,
     /// The user dragged the vertical pane to this width.
@@ -53,6 +63,15 @@ pub(crate) trait TabStrip {
     fn clear(&self) -> Result<()>;
     /// Whether the tab's row shows its in-use icon.
     fn capture_shown(&self, tab: TabId) -> bool;
+    /// Puts each group's header before its first tab, hides the tabs of collapsed groups and
+    /// colours grouped tabs, as `rows` say; `dark` picks the shade of the colours.
+    fn show_groups(&self, rows: &[GroupRow<TabId>], dark: bool) -> Result<()>;
+    /// Opens the group's editor at its header, as right-clicking the header does; `focus` puts
+    /// the keyboard in its name box.
+    fn edit_group(&self, group: GroupId, focus: bool) -> Result<()>;
+    /// The list as it shows: `[name]` for a group's header, a tab's id for its row, with
+    /// ` hidden` after one in a collapsed group; for checks.
+    fn group_lines(&self) -> Vec<String>;
 }
 
 /// One tab's entry in a list: its XAML item and the header drawn in it.
@@ -63,13 +82,25 @@ struct Row {
     pinned: Cell<bool>,
 }
 
-/// A list's rows, mapped to and from its XAML items by COM identity.
+/// A group's header in a list: its XAML item and the chip in it.
+struct Header {
+    item: IInspectable,
+    header: Rc<GroupHeader>,
+}
+
+/// A list's rows and group headers, mapped to and from its XAML items by COM identity.
 #[derive(Default)]
-struct Rows(RefCell<Vec<Row>>);
+struct Rows {
+    rows: RefCell<Vec<Row>>,
+    headers: RefCell<Vec<Header>>,
+    /// The tab selected last, which a selection that lands on a header goes back to.
+    selected: Cell<Option<TabId>>,
+    compact: Cell<bool>,
+}
 
 impl Rows {
     fn tab_of(&self, item: &IInspectable) -> Option<TabId> {
-        self.0
+        self.rows
             .borrow()
             .iter()
             .find(|r| xaml::same_object(&r.item, item))
@@ -77,22 +108,38 @@ impl Rows {
     }
 
     fn item_of(&self, tab: TabId) -> Option<IInspectable> {
-        self.0
+        self.rows
             .borrow()
             .iter()
             .find(|r| r.tab == tab)
             .map(|r| r.item.clone())
     }
 
+    fn header_of(&self, item: &IInspectable) -> Option<GroupId> {
+        self.headers
+            .borrow()
+            .iter()
+            .find(|h| xaml::same_object(&h.item, item))
+            .map(|h| h.header.group)
+    }
+
+    fn header(&self, group: GroupId) -> Option<Rc<GroupHeader>> {
+        self.headers
+            .borrow()
+            .iter()
+            .find(|h| h.header.group == group)
+            .map(|h| h.header.clone())
+    }
+
     fn update(&self, tab: TabId, look: &TabLook) {
-        if let Some(row) = self.0.borrow().iter().find(|r| r.tab == tab) {
+        if let Some(row) = self.rows.borrow().iter().find(|r| r.tab == tab) {
             row.header.apply(look);
             row.pinned.set(look.pinned);
         }
     }
 
     fn is_pinned(&self, tab: TabId) -> Option<bool> {
-        self.0
+        self.rows
             .borrow()
             .iter()
             .find(|r| r.tab == tab)
@@ -100,21 +147,30 @@ impl Rows {
     }
 
     fn capture_shown(&self, tab: TabId) -> bool {
-        self.0
+        self.rows
             .borrow()
             .iter()
             .any(|r| r.tab == tab && r.header.capture_shown())
     }
 
     fn with_header(&self, tab: TabId, f: impl FnOnce(&TabHeader)) {
-        if let Some(row) = self.0.borrow().iter().find(|r| r.tab == tab) {
+        if let Some(row) = self.rows.borrow().iter().find(|r| r.tab == tab) {
             f(&row.header);
         }
     }
 
     fn each_header(&self, f: impl Fn(&TabHeader)) {
-        for row in self.0.borrow().iter() {
+        for row in self.rows.borrow().iter() {
             f(&row.header);
+        }
+    }
+
+    /// Icon-only rows and dot-only headers: the collapsed vertical pane.
+    fn set_compact(&self, compact: bool) {
+        self.compact.set(compact);
+        self.each_header(|header| header.set_compact(compact));
+        for header in self.headers.borrow().iter() {
+            header.header.set_compact(compact);
         }
     }
 
@@ -122,14 +178,15 @@ impl Rows {
     fn insert(&self, items: &IVector<IInspectable>, index: u32, row: Row) -> Result<()> {
         let at = self.position(items, index);
         let item = row.item.clone();
-        self.0.borrow_mut().push(row);
+        self.rows.borrow_mut().push(row);
         items.InsertAt(at, &item)
     }
 
-    /// Where the `index`th row is in `items`, which may still hold rows on their way out.
+    /// Where the `index`th row is in `items`, which may hold group headers and rows on their
+    /// way out too.
     fn position(&self, items: &IVector<IInspectable>, index: u32) -> u32 {
         let size = items.Size().unwrap_or(0);
-        if size as usize == self.0.borrow().len() {
+        if size as usize == self.rows.borrow().len() {
             return index.min(size);
         }
         let mut rows = 0;
@@ -152,7 +209,7 @@ impl Rows {
     /// Forgets the tab's row and hands back its item, still in the list.
     fn take(&self, tab: TabId) -> Option<IInspectable> {
         let item = self.item_of(tab);
-        self.0.borrow_mut().retain(|r| r.tab != tab);
+        self.rows.borrow_mut().retain(|r| r.tab != tab);
         item
     }
 
@@ -165,8 +222,175 @@ impl Rows {
     }
 
     fn clear(&self, items: &IVector<IInspectable>) -> Result<()> {
-        self.0.borrow_mut().clear();
+        self.rows.borrow_mut().clear();
+        for header in self.headers.take() {
+            header.header.close_editor();
+        }
         items.Clear()
+    }
+
+    /// The selection moved to `selected`. A tab keeps it; a header passes it on to the tab
+    /// past it in the direction the selection came from, else back to the tab that had it,
+    /// and the item to select instead is returned.
+    fn selection_moved(
+        &self,
+        items: &IVector<IInspectable>,
+        selected: &IInspectable,
+    ) -> Option<IInspectable> {
+        if let Some(tab) = self.tab_of(selected) {
+            self.selected.set(Some(tab));
+            return None;
+        }
+        self.header_of(selected)?;
+        let size = items.Size().unwrap_or(0);
+        let mut at = 0;
+        if !items.IndexOf(selected, &mut at).unwrap_or(false) {
+            return None;
+        }
+        let previous = self.selected.get().and_then(|t| self.item_of(t));
+        let from = previous.as_ref().and_then(|p| {
+            let mut index = 0;
+            items.IndexOf(p, &mut index).ok()?.then_some(index)
+        });
+        let forward = from.is_none_or(|f| f < at);
+        let shown_tab = |i: u32| {
+            let item = items.GetAt(i).ok()?;
+            (self.tab_of(&item).is_some() && xaml::is_visible(&item)).then_some(item)
+        };
+        let after = (at + 1..size).find_map(shown_tab);
+        let before = || (0..at).rev().find_map(shown_tab);
+        let past = if forward {
+            after.or_else(before)
+        } else {
+            before().or(after)
+        };
+        past.or(previous)
+    }
+
+    /// Puts the headers of `rows`' groups before their first tabs, making and dropping headers
+    /// as groups come and go, hides the tabs `rows` say are hidden and colours the grouped
+    /// ones; `wrap` makes the list's item around a header's chip.
+    fn show_groups(
+        &self,
+        items: &IVector<IInspectable>,
+        rows: &[GroupRow<TabId>],
+        dark: bool,
+        on: &OnGroup,
+        wrap: impl Fn(&Button) -> Result<IInspectable>,
+    ) -> Result<()> {
+        let color_of = |group: GroupId| {
+            rows.iter().find_map(|r| match r {
+                GroupRow::Header(h) if h.id == group => Some(h.color.rgb(dark)),
+                _ => None,
+            })
+        };
+        let mut wanted = Vec::with_capacity(rows.len());
+        let mut groups = Vec::new();
+        for row in rows {
+            match row {
+                GroupRow::Header(group) => {
+                    groups.push(group.id);
+                    let header = match self.header(group.id) {
+                        Some(header) => header,
+                        None => {
+                            let header = GroupHeader::new(group.id, on.clone())?;
+                            header.set_compact(self.compact.get());
+                            let item = wrap(header.chip())?;
+                            self.headers.borrow_mut().push(Header {
+                                item,
+                                header: header.clone(),
+                            });
+                            header
+                        }
+                    };
+                    header.apply(group, dark)?;
+                    if let Some(item) = self.header_item(group.id) {
+                        wanted.push(item);
+                    }
+                }
+                GroupRow::Tab { tab, group, hidden } => {
+                    let Some(item) = self.item_of(*tab) else {
+                        continue;
+                    };
+                    xaml::set_visible(&item, !hidden)?;
+                    let color = group.and_then(color_of);
+                    self.with_header(*tab, |header| {
+                        if let Err(e) = header.set_group_color(color) {
+                            log::warn!("tab {tab}: group colour: {e}");
+                        }
+                    });
+                    wanted.push(item);
+                }
+            }
+        }
+        let gone: Vec<Header> = {
+            let mut headers = self.headers.borrow_mut();
+            let (gone, kept) = headers
+                .drain(..)
+                .partition(|h| !groups.contains(&h.header.group));
+            *headers = kept;
+            gone
+        };
+        for header in gone {
+            header.header.close_editor();
+            remove_item(items, &header.item)?;
+        }
+        // Rows on their way out stay where they are; everything else goes in `wanted`'s order.
+        let mut at = 0;
+        for item in wanted {
+            while items
+                .GetAt(at)
+                .is_ok_and(|i| self.tab_of(&i).is_none() && self.header_of(&i).is_none())
+            {
+                at += 1;
+            }
+            let mut index = 0;
+            if items.IndexOf(&item, &mut index)? {
+                if index == at {
+                    at += 1;
+                    continue;
+                }
+                items.RemoveAt(index)?;
+                if index < at {
+                    at -= 1;
+                }
+            }
+            items.InsertAt(at, &item)?;
+            at += 1;
+        }
+        Ok(())
+    }
+
+    fn header_item(&self, group: GroupId) -> Option<IInspectable> {
+        self.headers
+            .borrow()
+            .iter()
+            .find(|h| h.header.group == group)
+            .map(|h| h.item.clone())
+    }
+
+    fn edit_group(&self, group: GroupId, focus: bool) -> Result<()> {
+        match self.header(group) {
+            Some(header) => header.open_editor(focus),
+            None => Ok(()),
+        }
+    }
+
+    fn group_lines(&self, items: &IVector<IInspectable>) -> Vec<String> {
+        items
+            .into_iter()
+            .filter_map(|item| {
+                if let Some(group) = self.header_of(&item) {
+                    return Some(format!("[{}]", self.header(group)?.name()));
+                }
+                let tab = self.tab_of(&item)?;
+                Some(if xaml::is_visible(&item) {
+                    tab.to_string()
+                } else {
+                    format!("{tab} hidden")
+                })
+            })
+            .collect()
     }
 }
 
@@ -232,9 +456,23 @@ impl TopStrip {
                 }
             })?
             .forget();
-        let e = events.clone();
+        let weak = Rc::downgrade(&this);
         this.view
-            .SelectionChanged(move |_, _| (e.selection_changed)(StripKind::Top))?
+            .SelectionChanged(move |_, _| {
+                let Some(this) = weak.upgrade() else { return };
+                let instead = this
+                    .view
+                    .TabItems()
+                    .ok()
+                    .zip(this.view.SelectedItem().ok())
+                    .and_then(|(items, selected)| this.rows.selection_moved(&items, &selected));
+                match instead {
+                    Some(instead) => {
+                        let _ = this.view.SetSelectedItem(&instead);
+                    }
+                    None => (this.events.selection_changed)(StripKind::Top),
+                }
+            })?
             .forget();
         let weak = Rc::downgrade(&this);
         this.view
@@ -276,11 +514,13 @@ impl TopStrip {
 
     /// Pinned tabs show their icon only, as in Chrome; the others share the rest of the strip
     /// equally, within the widths `TabView` gives its tabs. (`TabView`'s own equal widths
-    /// would make pinned tabs as wide as the rest.)
+    /// would make pinned tabs as wide as the rest.) Tabs hidden in a collapsed group take no
+    /// room; group headers size to their chips.
     fn fit_widths(&self) {
-        let rows = self.rows.0.borrow();
-        let pinned = rows.iter().filter(|r| r.pinned.get()).count();
-        let others = rows.len() - pinned;
+        let rows = self.rows.rows.borrow();
+        let shown: Vec<&Row> = rows.iter().filter(|r| xaml::is_visible(&r.item)).collect();
+        let pinned = shown.iter().filter(|r| r.pinned.get()).count();
+        let others = shown.len() - pinned;
         let strip = self
             .view
             .cast::<FrameworkElement>()
@@ -294,7 +534,7 @@ impl TopStrip {
                 .clamp(TAB_WIDTHS.0, TAB_WIDTHS.1)
                 .floor()
         };
-        for row in rows.iter() {
+        for row in shown {
             let width = if row.pinned.get() {
                 PINNED_TAB_WIDTH
             } else {
@@ -393,6 +633,38 @@ impl TabStrip for TopStrip {
     fn capture_shown(&self, tab: TabId) -> bool {
         self.rows.capture_shown(tab)
     }
+
+    fn show_groups(&self, rows: &[GroupRow<TabId>], dark: bool) -> Result<()> {
+        let on = group_events(&self.events);
+        self.rows
+            .show_groups(&self.view.TabItems()?, rows, dark, &on, |chip| {
+                // Not a tab: nothing to close, and not for dragging.
+                let item: TabViewItem = xaml::load(
+                    r#"<TabViewItem {ns} IsClosable="False" CanDrag="False" MinWidth="0"/>"#,
+                )?;
+                item.SetHeader(chip)?;
+                item.cast()
+            })?;
+        self.fit_widths();
+        Ok(())
+    }
+
+    fn edit_group(&self, group: GroupId, focus: bool) -> Result<()> {
+        self.rows.edit_group(group, focus)
+    }
+
+    fn group_lines(&self) -> Vec<String> {
+        self.view
+            .TabItems()
+            .map(|items| self.rows.group_lines(&items))
+            .unwrap_or_default()
+    }
+}
+
+/// How a list's group headers reach the window.
+fn group_events(events: &Events) -> OnGroup {
+    let e = events.clone();
+    Rc::new(move |group, event| (e.group)(group, event))
 }
 
 // ---- the vertical pane ----
@@ -534,9 +806,23 @@ impl SidePane {
             .cast::<ButtonBase>()?
             .Click(move |_, _| (e.new_tab)())?
             .forget();
-        let e = events.clone();
+        let weak = Rc::downgrade(&this);
         this.selector()?
-            .SelectionChanged(move |_, _| (e.selection_changed)(StripKind::Side))?
+            .SelectionChanged(move |_, _| {
+                let Some(this) = weak.upgrade() else { return };
+                let selected = this.selector().and_then(|s| s.SelectedItem()).ok();
+                let instead = this
+                    .items()
+                    .ok()
+                    .zip(selected)
+                    .and_then(|(items, selected)| this.rows.selection_moved(&items, &selected));
+                match instead {
+                    Some(instead) => {
+                        let _ = this.selector().and_then(|s| s.SetSelectedItem(&instead));
+                    }
+                    None => (this.events.selection_changed)(StripKind::Side),
+                }
+            })?
             .forget();
         let e = events.clone();
         this.list
@@ -666,13 +952,15 @@ impl SidePane {
         &self.root
     }
 
-    /// Every row in the list with its tab, `None` for a row on its way out; for scripted runs.
+    /// Every tab row in the list with its tab, `None` for a row on its way out; for scripted
+    /// runs. Group headers are not rows.
     pub fn rows(&self) -> Vec<(Option<TabId>, FrameworkElement)> {
         let Ok(items) = self.items() else {
             return Vec::new();
         };
         (&items)
             .into_iter()
+            .filter(|item| self.rows.header_of(item).is_none())
             .filter_map(|item| Some((self.rows.tab_of(&item), item.cast().ok()?)))
             .collect()
     }
@@ -703,7 +991,7 @@ impl SidePane {
         let _ = xaml::set_visible(&self.new_tab_text, !compact);
         let _ = xaml::set_visible(&self.search, !compact);
         self.show_shortcuts();
-        self.rows.each_header(|header| header.set_compact(compact));
+        self.rows.set_compact(compact);
     }
 
     /// The tooltips that name a shortcut, from the bindings in effect.
@@ -841,5 +1129,29 @@ impl TabStrip for SidePane {
 
     fn capture_shown(&self, tab: TabId) -> bool {
         self.rows.capture_shown(tab)
+    }
+
+    fn show_groups(&self, rows: &[GroupRow<TabId>], dark: bool) -> Result<()> {
+        let on = group_events(&self.events);
+        self.rows
+            .show_groups(&self.items()?, rows, dark, &on, |chip| {
+                // Its own container, so that it is not for dragging.
+                let item: FrameworkElement = xaml::load(
+                    r#"<ListViewItem {ns} CanDrag="False" MinHeight="28" Padding="10,0,4,0"
+                                     HorizontalContentAlignment="Left"/>"#,
+                )?;
+                item.cast::<IContentControl>()?.SetContent(chip)?;
+                item.cast()
+            })
+    }
+
+    fn edit_group(&self, group: GroupId, focus: bool) -> Result<()> {
+        self.rows.edit_group(group, focus)
+    }
+
+    fn group_lines(&self) -> Vec<String> {
+        self.items()
+            .map(|items| self.rows.group_lines(&items))
+            .unwrap_or_default()
     }
 }

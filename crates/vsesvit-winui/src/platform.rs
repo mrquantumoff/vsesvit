@@ -211,6 +211,27 @@ pub(crate) fn open_default_apps_settings() {
     open_in_shell(format!("ms-settings:defaultapps?registeredAppUser={REGISTERED_NAME}").as_ref());
 }
 
+/// Whether Windows shows apps dark (Settings > Personalization > Colors); light when unknown.
+pub(crate) fn apps_dark() -> bool {
+    const RRF_RT_REG_DWORD: u32 = 0x10;
+    let key = HSTRING::from(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let value = HSTRING::from("AppsUseLightTheme");
+    let mut light: u32 = 1;
+    let mut bytes = 4;
+    let read = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&raw mut light).cast(),
+            &mut bytes,
+        )
+    };
+    read == 0 && light == 0
+}
+
 /// A string value under `HKEY_CURRENT_USER`.
 fn user_registry_string(key: &str, value: &str) -> Option<String> {
     let (key, value) = (HSTRING::from(key), HSTRING::from(value));
