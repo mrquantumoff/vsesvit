@@ -314,7 +314,9 @@ pub struct InstalledExtension {
     /// The id WebView2 assigned when it loaded *this* `dir`
     /// (`CoreWebView2BrowserExtension.Id`), recorded by the Windows shell.
     /// `None` means the engine has not loaded the current dir yet: a fresh install,
-    /// or an update. `commit` clears it whenever `dir` changes. It equals `id` when the
+    /// or an update. `commit` clears it whenever `dir` changes, except for an update that is
+    /// [`withheld`](Self::withheld): the engine keeps the version before, off, and loads this
+    /// one only once `approve_permissions` clears the id. It equals `id` when the
     /// manifest carries `key` (every CRX install) and differs for XPI (whose `key` is
     /// removed at install) and keyless unpacked installs, which is why it is stored.
     pub engine_id: Option<String>,
@@ -435,7 +437,8 @@ impl Extensions<'_> {
                 Some(_) => None,
                 None => Some(existing.as_ref().and_then(|r| r.local_enabled).unwrap_or(true)),
             },
-            engine_id: existing.as_ref().filter(|_| same_dir).and_then(|r| r.engine_id.clone()),
+            // A withheld version is not loaded until approved: the engine keeps the one before.
+            engine_id: existing.as_ref().filter(|_| same_dir || granted.is_some()).and_then(|r| r.engine_id.clone()),
             installed_ms: existing.as_ref().map_or_else(|| self.p.clock.now_ms() as i64, |r| r.installed_ms),
             id,
             version: manifest.version.clone(),
@@ -583,7 +586,10 @@ impl Extensions<'_> {
             self.grant_permissions(id, &permissions::required(&row.manifest).beyond(approved))?;
         }
         self.p.write(|tx| {
-            let n = tx.sql.execute("UPDATE extension_installs SET granted = NULL WHERE id = ?1", [id.as_str()])?;
+            let n = tx.sql.execute(
+                "UPDATE extension_installs SET engine_id = CASE WHEN granted IS NULL THEN engine_id END, granted = NULL WHERE id = ?1",
+                [id.as_str()],
+            )?;
             if n == 0 { Err(Error::NotFound) } else { Ok(()) }
         })
     }
@@ -876,23 +882,24 @@ fn to_json<T: Serialize>(value: &T) -> String {
 
 /// Idempotent housekeeping, called by `Profile::open` after migrations: wipe `staging/`,
 /// drop `extension_installs` rows whose dir is missing, delete version dirs no row
-/// references. Everything here is best effort: a file the OS will not let go of is
+/// references, except those of a withheld update's extension, since the engine still holds
+/// the version before it. Everything here is best effort: a file the OS will not let go of is
 /// retried at the next open, and never stops the profile from opening.
 pub(crate) fn on_open(p: &mut Profile) -> Result<(), Error> {
     let _ = fs::remove_dir_all(&p.paths.staging);
     fs::create_dir_all(&p.paths.staging)?;
 
-    // (id, dir, managed). Only plain columns, so a row whose JSON this build cannot decode
-    // still keeps its dir.
-    let rows: Vec<(String, String, bool)> = {
-        let mut stmt = p.conn.prepare("SELECT id, dir, source_kind <> 'unpacked' FROM extension_installs")?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?
+    // (id, dir, managed, withheld). Only plain columns, so a row whose JSON this build cannot
+    // decode still keeps its dir.
+    let rows: Vec<(String, String, bool, bool)> = {
+        let mut stmt = p.conn.prepare("SELECT id, dir, source_kind <> 'unpacked', granted IS NOT NULL FROM extension_installs")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<_, _>>()?
     };
     let (present, vanished): (Vec<_>, Vec<_>) =
-        rows.into_iter().partition(|(_, dir, managed)| resolve_dir(dir, *managed, &p.paths.extensions).is_dir());
+        rows.into_iter().partition(|(_, dir, managed, _)| resolve_dir(dir, *managed, &p.paths.extensions).is_dir());
     if !vanished.is_empty() {
         p.write(|tx| {
-            for (id, _, _) in &vanished {
+            for (id, _, _, _) in &vanished {
                 tx.sql.execute("DELETE FROM extension_installs WHERE id = ?1", [id])?;
             }
             Ok(())
@@ -902,10 +909,15 @@ pub(crate) fn on_open(p: &mut Profile) -> Result<(), Error> {
     // Compared ignoring case: on Windows `extensions/<id>` may be an existing dir spelled in
     // another case, and `commit` keeps installed ids distinct ignoring case.
     let referenced: HashSet<String> =
-        present.iter().filter(|(_, _, managed)| *managed).map(|(_, dir, _)| dir.to_ascii_lowercase()).collect();
+        present.iter().filter(|(_, _, managed, _)| *managed).map(|(_, dir, _, _)| dir.to_ascii_lowercase()).collect();
+    let withheld: HashSet<String> =
+        present.iter().filter(|(_, _, managed, withheld)| *managed && *withheld).map(|(id, _, _, _)| id.to_ascii_lowercase()).collect();
     let Ok(id_dirs) = fs::read_dir(&p.paths.extensions) else { return Ok(()) };
     for id_dir in id_dirs.flatten() {
         let id_name = id_dir.file_name().to_string_lossy().into_owned();
+        if withheld.contains(&id_name.to_ascii_lowercase()) {
+            continue;
+        }
         if let Ok(versions) = fs::read_dir(id_dir.path()) {
             for version in versions.flatten() {
                 let rel = format!("{id_name}/{}", version.file_name().to_string_lossy());

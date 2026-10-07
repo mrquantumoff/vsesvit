@@ -483,7 +483,9 @@ impl LoadedExtension for EngineExtension {
 /// Brings the engine's extensions in line with core's `list`. Idempotent. An extension is
 /// (re)added when the engine does not have the id core recorded for its current folder; add
 /// comes before remove, because adding a folder with an id the engine knows replaces that
-/// extension in place. Returns what went wrong per extension, for the Extensions dialog.
+/// extension in place. A withheld update is never added, since the engine starts what it adds:
+/// core keeps the id of the version before, which stays loaded and off until the user approves.
+/// Returns what went wrong per extension, for the Extensions dialog.
 async fn sync_engine<E: EngineExtensions>(
     engine: &E,
     list: &dyn Fn() -> Result<Vec<InstalledExtension>, String>,
@@ -508,7 +510,7 @@ async fn sync_engine<E: EngineExtensions>(
             .engine_id
             .as_deref()
             .is_some_and(|id| listed.iter().any(|e| e.id() == id));
-        if loaded {
+        if loaded || !ext.withheld.is_empty() {
             continue;
         }
         if ext.engine_id.is_none()
@@ -1003,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn an_update_that_asks_for_more_replaces_the_old_version_and_stays_off() {
+    fn an_update_that_asks_for_more_is_not_loaded_until_it_is_approved() {
         let root = temp_dir("withheld");
         let dirs = ["1.0", "2.0"].map(|version| {
             let dir = root.join(format!("{version}_ab"));
@@ -1017,18 +1019,13 @@ mod tests {
         let core = RefCell::new(vec![installed("x@vsesvit.test", &dirs[0], None, true)]);
         sync(&engine, &core);
         let engine_id = core.borrow()[0].engine_id.clone().unwrap();
-        let mut update = installed("x@vsesvit.test", &dirs[1], None, false);
+        let mut update = installed("x@vsesvit.test", &dirs[1], Some(&engine_id), false);
         update.withheld.push(PermissionMessage {
             text: "Read your browsing history".into(),
             details: Vec::new(),
         });
-        *core.borrow_mut() = vec![update];
+        *core.borrow_mut() = vec![update.clone()];
         sync(&engine, &core);
-        let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(
-            core.borrow()[0].engine_id.as_deref(),
-            Some(engine_id.as_str())
-        );
         assert_eq!(
             engine.0.borrow().loaded,
             [(engine_id.clone(), "Added".to_owned(), false)]
@@ -1037,9 +1034,31 @@ mod tests {
             engine.calls(),
             [
                 format!("add {}", dirs[0]),
-                format!("add {}", dirs[1]),
                 format!("enable {engine_id} false"),
-            ]
+            ],
+            "1.0 is switched off and 2.0 not started"
+        );
+
+        let fresh = FakeEngine::default();
+        update.engine_id = None;
+        sync(&fresh, &RefCell::new(vec![update]));
+        assert_eq!(
+            fresh.calls(),
+            Vec::<String>::new(),
+            "nothing to keep, nothing loaded"
+        );
+
+        *core.borrow_mut() = vec![installed("x@vsesvit.test", &dirs[1], None, true)];
+        sync(&engine, &core);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            engine.calls()[2..],
+            [format!("add {}", dirs[1])],
+            "approved, 2.0 replaces 1.0 and runs"
+        );
+        assert_eq!(
+            engine.0.borrow().loaded,
+            [(engine_id.clone(), "Added".to_owned(), true)]
         );
     }
 }

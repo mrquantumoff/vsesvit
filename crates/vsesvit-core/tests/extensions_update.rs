@@ -89,6 +89,14 @@ impl Fixture {
     fn get(&mut self, id: &ExtensionId) -> Option<InstalledExtension> {
         self.p.extensions().get(id).unwrap()
     }
+
+    /// Closes the profile and opens it again, as a restart does.
+    fn reopen(&mut self) {
+        let scratch = Profile::open(&self.t.path().join("scratch"), OpenOptions::default()).unwrap();
+        drop(std::mem::replace(&mut self.p, scratch));
+        self.p = Profile::open(&self.t.path().join("profile"), OpenOptions::default()).unwrap();
+        self.p.set_stores(self.store.stores());
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -200,6 +208,29 @@ fn every_store_updates_in_place_and_withholds_new_permissions() {
         let report = f.check();
         assert!(report.updated.is_empty() && report.failed.is_empty(), "{from:?}: {report:?}");
     }
+}
+
+#[test]
+fn the_engine_keeps_the_version_before_a_withheld_update_until_it_is_approved() {
+    let mut f = Fixture::new();
+    let id = f.publish(Kind::ChromeWebStore, "1.0", &["storage"]);
+    let v1 = f.install(Kind::ChromeWebStore.source(&id));
+    f.p.extensions().set_engine_id(&id, id.as_str()).unwrap();
+    f.publish(Kind::ChromeWebStore, "2.0", &["storage", "history"]);
+    f.check();
+    let v2 = f.get(&id).unwrap();
+    assert!(!v2.withheld.is_empty());
+    assert_eq!(v2.engine_id.as_deref(), Some(id.as_str()), "2.0 is not loaded before it is approved; the engine keeps 1.0");
+    f.reopen();
+    assert!(v1.dir.is_dir() && v2.dir.is_dir(), "the engine still holds 1.0's files");
+
+    f.p.extensions().approve_permissions(&id).unwrap();
+    assert_eq!(f.get(&id).unwrap().engine_id, None, "approved, 2.0 is loaded over 1.0");
+    f.p.extensions().set_engine_id(&id, id.as_str()).unwrap();
+    f.reopen();
+    assert!(!v1.dir.exists() && v2.dir.is_dir(), "1.0's files go once 2.0 runs");
+    f.p.extensions().approve_permissions(&id).unwrap();
+    assert_eq!(f.get(&id).unwrap().engine_id.as_deref(), Some(id.as_str()), "nothing withheld, nothing to load again");
 }
 
 #[test]
