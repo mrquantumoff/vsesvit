@@ -295,10 +295,45 @@ impl<K: Clone + Eq + Hash> TabGroups<K> {
             return Vec::new();
         };
         let at = tabs.order.iter().position(|t| t == active).unwrap_or(0);
-        let shown = |t: &&K| !self.group_of(t).is_some_and(|g| g.collapsed);
-        let after = tabs.order[at..].iter().find(shown);
-        let before = || tabs.order[..at].iter().rev().find(shown);
-        vec![after.or_else(before).map_or(Step::OpenTab, |t| Step::Activate(t.clone()))]
+        vec![self.nearest_shown(tabs, at).map_or(Step::OpenTab, |t| Step::Activate(t.clone()))]
+    }
+
+    /// Ctrl+Tab's tab, or Ctrl+Shift+Tab's going `back`: the next tab from the selected one that
+    /// way, round the end, past those hidden in collapsed groups, as in Chrome. `None` when no
+    /// other tab shows.
+    pub fn next_shown(&self, tabs: &WindowTabs<K>, back: bool) -> Option<K> {
+        let at = tabs.order.iter().position(|t| Some(t) == tabs.active.as_ref())?;
+        let n = tabs.order.len();
+        (1..n)
+            .map(|i| &tabs.order[if back { (at + n - i) % n } else { (at + i) % n }])
+            .find(|t| self.is_shown(t))
+            .cloned()
+    }
+
+    /// The tab selected when the selected tab `closing` closes, as Chrome picks it: `opener`,
+    /// the shell's pick by which tab opened which, if it shows; else the tab beside it in its
+    /// group, the one after first; else the nearest shown tab after it, then before it; else
+    /// the tab beside it, whose group selecting it expands. `None` for the window's last tab.
+    pub fn after_closing(&self, tabs: &WindowTabs<K>, closing: &K, opener: Option<&K>) -> Option<K> {
+        let at = tabs.order.iter().position(|t| t == closing)?;
+        if let Some(opener) = opener.filter(|o| *o != closing && tabs.order.contains(o) && self.is_shown(o)) {
+            return Some(opener.clone());
+        }
+        let beside = [tabs.order.get(at + 1), at.checked_sub(1).map(|i| &tabs.order[i])];
+        let own = self.members.get(closing);
+        let mate = beside.into_iter().flatten().find(|t| own.is_some() && self.members.get(*t) == own);
+        mate.or_else(|| self.nearest_shown(tabs, at)).or_else(|| beside.into_iter().flatten().next()).cloned()
+    }
+
+    /// The shown tab nearest after the one at `at`, else before it.
+    fn nearest_shown<'a>(&self, tabs: &'a WindowTabs<K>, at: usize) -> Option<&'a K> {
+        let (before, after) = tabs.order.split_at(at.min(tabs.order.len()));
+        after.iter().skip(1).chain(before.iter().rev()).find(|t| self.is_shown(t))
+    }
+
+    /// Whether the tab shows: it is in no group, or in an expanded one.
+    fn is_shown(&self, tab: &K) -> bool {
+        !self.group_of(tab).is_some_and(|g| g.collapsed)
     }
 
     pub fn set_title(&mut self, group: GroupId, title: &str) {
@@ -605,6 +640,42 @@ mod tests {
         groups.set_collapsed(&tabs("bcd", 0, None), h, true);
         assert_eq!(groups.set_collapsed(&tabs("bcd", 0, Some('b')), g, true), [Step::OpenTab], "d is hidden too");
         assert!(groups.set_collapsed(&tabs("abcd", 0, Some('a')), g, true).is_empty(), "the selected tab is not in it");
+    }
+
+    #[test]
+    fn ctrl_tab_steps_round_the_end_past_collapsed_groups() {
+        let mut groups = TabGroups::default();
+        let g = group_with(&mut groups, "bc");
+        groups.set_collapsed(&tabs("abcd", 0, None), g, true);
+        assert_eq!(groups.next_shown(&tabs("abcd", 0, Some('a')), false), Some('d'));
+        assert_eq!(groups.next_shown(&tabs("abcd", 0, Some('d')), true), Some('a'));
+        assert_eq!(groups.next_shown(&tabs("abcd", 0, Some('d')), false), Some('a'), "round the end");
+        assert_eq!(groups.next_shown(&tabs("abc", 0, Some('a')), false), None, "no other tab shows");
+        groups.set_collapsed(&tabs("abcd", 0, None), g, false);
+        assert_eq!(groups.next_shown(&tabs("abcd", 0, Some('a')), false), Some('b'));
+        assert_eq!(groups.next_shown(&tabs("abcd", 0, None), false), None);
+    }
+
+    #[test]
+    fn closing_the_selected_tab_selects_a_shown_one() {
+        let mut groups = TabGroups::default();
+        let g = group_with(&mut groups, "bc");
+        groups.set_collapsed(&tabs("abcd", 0, None), g, true);
+        assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('a')), &'a', None), Some('d'));
+        assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('d')), &'d', None), Some('a'));
+        assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('a')), &'a', Some(&'c')), Some('d'), "the opener is hidden");
+        assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('a')), &'a', Some(&'d')), Some('d'));
+        assert_eq!(groups.after_closing(&tabs("abc", 0, Some('a')), &'a', None), Some('b'), "only hidden tabs are left");
+        assert_eq!(groups.after_closing(&tabs("a", 0, Some('a')), &'a', None), None);
+    }
+
+    #[test]
+    fn closing_a_groups_last_tab_selects_the_one_before_it_in_the_group() {
+        let mut groups = TabGroups::default();
+        group_with(&mut groups, "bc");
+        assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('c')), &'c', None), Some('b'));
+        assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('b')), &'b', None), Some('c'));
+        assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('a')), &'a', None), Some('b'));
     }
 
     #[test]
