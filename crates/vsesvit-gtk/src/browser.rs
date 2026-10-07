@@ -41,6 +41,7 @@ use vsesvit_core::sync::Changed;
 use vsesvit_core::tab_search::{self, Listed, Row};
 use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_core::{Profile, Url};
+use vsesvit_webext::permissions::Prompt;
 use vsesvit_webext::{
     ActionInfo, NewTab, NewWindow, Runtime, TabHost, TabId, TabInfo, WindowId, WindowInfo,
     WindowState, WindowUpdate,
@@ -49,7 +50,7 @@ use webkit::prelude::*;
 
 use crate::closed_tabs::{ClosedKey, ClosedTabs};
 use crate::cookies::Cookies;
-use crate::dialogs::Windowed;
+use crate::dialogs::{Windowed, extension_prompts};
 use crate::downloads::Downloads;
 use crate::engine::{self, Engine};
 use crate::profile::{self, Core};
@@ -1563,6 +1564,17 @@ impl TabHost for Host {
     fn private_session(&self) -> Option<webkit::NetworkSession> {
         self.0.upgrade()?.private.borrow().as_ref().map(|engine| engine.session.clone())
     }
+
+    /// Over the window the user used last, as Chrome asks over the extension's window.
+    fn ask_permissions(&self, prompt: Prompt, answer: Box<dyn FnOnce(bool)>) {
+        let Some(window) = self.browser().and_then(|b| b.windows().into_iter().next()) else {
+            return answer(false);
+        };
+        let dialog = extension_prompts::request_dialog(&prompt);
+        glib::spawn_future_local(async move {
+            answer(dialog.choose_future(Some(&window)).await == extension_prompts::ALLOW);
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1572,6 +1584,36 @@ mod tests {
 
     use super::*;
     use crate::test_support::{Reply, Server, browser, wait_until};
+
+    #[gtk::test]
+    fn an_extensions_permission_request_asks_over_the_last_window_used() {
+        use vsesvit_core::extensions::permissions::PermissionMessage;
+
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let answers = Rc::new(RefCell::new(Vec::new()));
+        let shown = || browser.windows().into_iter().next().and_then(|w| w.visible_dialog()).and_downcast::<adw::AlertDialog>();
+        let ask = |after: Option<&adw::AlertDialog>| {
+            let prompt = Prompt {
+                extension: vsesvit_core::extensions::ExtensionId::parse("asker@vsesvit.test").unwrap(),
+                name: "Asker".into(),
+                icon: None,
+                warnings: vec![PermissionMessage { text: "Read your browsing history".into(), details: Vec::new() }],
+            };
+            let answers = answers.clone();
+            Host(Rc::downgrade(&browser.0)).ask_permissions(prompt, Box::new(move |allowed| answers.borrow_mut().push(allowed)));
+            wait_until("the prompt over the last window used", || shown().is_some_and(|d| Some(&d) != after));
+            shown().unwrap()
+        };
+        let first = ask(None);
+        assert_eq!(first.heading().as_deref(), Some("“Asker” has requested additional permissions."));
+        first.emit_by_name::<()>("response", &[&extension_prompts::ALLOW]);
+        wait_until("the allowed answer", || answers.borrow().len() == 1);
+        ask(Some(&first)).close();
+        wait_until("the denied answer", || answers.borrow().len() == 2);
+        assert_eq!(*answers.borrow(), [true, false]);
+        window.destroy();
+    }
 
     fn history_title(browser: &Browser, url: &str) -> Option<String> {
         let found = browser.core().borrow_mut().history().search(url, 10).ok()?;

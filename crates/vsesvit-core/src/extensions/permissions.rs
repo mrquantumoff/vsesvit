@@ -25,13 +25,12 @@ use crate::prefs::{Pref, Scope};
 pub const GRANTED_PERMISSIONS: Pref<BTreeMap<ExtensionId, PermissionSet>> =
     Pref { key: "extensions.granted_permissions", scope: Scope::Local, default: BTreeMap::new };
 
-/// Chrome's install prompt: `Add “<name>”?`, then this, then the warnings.
+/// Chrome's install prompt: [`install_heading`], then this, then the warnings; Cancel and
+/// "Add extension".
 pub const INSTALL_LEAD: &str = "It can:";
-pub const INSTALL_ACCEPT: &str = "Add extension";
-/// Chrome's `permissions.request` prompt: [`request_heading`], then this, then the warnings.
+/// Chrome's `permissions.request` prompt: [`request_heading`], then this, then the warnings;
+/// Deny and Allow.
 pub const REQUEST_LEAD: &str = "It could:";
-pub const REQUEST_ACCEPT: &str = "Allow";
-pub const REQUEST_DENY: &str = "Deny";
 
 pub fn install_heading(name: &str) -> String {
     format!("Add “{name}”?")

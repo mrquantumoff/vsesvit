@@ -163,7 +163,8 @@ impl Runtime {
         if self.0.extension(&installed.id).is_some() {
             self.unload(&installed.id);
         }
-        let ext = Rc::new(Extension::build(installed, &self.0.ui_locale)?);
+        let active = self.0.profile.borrow_mut().extensions().active_permissions(&installed.id, &installed.manifest);
+        let ext = Rc::new(Extension::build(installed, &self.0.ui_locale, active)?);
         ext.in_private.set(self.0.profile.borrow_mut().extensions().allowed_in_private(&ext.id));
         let event = self.0.install_event(&ext, reason);
         self.0.restore_scripts(&ext, &event);
@@ -855,6 +856,23 @@ impl Inner {
         }
         *ext.dynamic_scripts.borrow_mut() = scripts;
         *ext.dynamic_content.borrow_mut() = ext.build_dynamic_content();
+    }
+
+    /// The user granted `ext` permissions or it gave some back: it holds what core says now,
+    /// which widens or narrows the hosts its pages fetch from, its registered content scripts
+    /// and its declarativeNetRequest rules reach, and the tabs it sees.
+    pub(crate) fn permissions_changed(self: &Rc<Self>, ext: &Rc<Extension>) {
+        let active = self.profile.borrow_mut().extensions().active_permissions(&ext.id, &ext.manifest);
+        let grants = crate::extension::dnr_grants(&active);
+        *ext.permissions.borrow_mut() = active;
+        for (_, _, view) in ext.live_views() {
+            views::set_cors_allowlist(&view, ext);
+        }
+        self.dynamic_scripts_changed(ext);
+        if *ext.grants.borrow() != grants {
+            *ext.grants.borrow_mut() = grants;
+            filters::compile(self, ext);
+        }
     }
 
     /// `ext`'s dynamic content scripts changed: every tab gets their new user content, which

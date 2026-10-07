@@ -36,7 +36,7 @@ pub(crate) struct Compiles {
 pub(crate) fn compile(inner: &Rc<Inner>, ext: &Rc<Extension>) -> u64 {
     let compiles = &ext.compiles;
     compiles.wanted.set(compiles.wanted.get() + 1);
-    if ext.grants.is_some() && !compiles.running.get() {
+    if ext.grants.borrow().is_some() && !compiles.running.get() {
         start(inner, ext);
     }
     compiles.wanted.get()
@@ -44,7 +44,7 @@ pub(crate) fn compile(inner: &Rc<Inner>, ext: &Rc<Extension>) -> u64 {
 
 /// Runs `f` once the content blocker reflects change `wanted` (at once when it does).
 pub(crate) fn when_compiled(ext: &Extension, wanted: u64, f: impl FnOnce() + 'static) {
-    if ext.grants.is_none() || ext.compiles.applied.get() >= wanted {
+    if ext.grants.borrow().is_none() || ext.compiles.applied.get() >= wanted {
         f();
     } else {
         ext.compiles.waiters.borrow_mut().push((wanted, Box::new(f)));
@@ -66,7 +66,7 @@ struct Built {
 }
 
 fn start(inner: &Rc<Inner>, ext: &Rc<Extension>) {
-    let Some(grants) = ext.grants.clone() else { return };
+    let Some(grants) = ext.grants.borrow().clone() else { return };
     ext.compiles.running.set(true);
     inner.pending_filters.set(inner.pending_filters.get() + 1);
     let change = ext.compiles.wanted.get();

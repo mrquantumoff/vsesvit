@@ -96,8 +96,8 @@ impl Call {
 
 macro_rules! methods {
     ($($variant:ident = $name:literal,)*) => {
-        /// Every API the runtime implements on the Rust side. Anything else (`i18n`, `getURL`,
-        /// `permissions.contains`) is answered inside the shim from the embedded manifest.
+        /// Every API the runtime implements on the Rust side. Anything else (`i18n`, `getURL`)
+        /// is answered inside the shim from the embedded manifest.
         #[derive(Copy, Clone, Debug, PartialEq, Eq)]
         pub enum Method {
             $($variant,)*
@@ -187,6 +187,10 @@ methods! {
     CookiesSet = "cookies.set",
     CookiesRemove = "cookies.remove",
     CookiesGetAllCookieStores = "cookies.getAllCookieStores",
+    PermissionsGetAll = "permissions.getAll",
+    PermissionsContains = "permissions.contains",
+    PermissionsRequest = "permissions.request",
+    PermissionsRemove = "permissions.remove",
     PortPostMessage = "port.postMessage",
     PortDisconnect = "port.disconnect",
     PortReceive = "port.receive",
@@ -530,6 +534,10 @@ mod tests {
             "cookies.set",
             "cookies.remove",
             "cookies.getAllCookieStores",
+            "permissions.getAll",
+            "permissions.contains",
+            "permissions.request",
+            "permissions.remove",
             "port.postMessage",
             "port.disconnect",
             "port.receive",

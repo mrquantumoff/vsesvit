@@ -149,7 +149,8 @@
 //!   `registerContentScripts/getRegisteredContentScripts/updateContentScripts/unregisterContentScripts`,
 //!   `action`/`browserAction` (`setBadgeText`, `setTitle`, `setIcon`, `setPopup`,
 //!   `onClicked`), `alarms` (at most 500, every 30 seconds at the soonest, as in Chrome),
-//!   `permissions.contains/getAll`, `contextMenus` (also as Firefox's `menus`, see [`menus`]),
+//!   `permissions.getAll/contains/request/remove` with `onAdded/onRemoved` (see below),
+//!   `contextMenus` (also as Firefox's `menus`, see [`menus`]),
 //!   `commands.getAll/onCommand` when the manifest declares `commands`, `notifications` (see
 //!   [`notifications`]: `create/update/clear/getAll/getPermissionLevel` with
 //!   `onClicked/onButtonClicked/onClosed/onPermissionLevelChanged`, shown as Chrome shows
@@ -175,6 +176,14 @@
 //!   "Allow access to file URLs" grant for that, which Vsesvit does not offer.
 //!   `tabs.create/update` resolve relative URLs against the calling page and refuse
 //!   `javascript:` and `file:`.
+//! - Optional permissions as in Chrome: `permissions.request` during a user gesture, for
+//!   permissions the manifest lists, answers at once for what the extension holds or what has
+//!   no warning, and otherwise asks the user through [`TabHost::ask_permissions`] with
+//!   Chrome's warnings ([`permissions::Prompt`]). Core keeps the grants
+//!   (`Extensions::active_permissions`), which `permissions.remove` takes back, refusing
+//!   required ones. Granted hosts widen at once where the extension's pages fetch from across
+//!   origins, its registered content scripts and declarativeNetRequest rules reach and the
+//!   tabs it sees; a grant's namespace is there from the start in every page.
 //! - Private tabs only where the user allowed the extension in private windows (Chrome's
 //!   "Allow in Incognito"; [`Runtime::allowed_in_private_changed`] applies a change): elsewhere
 //!   a private tab gets none of its content scripts or rulesets, `chrome.tabs` neither lists it
@@ -216,7 +225,9 @@
 //! `setExtensionActionOptions` shows no count and there is no `getMatchedRules`; no
 //! `webRequest`; content-script CSS is a user-level style sheet (WebKitGTK ignores
 //! author-level ones on standards-mode pages), so a page's own rules beat it unless it is
-//! `!important`; a registered script's `matchOriginAsFallback` changes nothing; one runtime
+//! `!important`; a registered script's `matchOriginAsFallback` changes nothing; a host
+//! permission taken back with `permissions.remove` stays fetchable from the extension's pages
+//! until their web process ends (WebKit never forgets a CORS exception it was given); one runtime
 //! per process;
 //! `about:blank` frames inside extension pages get no API; in a background or popup view,
 //! an `http(s)` iframe loads only for an extension without host permissions (WebKitGTK
@@ -239,6 +250,7 @@ pub mod messaging;
 pub mod mime;
 pub mod notifications;
 pub mod patterns;
+pub mod permissions;
 pub mod protocol;
 pub mod support;
 pub mod tabs;

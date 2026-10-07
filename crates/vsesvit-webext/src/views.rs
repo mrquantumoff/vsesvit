@@ -34,11 +34,7 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
         None => builder.network_session(&inner.session).web_context(&inner.context).build(),
     };
 
-    let allowlist: Vec<&str> = ext.host_permissions.iter().map(String::as_str).collect();
-    let cors_bypass = !allowlist.is_empty();
-    if cors_bypass {
-        view.set_cors_allowlist(&allowlist);
-    }
+    set_cors_allowlist(&view, ext);
     if let Some(settings) = WebViewExt::settings(&view) {
         settings.set_enable_developer_extras(true);
         settings.set_enable_write_console_messages_to_stdout(std::env::var_os("VSESVIT_WEBEXT_CONSOLE").is_some());
@@ -110,7 +106,7 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
                 // every frame of the view (WebKit checks the page, not the frame), so a
                 // third-party frame would get the extension's host-permission fetches,
                 // which Chrome gives only to the extension's own frames.
-                if cors_bypass {
+                if weak_ext.upgrade().is_some_and(|ext| !ext.cors_allowlist().is_empty()) {
                     log::debug!("{ext_id}: refused subframe {uri} in an extension view with host permissions");
                     decision.ignore();
                     return true;
@@ -152,6 +148,13 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
 /// background opens it with `window.open`, so the popup's `opener` is the background page:
 /// WebKit lets a page reach another view's window only through that relationship, and
 /// `runtime.getBackgroundPage` needs it. Any other popup is a plain view.
+/// Lets `view` fetch across origins from the hosts `ext` holds now. WebKit adds the hosts to
+/// its web process for good, so one taken back stays reachable until that process ends.
+pub(crate) fn set_cors_allowlist(view: &webkit::WebView, ext: &Extension) {
+    let allowlist = ext.cors_allowlist();
+    view.set_cors_allowlist(&allowlist.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
 pub(crate) fn open_popup(inner: &Rc<Inner>, ext: &Rc<Extension>, url: String, show: Box<dyn FnOnce(webkit::WebView)>) {
     let background = ext.background.borrow().clone().filter(|_| ext.background_is_page());
     let Some(background) = background else {

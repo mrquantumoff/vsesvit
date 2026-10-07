@@ -5,6 +5,7 @@
 pub(crate) mod about;
 pub(crate) mod bookmarks;
 pub(crate) mod downloads;
+pub(crate) mod extension_prompts;
 pub(crate) mod extensions;
 pub(crate) mod history;
 pub(crate) mod passphrase;

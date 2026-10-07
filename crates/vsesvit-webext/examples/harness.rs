@@ -102,7 +102,15 @@
 //!     its own store, which `getAll`, `onChanged` and `getAllCookieStores` keep from an
 //!     extension until the user allows it in private windows, and which it then reads and
 //!     sets as store "1"; an extension without the permission has no `chrome.cookies`;
-//! 17. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
+//! 17. optional permissions (`tests/fixtures/extensions/permissions/`, optional `tabs`,
+//!     `alarms` and the fixture server's host): `getAll` and `contains` answer what it holds;
+//!     `request` grants what has no warning without asking, refuses with Chrome's messages
+//!     what the manifest does not list, a `file:` pattern and a request when no user acts,
+//!     and asks the shell with Chrome's warnings otherwise; a denial grants nothing; a grant
+//!     fires `onAdded`, shows the tab's URL, lets the popup fetch the site and runs a content
+//!     script registered for it before; the grant outlives a reload; `remove` refuses a
+//!     required permission and fires `onRemoved`;
+//! 18. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
 //!
@@ -141,6 +149,7 @@ mod linux {
     use vsesvit_core::{OpenOptions, Profile};
     use vsesvit_webext::menus::{Entry, ItemId, Target};
     use vsesvit_webext::notifications::{Activation, Priority, Shown};
+    use vsesvit_webext::permissions::Prompt;
     use vsesvit_webext::web_navigation::{Load, NetError};
     use vsesvit_webext::{Gate, LoadReason, NewTab, NewWindow, Runtime, TabHost, TabId, TabInfo, WindowId, WindowInfo, WindowState, WindowUpdate};
     use webkit::prelude::*;
@@ -158,6 +167,7 @@ mod linux {
     const WINDOWS_ID: &str = "windows@vsesvit.test";
     const NAVIGATION_ID: &str = "navigation@vsesvit.test";
     const COOKIES_ID: &str = "cookies@vsesvit.test";
+    const PERMISSIONS_ID: &str = "permissions@vsesvit.test";
 
     pub fn main() -> ExitCode {
         let show = std::env::args().any(|a| a == "--show");
@@ -223,6 +233,8 @@ mod linux {
         write_xpi(&navigation_xpi, &fixture_files("navigation"));
         let cookies_xpi = out_dir.join("cookies.xpi");
         write_xpi(&cookies_xpi, &fixture_files("cookies"));
+        let permissions_xpi = out_dir.join("permissions.xpi");
+        write_xpi(&permissions_xpi, &fixture_files("permissions"));
 
         let probe = install(&profile, &probe_crx);
         assert_eq!(probe.id.as_str(), vsesvit_core::testkit::PROBE_ID);
@@ -248,7 +260,9 @@ mod linux {
         assert_eq!(navigation.id.as_str(), NAVIGATION_ID);
         let cookies = install(&profile, &cookies_xpi);
         assert_eq!(cookies.id.as_str(), COOKIES_ID);
-        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr, &scripts, &windows, &navigation, &cookies] {
+        let permissions = install(&profile, &permissions_xpi);
+        assert_eq!(permissions.id.as_str(), PERMISSIONS_ID);
+        for ext in [&probe, &twin, &widget, &ports, &friend, &menus, &classic, &commands, &notifications, &dnr, &scripts, &windows, &navigation, &cookies, &permissions] {
             if let Err(e) = runtime.load(ext) {
                 println!("[harness] FAIL: Runtime::load({}): {e}", ext.id.as_str());
                 return ExitCode::FAILURE;
@@ -281,6 +295,7 @@ mod linux {
             windows_id: windows.id.clone(),
             navigation_id: navigation.id.clone(),
             cookies_id: cookies.id.clone(),
+            permissions,
             out_dir: out_dir.clone(),
             window: window.clone(),
             results: RefCell::new(Vec::new()),
@@ -331,6 +346,7 @@ mod linux {
         windows_id: ExtensionId,
         navigation_id: ExtensionId,
         cookies_id: ExtensionId,
+        permissions: InstalledExtension,
         out_dir: PathBuf,
         window: gtk::Window,
         results: RefCell<Vec<(&'static str, bool)>>,
@@ -412,7 +428,10 @@ mod linux {
             // 14. cookies
             self.cookies().await;
 
-            // 15. lifecycle events
+            // 15. optional permissions
+            self.optional_permissions().await;
+
+            // 16. lifecycle events
             self.lifecycle().await;
 
             for id in self.runtime.loaded() {
@@ -513,7 +532,7 @@ mod linux {
             self.note("i18n_substitution_single_pass", cost.as_ref().and_then(Value::as_str) == Some("Total: $5.00 $$ $5.00 $$"), format!("getMessage(cost, ['$5.00 $$']) = {cost:?}"));
             // permissions.contains and request answer by pattern coverage, as in Chrome.
             let contains = self
-                .eval_async(&popup, "const ask = (o) => chrome.permissions.contains({ origins: [o] }); return [await ask('http://127.0.0.1/foo/*'), await ask('http://127.0.0.1:8080/*'), await ask('http://127.0.0.2/*'), await ask('*://127.0.0.1/*'), await chrome.permissions.request({ origins: ['http://127.0.0.1/a*'] })];")
+                .eval_async(&popup, "const requested = chrome.permissions.request({ origins: ['http://127.0.0.1/a*'] }); const ask = (o) => chrome.permissions.contains({ origins: [o] }); return [await ask('http://127.0.0.1/foo/*'), await ask('http://127.0.0.1:8080/*'), await ask('http://127.0.0.2/*'), await ask('*://127.0.0.1/*'), await requested];")
                 .await;
             self.note("permissions_contains_patterns", contains == Some(serde_json::json!([true, true, false, false, true])), format!("contains/request under http://127.0.0.1/* = {contains:?}"));
 
@@ -1970,6 +1989,148 @@ mod linux {
             self.cookie_events(popup, 0).await;
         }
 
+        async fn optional_permissions(&self) {
+            let id = self.permissions.id.clone();
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("permissions_before_grant", false, "no popup view");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Permissions"), TIMEOUT).await;
+            let page = self.url("/page2.html");
+            let tab = self.host.open(&page, false).expect("page tab");
+            let view = self.host.web_view(tab).expect("page tab view");
+            wait_until(|| !view.is_loading(), TIMEOUT).await;
+            let origin = "http://127.0.0.1/*";
+            let state = format!(
+                r#"const tab = (await chrome.tabs.query({{}})).find((t) => t.id === {tab});
+                return {{
+                    all: await chrome.permissions.getAll(),
+                    contains: await chrome.permissions.contains({{ permissions: ["tabs"], origins: ["{origin}"] }}),
+                    url: tab.url || null,
+                    fetched: await fetch({page:?}, {{ cache: "no-store" }}).then((r) => r.status, () => "refused"),
+                }};"#,
+                tab = tab.0
+            );
+            let events = async || self.eval_async(&popup, r#"return chrome.runtime.sendMessage("events");"#).await.unwrap_or(Value::Null);
+            let marked = async || {
+                view.reload();
+                glib::timeout_future(Duration::from_millis(100)).await;
+                wait_until(|| !view.is_loading(), TIMEOUT).await;
+                glib::timeout_future(Duration::from_millis(300)).await;
+                self.eval(&view, "String(document.documentElement.dataset.vsesvitPermissions)", None).await
+            };
+
+            let before = self.eval_async(&popup, &state).await;
+            let registered = self
+                .eval_async(&popup, &format!(r#"await chrome.scripting.registerContentScripts([{{ id: "mark", matches: ["{origin}"], js: ["mark.js"], persistAcrossSessions: false }}]); return true;"#))
+                .await;
+            let unmarked = marked().await;
+            let expected = serde_json::json!({ "all": { "permissions": ["scripting", "storage"], "origins": [] }, "contains": false, "url": null, "fetched": "refused" });
+            self.note(
+                "permissions_before_grant",
+                before.as_ref() == Some(&expected) && registered == Some(Value::Bool(true)) && unmarked.as_deref() == Some("undefined"),
+                format!("{before:?}; registered = {registered:?}; content script = {unmarked:?}"),
+            );
+
+            // Each request is the first call of its script, which runs as a user gesture. The
+            // background asked once as it started, when no user acted.
+            let mut unasked = Vec::new();
+            for request in [
+                r#"chrome.permissions.request({ permissions: ["alarms"] })"#,
+                r#"chrome.permissions.request({ permissions: ["history"] })"#,
+                r#"chrome.permissions.request({ origins: ["https://elsewhere.example/*"] })"#,
+                r#"chrome.permissions.request({ origins: ["file:///*"] })"#,
+                r#"chrome.runtime.sendMessage("unprompted")"#,
+                r#"Promise.resolve(typeof chrome.alarms.create)"#,
+            ] {
+                unasked.push(self.eval_async(&popup, &format!("return await {request}.then((v) => v, (e) => e.message);")).await.unwrap_or(Value::Null));
+            }
+            let unasked = Some(Value::Array(unasked));
+            let expected = serde_json::json!([
+                true,
+                "Only permissions specified in the manifest may be requested.",
+                "Only permissions specified in the manifest may be requested.",
+                "Extension must have file access enabled to request 'file:///*'.",
+                "This function must be called during a user gesture",
+                "function"
+            ]);
+            self.note(
+                "permissions_request_unprompted",
+                unasked.as_ref() == Some(&expected) && self.host.prompts.borrow().is_empty(),
+                format!("{unasked:?}; prompts = {:?}", self.host.prompts.borrow()),
+            );
+            events().await;
+
+            let ask = format!(r#"return await chrome.permissions.request({{ permissions: ["tabs"], origins: ["{origin}"] }});"#);
+            let denied = self.eval_async(&popup, &ask).await;
+            let prompt = self.host.prompts.borrow().first().cloned();
+            let warnings: Vec<String> = prompt.iter().flat_map(|p| p.warnings.iter().map(|w| w.text.clone())).collect();
+            let still = self.eval_async(&popup, &state).await;
+            self.note(
+                "permissions_request_denied",
+                denied == Some(Value::Bool(false))
+                    && prompt.as_ref().is_some_and(|p| p.name == "Vsesvit Permissions")
+                    && warnings == ["Read and change your data on 127.0.0.1", "Read your browsing history"]
+                    && still.as_ref().map(|s| &s["contains"]) == Some(&Value::Bool(false)),
+                format!("request = {denied:?}; prompt = {prompt:?}; after = {still:?}"),
+            );
+
+            self.host.allow_permissions.set(true);
+            let allowed = self.eval_async(&popup, &ask).await;
+            let after = self.eval_async(&popup, &state).await;
+            let added = events().await;
+            let injected = marked().await;
+            let expected = serde_json::json!({ "all": { "permissions": ["alarms", "scripting", "storage", "tabs"], "origins": [origin] }, "contains": true, "url": page, "fetched": 200 });
+            let event = serde_json::json!([["onAdded", { "permissions": ["tabs"], "origins": [origin] }]]);
+            self.note(
+                "permissions_request_granted",
+                allowed == Some(Value::Bool(true)) && after.as_ref() == Some(&expected) && added == event && injected.as_deref() == Some("injected") && self.host.prompts.borrow().len() == 2,
+                format!("request = {allowed:?}; after = {after:?}; events = {added}; content script = {injected:?}"),
+            );
+
+            self.runtime.unload(&id);
+            if let Err(e) = self.runtime.load(&self.permissions) {
+                self.note("permissions_kept", false, format!("reload: {e}"));
+                return;
+            }
+            let kept = self.profile.borrow_mut().extensions().active_permissions(&id, &self.permissions.manifest);
+            self.note("permissions_kept", kept.apis.contains("tabs") && kept.origins.iter().any(|o| o.as_str() == origin), format!("after a reload core says {kept:?}"));
+
+            let Some(popup) = self.popup(&id, self.tab).await else {
+                self.note("permissions_remove", false, "no popup view after the reload");
+                return;
+            };
+            let _window = self.park(&popup);
+            wait_until(|| popup.title().as_deref() == Some("Vsesvit Permissions"), TIMEOUT).await;
+            let removed = self
+                .eval_async(
+                    &popup,
+                    &format!(
+                        r#"const refused = (p) => p.then(() => "ran", (e) => e.message);
+                        return [
+                          await refused(chrome.permissions.remove({{ permissions: ["scripting"] }})),
+                          await refused(chrome.permissions.remove({{ permissions: ["history"] }})),
+                          await chrome.permissions.remove({{ permissions: ["tabs"], origins: ["{origin}"] }}),
+                        ];"#
+                    ),
+                )
+                .await;
+            // WebKit keeps a host it let the popup's process fetch from, so `fetched` stays 200.
+            let after = self.eval_async(&popup, &state).await;
+            let removal = self.eval_async(&popup, r#"return chrome.runtime.sendMessage("events");"#).await.unwrap_or(Value::Null);
+            let expected = serde_json::json!(["You cannot remove required permissions.", "Only permissions specified in the manifest may be requested.", true]);
+            let event = serde_json::json!([["onRemoved", { "permissions": ["tabs"], "origins": [origin] }]]);
+            self.note(
+                "permissions_remove",
+                removed.as_ref() == Some(&expected)
+                    && after.as_ref().is_some_and(|a| a["contains"] == false && a["url"].is_null() && a["all"]["permissions"] == serde_json::json!(["alarms", "scripting", "storage"]))
+                    && removal == event,
+                format!("remove = {removed:?}; after = {after:?}; events = {removal}"),
+            );
+            self.host.remove_tab(tab);
+        }
+
         async fn lifecycle(&self) {
             let id = self.twin.borrow().id.clone();
             let lives = wait_for_value(|| {
@@ -2191,6 +2352,9 @@ mod linux {
         created: RefCell<Vec<String>>,
         /// Every target a gate refused, for checks that wait on one.
         refused: Rc<RefCell<Vec<String>>>,
+        /// Every `permissions.request` prompt, and how the user answers the next ones.
+        prompts: RefCell<Vec<Prompt>>,
+        allow_permissions: Cell<bool>,
         next_id: Cell<u32>,
         next_window: Cell<u32>,
         me: RefCell<std::rc::Weak<Host>>,
@@ -2207,6 +2371,8 @@ mod linux {
                 private: RefCell::new(None),
                 created: RefCell::new(Vec::new()),
                 refused: Rc::new(RefCell::new(Vec::new())),
+                prompts: RefCell::new(Vec::new()),
+                allow_permissions: Cell::new(false),
                 next_id: Cell::new(1),
                 next_window: Cell::new(FIRST_WINDOW.0 + 1),
                 me: RefCell::new(std::rc::Weak::new()),
@@ -2481,6 +2647,13 @@ mod linux {
 
         fn private_session(&self) -> Option<webkit::NetworkSession> {
             self.private.borrow().clone()
+        }
+
+        /// Answers later, as a dialog would.
+        fn ask_permissions(&self, prompt: Prompt, answer: Box<dyn FnOnce(bool)>) {
+            self.prompts.borrow_mut().push(prompt);
+            let allow = self.allow_permissions.get();
+            glib::idle_add_local_once(move || answer(allow));
         }
 
         fn remove_window(&self, window: WindowId) -> bool {

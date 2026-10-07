@@ -19,6 +19,7 @@ use webkit::prelude::*;
 use webkit::{gio, glib};
 
 use vsesvit_core::extensions::ExtensionId;
+use vsesvit_core::extensions::permissions::{self as granted, PermissionSet, Request};
 
 use crate::dnr;
 use crate::dnr_rules::{STATIC_RULE_BUDGET, Scope};
@@ -27,6 +28,7 @@ use crate::filters;
 use crate::menus::ItemId;
 use crate::messaging::{self, PortEvent, Wake};
 use crate::notifications::{self, Activation, Priority, Shown};
+use crate::permissions::{self, Prompt};
 use crate::protocol::{self, Call, Dispatch, Dispatched, Method, NO_RECEIVER, Replies, Sender};
 use crate::runtime::Inner;
 use crate::tabs::{NewTab, TabId, TabInfo};
@@ -202,6 +204,10 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         Method::CookiesGet | Method::CookiesGetAll | Method::CookiesSet | Method::CookiesRemove | Method::CookiesGetAllCookieStores => {
             crate::cookie_jar::call(inner, ext, &call, reply)
         }
+        Method::PermissionsGetAll => reply.ok(Some(permissions::to_json(&ext.permissions.borrow()))),
+        Method::PermissionsContains => reply.finish(permissions_contain(ext, &call)),
+        Method::PermissionsRequest => request_permissions(inner, ext, &call, reply),
+        Method::PermissionsRemove => reply.finish(remove_permissions(inner, ext, &call)),
     }
 }
 
@@ -1089,7 +1095,7 @@ pub(crate) fn withdraw_notification(ext: &Extension, id: &str) {
 // --- declarativeNetRequest --------------------------------------------------------------
 
 fn dnr_permission(ext: &Extension, call: &Call) -> Result<(), String> {
-    match ext.grants {
+    match *ext.grants.borrow() {
         Some(_) => Ok(()),
         None => Err(format!("{} requires the \"declarativeNetRequest\" permission", call.method)),
     }
@@ -1285,6 +1291,64 @@ fn schedule_alarm(inner: &Rc<Inner>, ext: &Rc<Extension>, name: String, delay_ms
     if let Some(alarm) = ext.alarms.borrow_mut().get_mut(&name) {
         alarm.source = Some(source);
     }
+}
+
+// --- permissions ------------------------------------------------------------------------
+
+/// No local file, whatever it holds: that needs a file-access grant this runtime does not offer.
+fn permissions_contain(ext: &Extension, call: &Call) -> Result<Option<Value>, String> {
+    let asked = permissions::parse(call.arg(0))?;
+    let local = asked.origins.iter().any(|o| o.as_str().starts_with("file:"));
+    Ok(Some(json!(!local && ext.permissions.borrow().contains(&asked))))
+}
+
+/// `permissions.request`: what the extension holds already, or what adds no warning, answers
+/// at once; anything else waits for the user's choice in the shell's prompt.
+fn request_permissions(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: Reply) {
+    let requested = match permissions::parse(call.arg(0)) {
+        Ok(requested) => requested,
+        Err(e) => return reply.err(&e),
+    };
+    let decided = granted::request(&ext.manifest, &ext.permissions.borrow(), &requested);
+    match decided {
+        Err(e) => reply.err(&e.to_string()),
+        Ok(Request::Held) => reply.ok(Some(json!(true))),
+        Ok(Request::Grant(new)) => reply.finish(grant_permissions(inner, &ext.id, &new).map(|()| Some(json!(true)))),
+        Ok(Request::Ask(new, warnings)) => {
+            let prompt = Prompt { extension: ext.id.clone(), name: ext.manifest.name.clone(), icon: ext.icon(), warnings };
+            let (weak, id) = (Rc::downgrade(inner), ext.id.clone());
+            inner.host.ask_permissions(
+                prompt,
+                Box::new(move |allowed| {
+                    let granted = match weak.upgrade() {
+                        Some(inner) if allowed => grant_permissions(&inner, &id, &new).map(|()| true),
+                        _ => Ok(false),
+                    };
+                    reply.finish(granted.map(|g| Some(json!(g))));
+                }),
+            );
+        }
+    }
+}
+
+fn grant_permissions(inner: &Rc<Inner>, id: &ExtensionId, new: &PermissionSet) -> Result<(), String> {
+    inner.profile.borrow_mut().extensions().grant_permissions(id, new).map_err(|e| e.to_string())?;
+    if let Some(ext) = inner.extension(id) {
+        inner.permissions_changed(&ext);
+        emit_to_pages(inner, &ext, "permissions.onAdded", &[permissions::to_json(new)]);
+    }
+    Ok(())
+}
+
+/// `permissions.remove`, which answers true once the permissions are gone, as Chrome does.
+fn remove_permissions(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call) -> Result<Option<Value>, String> {
+    let removed = permissions::parse(call.arg(0))?;
+    let taken = inner.profile.borrow_mut().extensions().remove_permissions(&ext.id, &ext.manifest, &removed).map_err(|e| e.to_string())?;
+    if !taken.is_empty() {
+        inner.permissions_changed(ext);
+        emit_to_pages(inner, ext, "permissions.onRemoved", &[permissions::to_json(&taken)]);
+    }
+    Ok(Some(json!(true)))
 }
 
 #[cfg(test)]

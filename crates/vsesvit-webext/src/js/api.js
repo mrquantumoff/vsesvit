@@ -3,7 +3,7 @@
   // runtime applies to the context's configuration (protocol::bootstrap), so nothing is
   // declared in the global scope and the bootstrap can run more than once per world:
   //   { id, host, handler, token?, kind: "content" | "page", manifest,
-  //     i18n: { locale, messages }, permissions, hostPermissions, optionsPage }
+  //     i18n: { locale, messages }, permissions, optionsPage }
   // `host` is the extension's URL host (not the id for Gecko ids). Calls that need the
   // browser go through window.webkit.messageHandlers[handler] (a Promise-returning
   // postMessage); see src/protocol.rs for the wire format and what `token` is for.
@@ -306,49 +306,11 @@
     detectLanguage: local(() => ({ isReliable: false, languages: [] })),
   };
 
-  // --- permissions (answered from the manifest) --------------------------------------
-  const grantedPermissions = new Set(config.permissions || []);
-  const grantedOrigins = config.hostPermissions || [];
-  // A requested origin pattern is granted when a host permission covers every URL it
-  // matches. As in patterns.rs, `<all_urls>` leaves `file:` out and a `file:` pattern
-  // covers nothing: local files need a file-access grant this runtime does not offer.
-  const webSchemes = ["http", "https", "ws", "wss"];
-  function parsePattern(s) {
-    if (s === "<all_urls>") return { schemes: webSchemes.concat("ftp"), host: "*", port: "*", path: "/*" };
-    const m = /^(\*|[a-z][a-z0-9+.-]*):\/\/([^/]*)(\/.*)$/.exec(String(s));
-    if (!m || m[1] === "file") return null;
-    const hp = /^(.*?)(?::(\*|\d+))?$/.exec(m[2].toLowerCase());
-    return { schemes: m[1] === "*" ? webSchemes : [m[1]], host: hp[1], port: hp[2] || "*", path: m[3] };
-  }
-  function hostCovers(g, r) {
-    if (g === "*") return true;
-    if (!g.startsWith("*.")) return g === r;
-    const d = g.slice(2), h = r.startsWith("*.") ? r.slice(2) : r;
-    return h === d || h.endsWith("." + d);
-  }
-  function covers(g, r) {
-    const path = new RegExp("^" + g.path.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
-    return r.schemes.every((s) => g.schemes.includes(s)) && hostCovers(g.host, r.host) && (g.port === "*" || g.port === r.port) && path.test(r.path);
-  }
-  function originGranted(pattern) {
-    const r = parsePattern(pattern);
-    return !!r && grantedOrigins.some((g) => { const gp = parsePattern(g); return !!gp && covers(gp, r); });
-  }
-  function contains(perms) {
-    const p = (perms && perms.permissions) || [];
-    const o = (perms && perms.origins) || [];
-    return p.every((x) => grantedPermissions.has(x)) && o.every(originGranted);
-  }
-  const permissions = {
-    contains: local(contains),
-    getAll: local(() => ({ permissions: Array.from(grantedPermissions), origins: grantedOrigins.slice() })),
-    request: local(contains),
-    remove: local(() => false),
-    onAdded: new ExtensionEvent("permissions.onAdded"),
-    onRemoved: new ExtensionEvent("permissions.onRemoved"),
-  };
+  // The namespaces of every permission it may hold, required or optional: the runtime refuses
+  // a call it holds no permission for.
+  const availablePermissions = new Set(config.permissions || []);
 
-  const api = { runtime, storage, i18n, permissions };
+  const api = { runtime, storage, i18n };
   // The `onclick` functions this page gave contextMenus, by item id: Chrome calls one only
   // in the page that made the item.
   const menuClicks = new Map();
@@ -463,7 +425,7 @@
       clearAll: bridged("alarms.clearAll"),
       onAlarm: new ExtensionEvent("alarms.onAlarm"),
     };
-    if (grantedPermissions.has("contextMenus") || grantedPermissions.has("menus")) {
+    if (availablePermissions.has("contextMenus") || availablePermissions.has("menus")) {
       // Chrome returns a new item's id at once, so the shim makes the ids an extension leaves
       // out: from 1 in the background page, which makes nearly all of them, and from a random
       // base in other pages so that two pages' ids do not collide.
@@ -506,7 +468,7 @@
     if (config.manifest && config.manifest.commands) {
       api.commands = { getAll: bridged("commands.getAll"), onCommand: new ExtensionEvent("commands.onCommand") };
     }
-    if (grantedPermissions.has("notifications")) {
+    if (availablePermissions.has("notifications")) {
       // As in Chrome, every image of the options loads before the call goes out, and a
       // failure fails the call; the icon goes on as PNG, scaled down to fit 128x128.
       const loadImage = (url) => new Promise((resolve, reject) => {
@@ -556,7 +518,7 @@
         onShowSettings: new ExtensionEvent("notifications.onShowSettings"),
       };
     }
-    if (grantedPermissions.has("declarativeNetRequest") || grantedPermissions.has("declarativeNetRequestWithHostAccess")) {
+    if (availablePermissions.has("declarativeNetRequest") || availablePermissions.has("declarativeNetRequestWithHostAccess")) {
       const options = (args) => [args[0] || {}];
       const enumOf = (values) => Object.fromEntries(values.map((v) => [v.replace(/[A-Z]/g, (c) => "_" + c).toUpperCase(), v]));
       api.declarativeNetRequest = Object.assign({
@@ -579,7 +541,7 @@
         UnsupportedRegexReason: enumOf(["syntaxError", "memoryLimitExceeded"]),
       }, config.dnr);
     }
-    if (grantedPermissions.has("webNavigation")) {
+    if (availablePermissions.has("webNavigation")) {
       const details = (args) => [args[0] || {}];
       const values = (list) => Object.fromEntries(list.map((v) => [v.toUpperCase(), v]));
       api.webNavigation = {
@@ -634,8 +596,23 @@
       onFocusChanged: new ExtensionEvent("windows.onFocusChanged"),
       onBoundsChanged: new ExtensionEvent("windows.onBoundsChanged"),
     };
+    // Chrome asks the user only while they act on the page, so an extension cannot prompt
+    // out of the blue.
+    const requestPermissions = bridged("permissions.request");
+    const permissions = {
+      getAll: bridged("permissions.getAll"),
+      contains: bridged("permissions.contains"),
+      request: (...args) => {
+        const activation = g.navigator && g.navigator.userActivation;
+        if (activation && !activation.isActive) return local(() => { throw new Error("This function must be called during a user gesture"); })(...args);
+        return requestPermissions(...args);
+      },
+      remove: bridged("permissions.remove"),
+      onAdded: new ExtensionEvent("permissions.onAdded"),
+      onRemoved: new ExtensionEvent("permissions.onRemoved"),
+    };
     Object.assign(api, {
-      tabs, scripting, action, browserAction: action, alarms, windows,
+      tabs, scripting, action, browserAction: action, alarms, windows, permissions,
       extension: { getURL: runtime.getURL, inIncognitoContext: false, getViews: () => [], getBackgroundPage: backgroundPage },
     });
   }

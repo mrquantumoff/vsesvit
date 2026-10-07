@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use vsesvit_core::extensions::manifest::{Background, Manifest, ManifestVersion, RelPath};
+use vsesvit_core::extensions::manifest::{Background, Manifest, ManifestVersion, MatchPattern, RelPath};
+use vsesvit_core::extensions::permissions::{self, PermissionSet};
 use vsesvit_core::extensions::{ExtensionId, InstalledExtension};
 use vsesvit_core::html::escape as html_escape;
 use vsesvit_core::private::Browsing;
@@ -102,10 +103,12 @@ pub(crate) struct Extension {
     /// (`scripting.executeScript`, dynamic content scripts).
     pub content_bootstrap: String,
     pub csp: String,
-    pub host_permissions: Vec<String>,
+    /// What it holds now: its required permissions and the optional ones the user granted
+    /// (`Extensions::active_permissions` in core).
+    pub permissions: RefCell<PermissionSet>,
     /// What the extension's declarativeNetRequest rules may do; `None` without the
     /// declarativeNetRequest permission.
-    pub grants: Option<Grants>,
+    pub grants: RefCell<Option<Grants>>,
     pub dnr: RefCell<Rules>,
     pub compiles: Compiles,
     pub background: RefCell<Option<webkit::WebView>>,
@@ -130,7 +133,7 @@ pub(crate) struct Extension {
 }
 
 impl Extension {
-    pub fn build(installed: &InstalledExtension, ui_locale: &str) -> Result<Extension, LoadError> {
+    pub fn build(installed: &InstalledExtension, ui_locale: &str, active: PermissionSet) -> Result<Extension, LoadError> {
         let manifest = &installed.manifest;
         let host = url_host(&installed.id);
         let base_url = format!("{SCHEME}://{host}/");
@@ -139,7 +142,8 @@ impl Extension {
         let page_handler = format!("vsesvit_{host}_page");
         let page_token = random_token();
         let catalog = i18n::load_catalog(&installed.dir, ui_locale, manifest.default_locale.as_deref());
-        let host_permissions: Vec<String> = manifest.host_permissions.iter().map(|p| p.as_str().to_owned()).collect();
+        // Every namespace it may hold, so one the user grants later works in pages already open.
+        let available = permissions::required(manifest).union(&permissions::optional(manifest)).apis;
 
         let config = |kind: &str, handler: &str, token: Option<&str>| {
             json!({
@@ -150,8 +154,7 @@ impl Extension {
                 "kind": kind,
                 "manifest": manifest.raw,
                 "i18n": { "locale": ui_locale, "messages": catalog },
-                "permissions": manifest.permissions,
-                "hostPermissions": host_permissions,
+                "permissions": available,
                 "optionsPage": manifest.options_page.as_ref().map(|p| p.as_str()),
                 "dnr": crate::dnr_rules::constants(),
             })
@@ -169,7 +172,7 @@ impl Extension {
             &[],
         );
 
-        let grants = Grants::from_manifest(&manifest.permissions, &host_permissions);
+        let grants = dnr_grants(&active);
         if grants.is_none() && manifest.dnr_rulesets.iter().any(|r| r.enabled) {
             log::warn!("{}: declarativeNetRequest rulesets ignored without the declarativeNetRequest permission", manifest.name);
         }
@@ -197,8 +200,8 @@ impl Extension {
             page_script,
             content_bootstrap,
             csp: content_security_policy(manifest),
-            host_permissions,
-            grants,
+            permissions: RefCell::new(active),
+            grants: RefCell::new(grants),
             dnr: RefCell::new(Rules::new(&manifest.dnr_rulesets, Saved::default()).0),
             compiles: Compiles::default(),
             background: RefCell::new(None),
@@ -240,7 +243,7 @@ impl Extension {
     /// The user content of the dynamic content scripts. A file gone since they were
     /// registered leaves them all out, which is logged.
     pub fn build_dynamic_content(&self) -> UserContent {
-        let entries = self.dynamic_scripts.borrow().content_scripts(&self.manifest.host_permissions);
+        let entries = self.dynamic_scripts.borrow().content_scripts(&self.host_permissions());
         UserContent::build(&self.dir, &entries, &self.world, &self.content_bootstrap).unwrap_or_else(|e| {
             log::warn!("{}: dynamic content scripts left out: {e}", self.id.as_str());
             UserContent::default()
@@ -248,7 +251,17 @@ impl Extension {
     }
 
     pub fn has_permission(&self, name: &str) -> bool {
-        self.manifest.permissions.iter().any(|p| p == name)
+        self.permissions.borrow().apis.contains(name)
+    }
+
+    /// The host permissions it holds now, granted ones included.
+    pub fn host_permissions(&self) -> Vec<MatchPattern> {
+        self.permissions.borrow().origins.iter().cloned().collect()
+    }
+
+    /// The origins its own views may fetch from across origins.
+    pub fn cors_allowlist(&self) -> Vec<String> {
+        self.permissions.borrow().origins.iter().map(|p| p.as_str().to_owned()).collect()
     }
 
     /// May this extension act on a document at `url` (inject scripts, read the tab's
@@ -263,7 +276,7 @@ impl Extension {
         if parsed.as_ref().is_ok_and(|u| u.scheme() == "file") {
             return false;
         }
-        tab.is_some_and(|t| self.active_tabs.borrow().contains(&t)) || parsed.is_ok_and(|u| self.manifest.host_permissions.iter().any(|p| p.matches(&u)))
+        tab.is_some_and(|t| self.active_tabs.borrow().contains(&t)) || parsed.is_ok_and(|u| self.permissions.borrow().origins.iter().any(|p| p.matches(&u)))
     }
 
     /// Whether it runs in tabs of `browsing`'s kind: in private ones only where the user allowed
@@ -294,6 +307,11 @@ impl Extension {
 
     pub fn revoke_active_tab(&self, tab: TabId) {
         self.active_tabs.borrow_mut().remove(&tab);
+    }
+
+    /// Its largest icon, as prompts about it show it.
+    pub fn icon(&self) -> Option<PathBuf> {
+        largest_icon(&self.dir, &self.manifest.icons)
     }
 
     pub fn background_url(&self) -> Option<String> {
@@ -503,6 +521,13 @@ fn string_literal(s: &str, quote: char) -> Option<(String, &str)> {
         }
     }
     None
+}
+
+/// What declarativeNetRequest rules may do for an extension holding `permissions`.
+pub(crate) fn dnr_grants(permissions: &PermissionSet) -> Option<Grants> {
+    let apis: Vec<String> = permissions.apis.iter().cloned().collect();
+    let hosts: Vec<String> = permissions.origins.iter().map(|p| p.as_str().to_owned()).collect();
+    Grants::from_manifest(&apis, &hosts)
 }
 
 /// Chrome-style ids are URL hosts already. Gecko ids (`{uuid}`, `name@domain`) are not,
