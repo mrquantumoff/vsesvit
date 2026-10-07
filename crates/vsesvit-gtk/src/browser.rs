@@ -38,7 +38,7 @@ use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles::{self, Home, ProfileColor, ProfileId, Registry};
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
-use vsesvit_core::tab_groups::extension_group_id;
+use vsesvit_core::tab_groups::{GroupId, extension_group_id};
 use vsesvit_core::tab_search::{self, Listed, Row};
 use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_core::{Profile, Url};
@@ -153,6 +153,8 @@ pub(crate) struct ClosedTab {
     pub(crate) state: Option<webkit::WebViewSessionState>,
     pub(crate) position: i32,
     pub(crate) pinned: bool,
+    /// The group it was in, which it goes back into if its window still has it.
+    pub(crate) group: Option<GroupId>,
     /// When it was closed, on the clock of [`Tab::used`].
     pub(crate) used: u64,
 }
@@ -665,7 +667,7 @@ impl Browser {
 
     // Tabs.
 
-    pub(crate) fn tab_closed(&self, tab: &Tab, position: i32, pinned: bool) {
+    pub(crate) fn tab_closed(&self, tab: &Tab, position: i32, pinned: bool, group: Option<GroupId>) {
         permissions::closed(tab);
         self.runtime().tab_closed(tab.id(), false);
         self.schedule_session_save();
@@ -680,6 +682,7 @@ impl Browser {
             state: web_view.session_state(),
             position,
             pinned,
+            group,
             used: self.tick(),
         };
         self.closed_tabs(tab.browsing()).borrow_mut().push(closed);

@@ -32,6 +32,7 @@ use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::suggest::{Queries, SuggestRequest};
 use vsesvit_core::sync::Changed;
+use vsesvit_core::tab_groups::GroupId;
 use vsesvit_core::tab_search::{self, Hit, Listed, Row};
 use vsesvit_core::trackers::TrackerList;
 use vsesvit_core::{Profile, Url, onboarding};
@@ -142,6 +143,8 @@ pub(crate) struct ClosedTab {
     /// When it closed, on the use clock. No two closed tabs share it, so tab search names the
     /// tab by it: unlike its place among them, it stays put while other tabs close.
     pub closed: u64,
+    /// The group it was in, which it goes back into if its window still has it.
+    pub group: Option<GroupId>,
 }
 
 /// The tab a tab search row stands for: an open tab, or a closed one by when it closed.
@@ -847,8 +850,8 @@ impl Browser {
         drop(closed);
     }
 
-    /// Keeps `tab` among its kind's recently closed tabs.
-    pub fn remember_closed(&self, tab: &Tab) {
+    /// Keeps `tab`, closed in `group`, among its kind's recently closed tabs.
+    pub fn remember_closed(&self, tab: &Tab, group: Option<GroupId>) {
         let state = tab.state();
         if !omnibox::has_link(&state.url) {
             return;
@@ -858,6 +861,7 @@ impl Browser {
             title: state.title,
             favicon: tab.look().favicon,
             closed: self.tick(),
+            group,
         };
         let mut closed_tabs = self.closed_tabs.borrow_mut();
         let closed = closed_tabs.of_mut(tab.browsing());

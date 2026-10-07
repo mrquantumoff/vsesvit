@@ -484,7 +484,8 @@ impl BrowserWindow {
             glib::Propagation::Proceed,
             move |view, page| {
                 if let Ok(tab) = page.child().downcast::<Tab>() {
-                    window.browser().tab_closed(&tab, view.page_position(page), page.is_pinned());
+                    let group = window.group_of(&tab).map(|g| g.id);
+                    window.browser().tab_closed(&tab, view.page_position(page), page.is_pinned(), group);
                 }
                 if page.is_selected() {
                     window.select_after_closing(page);
@@ -1232,6 +1233,9 @@ impl BrowserWindow {
             view.insert(&tab, closed.position.clamp(pinned, view.n_pages()))
         };
         view.set_selected_page(&page);
+        if let Some(group) = closed.group {
+            self.rejoin_group(&tab, group);
+        }
         tab.restore(closed.state.as_ref(), &closed.uri);
     }
 

@@ -314,6 +314,11 @@ impl BrowserWindow {
         self.change_groups(|groups, tabs| groups.join(tabs, &tab.id(), group));
     }
 
+    /// A reopened tab goes back into the group it closed in, if the window still has it.
+    pub(super) fn rejoin_group(&self, tab: &Tab, group: GroupId) {
+        self.change_groups(|groups, tabs| groups.rejoin(tabs, &tab.id(), group));
+    }
+
     pub(super) fn remove_tab_from_group(&self, tab: &Tab) {
         self.change_groups(|groups, tabs| groups.leave(tabs, &tab.id()));
     }
@@ -579,6 +584,7 @@ impl BrowserWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::ClosedTab;
     use crate::test_support::browser;
     use crate::window::Focus;
 
@@ -653,5 +659,38 @@ mod tests {
         assert_eq!(after_child, Some(first), "closing a tab selects the tab that opened it");
         assert_eq!(after_first, Some(last), "closing the first selects the next shown tab");
         assert_eq!(collapsed, Some(true));
+    }
+
+    #[gtk::test]
+    fn a_reopened_tab_goes_back_into_its_group_if_the_window_has_it() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        window.open_tab(None, None, Focus::Foreground);
+        let grouped = window.open_tab(None, None, Focus::Foreground);
+        window.group_tab(&grouped);
+        window.close_group_editor();
+        let id = window.group_of(&grouped).expect("the tab is in its new group").id;
+        window.toggle_group(id);
+        let closed = |position, group| ClosedTab {
+            uri: "about:blank".to_owned(),
+            title: String::new(),
+            favicon: None,
+            state: None,
+            position,
+            pinned: false,
+            group: Some(group),
+            used: 0,
+        };
+        let reopen = |position, group| {
+            window.restore_closed(&closed(position, group));
+            let tab = window.selected_tab().expect("the reopened tab is selected");
+            (window.tabs().iter().position(|t| *t == tab), window.group_of(&tab).map(|g| (g.id, g.collapsed)))
+        };
+        let before = reopen(0, id);
+        let gone = reopen(3, GroupId::new());
+        window.destroy();
+        assert_eq!(before, (Some(1), Some((id, false))), "at the group's start, which expands");
+        assert_eq!(gone, (Some(3), None), "its group is gone");
     }
 }

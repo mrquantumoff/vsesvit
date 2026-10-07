@@ -609,11 +609,12 @@ impl BrowserWindow {
         if let Some(browser) = self.browser() {
             browser.tab_closing(self.browsing, self.tab_count() - 1);
         }
+        let group = self.group_of(id).map(|g| g.id);
         if let Err(e) = self.remove_tab(&tab) {
             log::warn!("close tab {id}: {e}");
         }
         if let Some(browser) = self.browser() {
-            browser.remember_closed(&tab);
+            browser.remember_closed(&tab, group);
             browser.session_changed();
         }
         let last = self.tabs.borrow().is_empty();
@@ -1258,11 +1259,17 @@ impl BrowserWindow {
         }
     }
 
-    /// Opens a closed tab again, at the end of this window's tabs.
+    /// Opens a closed tab again, at the end of this window's tabs, or of its group if this
+    /// window still has that.
     fn reopen(&self, closed: ClosedTab) {
         log::info!("reopening {} ({})", closed.url, closed.title);
-        if let Err(e) = self.open_url_tab(&closed.url, true) {
-            log::error!("reopen tab: {e}");
+        match self.open_url_tab(&closed.url, true) {
+            Ok(tab) => {
+                if let Some(group) = closed.group {
+                    self.rejoin_group(tab.id, group);
+                }
+            }
+            Err(e) => log::error!("reopen tab: {e}"),
         }
     }
 

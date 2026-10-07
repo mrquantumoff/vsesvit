@@ -103,6 +103,13 @@ impl BrowserWindow {
         self.apply_group_steps(steps);
     }
 
+    /// A reopened tab goes back into the group it closed in, if the window still has it.
+    pub(super) fn rejoin_group(&self, id: TabId, group: GroupId) {
+        let tabs = self.window_tabs();
+        let steps = self.groups.borrow_mut().rejoin(&tabs, &id, group);
+        self.apply_group_steps(steps);
+    }
+
     pub(super) fn leave_group(&self, id: TabId) {
         let tabs = self.window_tabs();
         let steps = self.groups.borrow_mut().leave(&tabs, &id);
