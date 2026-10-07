@@ -3,15 +3,14 @@
 #![cfg(feature = "testkit")]
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use vsesvit_core::crdt::TimeSource;
 use vsesvit_core::ext_storage::Area;
-use vsesvit_core::extensions::manifest::MatchPattern;
-use vsesvit_core::extensions::grants::PermissionSet;
+use vsesvit_core::extensions::permissions::{GRANTED_PERMISSIONS, PermissionMessage, PermissionSet};
 use vsesvit_core::extensions::{
     ExtensionId, FIRST_CHECK_DELAY, InstallError, InstallSource, InstalledExtension, UPDATE_INTERVAL, UpdateCheck, UpdateReport, Updates,
     Verification,
@@ -131,11 +130,8 @@ fn local_crx(files: &[(String, Vec<u8>)], developer: &CrxKey) -> Vec<u8> {
     write_crx3(&files, developer)
 }
 
-fn permissions(api: &[&str], hosts: &[&str]) -> PermissionSet {
-    PermissionSet {
-        api: api.iter().map(|s| (*s).to_owned()).collect::<BTreeSet<_>>(),
-        hosts: hosts.iter().map(|s| MatchPattern::parse(s).unwrap()).collect(),
-    }
+fn texts(warnings: &[PermissionMessage]) -> Vec<&str> {
+    warnings.iter().map(|w| w.text.as_str()).collect()
 }
 
 #[test]
@@ -165,7 +161,7 @@ fn every_store_updates_in_place_and_withholds_new_permissions() {
         let v2 = f.get(&id).unwrap();
         assert_eq!((v2.version.as_str(), v2.enabled, &v2.source, &v2.verification), ("2.0", true, &from.source(&id), &from.verification()));
         assert_eq!(report.updated[0].dir, v2.dir);
-        assert!(v2.withheld.is_empty(), "{from:?}: alarms is granted silently");
+        assert!(v2.withheld.is_empty(), "{from:?}: alarms has no warning");
         assert_eq!(v2.dir.parent(), v1.dir.parent(), "{from:?}: extensions/<id>/");
         assert!(v2.dir.file_name().unwrap().to_str().unwrap().starts_with("2.0_"), "{from:?}: <version>_<hash32>");
         assert!(v1.dir.is_dir(), "{from:?}: the old dir stays until the next open (the engine may hold it)");
@@ -176,27 +172,30 @@ fn every_store_updates_in_place_and_withholds_new_permissions() {
         let synced = f.p.change_seq();
         f.publish(from, "3.0", &["storage", "tabs", "https://example.com/*"]);
         let report = f.check();
-        assert_eq!(report.summary(), "Updated 1 extension. Vsesvit update probe needs your approval for new permissions", "{from:?}");
+        assert_eq!(
+            report.summary(),
+            "Updated 1 extension. The newest version of the extension “Vsesvit update probe” requires more permissions, so it has been disabled. \
+             It can now: Read and change your data on 127.0.0.1 and example.com; Read your browsing history",
+            "{from:?}"
+        );
         let v3 = f.get(&id).unwrap();
         assert_eq!(v3.version, "3.0");
-        assert_eq!(v3.withheld, permissions(&["tabs"], &["https://example.com/*"]), "{from:?}");
-        assert!(!v3.enabled, "{from:?}: off until approved");
-        assert_eq!(
-            v3.approval_notice().as_deref(),
-            Some("Turned off: version 3.0 asks for new permissions: tabs, https://example.com/*. Approve them to turn it back on.")
-        );
+        assert_eq!(texts(&v3.withheld), ["Read and change your data on 127.0.0.1 and example.com", "Read your browsing history"], "{from:?}");
+        assert!(!v3.enabled, "{from:?}: off until re-enabled");
         assert_eq!(f.p.change_seq(), synced, "{from:?}: an update leaves the synced record alone");
 
         f.publish(from, "4.0", &["storage", "tabs", "https://example.com/*"]);
         f.check();
         let v4 = f.get(&id).unwrap();
-        assert_eq!((v4.version.as_str(), v4.enabled), ("4.0", false), "{from:?}: still not approved");
+        assert_eq!((v4.version.as_str(), v4.enabled), ("4.0", false), "{from:?}: still not re-enabled");
         assert_eq!(v4.withheld, v3.withheld);
 
         f.p.extensions().approve_permissions(&id).unwrap();
         let approved = f.get(&id).unwrap();
         assert!(approved.enabled && approved.withheld.is_empty(), "{from:?}");
-        assert_eq!(f.p.change_seq(), synced, "{from:?}: approving is local too");
+        assert_eq!(f.p.change_seq(), synced, "{from:?}: re-enabling is local too");
+        let added = PermissionSet::from_manifest_list(["tabs", "https://example.com/*"]);
+        assert_eq!(f.p.prefs().get(&GRANTED_PERMISSIONS).get(&id), Some(&added), "{from:?}: re-enabling granted what 3.0 added");
 
         let report = f.check();
         assert!(report.updated.is_empty() && report.failed.is_empty(), "{from:?}: {report:?}");
@@ -204,7 +203,7 @@ fn every_store_updates_in_place_and_withholds_new_permissions() {
 }
 
 #[test]
-fn a_version_that_drops_the_new_permissions_needs_no_approval() {
+fn a_version_that_drops_the_new_permissions_needs_no_re_enabling() {
     let mut f = Fixture::new();
     let id = f.publish(Kind::ChromeWebStore, "1.0", &[]);
     f.install(Kind::ChromeWebStore.source(&id));
@@ -215,6 +214,19 @@ fn a_version_that_drops_the_new_permissions_needs_no_approval() {
     f.check();
     let v3 = f.get(&id).unwrap();
     assert!(v3.enabled && v3.withheld.is_empty());
+}
+
+#[test]
+fn what_the_user_granted_since_install_counts_as_approved() {
+    let mut f = Fixture::new();
+    let id = f.publish(Kind::ChromeWebStore, "1.0", &["storage"]);
+    f.install(Kind::ChromeWebStore.source(&id));
+    let history = PermissionSet { apis: ["history".to_owned()].into(), ..Default::default() };
+    f.p.extensions().grant_permissions(&id, &history).unwrap();
+    f.publish(Kind::ChromeWebStore, "2.0", &["storage", "history"]);
+    f.check();
+    let v2 = f.get(&id).unwrap();
+    assert!(v2.enabled && v2.withheld.is_empty(), "as in Chrome, a version that requires a granted permission adds no warning");
 }
 
 #[test]
@@ -231,7 +243,7 @@ fn a_disabled_extension_updates_and_stays_disabled() {
     f.publish(Kind::ChromeWebStore, "3.0", &["storage", "tabs"]);
     f.check();
     f.p.extensions().approve_permissions(&id).unwrap();
-    assert!(!f.get(&id).unwrap().enabled, "approving does not override the user's choice");
+    assert!(!f.get(&id).unwrap().enabled, "re-enabling does not override the user's choice");
 }
 
 #[test]

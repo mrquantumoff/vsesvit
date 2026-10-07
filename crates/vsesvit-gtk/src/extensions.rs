@@ -8,7 +8,7 @@
 //!
 //! An update check runs the same way: `prepare_update_check`, `UpdateCheck::run` on a worker
 //! thread, `commit_updates`, then the runtime reloads each updated extension at its new
-//! version, or stops one that waits for the user to approve new permissions.
+//! version, or stops one that waits for the user to re-enable it.
 //!
 //! Every change to the enabled extensions applies the keymap again, which binds their commands.
 
@@ -222,8 +222,8 @@ impl Browser {
         self.extension_changed(id)
     }
 
-    /// The user approved the new permissions an update asked for, so it runs again unless
-    /// they had turned it off.
+    /// The user re-enabled an extension an update turned off, so it runs again unless they
+    /// had turned it off.
     pub(crate) fn approve_extension_permissions(&self, id: &ExtensionId) -> Result<(), EnableFailure> {
         self.core().borrow_mut().extensions().approve_permissions(id)?;
         self.extension_changed(id)

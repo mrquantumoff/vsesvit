@@ -25,14 +25,14 @@
 //!   store row, newer version in the store      ──prepare_update_check()──▶ InstallJob (Intent::Update)
 //! ```
 //!
-//! An update that asks for permissions Chrome warns about is installed, but stays off on
-//! this device until the user approves them ([`InstalledExtension::withheld`]).
+//! An update that Chrome would warn about anew ([`permissions::update_warnings`]) is
+//! installed, but stays off on this device until the user re-enables it
+//! ([`InstalledExtension::withheld`]).
 
 mod sync_table;
 pub(crate) use sync_table::ExtensionsTable;
 pub mod commands;
 pub mod crx;
-pub mod grants;
 mod install;
 pub mod manifest;
 pub mod notifications;
@@ -57,7 +57,7 @@ pub use install::{
 };
 use install::{StagedFiles, StagingDir};
 use manifest::{Manifest, cmp_versions};
-use grants::{PermissionSet, permissions_added};
+use permissions::{GRANTED_PERMISSIONS, PermissionMessage, PermissionSet};
 pub use update::{FIRST_CHECK_DELAY, UPDATE_INTERVAL, UpdateCheck, UpdateReport, Updates};
 
 use crate::crdt::{Extra, Lww};
@@ -70,9 +70,10 @@ use crate::{Error, Profile};
 /// this with releases. Windows overrides it with the WebView2 runtime's real version.
 pub const DEFAULT_CHROME_VERSION: &str = "150.0.0.0";
 
-/// Migration v11: the permissions the user approved, as JSON [`PermissionSet`], kept only
-/// while they are less than what the installed version asks for (an update added some).
-/// NULL, as in every row before it, is everything the installed version asks for.
+/// Migration v11: what the user approved, as JSON [`PermissionSet`]: what the last version
+/// they approved showed in its prompt, and what they granted it since. Kept only while the
+/// installed version can do more (an update added warnings). NULL, as in every row before
+/// it, is everything the installed version can do.
 pub(crate) const SCHEMA_GRANTED: &str = "ALTER TABLE extension_installs ADD COLUMN granted TEXT;";
 
 /// Validated extension id. It is also a directory name, so the charset is restricted
@@ -303,11 +304,11 @@ pub struct InstalledExtension {
     /// Whether the engine runs it: the user's choice, owned by the synced record for store
     /// installs and by the local row otherwise, and nothing [`withheld`](Self::withheld).
     pub enabled: bool,
-    /// What this version asks for beyond what the user approved: an update added
-    /// permissions Chrome warns about. While this is not empty the extension is off on this
-    /// device, whatever the user's choice, until `Extensions::approve_permissions`. Local:
-    /// another device decides for itself.
-    pub withheld: PermissionSet,
+    /// Chrome's warnings for what this version can do beyond what the user approved: an
+    /// update added them. While this is not empty the extension is off on this device,
+    /// whatever the user's choice, until the user re-enables it
+    /// (`Extensions::approve_permissions`). Local: another device decides for itself.
+    pub withheld: Vec<PermissionMessage>,
     pub source: InstallSource,
     pub verification: Verification,
     /// The id WebView2 assigned when it loaded *this* `dir`
@@ -317,21 +318,6 @@ pub struct InstalledExtension {
     /// manifest carries `key` (every CRX install) and differs for XPI (whose `key` is
     /// removed at install) and keyless unpacked installs, which is why it is stored.
     pub engine_id: Option<String>,
-}
-
-impl InstalledExtension {
-    /// The line both shells show under an extension an update turned off, `None` for any other.
-    pub fn approval_notice(&self) -> Option<String> {
-        if self.withheld.is_empty() {
-            return None;
-        }
-        let names: Vec<&str> = self.withheld.names().collect();
-        Some(format!(
-            "Turned off: version {} asks for new permissions: {}. Approve them to turn it back on.",
-            self.version,
-            names.join(", ")
-        ))
-    }
 }
 
 /// Work `reconcile()` found.
@@ -404,8 +390,9 @@ impl Extensions<'_> {
     ///    the same version changes nothing and causes no sync traffic.
     /// 6. Upsert the `extension_installs` row. Crash after the rename but before the
     ///    commit leaves an unreferenced dir that the next open GCs or the next install reuses.
-    ///    An update keeps what the user approved before (`granted`), so a version asking
-    ///    for more is [`InstalledExtension::withheld`]; any other install is approved as is.
+    ///    An update keeps what the user approved before (`granted`), so a version Chrome
+    ///    warns about anew is [`InstalledExtension::withheld`]; any other install is
+    ///    approved as is.
     pub fn commit(&mut self, staged: StagedInstall) -> Result<Option<InstalledExtension>, Error> {
         let StagedInstall { id, source, intent, files, manifest, verification } = staged;
         if matches!(intent, Intent::Reconcile | Intent::Update) && !self.desired_installed(&id)? {
@@ -439,8 +426,9 @@ impl Extensions<'_> {
         };
         let same_dir = existing.as_ref().is_some_and(|r| r.dir == dir_text);
         let granted = existing.as_ref().filter(|_| intent == Intent::Update).and_then(|r| {
-            let granted = r.granted.clone().unwrap_or_else(|| PermissionSet::required(&r.manifest));
-            (!permissions_added(&granted, &PermissionSet::required(&manifest)).is_empty()).then_some(granted)
+            let since = self.p.prefs().get(&GRANTED_PERMISSIONS).remove(&id).unwrap_or_default();
+            let approved = r.granted.clone().unwrap_or_else(|| permissions::prompted(&r.manifest)).union(&since);
+            (!permissions::added_warnings(&approved, &permissions::prompted(&manifest)).is_empty()).then_some(approved)
         });
         let row = InstallRow {
             local_enabled: match source.store() {
@@ -585,10 +573,15 @@ impl Extensions<'_> {
         Ok(Reconcile { install, removed })
     }
 
-    /// The user approved what the installed version asks for, so nothing is
-    /// [`withheld`](InstalledExtension::withheld) any more and it runs again if the user's
-    /// choice has it enabled. Local to this device, like the withholding.
+    /// Chrome's "Re-enable": the user approved what the installed version can do, so nothing
+    /// is [`withheld`](InstalledExtension::withheld) any more and it runs again if the user's
+    /// choice has it enabled. What the update added is granted, as Chrome grants it. Local to
+    /// this device, like the withholding.
     pub fn approve_permissions(&mut self, id: &ExtensionId) -> Result<(), Error> {
+        let row = self.row(id)?.ok_or(Error::NotFound)?;
+        if let Some(approved) = &row.granted {
+            self.grant_permissions(id, &permissions::required(&row.manifest).beyond(approved))?;
+        }
         self.p.write(|tx| {
             let n = tx.sql.execute("UPDATE extension_installs SET granted = NULL WHERE id = ?1", [id.as_str()])?;
             if n == 0 { Err(Error::NotFound) } else { Ok(()) }
@@ -784,7 +777,7 @@ struct InstallRow {
     engine_id: Option<String>,
     /// When this extension was first installed on this device; `list` orders by it.
     installed_ms: i64,
-    /// What the user approved, when it is less than `manifest` asks for (`SCHEMA_GRANTED`).
+    /// What the user approved, while `manifest` can do more (`SCHEMA_GRANTED`).
     granted: Option<PermissionSet>,
 }
 
@@ -829,7 +822,7 @@ impl LoadedRow {
         if without_commands {
             manifest.commands = manifest.commands_from_raw(&dir, &install::ui_locale());
         }
-        let withheld = row.granted.map(|granted| permissions_added(&granted, &PermissionSet::required(&manifest))).unwrap_or_default();
+        let withheld = row.granted.map(|approved| permissions::added_warnings(&approved, &permissions::prompted(&manifest))).unwrap_or_default();
         InstalledExtension {
             dir,
             id: row.id,

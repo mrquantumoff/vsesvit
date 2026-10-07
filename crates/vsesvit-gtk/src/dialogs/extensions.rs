@@ -3,8 +3,8 @@
 //! or package install goes in; the installed list with icon, name, version, provenance, an
 //! enabled switch and removal, and Chrome's Update, which checks them all for newer versions
 //! now; and, per extension, what its manifest asks for that the Linux runtime does not
-//! provide, the new permissions an update waits for the user to approve, whether its
-//! notifications may show and whether it runs in private windows.
+//! provide, Chrome's Re-enable for an update that can do more than the user approved,
+//! whether its notifications may show and whether it runs in private windows.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::path::Path;
@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+use vsesvit_core::extensions::permissions::{self, PermissionMessage, RE_ENABLE_LEAD};
 use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension, SourceParseError};
 
 use super::plain_toast;
@@ -364,8 +365,8 @@ impl State {
             row.add_row(&unsupported);
             row.set_expanded(true);
         }
-        if let Some(notice) = ext.approval_notice() {
-            row.add_row(&self.approval_row(&ext.id, notice));
+        if !ext.withheld.is_empty() {
+            row.add_row(&self.re_enable_row(ext));
             row.set_expanded(true);
         }
         if let Some(error) = error {
@@ -421,18 +422,20 @@ impl State {
         row
     }
 
-    /// What an update turned the extension off for, and the button that approves it.
-    fn approval_row(self: &Rc<Self>, id: &ExtensionId, notice: String) -> adw::ActionRow {
+    /// Chrome's prompt for an extension an update turned off: `Enable “X”?`, what it can now
+    /// do, and Re-enable.
+    fn re_enable_row(self: &Rc<Self>, ext: &InstalledExtension) -> adw::ActionRow {
+        let id = ext.id.clone();
         let row = adw::ActionRow::builder()
-            .title("Needs your approval")
-            .subtitle(notice)
+            .title(permissions::re_enable_heading(&ext.manifest.name))
+            .subtitle(re_enable_text(&ext.withheld))
             .subtitle_lines(0)
             .use_markup(false)
             .css_classes(["warning"])
             .build();
         row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
-        let approve = gtk::Button::builder().label("_Approve").use_underline(true).valign(gtk::Align::Center).build();
-        approve.connect_clicked(glib::clone!(
+        let re_enable = gtk::Button::builder().label("_Re-enable").use_underline(true).valign(gtk::Align::Center).build();
+        re_enable.connect_clicked(glib::clone!(
             #[strong(rename_to = state)]
             self,
             #[strong]
@@ -441,13 +444,13 @@ impl State {
                 let Some(browser) = state.browser() else { return };
                 match browser.approve_extension_permissions(&id) {
                     Ok(()) => {}
-                    Err(EnableFailure::Load(e)) => state.toast(&format!("Approved, but it cannot run: {e}")),
-                    Err(e) => state.toast(&format!("Cannot approve the permissions: {e}")),
+                    Err(EnableFailure::Load(e)) => state.toast(&format!("Re-enabled, but it cannot run: {e}")),
+                    Err(e) => state.toast(&format!("Cannot re-enable the extension: {e}")),
                 }
                 state.refresh();
             }
         ));
-        row.add_suffix(&approve);
+        row.add_suffix(&re_enable);
         row
     }
 
@@ -476,6 +479,17 @@ impl State {
         ));
         row
     }
+}
+
+/// "It can now:" and an update's new warnings, one a line, the sites behind "a number of
+/// websites" indented below theirs.
+pub(crate) fn re_enable_text(warnings: &[PermissionMessage]) -> String {
+    let mut lines = vec![RE_ENABLE_LEAD.to_owned()];
+    for warning in warnings {
+        lines.push(format!("• {}", warning.text));
+        lines.extend(warning.details.iter().map(|d| format!("    ◦ {d}")));
+    }
+    lines.join("\n")
 }
 
 fn icon_image(path: Option<&Path>) -> gtk::Image {
@@ -540,7 +554,7 @@ mod tests {
     }
 
     #[gtk::test]
-    async fn an_update_asking_for_new_permissions_waits_for_the_approve_button() {
+    async fn an_update_asking_for_new_permissions_waits_for_the_re_enable_button() {
         use std::time::Duration;
 
         use vsesvit_core::extensions::Stores;
@@ -569,13 +583,18 @@ mod tests {
         while !state.update.is_sensitive() {
             glib::timeout_future(Duration::from_millis(10)).await;
         }
-        let approve = |row: &gtk::Widget| descendants(row).into_iter().find_map(|w| w.downcast::<gtk::Button>().ok().filter(|b| b.label().as_deref() == Some("_Approve")));
+        let re_enable = |row: &gtk::Widget| descendants(row).into_iter().find_map(|w| w.downcast::<gtk::Button>().ok().filter(|b| b.label().as_deref() == Some("_Re-enable")));
         let row = row_titled(&state, "Vsesvit update probe").expect("the extension's row");
-        approve(&row).expect("its Approve button").emit_clicked();
-        let approved = browser.runtime().loaded().contains(&id);
+        let prompt = descendants(&row)
+            .into_iter()
+            .find_map(|w| w.downcast::<adw::ActionRow>().ok().filter(|r| r.title() == "Enable “Vsesvit update probe”?"))
+            .and_then(|r| r.subtitle())
+            .map(String::from);
+        re_enable(&row).expect("its Re-enable button").emit_clicked();
+        let re_enabled = browser.runtime().loaded().contains(&id);
         let row = row_titled(&state, "Vsesvit update probe").expect("the extension's row");
         let switch = switches(&row).pop().expect("its switch");
-        let shown = (switch.is_sensitive(), switch.is_active(), approve(&row).is_some());
+        let shown = (switch.is_sensitive(), switch.is_active(), re_enable(&row).is_some());
 
         browser.uninstall_extension(&id).ok();
         browser.core().borrow_mut().set_stores(Stores::default());
@@ -584,7 +603,8 @@ mod tests {
         assert_eq!(second.as_deref(), Some("an update check is already running"));
         assert_eq!(withheld, (false, false, false), "the open dialog shows the switch insensitive and off, and the extension is not running");
         assert!(!sensitive_while_running, "the Update button stays insensitive while its check runs");
-        assert!(approved, "Approve runs it again");
+        assert_eq!(prompt.as_deref(), Some("It can now:\n• Read your browsing history"));
+        assert!(re_enabled, "Re-enable runs it again");
         assert_eq!(shown, (true, true, false));
     }
 

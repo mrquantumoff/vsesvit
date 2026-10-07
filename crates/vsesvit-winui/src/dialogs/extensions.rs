@@ -2,14 +2,14 @@
 //! `.xpi` file or an unpacked folder, with progress and, before a store or package install goes
 //! in, Chrome's install prompt in the page (a dialog cannot open over this one); Update, which
 //! checks every store extension for a newer version now; and the installed list with each
-//! extension's version, provenance, an on/off switch and a remove button, and Approve for an
-//! update that asks for new permissions.
+//! extension's version, provenance, an on/off switch and a remove button, and Chrome's
+//! Re-enable for an update that can do more than the user approved.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::extensions::manifest::Manifest;
-use vsesvit_core::extensions::permissions::{self, INSTALL_LEAD};
+use vsesvit_core::extensions::permissions::{self, INSTALL_LEAD, PermissionMessage, RE_ENABLE_LEAD};
 use vsesvit_core::extensions::{InstallSource, InstalledExtension, StagedInstall};
 use windows_core::{Interface, Result};
 
@@ -349,7 +349,7 @@ impl Manager {
         );
         let error =
             engine_error.map_or(String::new(), |e| format!("WebView2 did not load it: {e}"));
-        let notice = ext.approval_notice().unwrap_or_default();
+        let notice = re_enable_text(ext);
         let root: FrameworkElement = xaml::load(&format!(
             r#"<Grid {{ns}} ColumnSpacing="12" Padding="0,6">
                  <Grid.ColumnDefinitions>
@@ -366,7 +366,7 @@ impl Manager {
                    <TextBlock Text="{notice}" Style="{{StaticResource CaptionTextBlockStyle}}" TextWrapping="Wrap"
                               Foreground="{{ThemeResource SystemFillColorCautionBrush}}" Visibility="{notice_visibility}"/>
                  </StackPanel>
-                 <Button x:Name="Approve" Grid.Column="2" Content="Approve" VerticalAlignment="Center"
+                 <Button x:Name="ReEnable" Grid.Column="2" Content="Re-enable" VerticalAlignment="Center"
                          Visibility="{notice_visibility}"/>
                  <ToggleSwitch x:Name="Enabled" Grid.Column="3" OnContent="On" OffContent="Off" MinWidth="0"
                                AutomationProperties.Name="Enabled"/>
@@ -390,7 +390,7 @@ impl Manager {
         ))?;
         let toggle: ToggleSwitch = xaml::find(&root, "Enabled")?;
         toggle.SetIsOn(ext.enabled)?;
-        // An update's new permissions keep it off whatever the switch says, until approved.
+        // An update's new permissions keep it off whatever the switch says, until re-enabled.
         toggle.cast::<Control>()?.SetIsEnabled(notice.is_empty())?;
         let id = ext.id.clone();
         let me = Rc::downgrade(self);
@@ -415,11 +415,11 @@ impl Manager {
                 });
             })?
             .forget();
-        let approve: Button = xaml::find(&root, "Approve")?;
+        let re_enable: Button = xaml::find(&root, "ReEnable")?;
         let id = ext.id.clone();
         let name = ext.manifest.name.clone();
         let me = Rc::downgrade(self);
-        on_click(&approve, move || {
+        on_click(&re_enable, move || {
             let Some(me) = me.upgrade() else { return };
             let Some(browser) = me.browser.upgrade() else {
                 return;
@@ -427,8 +427,8 @@ impl Manager {
             let (id, name) = (id.clone(), name.clone());
             exec::spawn(async move {
                 let text = match browser.approve_extension_permissions(&id).await {
-                    Ok(()) => format!("Approved the new permissions of {name}."),
-                    Err(e) => format!("Could not approve the new permissions of {name}: {e}"),
+                    Ok(()) => format!("Re-enabled {name}."),
+                    Err(e) => format!("Could not re-enable {name}: {e}"),
                 };
                 let _ = me.status.SetText(&text);
                 me.render();
@@ -464,8 +464,25 @@ pub(crate) fn prompt_text(manifest: &Manifest) -> String {
     if warnings.is_empty() {
         return String::new();
     }
-    let mut lines = vec![INSTALL_LEAD.to_owned()];
-    for warning in &warnings {
+    warning_text(INSTALL_LEAD, &warnings)
+}
+
+/// Chrome's prompt for an extension an update turned off: `Enable “X”?`, "It can now:" and
+/// what the update added, above Re-enable. Empty for any other.
+fn re_enable_text(ext: &InstalledExtension) -> String {
+    if ext.withheld.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{}\n{}",
+        permissions::re_enable_heading(&ext.manifest.name),
+        warning_text(RE_ENABLE_LEAD, &ext.withheld)
+    )
+}
+
+fn warning_text(lead: &str, warnings: &[PermissionMessage]) -> String {
+    let mut lines = vec![lead.to_owned()];
+    for warning in warnings {
         lines.push(format!("\u{2022} {}", warning.text));
         lines.extend(warning.details.iter().map(|d| format!("    \u{25E6} {d}")));
     }

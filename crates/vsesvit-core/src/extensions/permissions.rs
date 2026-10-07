@@ -5,12 +5,12 @@
 //! consumes the permissions that make its message and the ones it absorbs, in order, so
 //! "Read and change all your data on all websites" stands for `tabs` and
 //! `declarativeNetRequest` too. [`update_warnings`] is what a new version adds, which is when
-//! Chrome asks again.
+//! Chrome turns it off until the user re-enables it ([`RE_ENABLE_LEAD`]).
 //!
 //! `permissions.request` grants an extension some of its manifest's `optional_permissions`
-//! for good (until it is uninstalled or gives them back with `permissions.remove`). The grants
-//! are one local preference, [`GRANTED_PERMISSIONS`], as Chrome keeps them in the profile and
-//! does not sync them. What an extension holds is [`Extensions::active_permissions`]: its
+//! for good (until it is uninstalled or gives them back with `permissions.remove`), and
+//! re-enabling an update grants what it added. The grants are one local preference,
+//! [`GRANTED_PERMISSIONS`], as Chrome keeps them in the profile and does not sync them. What an extension holds is [`Extensions::active_permissions`]: its
 //! manifest's required permissions and whatever granted ones its manifest still lists as optional.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +31,9 @@ pub const INSTALL_LEAD: &str = "It can:";
 /// Chrome's `permissions.request` prompt: [`request_heading`], then this, then the warnings;
 /// Deny and Allow.
 pub const REQUEST_LEAD: &str = "It could:";
+/// Chrome's prompt for an extension an update turned off: [`re_enable_heading`], then this,
+/// then what the update added; "Re-enable".
+pub const RE_ENABLE_LEAD: &str = "It can now:";
 
 pub fn install_heading(name: &str) -> String {
     format!("Add “{name}”?")
@@ -38,6 +41,10 @@ pub fn install_heading(name: &str) -> String {
 
 pub fn request_heading(name: &str) -> String {
     format!("“{name}” has requested additional permissions.")
+}
+
+pub fn re_enable_heading(name: &str) -> String {
+    format!("Enable “{name}”?")
 }
 
 /// API permission names and host patterns, as `chrome.permissions.Permissions` has them.
@@ -90,7 +97,7 @@ impl PermissionSet {
     }
 
     /// What `self` has that `held` does not.
-    fn beyond(&self, held: &PermissionSet) -> PermissionSet {
+    pub(crate) fn beyond(&self, held: &PermissionSet) -> PermissionSet {
         PermissionSet {
             apis: &self.apis - &held.apis,
             origins: self.origins.iter().filter(|o| !held.covers(o)).cloned().collect(),
@@ -139,14 +146,16 @@ pub fn update_warnings(installed: &Manifest, new: &Manifest) -> Vec<PermissionMe
     added_warnings(&prompted(installed), &prompted(new))
 }
 
-fn prompted(manifest: &Manifest) -> PermissionSet {
+/// What the install prompt shows for `manifest`: its required permissions and its content
+/// scripts' sites.
+pub(crate) fn prompted(manifest: &Manifest) -> PermissionSet {
     let mut set = required(manifest);
     set.origins.extend(manifest.content_scripts.iter().flat_map(|s| s.matches.iter().cloned()));
     set
 }
 
 /// The warnings `after` has that `before` does not.
-fn added_warnings(before: &PermissionSet, after: &PermissionSet) -> Vec<PermissionMessage> {
+pub(crate) fn added_warnings(before: &PermissionSet, after: &PermissionSet) -> Vec<PermissionMessage> {
     let had = warnings(before);
     warnings(after).into_iter().filter(|m| !had.contains(m)).collect()
 }

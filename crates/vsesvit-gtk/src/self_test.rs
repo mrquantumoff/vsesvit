@@ -39,7 +39,7 @@ use webkit::prelude::*;
 
 use crate::address_bar::Security;
 use crate::browser::Browser;
-use crate::dialogs::extensions::UPDATE_BUTTON;
+use crate::dialogs::extensions::{UPDATE_BUTTON, re_enable_text};
 use crate::dialogs::settings::{
     HTTPS_ONLY_ROW, MEMORY_SAVINGS_ROW, PASSWORDS_NOTICE, PROFILE_PICKER_ROW, SECURE_DNS_ROW, SPELLCHECK_ROW, SPELLING_LANGUAGES_ROW,
     TRACKING_PROTECTION_ROW,
@@ -1598,15 +1598,15 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             let insensitive = !update.is_sensitive();
             wait_for(&last, || if update.is_sensitive() { Ok(()) } else { Err("the Update button is still insensitive".to_owned()) }).await;
             let ext = browser.core().borrow_mut().extensions().get(&id).map_err(|e| e.to_string())?.ok_or_else(|| "the update uninstalled it".to_owned())?;
-            let withheld: Vec<&str> = ext.withheld.names().collect();
+            let withheld: Vec<&str> = ext.withheld.iter().map(|w| w.text.as_str()).collect();
             let running = browser.runtime().loaded().contains(&id);
-            if !insensitive || ext.version != "3.0" || withheld != ["tabs"] || ext.enabled || running {
+            if !insensitive || ext.version != "3.0" || withheld != ["Read your browsing history"] || ext.enabled || running {
                 return Err(format!("after Update (insensitive while it ran: {insensitive}): version {}, withheld {withheld:?}, enabled={}, running={running}", ext.version, ext.enabled));
             }
             let row = find::<adw::ExpanderRow>(dialog.upcast_ref(), |row| row.title() == "Vsesvit update probe").ok_or_else(|| "the dialog lists no update probe".to_owned())?;
-            let notice = find::<adw::ActionRow>(row.upcast_ref(), |row| row.title() == "Needs your approval").and_then(|row| row.subtitle()).map(String::from);
+            let notice = find::<adw::ActionRow>(row.upcast_ref(), |row| row.title() == "Enable “Vsesvit update probe”?").and_then(|row| row.subtitle()).map(String::from);
             let switch = find::<gtk::Switch>(row.upcast_ref(), |s| s.tooltip_text().as_deref() == Some("Enabled")).ok_or_else(|| "the probe's row has no switch".to_owned())?;
-            if notice != ext.approval_notice() || switch.is_sensitive() || switch.is_active() {
+            if notice != Some(re_enable_text(&ext.withheld)) || switch.is_sensitive() || switch.is_active() {
                 return Err(format!("the probe's row shows {notice:?}, its switch sensitive={}, on={}", switch.is_sensitive(), switch.is_active()));
             }
             glib::timeout_future(Duration::from_millis(300)).await;
@@ -1616,12 +1616,12 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             }
             glib::timeout_future(Duration::from_millis(300)).await;
             crate::screenshot::save_png(window, &ctx.out_dir.join("extension-update.png")).await.map_err(|e| e.to_string())?;
-            button_labelled(row.upcast_ref(), "_Approve").ok_or_else(|| "the probe's row has no Approve button".to_owned())?.emit_clicked();
+            button_labelled(row.upcast_ref(), "_Re-enable").ok_or_else(|| "the probe's row has no Re-enable button".to_owned())?.emit_clicked();
             if !browser.runtime().loaded().contains(&id) {
-                return Err("after Approve the runtime does not run it".to_owned());
+                return Err("after Re-enable the runtime does not run it".to_owned());
             }
             Ok(format!(
-                "the Extensions dialog's Update, insensitive while it ran, left it at {}, withheld {withheld:?}, off and not running, its row showing {:?} with the switch insensitive (extension-update.png); Approve ran it again",
+                "the Extensions dialog's Update, insensitive while it ran, left it at {}, withheld {withheld:?}, off and not running, its row showing Enable “Vsesvit update probe”? {:?} with the switch insensitive (extension-update.png); Re-enable ran it again",
                 ext.version,
                 notice.unwrap_or_default()
             ))

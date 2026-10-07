@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use super::install::{self, MAX_API_RESPONSE_BYTES, network_error};
 use super::manifest::cmp_versions;
+use super::permissions::RE_ENABLE_LEAD;
 use super::{ExtensionId, Extensions, InstallError, InstallJob, InstallSource, InstalledExtension, Intent, StagedInstall, StoreRef, Stores};
 use crate::{Error, Url, db};
 
@@ -66,7 +67,8 @@ pub struct UpdateReport {
 
 impl UpdateReport {
     /// One line both shells show after a check the user started: "Updated 2 extensions",
-    /// then a sentence for each update waiting on the user's approval.
+    /// then, for each update that is off until the user re-enables it, Chrome's sentence and
+    /// what it can now do.
     pub fn summary(&self) -> String {
         let extensions = |n: usize| if n == 1 { "1 extension".to_owned() } else { format!("{n} extensions") };
         let outcome = match (self.updated.len(), self.failed.len()) {
@@ -75,12 +77,15 @@ impl UpdateReport {
             (updated, 0) => format!("Updated {}", extensions(updated)),
             (updated, failed) => format!("Updated {}; {failed} could not be updated", extensions(updated)),
         };
-        let approvals = self
-            .updated
-            .iter()
-            .filter(|ext| !ext.withheld.is_empty())
-            .map(|ext| format!("{} needs your approval for new permissions", ext.manifest.name));
-        std::iter::once(outcome).chain(approvals).collect::<Vec<_>>().join(". ")
+        let disabled = self.updated.iter().filter(|ext| !ext.withheld.is_empty()).map(|ext| {
+            let warnings: Vec<&str> = ext.withheld.iter().map(|w| w.text.as_str()).collect();
+            format!(
+                "The newest version of the extension “{}” requires more permissions, so it has been disabled. {RE_ENABLE_LEAD} {}",
+                ext.manifest.name,
+                warnings.join("; ")
+            )
+        });
+        std::iter::once(outcome).chain(disabled).collect::<Vec<_>>().join(". ")
     }
 }
 
@@ -275,7 +280,7 @@ mod tests {
     use super::*;
     use crate::extensions::Verification;
     use crate::extensions::manifest::Manifest;
-    use crate::extensions::grants::PermissionSet;
+    use crate::extensions::permissions::PermissionMessage;
 
     const A: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
     const B: &str = "gcllgfdnfnllodcaambdaknbipemelie";
@@ -347,7 +352,7 @@ mod tests {
             dir: PathBuf::from("x"),
             manifest,
             enabled: withheld.is_empty(),
-            withheld: PermissionSet { api: withheld.iter().map(|s| (*s).to_owned()).collect(), hosts: Vec::new() },
+            withheld: withheld.iter().map(|text| PermissionMessage { text: (*text).to_owned(), details: Vec::new() }).collect(),
             source: InstallSource::ChromeWebStore { id: id(A) },
             verification: Verification::ChromeWebStore,
             engine_id: None,
@@ -366,20 +371,20 @@ mod tests {
         assert_eq!(report(vec![installed("A", &[])], 1).summary(), "Updated 1 extension; 1 could not be updated");
         assert_eq!(report(vec![], 2).summary(), "2 extensions could not be updated");
         assert_eq!(
-            report(vec![installed("Ad Blocker", &["tabs"]), installed("B", &[]), installed("Notes", &["history"])], 1).summary(),
-            "Updated 3 extensions; 1 could not be updated. Ad Blocker needs your approval for new permissions. \
-             Notes needs your approval for new permissions"
+            report(
+                vec![
+                    installed("Ad Blocker", &["Read and change all your data on all websites", "Display notifications"]),
+                    installed("B", &[]),
+                    installed("Notes", &["Read your browsing history"]),
+                ],
+                1
+            )
+            .summary(),
+            "Updated 3 extensions; 1 could not be updated. \
+             The newest version of the extension “Ad Blocker” requires more permissions, so it has been disabled. \
+             It can now: Read and change all your data on all websites; Display notifications. \
+             The newest version of the extension “Notes” requires more permissions, so it has been disabled. \
+             It can now: Read your browsing history"
         );
-    }
-
-    #[test]
-    fn the_approval_notice_names_the_version_and_what_it_asks_for() {
-        let mut ext = installed("A", &["tabs"]);
-        ext.withheld.hosts.push(crate::extensions::manifest::MatchPattern::parse("<all_urls>").unwrap());
-        assert_eq!(
-            ext.approval_notice().as_deref(),
-            Some("Turned off: version 2.0 asks for new permissions: tabs, <all_urls>. Approve them to turn it back on.")
-        );
-        assert_eq!(installed("A", &[]).approval_notice(), None);
     }
 }

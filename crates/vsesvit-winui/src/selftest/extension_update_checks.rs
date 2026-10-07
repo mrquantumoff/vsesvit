@@ -1,6 +1,6 @@
 //! The `extension_update` check: a Chrome Web Store extension updates in place through the
 //! Extensions dialog's Update path, an update that asks for new permissions stays off until
-//! they are approved, and the page shows whether WebView2 kept the extension's chrome.storage
+//! the user re-enables it, and the page shows whether WebView2 kept the extension's chrome.storage
 //! when it loaded each new version over the old one.
 
 use std::rc::Rc;
@@ -95,16 +95,19 @@ pub(super) async fn extension_update(
         .updated
         .iter()
         .find(|e| e.id == id)
-        .map(|e| e.withheld.names().collect())
+        .map(|e| e.withheld.iter().map(|w| w.text.as_str()).collect())
         .unwrap_or_default();
-    if !updated(&report, &id, "3.0", false) || withheld != ["tabs"] || !engine.loaded(&id, false) {
+    if !updated(&report, &id, "3.0", false)
+        || withheld != ["Read your browsing history"]
+        || !engine.loaded(&id, false)
+    {
         return Err(context(
             &seen,
-            "3.0 is not held off in the engine until tabs is approved",
+            "3.0 is not held off in the engine until it is re-enabled",
         ));
     }
 
-    p.observe("approving 3.0's new permissions");
+    p.observe("re-enabling 3.0");
     browser
         .approve_extension_permissions(&id)
         .await
@@ -115,10 +118,10 @@ pub(super) async fn extension_update(
         .map(|e| (e.enabled, e.withheld.is_empty()));
     let engine = engine_state(browser, &id).await?;
     seen.push(format!(
-        "approved: (enabled, nothing withheld) = {approved:?}; {engine}"
+        "re-enabled: (enabled, nothing withheld) = {approved:?}; {engine}"
     ));
     if approved != Some((true, true)) || !engine.loaded(&id, true) {
-        return Err(context(&seen, "approving did not turn 3.0 back on"));
+        return Err(context(&seen, "Re-enable did not turn 3.0 back on"));
     }
     tab.reload();
     let third = written(&tab, "3.0:", p).await;
@@ -183,7 +186,7 @@ fn describe(report: &UpdateReport, id: &ExtensionId) -> String {
             "{} enabled={} withheld={:?}",
             e.version,
             e.enabled,
-            e.withheld.names().collect::<Vec<_>>()
+            e.withheld.iter().map(|w| &w.text).collect::<Vec<_>>()
         ))
     )
 }

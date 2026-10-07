@@ -267,7 +267,7 @@ impl Browser {
         Ok(report)
     }
 
-    /// The user approved what an update asks for; the extension runs again if it is on.
+    /// The user re-enabled an extension an update turned off; it runs again if it is on.
     pub(crate) async fn approve_extension_permissions(
         self: &Rc<Self>,
         id: &ExtensionId,
@@ -670,6 +670,7 @@ mod tests {
 
     use vsesvit_core::extensions::Verification;
     use vsesvit_core::extensions::manifest::Manifest;
+    use vsesvit_core::extensions::permissions::PermissionMessage;
 
     use super::*;
 
@@ -1017,7 +1018,10 @@ mod tests {
         sync(&engine, &core);
         let engine_id = core.borrow()[0].engine_id.clone().unwrap();
         let mut update = installed("x@vsesvit.test", &dirs[1], None, false);
-        update.withheld.api.insert("tabs".into());
+        update.withheld.push(PermissionMessage {
+            text: "Read your browsing history".into(),
+            details: Vec::new(),
+        });
         *core.borrow_mut() = vec![update];
         sync(&engine, &core);
         let _ = std::fs::remove_dir_all(&root);
