@@ -486,6 +486,9 @@ impl BrowserWindow {
                 if let Ok(tab) = page.child().downcast::<Tab>() {
                     window.browser().tab_closed(&tab, view.page_position(page), page.is_pinned());
                 }
+                if page.is_selected() {
+                    window.select_after_closing(page);
+                }
                 // The last tab of the last normal window is saved while it still exists, so
                 // that, as in Chrome, the next start restores it.
                 if view.n_pages() == 1 && window.browser().is_last_normal_window(&window) {

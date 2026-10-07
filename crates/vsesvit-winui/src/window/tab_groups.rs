@@ -12,7 +12,7 @@ use crate::tab::{Initial, TabId};
 
 impl BrowserWindow {
     /// The window's tabs as the groups see them.
-    fn window_tabs(&self) -> WindowTabs<TabId> {
+    pub(super) fn window_tabs(&self) -> WindowTabs<TabId> {
         let strip = self.strip();
         WindowTabs {
             order: strip.order(),

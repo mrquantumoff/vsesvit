@@ -624,15 +624,15 @@ impl BrowserWindow {
 
     fn remove_tab(&self, tab: &Rc<Tab>) -> Result<()> {
         let strip = self.strip();
-        let order = strip.order();
-        if let Some(index) = order.iter().position(|id| *id == tab.id) {
-            if strip.selected() == Some(tab.id) && order.len() > 1 {
-                let next = if index + 1 < order.len() {
-                    index + 1
-                } else {
-                    index - 1
-                };
-                strip.select(order[next])?;
+        if strip.order().contains(&tab.id) {
+            if strip.selected() == Some(tab.id) {
+                let next = self
+                    .groups
+                    .borrow()
+                    .after_closing(&self.window_tabs(), &tab.id, None);
+                if let Some(next) = next {
+                    strip.select(next)?;
+                }
             }
             strip.remove(tab.id)?;
         }
@@ -681,17 +681,12 @@ impl BrowserWindow {
         self.sync_selection();
     }
 
-    fn select_relative(&self, step: isize) {
-        let count = self.tab_count() as isize;
-        if count == 0 {
-            return;
+    /// Ctrl+Tab, or Ctrl+Shift+Tab going `back`, which pass over tabs in collapsed groups.
+    fn select_next(&self, back: bool) {
+        let next = self.groups.borrow().next_shown(&self.window_tabs(), back);
+        if let Some(next) = next {
+            self.select_tab(next);
         }
-        let current = self
-            .strip()
-            .selected()
-            .and_then(|id| self.index_of(id))
-            .unwrap_or(0) as isize;
-        self.select_index((current + step).rem_euclid(count) as usize);
     }
 
     /// Shows the selected tab's web view, hides the rest, and refreshes the toolbar. The groups
@@ -1167,8 +1162,8 @@ impl BrowserWindow {
                     tab.go_forward();
                 }
             }
-            Command::NextTab => self.select_relative(1),
-            Command::PreviousTab => self.select_relative(-1),
+            Command::NextTab => self.select_next(false),
+            Command::PreviousTab => self.select_next(true),
             Command::SelectTab(index) => {
                 if usize::from(index) < self.tab_count() {
                     self.select_index(usize::from(index));

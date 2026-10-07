@@ -4,6 +4,8 @@
 //! a collapsed group's rows. `AdwTabBar` can neither hide pages nor head them, so on top each
 //! group is a chip before the tabs that opens its editor, a grouped tab shows a dot in the
 //! group's colour where its speaker would be, and a collapsed group's tabs stay in the bar.
+//! Either way Ctrl+Tab, and the choice of a tab to select when the selected one closes, pass
+//! them over.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -45,6 +47,47 @@ pub(super) fn install(window: &BrowserWindow) {
         actions.add_action(&action);
     }
     window.insert_action_group("tab-group", Some(&actions));
+
+    // The tab view's own would select tabs hidden in collapsed groups.
+    let view = &window.ui().tab_view;
+    view.remove_shortcuts(
+        adw::TabViewShortcuts::CONTROL_TAB
+            | adw::TabViewShortcuts::CONTROL_SHIFT_TAB
+            | adw::TabViewShortcuts::CONTROL_PAGE_UP
+            | adw::TabViewShortcuts::CONTROL_PAGE_DOWN,
+    );
+    let keys = gtk::ShortcutController::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    for (trigger, back) in [
+        ("<Control>Tab|<Control>KP_Tab|<Control>Page_Down", false),
+        ("<Control><Shift>Tab|<Control><Shift>ISO_Left_Tab|<Control><Shift>KP_Tab|<Control>Page_Up", true),
+    ] {
+        let select = gtk::CallbackAction::new(move |widget, _| {
+            if let Some(window) = widget.downcast_ref::<BrowserWindow>() {
+                window.select_next_tab(back);
+            }
+            glib::Propagation::Stop
+        });
+        keys.add_shortcut(gtk::Shortcut::new(gtk::ShortcutTrigger::parse_string(trigger), Some(select)));
+    }
+    window.add_controller(keys);
+}
+
+/// The page `AdwTabView` selects by its pages' parents when the selected `page` closes
+/// (`AdwTabView.close_page`): the one before it if that descends from its parent, else the
+/// parent if both are pinned.
+fn by_parent(view: &adw::TabView, page: &adw::TabPage) -> Option<adw::TabPage> {
+    let parent = page.parent()?;
+    let at = view.page_position(page);
+    let before = (at > 0).then(|| view.nth_page(at - 1))?;
+    let mut up = Some(before.clone());
+    while let Some(ancestor) = up {
+        if ancestor == parent {
+            return Some(before);
+        }
+        up = ancestor.parent();
+    }
+    (before.is_pinned() && parent.is_pinned()).then_some(parent)
 }
 
 /// A group as an action's target.
@@ -165,6 +208,27 @@ impl BrowserWindow {
 
     pub(crate) fn group_of(&self, tab: &Tab) -> Option<TabGroup> {
         self.imp().groups.borrow().group_of(&tab.id()).cloned()
+    }
+
+    /// Ctrl+Tab, or Ctrl+Shift+Tab going `back`, which pass over tabs in collapsed groups.
+    pub(crate) fn select_next_tab(&self, back: bool) {
+        let next = self.imp().groups.borrow().next_shown(&self.window_tabs(), back);
+        if let Some(page) = next.and_then(|id| self.page_by_id(id)) {
+            self.ui().tab_view.set_selected_page(&page);
+        }
+    }
+
+    /// Just before the selected `page` closes, selects the tab core picks to follow it, which
+    /// is the tab view's own pick by the pages' parents when that one is not hidden.
+    pub(super) fn select_after_closing(&self, page: &adw::TabPage) {
+        let id = |page: &adw::TabPage| page.child().downcast::<Tab>().ok().map(|tab| tab.id());
+        let Some(closing) = id(page) else { return };
+        let view = &self.ui().tab_view;
+        let opener = by_parent(view, page).and_then(|parent| id(&parent));
+        let next = self.imp().groups.borrow().after_closing(&self.window_tabs(), &closing, opener.as_ref());
+        if let Some(next) = next.and_then(|id| self.page_by_id(id)) {
+            view.set_selected_page(&next);
+        }
     }
 
     /// A restored window's groups, from its tabs' records, once all of them are open.
@@ -557,5 +621,37 @@ mod tests {
         assert!(stepped_down && stepped_up, "the arrow keys step over the hidden row");
         assert_eq!(reselected, (Some(false), Some(false)), "selecting a hidden tab expands its group");
         assert_eq!(ungrouped, (None, None));
+    }
+
+    #[gtk::test]
+    fn ctrl_tab_and_closing_the_selected_tab_pass_over_a_collapsed_group() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        let first = window.open_tab(None, None, Focus::Foreground);
+        let grouped = window.open_tab(None, None, Focus::Foreground);
+        window.group_tab(&grouped);
+        window.close_group_editor();
+        let id = window.group_of(&grouped).expect("the tab is in its new group").id;
+        let last = window.open_tab(None, None, Focus::Background);
+        window.select_tab(&first);
+        window.toggle_group(id);
+
+        window.select_next_tab(false);
+        let forward = window.selected_tab();
+        window.select_next_tab(true);
+        let back = window.selected_tab();
+        let child = window.open_tab(None, Some(&first), Focus::Foreground);
+        window.close_tab(&child);
+        let after_child = window.selected_tab();
+        window.close_tab(&first);
+        let after_first = window.selected_tab();
+        let collapsed = window.group_of(&grouped).map(|g| g.collapsed);
+        window.destroy();
+        assert_eq!(forward, Some(last.clone()), "Ctrl+Tab passes over the hidden tab");
+        assert_eq!(back, Some(first.clone()), "so does Ctrl+Shift+Tab");
+        assert_eq!(after_child, Some(first), "closing a tab selects the tab that opened it");
+        assert_eq!(after_first, Some(last), "closing the first selects the next shown tab");
+        assert_eq!(collapsed, Some(true));
     }
 }

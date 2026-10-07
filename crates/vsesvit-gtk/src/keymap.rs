@@ -12,8 +12,8 @@ use vsesvit_core::shortcuts::{Chord, Command, Key, Keymap, Mods};
 pub(crate) enum Binding {
     /// An action whose accelerators follow the keymap.
     Action(&'static str),
-    /// Built into a widget (`AdwTabView`) with a fixed accelerator: listed in the shortcuts
-    /// help, never reassignable.
+    /// A fixed accelerator the window handles itself: listed in the shortcuts help, never
+    /// reassignable.
     BuiltIn(&'static str),
 }
 
