@@ -411,19 +411,30 @@ fn normalize(bytes: &[u8]) -> Option<Vec<u8>> {
         ImageFormat::Ico => Cow::Owned(best_ico_entry(bytes)?),
         _ => Cow::Borrowed(bytes),
     };
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(2048);
-    limits.max_image_height = Some(2048);
-    limits.max_alloc = Some(64 * 1024 * 1024);
-    let mut reader = ImageReader::with_format(Cursor::new(bytes.as_ref()), format);
-    reader.limits(limits);
-    let mut image = reader.decode().ok()?;
+    let mut image = decode_image(&bytes, format, 2048, 64 * 1024 * 1024)?;
     if image.width() > SIZE || image.height() > SIZE {
         image = image.resize(SIZE, SIZE, image::imageops::FilterType::Lanczos3);
     }
+    rgba_png(image).filter(|png| png.len() <= MAX_BYTES)
+}
+
+/// Decodes `bytes` as `format`, refusing an image more than `max_edge` pixels a side or one
+/// that needs more than `max_alloc` bytes.
+pub(crate) fn decode_image(bytes: &[u8], format: ImageFormat, max_edge: u32, max_alloc: u64) -> Option<DynamicImage> {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(max_edge);
+    limits.max_image_height = Some(max_edge);
+    limits.max_alloc = Some(max_alloc);
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(limits);
+    reader.decode().ok()
+}
+
+/// `image` as an RGBA PNG.
+pub(crate) fn rgba_png(image: DynamicImage) -> Option<Vec<u8>> {
     let mut png = Vec::new();
     DynamicImage::from(image.into_rgba8()).write_to(&mut Cursor::new(&mut png), ImageFormat::Png).ok()?;
-    (png.len() <= MAX_BYTES).then_some(png)
+    Some(png)
 }
 
 /// An ICO with just the entry to use: the smallest of at least 32px, else the largest,

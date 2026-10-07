@@ -4,16 +4,15 @@
 //! [`super::ProfilesDir::take_account_details`] stores them, unless the user named or coloured
 //! the profile by hand.
 
-use std::io::Cursor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use image::{DynamicImage, ImageFormat, ImageReader, Limits};
+use image::ImageFormat;
 use sha2::{Digest, Sha256};
 use vsesvit_sync_proto::Claims;
 
 use super::NAME_MAX;
 use crate::Url;
-use crate::favicons::{fetch_agent, local_hosts_allowed};
+use crate::favicons::{decode_image, fetch_agent, local_hosts_allowed, rgba_png};
 
 /// The edge of a stored picture: the picker's 72px avatar at 200% scale.
 const SIZE: u32 = 144;
@@ -101,26 +100,20 @@ impl AccountPicture {
 
 fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
     let format = image::guess_format(bytes).ok().filter(|f| *f != ImageFormat::Ico)?;
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(limits);
-    let image = reader.decode().ok()?;
+    let image = decode_image(bytes, format, 4096, 128 * 1024 * 1024)?;
     let edge = image.width().min(image.height());
     let mut image = image.crop_imm((image.width() - edge) / 2, (image.height() - edge) / 2, edge, edge);
     if edge > SIZE {
         image = image.resize_exact(SIZE, SIZE, image::imageops::FilterType::Lanczos3);
     }
-    let mut png = Vec::new();
-    DynamicImage::from(image.into_rgba8()).write_to(&mut Cursor::new(&mut png), ImageFormat::Png).ok()?;
-    Some(png)
+    rgba_png(image)
 }
 
 #[cfg(test)]
 mod tests {
-    use image::{Rgba, RgbaImage};
+    use std::io::Cursor;
+
+    use image::{DynamicImage, Rgba, RgbaImage};
 
     use super::*;
 
