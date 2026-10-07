@@ -1,9 +1,10 @@
 //! Downloads: the list newest first, each entry's actions (pausing and resuming, keeping or
 //! discarding a file that can run code), the download folder and clearing the list. Updates
-//! live while open.
+//! live while open, the speed and time left at least every second.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 
 use vsesvit_core::downloads::{Download, State, status_line};
 use vsesvit_core::private::Browsing;
@@ -32,6 +33,10 @@ pub(super) const MARKUP: &str = r#"
                  VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
     </Grid>
   </Grid>"#;
+
+/// How often the running rows refresh while no bytes arrive, so a stalled download's speed
+/// falls.
+const TICK: Duration = Duration::from_secs(1);
 
 /// What a row offers, in the order its buttons appear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +115,14 @@ pub(super) fn wire(
     });
     browser.subscribe_downloads(&subscriber);
     page.render();
+    let p = Rc::downgrade(&page);
+    exec::spawn(async move {
+        loop {
+            exec::sleep(TICK).await;
+            let Some(p) = p.upgrade() else { break };
+            p.refresh_running();
+        }
+    });
 
     let b = Rc::downgrade(browser);
     on_click(
@@ -170,7 +183,9 @@ impl Page {
         for row in self.running.borrow().iter() {
             let live = browser.download_progress(row.download.id);
             let _ = row.status.SetText(&status_line(&row.download, live, true));
-            let (received, total) = live.unwrap_or((row.download.received, row.download.total));
+            let (received, total) = live.map_or((row.download.received, row.download.total), |l| {
+                (l.received, l.total)
+            });
             let _ = super::set_progress(&row.progress, fraction(received, total));
         }
     }

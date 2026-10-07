@@ -1,18 +1,24 @@
 //! The Downloads window: core's list, newest first, following the downloads in progress
-//! while it is open. A finished file can be opened or shown in its folder, and a file that can
-//! run code kept or discarded; an entry can leave the list without its file.
+//! while it is open, their speed and time left at least every second. A finished file can be
+//! opened or shown in its folder, and a file that can run code kept or discarded; an entry can
+//! leave the list without its file.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use vsesvit_core::downloads::{Download, DownloadId, State as DownloadState, status_line};
+use vsesvit_core::downloads::{Download, DownloadId, Progress, State as DownloadState, status_line};
 use vsesvit_core::private::Browsing;
 
 use super::Windowed;
 use crate::downloads::{self, Change, Downloads};
 use crate::window::BrowserWindow;
+
+/// How often the rows in progress refresh while no bytes arrive, so a stalled download's speed
+/// falls.
+const TICK: Duration = Duration::from_secs(1);
 
 /// Holds no [`crate::browser::Browser`] or profile of its own: the widgets' handlers keep
 /// this state alive for as long as the window's widgets exist, which must not keep the
@@ -96,10 +102,21 @@ fn build(window: &BrowserWindow) -> adw::Window {
             }
         }
     });
+    let weak_state = Rc::downgrade(&state);
+    let tick = glib::timeout_add_local(TICK, move || {
+        if let Some(state) = weak_state.upgrade() {
+            state.update_running();
+        }
+        glib::ControlFlow::Continue
+    });
+    let tick = Cell::new(Some(tick));
     let weak_downloads = Rc::downgrade(downloads);
     downloads_window.connect_destroy(move |_| {
         if let Some(downloads) = weak_downloads.upgrade() {
             downloads.unsubscribe(subscription);
+        }
+        if let Some(tick) = tick.take() {
+            tick.remove();
         }
     });
 
@@ -139,12 +156,15 @@ impl State {
 
     fn update_progress(&self, id: DownloadId) {
         let Some(downloads) = self.downloads.upgrade() else { return };
-        let live = downloads.progress(id);
-        let rows = self.rows.borrow();
-        let Some(row) = rows.iter().find(|row| row.download.id == id) else { return };
-        row.widget.set_subtitle(&status_line(&row.download, live, true));
-        if let Some(bar) = &row.bar {
-            show_progress(bar, live);
+        if let Some(row) = self.rows.borrow().iter().find(|row| row.download.id == id) {
+            row.show_live(&downloads);
+        }
+    }
+
+    fn update_running(&self) {
+        let Some(downloads) = self.downloads.upgrade() else { return };
+        for row in self.rows.borrow().iter().filter(|row| row.download.state.is_live()) {
+            row.show_live(&downloads);
         }
     }
 
@@ -260,10 +280,20 @@ impl State {
     }
 }
 
+impl Row {
+    fn show_live(&self, downloads: &Downloads) {
+        let live = downloads.progress(self.download.id);
+        self.widget.set_subtitle(&status_line(&self.download, live, true));
+        if let Some(bar) = &self.bar {
+            show_progress(bar, live);
+        }
+    }
+}
+
 /// A fraction when the size is known, else a pulse per update.
-fn show_progress(bar: &gtk::ProgressBar, live: Option<(u64, Option<u64>)>) {
+fn show_progress(bar: &gtk::ProgressBar, live: Option<Progress>) {
     match live {
-        Some((received, Some(total))) if total > 0 => bar.set_fraction(received as f64 / total as f64),
+        Some(Progress { received, total: Some(total), .. }) if total > 0 => bar.set_fraction(received as f64 / total as f64),
         Some(_) => bar.pulse(),
         None => bar.set_fraction(0.0),
     }

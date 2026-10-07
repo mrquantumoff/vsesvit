@@ -20,7 +20,7 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use vsesvit_core::Profile;
-use vsesvit_core::downloads::{self as list, Download, DownloadId, State, listed_in};
+use vsesvit_core::downloads::{self as list, Download, DownloadId, Progress, State, Transfer, listed_in};
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
 use windows_core::Result;
@@ -70,8 +70,7 @@ struct Live {
     dangerous: bool,
     /// As last stored in core.
     state: State,
-    received: u64,
-    total: Option<u64>,
+    transfer: Transfer,
     notified: Instant,
     /// Whose tab started it: a dangerous file is warned about there.
     window: Weak<BrowserWindow>,
@@ -162,10 +161,11 @@ impl Browser {
             })
     }
 
-    /// Bytes received and expected so far, while the download runs.
-    pub fn download_progress(&self, id: DownloadId) -> Option<(u64, Option<u64>)> {
+    /// Bytes received and expected so far, and how fast they arrive, while the engine holds
+    /// the download.
+    pub fn download_progress(&self, id: DownloadId) -> Option<Progress> {
         let live = self.downloads.live.borrow();
-        live.get(&id).map(|l| (l.received, l.total))
+        live.get(&id).map(|l| l.transfer.at(Instant::now()))
     }
 
     pub fn cancel_download(&self, id: DownloadId) {
@@ -389,8 +389,7 @@ impl Browser {
                 path: written,
                 dangerous,
                 state: State::InProgress,
-                received: 0,
-                total,
+                transfer: Transfer::new(Instant::now(), total),
                 notified: Instant::now(),
                 window,
             },
@@ -410,8 +409,7 @@ impl Browser {
             let Some(entry) = live.get_mut(&id) else {
                 return;
             };
-            entry.received = received;
-            entry.total = total;
+            entry.transfer.update(Instant::now(), received, total);
             let due = entry.notified.elapsed() >= PROGRESS_INTERVAL;
             if due {
                 entry.notified = Instant::now();
@@ -438,6 +436,7 @@ impl Browser {
                 return;
             }
             entry.state = state;
+            entry.transfer.restart(Instant::now());
             let (path, window) = (entry.path.clone(), entry.window.clone());
             let browsing = entry.browsing;
             if !state.is_live() {

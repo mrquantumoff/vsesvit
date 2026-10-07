@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::downloads::{
-    Download, DownloadId, State, is_dangerous, listed_in, sanitize, status_line, unconfirmed_path, unique_destination,
+    Download, DownloadId, Progress, State, Transfer, is_dangerous, listed_in, sanitize, status_line, unconfirmed_path,
+    unique_destination,
 };
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
@@ -53,8 +54,7 @@ struct Live {
     handle: webkit::Download,
     /// Written under its unconfirmed name, to wait for the user once it is complete.
     dangerous: bool,
-    received: u64,
-    total: Option<u64>,
+    transfer: Transfer,
     notified: Instant,
 }
 
@@ -169,9 +169,9 @@ impl Downloads {
         })
     }
 
-    /// The live `(received, total)` of a download in progress.
-    pub(crate) fn progress(&self, id: DownloadId) -> Option<(u64, Option<u64>)> {
-        self.live.borrow().get(&id).map(|live| (live.received, live.total))
+    /// The live byte counts and speed of a download in progress.
+    pub(crate) fn progress(&self, id: DownloadId) -> Option<Progress> {
+        self.live.borrow().get(&id).map(|live| live.transfer.at(Instant::now()))
     }
 
     pub(crate) fn cancel(&self, id: DownloadId) {
@@ -405,7 +405,7 @@ impl Downloads {
         };
         self.live.borrow_mut().insert(
             record.id,
-            Live { handle: download.clone(), dangerous, received: 0, total, notified: Instant::now() },
+            Live { handle: download.clone(), dangerous, transfer: Transfer::new(Instant::now(), total), notified: Instant::now() },
         );
         match browsing {
             Browsing::Normal => self.started_this_session.set(true),
@@ -431,8 +431,7 @@ impl Downloads {
         {
             let mut live = self.live.borrow_mut();
             let Some(entry) = live.get_mut(&id) else { return };
-            entry.received = download.received_data_length();
-            entry.total = total_of(download);
+            entry.transfer.update(Instant::now(), download.received_data_length(), total_of(download));
             if entry.notified.elapsed() < PROGRESS_INTERVAL {
                 return;
             }
@@ -670,14 +669,16 @@ mod tests {
         let in_folder = |d: &Download| d.path.parent() == Some(dir.as_path());
         wait_until("the download to receive its first bytes", || {
             downloads.list(Browsing::Normal).iter().filter(|d| in_folder(d)).any(|d| {
-                downloads.progress(d.id).is_some_and(|(received, _)| received == STALLED_FILE_SENT)
+                downloads.progress(d.id).is_some_and(|live| live.received == STALLED_FILE_SENT)
             })
         });
         let entry = downloads.list(Browsing::Normal).into_iter().find(|d| in_folder(d)).expect("the entry");
         assert_eq!(entry.state, State::InProgress);
         assert_eq!(entry.path, dir.join("big.bin"));
-        assert_eq!(downloads.progress(entry.id), Some((STALLED_FILE_SENT, Some(STALLED_FILE_SIZE))));
-        assert_eq!(status_line(&entry, downloads.progress(entry.id), false), "1.0 KB of 1.0 MB");
+        let live = downloads.progress(entry.id).expect("live counts");
+        assert_eq!((live.received, live.total), (STALLED_FILE_SENT, Some(STALLED_FILE_SIZE)));
+        let line = status_line(&entry, Some(live), false);
+        assert!(line.contains("/s - 1.0 KB of 1.0 MB"), "{line}");
         assert!(downloads.started_this_session(Browsing::Normal));
 
         downloads.cancel(entry.id);

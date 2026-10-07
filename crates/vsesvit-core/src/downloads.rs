@@ -15,9 +15,14 @@
 //! ([`crate::private`]) until the session ends, listed in private windows only ([`listed_in`]).
 //! Its file stays on disk, unless it still waits to be kept: nothing could keep it once the row
 //! is gone.
+//!
+//! The shell feeds a running download's byte counts to a [`Transfer`], which measures its speed
+//! as Chrome does, and [`status_line`] words the speed and time left as Chrome's downloads page.
 
 use std::cmp::Reverse;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use rusqlite::{OptionalExtension, params};
 
@@ -134,7 +139,8 @@ pub struct Download {
     pub path: PathBuf,
     pub started_ms: u64,
     pub state: State,
-    /// Bytes written, as of the last [`Downloads::update`]. Live progress lives in the shell.
+    /// Bytes written, as of the last [`Downloads::update`]. Live progress lives in the shell's
+    /// [`Transfer`].
     pub received: u64,
     pub total: Option<u64>,
 }
@@ -504,18 +510,127 @@ pub fn describe_size(bytes: u64) -> String {
     unreachable!("the last unit always returns")
 }
 
-/// The line under a download's file name, identical in both shells. `live` is the shell's
-/// in-memory `(received, total)` for a download in progress; `exists` is whether the file
-/// is still on disk.
-pub fn status_line(d: &Download, live: Option<(u64, Option<u64>)>, exists: bool) -> String {
-    let counts = || match live.unwrap_or((d.received, d.total)) {
-        (received, Some(total)) => format!("{} of {}", describe_size(received), describe_size(total)),
-        (received, None) => describe_size(received),
+/// How far back a download's speed looks, as Chrome's rate estimator does.
+const SPEED_WINDOW: Duration = Duration::from_secs(10);
+/// Byte counts reported closer together than this make one sample.
+const SAMPLE_STEP: Duration = Duration::from_secs(1);
+/// The shortest time a speed is measured over, so the first bytes do not read as a burst.
+const SHORTEST_SPAN: Duration = Duration::from_secs(1);
+
+/// A running download's live byte counts and its speed over the last [`SPEED_WINDOW`], fed as
+/// the engine reports them. A stall slows it down until it reads 0 a window later.
+#[derive(Clone, Debug)]
+pub struct Transfer {
+    total: Option<u64>,
+    /// Bytes received and when, oldest first, never empty. All but the last are at least
+    /// [`SAMPLE_STEP`] apart, and only the first may be older than the window.
+    samples: VecDeque<(Instant, u64)>,
+}
+
+/// A running download at one moment.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub received: u64,
+    pub total: Option<u64>,
+    /// Bytes a second over the last few seconds.
+    pub per_second: u64,
+}
+
+impl Transfer {
+    /// A download that starts at `now`, announcing `total` bytes if the server said.
+    pub fn new(now: Instant, total: Option<u64>) -> Self {
+        Transfer { total, samples: VecDeque::from([(now, 0)]) }
+    }
+
+    /// The engine reports `received` bytes at `now`, and the size it now expects.
+    pub fn update(&mut self, now: Instant, received: u64, total: Option<u64>) {
+        self.total = total;
+        // The engine started over: the bytes before say nothing about how fast it goes now.
+        if received < self.received() {
+            self.samples.clear();
+        }
+        let n = self.samples.len();
+        if n >= 2 && self.samples[n - 1].0.saturating_duration_since(self.samples[n - 2].0) < SAMPLE_STEP {
+            self.samples[n - 1] = (now, received);
+        } else {
+            self.samples.push_back((now, received));
+        }
+        while self.samples.get(1).is_some_and(|&(at, _)| now.saturating_duration_since(at) >= SPEED_WINDOW) {
+            self.samples.pop_front();
+        }
+    }
+
+    /// Measures the speed afresh from `now`, as a download pauses, is interrupted or resumes:
+    /// the time it spent stopped says nothing about how fast it goes.
+    pub fn restart(&mut self, now: Instant) {
+        self.samples = VecDeque::from([(now, self.received())]);
+    }
+
+    fn received(&self) -> u64 {
+        self.samples.back().map_or(0, |&(_, received)| received)
+    }
+
+    /// Where the download is at `now`: its speed is what arrived since the newest sample at the
+    /// start of the window or before it (else the oldest), over the time since.
+    pub fn at(&self, now: Instant) -> Progress {
+        let received = self.received();
+        let start = now.checked_sub(SPEED_WINDOW);
+        let from = self.samples.iter().rev().find(|&&(at, _)| start.is_some_and(|start| at <= start));
+        let (since, then) = from.or(self.samples.front()).copied().unwrap_or((now, received));
+        let span = now.saturating_duration_since(since).max(SHORTEST_SPAN);
+        let per_second = u128::from(received.saturating_sub(then)) * 1000 / span.as_millis();
+        Progress { received, total: self.total, per_second: u64::try_from(per_second).unwrap_or(u64::MAX) }
+    }
+}
+
+impl Progress {
+    /// Whole seconds until the last byte at this speed, as Chrome counts them; none while
+    /// nothing arrives or the size is unknown.
+    fn seconds_left(&self) -> Option<u64> {
+        let total = self.total.filter(|&total| total > 0)?;
+        (self.per_second > 0).then(|| total.saturating_sub(self.received) / self.per_second)
+    }
+}
+
+/// "12 MB/s", "512 B/s".
+fn describe_speed(per_second: u64) -> String {
+    format!("{}/s", describe_size(per_second))
+}
+
+/// "45 secs left", "1 min left", "3 hours left", "2 days left": the largest unit the time
+/// rounds to at least one of, rounded to the nearest, as Chrome words it.
+fn describe_time_left(seconds: u64) -> String {
+    const UNITS: [(u64, u64, &str); 4] = [(1, 60, "sec"), (60, 60, "min"), (3_600, 24, "hour"), (86_400, u64::MAX, "day")];
+    let (count, unit) = UNITS
+        .into_iter()
+        .map(|(size, limit, unit)| (seconds.saturating_add(size / 2) / size, limit, unit))
+        .find(|&(count, limit, _)| count < limit)
+        .map(|(count, _, unit)| (count, unit))
+        .expect("days have no limit");
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{plural} left")
+}
+
+/// The line under a download's file name, identical in both shells, worded as Chrome's
+/// downloads page. `live` is the shell's [`Transfer::at`] for a download the engine holds;
+/// `exists` is whether the file is still on disk.
+pub fn status_line(d: &Download, live: Option<Progress>, exists: bool) -> String {
+    let progress = live.unwrap_or(Progress { received: d.received, total: d.total, per_second: 0 });
+    let counts = match progress.total {
+        Some(total) => format!("{} of {}", describe_size(progress.received), describe_size(total)),
+        None => describe_size(progress.received),
     };
     match d.state {
-        State::InProgress => counts(),
-        State::Paused => format!("Paused · {}", counts()),
-        State::Interrupted => format!("Interrupted · {}", counts()),
+        State::InProgress => {
+            let speed = describe_speed(progress.per_second);
+            match progress.seconds_left() {
+                Some(seconds) => format!("{speed} - {counts}, {}", describe_time_left(seconds)),
+                None => format!("{speed} - {counts}"),
+            }
+        }
+        // Chrome reads a paused download's speed as 0.
+        State::Paused => format!("{} - {counts}, Paused", describe_speed(0)),
+        State::Interrupted => format!("Interrupted · {counts}"),
         State::Unconfirmed => "This type of file can harm your device".to_owned(),
         State::Completed if !exists => "Deleted".to_owned(),
         State::Completed => {
@@ -590,13 +705,26 @@ mod tests {
         }
     }
 
+    fn live(received: u64, total: Option<u64>, per_second: u64) -> Option<Progress> {
+        Some(Progress { received, total, per_second })
+    }
+
     #[test]
     fn status_lines() {
         let url = "https://example.com/files/a.zip";
         let running = download(url, State::InProgress, 0, Some(10_000_000));
-        assert_eq!(status_line(&running, Some((3_200_000, Some(10_000_000))), true), "3.2 MB of 10 MB");
-        assert_eq!(status_line(&running, Some((3_200_000, None)), true), "3.2 MB", "unknown total");
-        assert_eq!(status_line(&running, None, true), "0 B of 10 MB", "no live counts yet");
+        assert_eq!(
+            status_line(&running, live(3_200_000, Some(10_000_000), 1_250_000), true),
+            "1.3 MB/s - 3.2 MB of 10 MB, 5 secs left"
+        );
+        let big = download(url, State::InProgress, 0, Some(2_900_000_000));
+        assert_eq!(
+            status_line(&big, live(200_000_000, Some(2_900_000_000), 12_500_000), true),
+            "13 MB/s - 200 MB of 2.9 GB, 4 mins left"
+        );
+        assert_eq!(status_line(&running, live(3_200_000, None, 512), true), "512 B/s - 3.2 MB", "unknown total");
+        assert_eq!(status_line(&running, live(3_200_000, Some(10_000_000), 0), true), "0 B/s - 3.2 MB of 10 MB", "stalled");
+        assert_eq!(status_line(&running, None, true), "0 B/s - 0 B of 10 MB", "no live counts yet");
 
         let done = download(url, State::Completed, 10_000_000, Some(10_000_000));
         assert_eq!(status_line(&done, None, true), "10 MB · example.com");
@@ -610,12 +738,125 @@ mod tests {
         assert_eq!(status_line(&download(url, State::Cancelled, 5, None), None, false), "Cancelled");
 
         let paused = download(url, State::Paused, 1_000, Some(10_000_000));
-        assert_eq!(status_line(&paused, Some((3_200_000, Some(10_000_000))), true), "Paused · 3.2 MB of 10 MB");
-        assert_eq!(status_line(&paused, None, false), "Paused · 1.0 KB of 10 MB", "the stored counts");
+        assert_eq!(
+            status_line(&paused, live(3_200_000, Some(10_000_000), 1_250_000), true),
+            "0 B/s - 3.2 MB of 10 MB, Paused"
+        );
+        assert_eq!(status_line(&paused, None, false), "0 B/s - 1.0 KB of 10 MB, Paused", "the stored counts");
         let interrupted = download(url, State::Interrupted, 0, None);
-        assert_eq!(status_line(&interrupted, Some((5, None)), true), "Interrupted · 5 B");
+        assert_eq!(status_line(&interrupted, live(5, None, 0), true), "Interrupted · 5 B");
         let unconfirmed = download(url, State::Unconfirmed, 5, Some(5));
         assert_eq!(status_line(&unconfirmed, None, true), "This type of file can harm your device");
+    }
+
+    #[test]
+    fn time_left_rounds_to_the_largest_unit() {
+        let cases = [
+            (0, "0 secs left"),
+            (1, "1 sec left"),
+            (59, "59 secs left"),
+            (60, "1 min left"),
+            (89, "1 min left"),
+            (90, "2 mins left"),
+            (3_569, "59 mins left"),
+            (3_570, "1 hour left"),
+            (5_399, "1 hour left"),
+            (5_400, "2 hours left"),
+            (84_599, "23 hours left"),
+            (84_600, "1 day left"),
+            (3 * 86_400, "3 days left"),
+            (u64::MAX, "213503982334601 days left"),
+        ];
+        for (seconds, text) in cases {
+            assert_eq!(describe_time_left(seconds), text, "{seconds} s");
+        }
+    }
+
+    #[test]
+    fn no_time_left_without_a_speed_or_a_size() {
+        let left = |received, total, per_second| Progress { received, total, per_second }.seconds_left();
+        assert_eq!(left(0, Some(1_000), 100), Some(10));
+        assert_eq!(left(950, Some(1_000), 100), Some(0));
+        assert_eq!(left(2_000, Some(1_000), 100), Some(0), "more than announced");
+        assert_eq!(left(0, Some(1_000), 0), None, "nothing arrives");
+        assert_eq!(left(0, None, 100), None, "unknown size");
+        assert_eq!(left(0, Some(0), 100), None, "an empty size is unknown");
+    }
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn speed_is_what_arrived_over_the_window() {
+        let t0 = Instant::now();
+        let mut transfer = Transfer::new(t0, Some(100_000_000));
+        assert_eq!(transfer.at(t0).per_second, 0, "nothing yet");
+        for tenth in 1..=300 {
+            transfer.update(t0 + Duration::from_millis(tenth * 100), tenth * 100_000, Some(100_000_000));
+        }
+        assert_eq!(
+            transfer.at(t0 + secs(30)),
+            Progress { received: 30_000_000, total: Some(100_000_000), per_second: 1_000_000 }
+        );
+        assert!(transfer.samples.len() <= 12, "{} samples kept", transfer.samples.len());
+
+        for tenth in 301..=400 {
+            transfer.update(t0 + Duration::from_millis(tenth * 100), 30_000_000 + (tenth - 300) * 400_000, None);
+        }
+        let faster = transfer.at(t0 + secs(40));
+        assert_eq!((faster.per_second, faster.total), (4_000_000, None), "the old speed has left the window");
+    }
+
+    #[test]
+    fn the_first_bytes_are_not_a_burst() {
+        let t0 = Instant::now();
+        let mut transfer = Transfer::new(t0, Some(1_000_000));
+        transfer.update(t0 + Duration::from_millis(10), 50_000, Some(1_000_000));
+        assert_eq!(transfer.at(t0 + Duration::from_millis(10)).per_second, 50_000, "measured over a second at least");
+        transfer.update(t0 + secs(2), 400_000, Some(1_000_000));
+        assert_eq!(transfer.at(t0 + secs(2)).per_second, 200_000);
+    }
+
+    #[test]
+    fn a_stall_slows_the_speed_to_nothing() {
+        let t0 = Instant::now();
+        let mut transfer = Transfer::new(t0, Some(100_000_000));
+        for second in 1..=20 {
+            transfer.update(t0 + secs(second), second * 1_000_000, Some(100_000_000));
+        }
+        let stalled = t0 + secs(20);
+        assert_eq!(transfer.at(stalled).per_second, 1_000_000);
+        assert_eq!(transfer.at(stalled + secs(5)).per_second, 500_000, "half the window still moved");
+        assert_eq!(transfer.at(stalled + secs(10)).per_second, 0);
+        let long_after = transfer.at(stalled + secs(600));
+        assert_eq!((long_after.received, long_after.per_second), (20_000_000, 0));
+    }
+
+    #[test]
+    fn a_pause_does_not_count_against_the_speed() {
+        let t0 = Instant::now();
+        let mut transfer = Transfer::new(t0, Some(100_000_000));
+        for second in 1..=10 {
+            transfer.update(t0 + secs(second), second * 1_000_000, Some(100_000_000));
+        }
+        transfer.restart(t0 + secs(10));
+        let resumed = t0 + secs(70);
+        transfer.restart(resumed);
+        assert_eq!(transfer.at(resumed).per_second, 0, "nothing since the resume");
+        transfer.update(resumed + secs(2), 14_000_000, Some(100_000_000));
+        assert_eq!(transfer.at(resumed + secs(2)).per_second, 2_000_000);
+    }
+
+    #[test]
+    fn starting_over_measures_afresh() {
+        let t0 = Instant::now();
+        let mut transfer = Transfer::new(t0, Some(10_000_000));
+        transfer.update(t0 + secs(5), 5_000_000, Some(10_000_000));
+        transfer.update(t0 + secs(6), 100_000, Some(10_000_000));
+        assert_eq!(transfer.at(t0 + secs(6)).per_second, 0, "no speed from one count");
+        transfer.update(t0 + secs(8), 1_100_000, Some(10_000_000));
+        assert_eq!(transfer.at(t0 + secs(8)).per_second, 500_000);
     }
 
     #[test]

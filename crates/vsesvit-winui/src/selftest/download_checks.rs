@@ -36,7 +36,7 @@ pub(super) async fn download_pause(
             .find(|d| d.url == stalled.as_str())?;
         let live = browser.download_progress(entry.id);
         p.observe(format!("{:?}, live counts {live:?}", entry.state));
-        live.is_some_and(|(received, _)| received >= STALLED_SENT as u64)
+        live.is_some_and(|l| l.received >= STALLED_SENT as u64)
             .then_some(entry.id)
     })
     .await;
@@ -56,9 +56,7 @@ pub(super) async fn download_pause(
         paused.0, paused.1
     );
     let ok = paused.0 == Indicator::Idle
-        && paused
-            .1
-            .is_some_and(|(received, _)| received >= STALLED_SENT as u64)
+        && paused.1.is_some_and(|l| l.received >= STALLED_SENT as u64)
         && resumed == Indicator::Busy;
     ok.then_some(detail.clone()).ok_or(detail)
 }
