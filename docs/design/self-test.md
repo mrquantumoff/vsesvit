@@ -20,6 +20,7 @@ Both shells also accept `--profile-dir <path>` in normal runs, so development ne
 | name | what it proves | pass condition |
 |---|---|---|
 | `profile_open` | core opens a new profile | `Profile::open` succeeds |
+| `install_prompt` (Linux; Windows has ui-smoke step `15c-extensions-install-prompt`) | Chrome's install prompt before a package goes in | installing `<out_dir>/probe.crx` through the Extensions dialog's path shows an alert headed `Add “Vsesvit Probe”?` listing `It can:`, `• Read and change all your data on all websites` and `• Display notifications` (`install-prompt.png`); closing it cancels the install and commits nothing |
 | `install_crx` | CRX3 parse, verify, unpack, key injection, commit | install of `<out_dir>/probe.crx` succeeds, id == `PROBE_ID`, verification == `LocalCrx` |
 | `engine_loaded_extension` | the engine runs the installed dir | Windows: `AddBrowserExtensionAsync` returns id == `PROBE_ID` (proves the injected `key`). Linux: the runtime lists the extension as loaded |
 | `navigate` | tab + engine + fixture server | a tab loads `http://127.0.0.1:<port>/index.html` and its title becomes `Vsesvit fixture` |
