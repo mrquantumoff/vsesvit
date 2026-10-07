@@ -100,14 +100,20 @@ impl FaviconFetch {
 /// Set by [`allow_local_hosts`] only.
 static ALLOW_LOCAL: AtomicBool = AtomicBool::new(false);
 
-/// Lets [`FaviconFetch`] reach loopback and private-network hosts from now on, for tests that
-/// serve their pages from a local fixture server. Process-wide.
+/// Lets [`FaviconFetch`] and [`crate::profiles::AccountPicture::fetch`] reach loopback and
+/// private-network hosts from now on, and account pictures come over plain HTTP, for tests that
+/// serve them from a local fixture server. Process-wide.
 #[cfg(feature = "testkit")]
 pub fn allow_local_hosts() {
     ALLOW_LOCAL.store(true, Ordering::Relaxed);
 }
 
-fn agent() -> ureq::Agent {
+pub(crate) fn local_hosts_allowed() -> bool {
+    ALLOW_LOCAL.load(Ordering::Relaxed)
+}
+
+/// Fetches from public addresses only, giving up after 10 seconds.
+pub(crate) fn agent() -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .user_agent(USER_AGENT)
@@ -128,7 +134,7 @@ impl Resolver for PublicOnly {
     fn resolve(&self, uri: &Uri, config: &Config, timeout: NextTimeout) -> Result<ResolvedSocketAddrs, ureq::Error> {
         let addrs = self.0.resolve(uri, config, timeout)?;
         // A proxy the user configured may well be local.
-        if ALLOW_LOCAL.load(Ordering::Relaxed) || config.proxy().is_some_and(|p| p.uri() == uri) {
+        if local_hosts_allowed() || config.proxy().is_some_and(|p| p.uri() == uri) {
             return Ok(addrs);
         }
         let mut public = self.empty();

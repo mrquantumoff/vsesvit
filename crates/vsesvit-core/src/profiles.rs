@@ -1,5 +1,5 @@
-//! The profile list: every profile of an install, with its name and avatar colour, the one
-//! used last, and whether the profile picker shows at startup.
+//! The profile list: every profile of an install, with its name, avatar colour and picture, the
+//! one used last, and whether the profile picker shows at startup.
 //!
 //! A profile is a directory directly inside one [`ProfilesDir`] (`Default`, `Profile 1`, ...),
 //! and one process runs each profile (`Profile::open` locks it). The list is the small file
@@ -10,6 +10,11 @@
 //!
 //! The list never caches anything a shell must keep in step: [`ProfilesDir::load`] reads it,
 //! and every change re-reads it under the lock and returns the new [`Registry`].
+//!
+//! A profile signed in to sync takes its name and picture from the account (`account`), until
+//! the user names or colours it by hand.
+
+mod account;
 
 use std::fs;
 use std::io::{self, Write};
@@ -19,6 +24,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::ProfilePaths;
+
+pub use account::{AccountDetails, AccountPicture};
 
 const FILE: &str = "profiles.json";
 const LOCK: &str = "profiles.lock";
@@ -154,13 +161,36 @@ pub struct ProfileEntry {
     pub id: ProfileId,
     pub name: String,
     pub color: ProfileColor,
+    /// The sync account's picture, shown in place of the coloured initial: a PNG in the
+    /// profile's directory, by its file name ([`ProfilesDir::picture`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    picture: Option<String>,
+    /// The user named or coloured the profile: its sync account no longer changes it. `None` in
+    /// lists from before profiles took details from sync, see [`ProfileEntry::set_by_hand`].
+    #[serde(default)]
+    set_by_hand: Option<bool>,
 }
 
 impl ProfileEntry {
+    fn new(id: ProfileId, name: String, color: ProfileColor, set_by_hand: bool) -> ProfileEntry {
+        ProfileEntry { id, name, color, picture: None, set_by_hand: Some(set_by_hand) }
+    }
+
+    /// For a profile listed before profiles took details from sync: when its name is not one
+    /// Chrome gives unnamed profiles, the user gave it.
+    pub fn set_by_hand(&self) -> bool {
+        self.set_by_hand.unwrap_or_else(|| !is_unnamed(&self.name))
+    }
+
     /// The letter on the avatar: the name's first letter or digit, upper-cased.
     pub fn initial(&self) -> String {
         avatar_initial(&self.name)
     }
+}
+
+/// "Person N", as [`Registry::next_name`] names profiles.
+fn is_unnamed(name: &str) -> bool {
+    name.strip_prefix("Person ").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 pub fn avatar_initial(name: &str) -> String {
@@ -361,7 +391,7 @@ impl ProfilesDir {
                 return Ok(false);
             }
             if registry.get(id).is_none() {
-                let entry = ProfileEntry { id: id.clone(), name: registry.next_name(), color: registry.next_color() };
+                let entry = ProfileEntry::new(id.clone(), registry.next_name(), registry.next_color(), false);
                 registry.profiles.push(entry);
             }
             registry.last_used = Some(id.clone());
@@ -372,13 +402,15 @@ impl ProfilesDir {
 
     /// Creates the directory `Profile N` (the first N that is free, as Chrome names them) and
     /// lists it. The directory exists from now on, so another process's `add` picks the next N;
-    /// the profile's process fills it when it starts.
+    /// the profile's process fills it when it starts. A name or colour other than the ones
+    /// suggested ([`Registry::next_name`], [`Registry::next_color`]) counts as set by hand.
     pub fn add(&self, name: &str, color: ProfileColor) -> Result<(ProfileId, Registry), EditError> {
         let name = valid_name(name)?;
         let mut added = None;
         let registry = self.edit(|registry| {
+            let by_hand = name != registry.next_name() || color != registry.next_color();
             let id = self.claim_dir(registry)?;
-            registry.profiles.push(ProfileEntry { id: id.clone(), name, color });
+            registry.profiles.push(ProfileEntry::new(id.clone(), name, color, by_hand));
             added = Some(id);
             Ok(true)
         })?;
@@ -401,16 +433,66 @@ impl ProfilesDir {
         unreachable!("some number is free")
     }
 
-    /// Renames and recolours `id`.
+    /// Renames and recolours `id`, by hand: its sync account no longer changes it. A new colour
+    /// shows in place of the account's picture, which is dropped.
     pub fn edit_profile(&self, id: &ProfileId, name: &str, color: ProfileColor) -> Result<Registry, EditError> {
         let name = valid_name(name)?;
         self.edit(|registry| {
             let entry = registry.profiles.iter_mut().find(|p| &p.id == id).ok_or(EditError::NotListed)?;
-            let changed = entry.name != name || entry.color != color;
+            if entry.name == name && entry.color == color {
+                return Ok(false);
+            }
+            if entry.color != color
+                && let Some(old) = entry.picture.take()
+            {
+                self.delete_picture(id, &old);
+            }
             entry.name = name;
             entry.color = color;
+            entry.set_by_hand = Some(true);
+            Ok(true)
+        })
+    }
+
+    /// Takes the name and picture of the sync account `id` is signed in to, unless the user set
+    /// its details by hand. Either may be `None`, which keeps the profile's own.
+    pub fn take_account_details(&self, id: &ProfileId, name: Option<&str>, picture: Option<&AccountPicture>) -> Result<Registry, EditError> {
+        let name = name.and_then(|name| valid_name(name).ok());
+        self.edit(|registry| {
+            let entry = registry.profiles.iter_mut().find(|p| &p.id == id).ok_or(EditError::NotListed)?;
+            if entry.set_by_hand() {
+                return Ok(false);
+            }
+            let mut changed = false;
+            if let Some(name) = name.filter(|name| *name != entry.name) {
+                entry.name = name;
+                changed = true;
+            }
+            if let Some(picture) = picture.filter(|p| entry.picture.as_deref() != Some(p.file_name().as_str())) {
+                let file = picture.file_name();
+                write_atomically(&self.root(id).join(&file), picture.png())?;
+                if let Some(old) = entry.picture.replace(file) {
+                    self.delete_picture(id, &old);
+                }
+                changed = true;
+            }
             Ok(changed)
         })
+    }
+
+    /// The file of `entry`'s account picture, when it has one.
+    pub fn picture(&self, entry: &ProfileEntry) -> Option<PathBuf> {
+        let file = entry.picture.as_deref().filter(|f| !f.starts_with('.') && !f.contains(['/', '\\', ':']) && f.ends_with(".png"))?;
+        Some(self.root(&entry.id).join(file))
+    }
+
+    fn delete_picture(&self, id: &ProfileId, file: &str) {
+        let path = self.root(id).join(file);
+        if let Err(e) = fs::remove_file(&path)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            log::warn!("deleting {}: {e}", path.display());
+        }
     }
 
     /// Takes `id` off the list at once and deletes its data, now if no process has it open,
@@ -519,18 +601,24 @@ impl ProfilesDir {
         let mut registry = self.load();
         if change(&mut registry)? {
             let json = serde_json::to_vec_pretty(&registry).map_err(io::Error::other)?;
-            let tmp = self.path.join(format!("{FILE}.{}.tmp", uuid::Uuid::new_v4()));
-            let written = fs::File::create(&tmp).and_then(|mut f| {
-                f.write_all(&json)?;
-                f.sync_all()
-            });
-            if let Err(e) = written.and_then(|()| fs::rename(&tmp, self.path.join(FILE))) {
-                let _ = fs::remove_file(&tmp);
-                return Err(e.into());
-            }
+            write_atomically(&self.path.join(FILE), &json)?;
         }
         Ok(registry)
     }
+}
+
+/// Writes a temporary file beside `path` and renames it over `path`, so a reader sees the old
+/// file or the new one, never a part.
+fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let tmp = path.with_file_name(format!("{name}.{}.tmp", uuid::Uuid::new_v4()));
+    let written = fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    written.and_then(|()| fs::rename(&tmp, path)).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
 }
 
 fn into_io(e: EditError) -> io::Error {
@@ -664,9 +752,9 @@ mod tests {
     fn startup_follows_chrome() {
         let mut registry = Registry::default();
         assert_eq!(registry.startup(false, false), Startup::Open(ProfileId::default_profile()));
-        registry.profiles.push(ProfileEntry { id: id("Profile 1"), name: "Work".into(), color: ProfileColor::Blue });
+        registry.profiles.push(ProfileEntry::new(id("Profile 1"), "Work".into(), ProfileColor::Blue, true));
         assert_eq!(registry.startup(false, false), Startup::Open(id("Profile 1")), "the only profile, even if not Default");
-        registry.profiles.push(ProfileEntry { id: ProfileId::default_profile(), name: "Me".into(), color: ProfileColor::Teal });
+        registry.profiles.push(ProfileEntry::new(ProfileId::default_profile(), "Me".into(), ProfileColor::Teal, true));
         assert_eq!(registry.startup(false, false), Startup::Picker);
         assert_eq!(registry.startup(true, false), Startup::Open(ProfileId::default_profile()), "addresses skip the picker");
         assert_eq!(registry.startup(false, true), Startup::Open(ProfileId::default_profile()), "a running browser opens a window");
@@ -771,6 +859,81 @@ mod tests {
         assert_eq!(dir.locate(&root.join("nested")), None);
         assert_eq!(dir.locate(dir.path()), None);
         assert_eq!(dir.locate(&dir.path().join("Profile 2")), Some(id("Profile 2")), "not made yet");
+    }
+
+    fn picture(rgba: [u8; 4]) -> AccountPicture {
+        let mut png = Vec::new();
+        image::DynamicImage::from(image::RgbaImage::from_pixel(4, 4, image::Rgba(rgba)))
+            .write_to(&mut io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        AccountPicture::decode(&png).unwrap()
+    }
+
+    #[test]
+    fn a_profile_takes_its_sync_accounts_details_until_set_by_hand() {
+        let dir = dir();
+        let default = ProfileId::default_profile();
+        fs::create_dir_all(dir.root(&default)).unwrap();
+        dir.opened(&default).unwrap();
+        let modified = || fs::metadata(dir.path().join(FILE)).unwrap().modified().unwrap();
+        let before = modified();
+        assert_eq!(dir.take_account_details(&default, None, None).unwrap(), dir.load());
+        assert_eq!(modified(), before, "an account with no details changes nothing");
+
+        let first = picture([1, 2, 3, 255]);
+        let registry = dir.take_account_details(&default, Some("Demir"), Some(&first)).unwrap();
+        let entry = registry.get(&default).unwrap();
+        assert_eq!(entry.name, "Demir");
+        assert!(!entry.set_by_hand());
+        let first_file = dir.picture(entry).unwrap();
+        assert_eq!(fs::read(&first_file).unwrap(), first.png());
+        assert_eq!(dir.load(), registry);
+
+        let registry = dir.take_account_details(&default, None, Some(&picture([3, 2, 1, 255]))).unwrap();
+        let second_file = dir.picture(registry.get(&default).unwrap()).unwrap();
+        assert_ne!(second_file, first_file);
+        assert!(second_file.exists() && !first_file.exists(), "the old picture is deleted");
+        assert_eq!(registry.get(&default).unwrap().name, "Demir", "no name keeps the name");
+
+        let registry = dir.edit_profile(&default, "Me", ProfileColor::Blue).unwrap();
+        let entry = registry.get(&default).unwrap();
+        assert!(entry.set_by_hand());
+        assert_eq!(dir.picture(entry), Some(second_file.clone()), "renamed only, so the picture stays");
+        let registry = dir.take_account_details(&default, Some("Someone"), Some(&first)).unwrap();
+        assert_eq!(registry.get(&default).unwrap().name, "Me");
+        assert_eq!(dir.picture(registry.get(&default).unwrap()), Some(second_file.clone()));
+
+        let registry = dir.edit_profile(&default, "Me", ProfileColor::Red).unwrap();
+        assert_eq!(dir.picture(registry.get(&default).unwrap()), None, "a colour chosen by hand replaces the picture");
+        assert!(!second_file.exists());
+    }
+
+    #[test]
+    fn a_profile_added_with_the_suggested_name_and_colour_is_not_set_by_hand() {
+        let dir = dir();
+        let registry = dir.load();
+        let (suggested, registry) = dir.add(&registry.next_name(), registry.next_color()).unwrap();
+        assert!(!registry.get(&suggested).unwrap().set_by_hand());
+        let (named, registry) = dir.add("Work", registry.next_color()).unwrap();
+        assert!(registry.get(&named).unwrap().set_by_hand());
+        let (coloured, registry) = dir.add(&registry.next_name(), ProfileColor::Blue).unwrap();
+        assert!(registry.get(&coloured).unwrap().set_by_hand());
+        assert!(matches!(dir.take_account_details(&id("Gone"), Some("x"), None), Err(EditError::NotListed)));
+    }
+
+    #[test]
+    fn a_list_from_before_counts_every_name_but_person_n_as_set_by_hand() {
+        let dir = dir();
+        for name in ["Default", "Profile 1", "Profile 2"] {
+            fs::create_dir_all(dir.path().join(name)).unwrap();
+        }
+        let old = r#"{"profiles":[{"id":"Default","name":"Person 1","color":"blue"},{"id":"Profile 1","name":"Work","color":"teal"},
+            {"id":"Profile 2","name":"Person 12","color":"green","picture":"../../elsewhere.png"}]}"#;
+        fs::write(dir.path().join(FILE), old).unwrap();
+        let registry = dir.load();
+        let by_hand: Vec<bool> = registry.profiles().iter().map(ProfileEntry::set_by_hand).collect();
+        assert_eq!(by_hand, [false, true, false]);
+        assert_eq!(dir.picture(&registry.profiles()[2]), None, "a picture outside the profile's directory is never read");
     }
 
     #[test]

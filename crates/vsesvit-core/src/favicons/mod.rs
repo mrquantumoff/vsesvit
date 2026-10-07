@@ -26,7 +26,7 @@ use std::collections::{HashSet, VecDeque};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub use fetch::{FaviconFetch, Fetched, Outcome};
-pub(crate) use fetch::USER_AGENT;
+pub(crate) use fetch::{USER_AGENT, agent as fetch_agent, local_hosts_allowed};
 #[cfg(feature = "testkit")]
 pub use fetch::allow_local_hosts;
 
