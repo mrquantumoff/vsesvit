@@ -14,6 +14,13 @@ pub use crx_writer::{CrxKey, encode_crx3, sign_crx3, write_crx3, zip_files};
 pub use fixture_server::{FixtureRequest, FixtureResponse, FixtureServer, STALLED_SENT};
 pub use store::FixtureStore;
 
+/// Whether a download's status line reads a speed above nothing and the time left, as
+/// `"250 KB/s - 1.2 MB of 10 MB, 35 secs left"` does while `/slow.bin` downloads.
+pub fn reads_speed_and_time_left(line: &str) -> bool {
+    line.split_once(" - ")
+        .is_some_and(|(speed, rest)| speed.ends_with("/s") && speed != "0 B/s" && rest.contains(" of ") && rest.ends_with(" left"))
+}
+
 /// The id `probe_crx()` installs as: derived from `tests/fixtures/keys/test-only-probe-key.pem`.
 pub const PROBE_ID: &str = "eonajgebgeenbhiiobbhmkafolkeghdb";
 

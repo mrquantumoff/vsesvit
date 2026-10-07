@@ -1,19 +1,23 @@
-//! The `download_pause` and `download_safety` checks: a download pauses, resumes and is
-//! cancelled through the engine, and a script waits under its unconfirmed name, marked as from
-//! the Internet, until the warning's Keep moves it to its name or Discard deletes it.
+//! The `download_pause`, `download_speed` and `download_safety` checks: a download pauses,
+//! resumes and is cancelled through the engine; the Downloads view reads a running download's
+//! speed and time left, and a stalled one's speed falling to nothing; and a script waits under
+//! its unconfirmed name, marked as from the Internet, until the warning's Keep moves it to its
+//! name or Discard deletes it.
 
 use std::path::Path;
+use std::rc::Rc;
 
 use vsesvit_core::Url;
 use vsesvit_core::downloads::{Download, DownloadId, State, unconfirmed_path, zone_identifier};
 use vsesvit_core::private::Browsing;
-use vsesvit_core::testkit::STALLED_SENT;
+use vsesvit_core::testkit::{STALLED_SENT, reads_speed_and_time_left};
 use windows_core::Interface;
 
 use super::{Probe, until};
 use crate::automation::invoke;
-use crate::bindings::{Button, UIElement};
+use crate::bindings::{Button, TextBlock, UIElement};
 use crate::browser::Browser;
+use crate::dialogs::{self, Dialog, Preview};
 use crate::downloads::Indicator;
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
@@ -59,6 +63,51 @@ pub(super) async fn download_pause(
         && paused.1.is_some_and(|l| l.received >= STALLED_SENT as u64)
         && resumed == Indicator::Busy;
     ok.then_some(detail.clone()).ok_or(detail)
+}
+
+pub(super) async fn download_speed(
+    browser: &Browser,
+    window: &Rc<BrowserWindow>,
+    tab: &Tab,
+    slow: &Url,
+    stalled: &Url,
+    p: &Probe,
+) -> Result<String, String> {
+    let preview =
+        dialogs::preview(window, Dialog::Downloads).map_err(|e| format!("Downloads view: {e}"))?;
+    tab.navigate(slow.as_str());
+    let running = newest_row_reads(&preview, p, reads_speed_and_time_left).await;
+    cancel(browser, slow, p).await?;
+    // Only the view's tick refreshes the row once the first kilobyte is in: nothing more comes.
+    tab.navigate(stalled.as_str());
+    let fallen = newest_row_reads(&preview, p, |line| line == "0 B/s - 1.0 KB of 1.0 MB").await;
+    cancel(browser, stalled, p).await?;
+    Ok(format!(
+        "/slow.bin read {running:?}; /stalled.bin came to read {fallen:?}"
+    ))
+}
+
+/// The status line of the Downloads view's newest row, once `wanted` holds for it.
+async fn newest_row_reads(preview: &Preview, p: &Probe, wanted: impl Fn(&str) -> bool) -> String {
+    until(p, |p| {
+        let line = preview
+            .find::<TextBlock>("Status")
+            .and_then(|status| status.Text());
+        p.observe(format!("the newest row reads {line:?}"));
+        line.ok().filter(|line| wanted(line))
+    })
+    .await
+}
+
+async fn cancel(browser: &Browser, url: &Url, p: &Probe) -> Result<(), String> {
+    let entry = browser
+        .download_list()
+        .into_iter()
+        .find(|d| d.url == url.as_str())
+        .ok_or_else(|| format!("no list entry for {url}"))?;
+    browser.cancel_download(entry.id);
+    reaches(browser, entry.id, State::Cancelled, p).await;
+    Ok(())
 }
 
 pub(super) async fn download_safety(

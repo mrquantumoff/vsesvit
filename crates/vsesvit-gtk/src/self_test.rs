@@ -30,7 +30,7 @@ use vsesvit_core::suggest::DEBOUNCE;
 use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, CrxKey, FixtureServer, FixtureStore};
 use vsesvit_core::trackers::{self, Category, TrackerList, TrackingProtection};
-use vsesvit_core::{OpenOptions, Profile};
+use vsesvit_core::{OpenOptions, Profile, Url};
 use vsesvit_sync::status::{Action, OFFER, passphrase_dialog};
 use vsesvit_sync::{Account, Encryption};
 use vsesvit_webext::menus::Target;
@@ -80,7 +80,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 61] = [
+const CHECKS: [&str; 62] = [
     "profile_open",
     "install_prompt",
     "install_crx",
@@ -120,6 +120,7 @@ const CHECKS: [&str; 61] = [
     "download",
     "private_window",
     "download_safety",
+    "download_speed",
     "new_tab_page",
     "address_progress",
     "settings",
@@ -2246,6 +2247,25 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     })
     .await;
 
+    ctx.check("download_speed", CHECK_TIMEOUT * 2, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        gio::prelude::ActionGroupExt::activate_action(window, "show-downloads", None);
+        let view = browser.windowed(Windowed::Downloads).ok_or_else(|| "win.show-downloads opened no window".to_owned())?;
+        let _view = Cleanup(|| view.close());
+
+        let slow = ctx.server.url("/slow.bin");
+        tab.load(slow.as_str());
+        let running = wait_for(&last, || newest_row_reads(&view, testkit::reads_speed_and_time_left)).await;
+        cancel_download(browser, &last, &slow).await?;
+        // Only the view's tick refreshes the row once the first kilobyte is in: nothing more comes.
+        let stalled = ctx.server.url("/stalled.bin");
+        tab.load(stalled.as_str());
+        let fallen = wait_for(&last, || newest_row_reads(&view, |line| line == "0 B/s - 1.0 KB of 1.0 MB")).await;
+        cancel_download(browser, &last, &stalled).await?;
+        Ok(format!("/slow.bin read {running:?}; /stalled.bin came to read {fallen:?}"))
+    })
+    .await;
+
     ctx.check("new_tab_page", CHECK_TIMEOUT, |last| async move {
         let first = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
         window.new_tab();
@@ -3933,6 +3953,27 @@ async fn wait_cookies(last: &Last, jar: &webkit::CookieManager, url: &str, done:
 }
 
 /// Waits until tracking protection's latest blocker is on every tab.
+/// The status line of the Downloads window's newest row, once `wanted` holds for it.
+fn newest_row_reads(view: &impl IsA<gtk::Widget>, wanted: fn(&str) -> bool) -> Result<String, String> {
+    match find::<adw::ActionRow>(view.upcast_ref(), |_| true).and_then(|row| row.subtitle()) {
+        Some(line) if wanted(&line) => Ok(line.into()),
+        line => Err(format!("the newest row reads {line:?}")),
+    }
+}
+
+/// Cancels the newest download of `url` and waits until its entry says so.
+async fn cancel_download(browser: &Browser, last: &Last, url: &Url) -> Result<(), String> {
+    let entry = browser.downloads().list().into_iter().find(|d| d.url == url.as_str());
+    let id = entry.ok_or_else(|| format!("no list entry for {url}"))?.id;
+    browser.downloads().cancel(id);
+    wait_for(last, || match browser.downloads().list().into_iter().find(|d| d.id == id) {
+        Some(d) if d.state == State::Cancelled => Ok(()),
+        other => Err(format!("the entry is {:?}", other.map(|d| d.state))),
+    })
+    .await;
+    Ok(())
+}
+
 async fn tracking_applied(browser: &Browser) {
     let (done, applied) = futures_channel::oneshot::channel();
     browser.trackers().when_applied(move || {

@@ -1,9 +1,9 @@
 //! A tiny HTTP/1.1 server for `tests/fixtures/site/`, bound to 127.0.0.1 on a random
 //! port, plus `/suggest?q=<terms>`, a search engine's suggestions for the terms,
-//! `/set-cookie`, a page that sets a cookie in its response header, and `/stalled.bin`, a
-//! download that never finishes. A test adds answers of its own with
-//! [`FixtureServer::route`] (`testkit::FixtureStore` serves the extension stores that way).
-//! It records the path of every request, so a test can prove that a request was made
+//! `/set-cookie`, a page that sets a cookie in its response header, `/stalled.bin`, a
+//! download that never finishes, and `/slow.bin`, one that takes its time. A test adds answers
+//! of its own with [`FixtureServer::route`] (`testkit::FixtureStore` serves the extension stores
+//! that way). It records the path of every request, so a test can prove that a request was made
 //! (`/allowed.png`) or was blocked before it left the engine (`/vsesvit-blocked/pixel.png`).
 
 use std::borrow::Cow;
@@ -62,6 +62,12 @@ const SITE: &[(&str, &str, &[u8])] = &[
 /// the client closes the connection: a download that stays in progress.
 const STALLED_SIZE: usize = 1_000_000;
 pub const STALLED_SENT: usize = 1_000;
+
+/// `/slow.bin` announces and sends this many bytes, [`SLOW_CHUNK`] every [`SLOW_EVERY`]: about
+/// 250 KB a second for 40 seconds, unless the client closes the connection first.
+const SLOW_SIZE: usize = 10_000_000;
+const SLOW_CHUNK: usize = 25_000;
+const SLOW_EVERY: Duration = Duration::from_millis(100);
 
 /// `/set-cookie`, served with `Set-Cookie: served=1; Path=/`.
 const COOKIE_SET_PAGE: &[u8] = b"<!doctype html><html><head><title>Cookie set</title></head><body></body></html>";
@@ -219,6 +225,9 @@ fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>, routes: &Routes) -> i
     if method == "GET" && path == "/stalled.bin" {
         return stall(stream);
     }
+    if method == "GET" && path == "/slow.bin" {
+        return trickle(stream);
+    }
     let set_cookie = get && path == "/set-cookie";
     let (status, content_type, body) = match SITE.iter().find(|(p, _, _)| *p == lookup) {
         Some((_, content_type, body)) if get => ("200 OK", *content_type, Cow::Borrowed(*body)),
@@ -254,15 +263,29 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
+/// The head of a response that downloads `size` bytes.
+fn download_head(size: usize) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+    )
+}
+
 fn stall(mut stream: TcpStream) -> io::Result<()> {
-    let head = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {STALLED_SIZE}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
-    );
-    stream.write_all(head.as_bytes())?;
+    stream.write_all(download_head(STALLED_SIZE).as_bytes())?;
     stream.write_all(&[0; STALLED_SENT])?;
     stream.flush()?;
     stream.set_read_timeout(None)?;
     while stream.read(&mut [0; 512])? > 0 {}
+    Ok(())
+}
+
+fn trickle(mut stream: TcpStream) -> io::Result<()> {
+    stream.write_all(download_head(SLOW_SIZE).as_bytes())?;
+    for _ in 0..SLOW_SIZE / SLOW_CHUNK {
+        stream.write_all(&[0; SLOW_CHUNK])?;
+        stream.flush()?;
+        std::thread::sleep(SLOW_EVERY);
+    }
     Ok(())
 }
 

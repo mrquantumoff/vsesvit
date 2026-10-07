@@ -1052,6 +1052,12 @@ async fn checks(
     })
     .await;
 
+    check(report, "download_speed", DEFAULT_TIMEOUT * 2, async |p| {
+        let (slow, stalled) = (server.url("/slow.bin"), server.url("/stalled.bin"));
+        download_checks::download_speed(browser, &window, &tab, &slow, &stalled, p).await
+    })
+    .await;
+
     check(report, "download_safety", DEFAULT_TIMEOUT, async |p| {
         let (script, dir) = (server.url("/dangerous.bat"), out_dir.join("downloads"));
         download_checks::download_safety(browser, &window, &tab, &script, &dir, p).await
