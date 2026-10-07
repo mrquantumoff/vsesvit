@@ -57,6 +57,9 @@ struct Inner {
     synced_seq: Cell<Option<Seq>>,
     /// Bumped by every sign-in and cancel, so the later steps of an abandoned sign-in stop.
     attempt: Cell<u64>,
+    /// Bumped whenever the profile takes an account's details and by every sign-out, so a
+    /// picture still on its way for an earlier sign-in is dropped.
+    details: Cell<u64>,
     canceller: RefCell<Option<Arc<AtomicBool>>>,
     watchers: RefCell<Vec<Watcher>>,
     window_seen: Cell<bool>,
@@ -78,6 +81,7 @@ impl Syncer {
             start_seq: Cell::new(None),
             synced_seq: Cell::new(None),
             attempt: Cell::new(0),
+            details: Cell::new(0),
             canceller: RefCell::default(),
             watchers: RefCell::default(),
             window_seen: Cell::new(false),
@@ -341,6 +345,8 @@ impl Syncer {
     /// details by hand. The picture is fetched on a worker, so it holds up neither the sign-in
     /// nor a sync, and taken here, so the list it shows is the newest.
     pub(crate) fn take_account_details(&self, details: AccountDetails) {
+        let latest = self.0.details.get() + 1;
+        self.0.details.set(latest);
         let Some(home) = self.browser().and_then(|b| b.home().cloned()) else { return };
         let registry = match home.dir.take_account_details(&home.id, details.name.as_deref(), None) {
             Ok(registry) => registry,
@@ -357,6 +363,9 @@ impl Syncer {
         let syncer = self.clone();
         glib::spawn_future_local(async move {
             let Some(picture) = on_worker(move || AccountPicture::fetch(&url)).await else { return };
+            if syncer.0.details.get() != latest {
+                return;
+            }
             match home.dir.take_account_details(&home.id, None, Some(&picture)) {
                 Ok(registry) => {
                     if let Some(browser) = syncer.browser() {
@@ -406,6 +415,7 @@ impl Syncer {
     /// Signs out, and revokes `account`'s refresh token on a worker thread.
     fn forget(&self, browser: &Browser, account: Option<Account>) -> Result<(), Error> {
         Account::forget(&mut browser.core().borrow_mut().sync())?;
+        self.0.details.set(self.0.details.get() + 1);
         self.cancel_timer();
         self.set_state(State::SignedOut { error: None });
         if let Some(account) = account {

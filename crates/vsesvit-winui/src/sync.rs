@@ -50,6 +50,9 @@ pub(crate) struct SyncController {
     running: Cell<bool>,
     /// Counts sign-ins begun and cancelled. A sign-in's steps go on only while it is the latest.
     attempts: Cell<u64>,
+    /// Bumped whenever the profile takes an account's details and by every sign-out, so a
+    /// picture still on its way for an earlier sign-in is dropped.
+    details: Cell<u64>,
     canceller: RefCell<Option<Arc<AtomicBool>>>,
     /// When the last sync started, and the profile's `change_seq` then.
     last_start: Cell<Option<(Instant, Seq)>>,
@@ -82,6 +85,7 @@ impl SyncController {
             http: Http::new(),
             running: Cell::new(false),
             attempts: Cell::new(0),
+            details: Cell::new(0),
             canceller: RefCell::new(None),
             last_start: Cell::new(None),
             uploaded: Cell::new(None),
@@ -504,6 +508,9 @@ pub(crate) fn sign_in(
 /// details by hand. The picture is fetched on a worker, so it holds up neither the sign-in nor a
 /// sync, and taken here, so the list it shows is the newest.
 pub(crate) fn take_account_details(browser: &Rc<Browser>, details: AccountDetails) {
+    let sync = browser.sync();
+    let latest = sync.details.get() + 1;
+    sync.details.set(latest);
     let Some(home) = browser.home().cloned() else {
         return;
     };
@@ -529,7 +536,10 @@ pub(crate) fn take_account_details(browser: &Rc<Browser>, details: AccountDetail
         let Ok(Some(picture)) = exec::background(move || AccountPicture::fetch(&url)).await else {
             return;
         };
-        let Some(browser) = browser.upgrade() else {
+        let Some(browser) = browser
+            .upgrade()
+            .filter(|b| b.sync().details.get() == latest)
+        else {
             return;
         };
         match home.dir.take_account_details(&home.id, None, Some(&picture)) {
@@ -574,7 +584,9 @@ pub(crate) fn sign_out(browser: &Browser) {
             return;
         }
     };
-    browser.sync().apply(Event::SignedOut);
+    let sync = browser.sync();
+    sync.details.set(sync.details.get() + 1);
+    sync.apply(Event::SignedOut);
     if let Some(account) = account {
         let http = browser.sync().http.clone();
         exec::spawn(async move {

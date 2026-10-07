@@ -3707,6 +3707,10 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         private.destroy();
         wait_for(&last, || if browser.windows_of(Browsing::Private).is_empty() { Ok(()) } else { Err("the private window is still open".to_owned()) }).await;
         let picture = Some(ctx.server.url("/allowed.png"));
+        browser.sync().take_account_details(AccountDetails { name: Some("Alex".to_owned()), picture: picture.clone() });
+        browser.sync().take_account_details(AccountDetails { name: Some("Alex".to_owned()), picture: None });
+        glib::timeout_future(Duration::from_millis(1500)).await;
+        let superseded = window.shows_profile_picture();
         browser.sync().take_account_details(AccountDetails { name: Some("Alex".to_owned()), picture });
         let from_account = wait_for(&last, || match (menu_names()?, window.shows_profile_picture()) {
             (names, true) => Ok(names),
@@ -3753,12 +3757,13 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         })
         .await;
         let detail = format!(
-            "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile menu {private_shown:?}; signed in to sync as Alex: menu {from_account:?} and the account picture shown (profiles-account.png); renamed and recoloured by hand while a newer account picture was on its way: {renamed:?}, then a sync sign-in as Sam left menu and picture {by_hand:?}; Manage Profiles lists {manage_rows:?} (profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored on={picker_stored}; Work removed: menu {:?}, title {:?} (profiles.png)",
+            "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile menu {private_shown:?}; an earlier sign-in's picture landed after a later one without: {superseded}; signed in to sync as Alex: menu {from_account:?} and the account picture shown (profiles-account.png); renamed and recoloured by hand while a newer account picture was on its way: {renamed:?}, then a sync sign-in as Sam left menu and picture {by_hand:?}; Manage Profiles lists {manage_rows:?} (profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored on={picker_stored}; Work removed: menu {:?}, title {:?} (profiles.png)",
             alone.0, alone.1, together.0, together.1, removed.0, removed.1
         );
         let ok = alone == (vec!["Person 1".to_owned()], page_title.clone())
             && together == (vec!["Person 1".to_owned(), "Work".to_owned()], format!("{page_title} - Person 1"))
             && private_shown == private_expected
+            && !superseded
             && from_account == ["Alex", "Work"]
             && renamed == format!("{page_title} - Tester")
             && by_hand == (vec!["Tester".to_owned(), "Work".to_owned()], false)
