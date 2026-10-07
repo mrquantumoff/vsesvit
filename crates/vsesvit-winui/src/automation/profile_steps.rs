@@ -57,7 +57,7 @@ pub(super) async fn run(
         "Add profile",
         "Manage profiles"
     ]);
-    shoot(window, out_dir, "21b-profile-menu", steps, |w| {
+    shoot(window, out_dir, "21d-profile-menu", steps, |w| {
         json!({ "entries": entries, "title": w.title(), "ok": entries == expected.as_array().cloned().unwrap_or_default() })
     })
     .await;
@@ -72,7 +72,7 @@ pub(super) async fn run(
     shoot(
         window,
         out_dir,
-        "21c-manage-profiles",
+        "21e-manage-profiles",
         steps,
         |_| json!({ "rows": rows, "ok": rows == ["Person 1", "Work"] }),
     )

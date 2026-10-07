@@ -867,7 +867,7 @@ async fn run(browser: &Rc<Browser>, out_dir: &Path, steps: &mut Vec<Value>) -> R
 
     private_window(browser, &window, out_dir, steps).await?;
     if let Err(e) = profile_steps::run(browser, &window, out_dir, steps).await {
-        steps.push(json!({ "name": "21b-profile-menu", "error": e, "ok": false }));
+        steps.push(json!({ "name": "21d-profile-menu", "error": e, "ok": false }));
     }
 
     // Last: it clears the site data every step above may rely on.
