@@ -541,14 +541,13 @@ impl BrowserWindow {
         self.add_controller(clicks);
 
         self.connect_is_active_notify(|window| {
-            if !window.is_active() {
-                return;
-            }
-            if let Some(tab) = window.selected_tab() {
-                window.browser().tab_used(&tab);
+            if window.is_active() {
+                if let Some(tab) = window.selected_tab() {
+                    window.browser().tab_used(&tab);
+                }
+                window.browser().profile_used();
             }
             window.browser().runtime().windows_changed();
-            window.browser().profile_used();
         });
         self.connect_realize(|window| {
             let Some(surface) = window.surface() else {
