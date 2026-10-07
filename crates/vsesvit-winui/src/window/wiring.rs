@@ -4,6 +4,7 @@
 use std::cell::OnceCell;
 use std::rc::{Rc, Weak};
 
+use vsesvit_core::private::Browsing;
 use windows_core::{Interface, Result};
 
 use super::{BrowserWindow, MenuAction};
@@ -231,7 +232,8 @@ impl BrowserWindow {
     }
 
     /// The window's accelerators from the bindings in effect; none while a shortcut is being
-    /// captured, so the key pressed for it runs nothing.
+    /// captured, so the key pressed for it runs nothing. A private window has no extension
+    /// shortcuts, as extensions do not run there.
     pub(super) fn set_accelerators(&self) -> Result<()> {
         let accelerators = self.ui.root.cast::<UIElement>()?.KeyboardAccelerators()?;
         accelerators.Clear()?;
@@ -239,6 +241,11 @@ impl BrowserWindow {
             return Ok(());
         }
         for binding in shortcuts::current().list() {
+            if self.browsing == Browsing::Private
+                && matches!(binding.command, Command::ExtensionAction(_))
+            {
+                continue;
+            }
             let accelerator = KeyboardAccelerator::new()?;
             accelerator.SetKey(VirtualKey(i32::from(binding.vk)))?;
             accelerator.SetModifiers(virtual_key_modifiers(binding.mods))?;

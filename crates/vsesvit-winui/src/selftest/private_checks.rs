@@ -1,8 +1,8 @@
 //! The `private_window` check: a page in a private window leaves no history, session entry or
 //! zoom behind, runs in WebView2's InPrivate profile without the probe extension, stays out of a
-//! normal window's tab search, by default gets no third-party cookies and no cookie rule in site
-//! info, and its download shows in private windows only; closing the window ends its private
-//! session.
+//! normal window's tab search, opens no extension popup, by default gets no third-party cookies
+//! and no cookie rule in site info, and its download shows in private windows only; closing the
+//! window ends its private session.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -15,13 +15,15 @@ use vsesvit_core::downloads::State;
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
 use vsesvit_core::tab_search::Hit;
-use vsesvit_core::testkit::FixtureServer;
+use vsesvit_core::testkit::{self, FixtureServer};
 use windows_core::Interface;
 
 use super::{DEFAULT_TIMEOUT, FIXTURE_TITLE, Probe, cookie_checks, emulate_zoom, eval, until};
 use crate::bindings::ICoreWebView2_13;
 use crate::browser::Browser;
+use crate::popup::Activation;
 use crate::session::{TabPlan, WindowPlan};
+use crate::shortcuts::{self, Command};
 use crate::{engine, exec, zoom};
 
 /// The probe's content script runs at `document_end`; this is ample for it to have marked the
@@ -85,6 +87,23 @@ pub(super) async fn private_window(
     exec::sleep(CONTENT_SCRIPT_WAIT).await;
     let marked = eval(&tab, "document.documentElement.dataset.vsesvitProbe || null").await?;
     detail.push(format!("dataset.vsesvitProbe = {marked}"));
+
+    let bindings = shortcuts::current();
+    let shortcut = (0..)
+        .map_while(|index| bindings.extension_action(index))
+        .position(|id| id == testkit::PROBE_ID);
+    if let Some(index) = shortcut {
+        private.run(Command::ExtensionAction(index));
+    }
+    let shortcut_popup = private.extension_popup().is_some();
+    let opened = private.open_extension_popup(testkit::PROBE_ID, Activation::Keep);
+    let refusal = opened.as_ref().err().map(|e| e.message());
+    if let Ok(popup) = &opened {
+        popup.hide();
+    }
+    detail.push(format!(
+        "the probe's action shortcut ({shortcut:?}) there opened a popup {shortcut_popup};          opening its popup there: {refusal:?}"
+    ));
 
     let in_history = browser
         .core(|c| c.history().visits_between(0, i64::MAX, 1000))
@@ -190,6 +209,9 @@ pub(super) async fn private_window(
 
     let ok = in_private
         && marked == "null"
+        && shortcut.is_some()
+        && !shortcut_popup
+        && refusal.is_some()
         && !in_history
         && saved
         && !in_session

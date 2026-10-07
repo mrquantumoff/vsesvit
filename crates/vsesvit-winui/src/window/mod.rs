@@ -1831,12 +1831,20 @@ impl BrowserWindow {
         &self.toolbar
     }
 
+    /// Every extension popup opens here. A private window opens none: its extensions are the
+    /// normal profile's, and the popup would learn the window's tabs.
     fn show_popup(
         &self,
         anchor: &FrameworkElement,
         action: &ExtensionAction,
         activation: Activation,
     ) -> Result<Popup> {
+        if self.browsing == Browsing::Private {
+            return Err(windows_core::Error::new(
+                E_FAIL,
+                "extensions do not run in private windows",
+            ));
+        }
         let browser = self.browser().ok_or_else(windows_core::Error::empty)?;
         let active = self.active_tab().map(|t| t.id);
         let opener: Vec<OpenerTab> = self
