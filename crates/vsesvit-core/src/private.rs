@@ -16,6 +16,7 @@
 //! ephemeral engine session.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::Profile;
 use crate::downloads::PrivateDownloads;
@@ -27,6 +28,17 @@ pub enum Browsing {
     #[default]
     Normal,
     Private,
+}
+
+impl Browsing {
+    /// What a log line shows for an address a tab of this kind loads. Logs outlive the private
+    /// session (Windows writes one into the profile), so a private page's address stays out.
+    pub fn loggable(self, address: &dyn fmt::Display) -> &dyn fmt::Display {
+        match self {
+            Browsing::Normal => address,
+            Browsing::Private => &"(a private page)",
+        }
+    }
 }
 
 /// What a private session keeps over the stored state. An entry of `None` masks a stored one:
@@ -46,5 +58,17 @@ impl Profile {
         sites.clear();
         zoom.clear();
         downloads.forget();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_private_address_stays_out_of_the_log() {
+        let url = "https://example.com/?token=secret";
+        assert_eq!(format!("loading {}", Browsing::Normal.loggable(&url)), format!("loading {url}"));
+        assert_eq!(format!("loading {}", Browsing::Private.loggable(&url)), "loading (a private page)");
     }
 }

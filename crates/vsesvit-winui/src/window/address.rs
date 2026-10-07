@@ -42,7 +42,7 @@ impl BrowserWindow {
             }
             None => {
                 if let Err(e) = self.open_url_tab(url, true) {
-                    log::error!("open {url}: {e}");
+                    log::error!("open {}: {e}", self.browsing.loggable(&url));
                 }
             }
         }

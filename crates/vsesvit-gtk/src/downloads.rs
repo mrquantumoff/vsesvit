@@ -194,7 +194,7 @@ impl Downloads {
     pub(crate) fn keep(&self, id: DownloadId) {
         let kept = self.core.borrow_mut().downloads().keep(id);
         match kept {
-            Ok(Some(path)) => log::info!("kept {}", path.display()),
+            Ok(Some(path)) => log::info!("kept {}", id.browsing().loggable(&path.display())),
             Ok(None) => {}
             Err(e) => log::warn!("downloads: keeping download {}: {e}", id.0),
         }
@@ -305,7 +305,7 @@ impl Downloads {
             move |download, error| {
                 let cancelled = error.matches(webkit::DownloadError::CancelledByUser);
                 if !cancelled {
-                    log::warn!("download of {} failed: {error}", describe(download));
+                    log::warn!("download of {} failed: {error}", browsing.loggable(&describe(download)));
                 }
                 let running = phase.replace(Phase::Ended);
                 let Some(downloads) = weak.upgrade() else { return };
@@ -465,7 +465,7 @@ impl Downloads {
 
     fn completed_toast(&self, download: &webkit::Download, browsing: Browsing) {
         let Some(destination) = download.destination() else { return };
-        log::info!("downloaded {destination}");
+        log::info!("downloaded {}", browsing.loggable(&destination));
         let Some(window) = self.window_for(download, browsing) else { return };
         let path = PathBuf::from(destination.as_str());
         let toast = adw::Toast::builder()

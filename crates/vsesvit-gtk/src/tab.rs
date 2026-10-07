@@ -495,7 +495,7 @@ impl Tab {
     pub(crate) fn restore_saved(&self, state: Option<&[u8]>, uri: &str) {
         let decoded = state.and_then(decode_session_state);
         if state.is_some() && decoded.is_none() {
-            log::info!("this WebKit cannot read the saved history of {uri}; loading the page alone");
+            log::info!("this WebKit cannot read the saved history of {}; loading the page alone", self.browsing().loggable(&uri));
         }
         self.restore(decoded.as_ref(), uri);
     }
@@ -662,7 +662,7 @@ impl Tab {
                     return;
                 }
                 let uri = web_view.uri().map(String::from).unwrap_or_default();
-                log::warn!("the web process showing {uri} ended: {reason:?}");
+                log::warn!("the web process showing {} ended: {reason:?}", tab.browsing().loggable(&uri));
                 tab.show_error_page(&uri, &error_page::crashed(&uri), ErrorPage::Other);
             }
         ));
@@ -1022,14 +1022,14 @@ impl Tab {
         match next {
             Next::Load => false,
             Next::Allow(url) => {
-                log::info!("continuing to {url} without a secure connection");
+                log::info!("continuing to {} without a secure connection", self.browsing().loggable(&url));
                 if let Err(e) = https_only::allow(&mut browser.core().borrow_mut(), self.browsing(), &url) {
-                    log::warn!("HTTPS-only exception for {url}: {e}");
+                    log::warn!("HTTPS-only exception for {}: {e}", self.browsing().loggable(&url));
                 }
                 false
             }
             Next::Upgrade(https) => {
-                log::debug!("upgrading {uri} to {https}");
+                log::debug!("upgrading {} to {}", self.browsing().loggable(&uri), self.browsing().loggable(&https));
                 stop();
                 self.load(https.as_str());
                 true
@@ -1052,7 +1052,7 @@ impl Tab {
     }
 
     fn show_https_warning(&self, url: &Url) {
-        log::info!("{url} has no secure connection");
+        log::info!("{} has no secure connection", self.browsing().loggable(&url));
         self.show_error_page(url.as_str(), &https_only::warning_page(url), ErrorPage::HttpsOnly);
     }
 
@@ -1065,7 +1065,7 @@ impl Tab {
     }
 
     fn refused(&self, target: String) {
-        log::debug!("refused a navigation to {target}");
+        log::debug!("refused a navigation to {}", self.browsing().loggable(&target));
         #[cfg(test)]
         self.imp().refused.borrow_mut().push(target);
     }

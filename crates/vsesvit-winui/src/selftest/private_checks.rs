@@ -2,7 +2,7 @@
 //! zoom behind, runs in WebView2's InPrivate profile without the probe extension, stays out of a
 //! normal window's tab search, opens no extension popup, by default gets no third-party cookies
 //! and no cookie rule in site info, and its download shows in private windows only; closing the
-//! window ends its private session.
+//! window ends its private session, and the log names none of its addresses.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -26,6 +26,10 @@ use crate::session::{TabPlan, WindowPlan};
 use crate::shortcuts::{self, Command};
 use crate::{engine, exec, zoom};
 
+/// In the query of every address the check loads in the private window, so the log can be
+/// searched for them.
+const MARK: &str = "private-window";
+
 /// The probe's content script runs at `document_end`; this is ample for it to have marked the
 /// page, had it run.
 const CONTENT_SCRIPT_WAIT: Duration = Duration::from_millis(1500);
@@ -41,7 +45,7 @@ pub(super) async fn private_window(
     p: &Probe,
 ) -> Result<String, String> {
     let mut detail = Vec::new();
-    let url = server.url("/index.html?private-window");
+    let url = server.url(&format!("/index.html?{MARK}"));
     let plan = WindowPlan::with_tabs(vec![TabPlan::url(url.to_string())]);
     let private = browser
         .open_window(Browsing::Private, &plan, browser.show_mode())
@@ -163,7 +167,7 @@ pub(super) async fn private_window(
     let button_before = normal_button();
     let dir_before = browser.custom_download_dir();
     browser.set_download_dir(Some(downloads));
-    tab.navigate(server.url("/download.bin").as_str());
+    tab.navigate(server.url(&format!("/download.bin?{MARK}")).as_str());
     let download = until(p, |p| {
         let row = browser
             .download_list(Browsing::Private)
@@ -206,6 +210,9 @@ pub(super) async fn private_window(
         "closed: private closed tabs left {private_closed}, normal ones gained {gained}, \
          its zoom now {zoom_after}, {download_rows} private download rows, its file kept {file_kept}"
     ));
+    let log = std::fs::read_to_string(browser.config().log_file()).map_err(err)?;
+    let logged: Vec<&str> = log.lines().filter(|line| line.contains(MARK)).collect();
+    detail.push(format!("log lines naming its addresses: {logged:?}"));
 
     let ok = in_private
         && marked == "null"
@@ -228,7 +235,8 @@ pub(super) async fn private_window(
         && closed_after == closed_before
         && zoom_after == stored_zoom
         && download_rows == 0
-        && file_kept;
+        && file_kept
+        && logged.is_empty();
     let detail = detail.join("; ");
     ok.then_some(detail.clone()).ok_or(detail)
 }

@@ -679,7 +679,10 @@ impl Browser {
     pub fn open_link_in(&self, browsing: Browsing, url: &str) {
         let plan = WindowPlan::with_tabs(vec![TabPlan::url(url.to_owned())]);
         if let Err(e) = self.open_window(browsing, &plan, self.show_mode()) {
-            log::error!("open {url} in a new {browsing:?} window: {e}");
+            log::error!(
+                "open {} in a new {browsing:?} window: {e}",
+                browsing.loggable(&url)
+            );
         }
     }
 
@@ -1075,7 +1078,10 @@ impl Browser {
         kind: CommitKind,
         transition: Transition,
     ) -> bool {
-        log::debug!("committed ({kind:?}, {transition:?}) {url}");
+        log::debug!(
+            "committed ({kind:?}, {transition:?}) {}",
+            browsing.loggable(&url)
+        );
         if browsing == Browsing::Normal {
             self.session_changed();
         }

@@ -207,7 +207,7 @@ impl Browser {
     /// Moves a dangerous file the user chose to keep to its own name.
     pub fn keep_download(&self, id: DownloadId) {
         match self.core(|p| p.downloads().keep(id)) {
-            Ok(Some(path)) => log::info!("kept {}", path.display()),
+            Ok(Some(path)) => log::info!("kept {}", id.browsing().loggable(&path.display())),
             Ok(None) => {}
             Err(e) => log::warn!("keep download: {e}"),
         }
@@ -364,7 +364,11 @@ impl Browser {
             .core(|p| p.downloads().start(&url, path, total, now, browsing))
             .map_err(|e| windows_core::Error::new(E_FAIL, e.to_string()))?;
         let id = download.id;
-        log::info!("downloading {url} to {}", written.display());
+        log::info!(
+            "downloading {} to {}",
+            browsing.loggable(&url),
+            browsing.loggable(&written.display())
+        );
         let browser = Rc::downgrade(self);
         operation
             .BytesReceivedChanged(move |operation, _| {
@@ -449,7 +453,10 @@ impl Browser {
         if engine == CoreWebView2DownloadState::Completed {
             let marked = operation.Uri().map_err(std::io::Error::other);
             if let Err(e) = marked.and_then(|url| mark_of_the_web(&path, &url)) {
-                log::warn!("mark of the web on {}: {e}", path.display());
+                log::warn!(
+                    "mark of the web on {}: {e}",
+                    browsing.loggable(&path.display())
+                );
             }
         }
         if let Err(e) = self.core(|p| p.downloads().update(id, state, received, total)) {

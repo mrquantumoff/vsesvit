@@ -643,7 +643,7 @@ impl Tab {
         *self.view_source.borrow_mut() = view_source::viewed_url(url).map(|_| url.to_owned());
         self.https.borrow_mut().leave();
         if let Err(e) = core.Navigate(url) {
-            log::warn!("tab {}: navigate to {url}: {e}", self.id);
+            log::warn!("tab {}: navigate to {}: {e}", self.id, self.browsing.loggable(&url));
         }
     }
 
@@ -964,14 +964,14 @@ impl Tab {
         if !self.trackers.borrow_mut().blocks(&browser.trackers(), &uri) {
             return;
         }
-        log::debug!("tab {}: blocked tracker {uri}", self.id);
+        log::debug!("tab {}: blocked tracker {}", self.id, self.browsing.loggable(&uri));
         let answered = browser
             .engine()
             .environment()
             .CreateWebResourceResponse(None::<&IRandomAccessStream>, 403, "Forbidden", "")
             .and_then(|response| args.SetResponse(&response));
         if let Err(e) = answered {
-            log::warn!("tab {}: blocking {uri}: {e}", self.id);
+            log::warn!("tab {}: blocking {}: {e}", self.id, self.browsing.loggable(&uri));
         }
         if self.trackers.borrow().blocked().len() > before {
             self.notify();
@@ -1000,7 +1000,7 @@ impl Tab {
         let stop = |then: Box<dyn FnOnce(&Tab)>| {
             self.stopped.set(args.NavigationId().ok());
             if let Err(e) = args.SetCancel(true) {
-                log::warn!("tab {}: stopping {uri}: {e}", self.id);
+                log::warn!("tab {}: stopping {}: {e}", self.id, self.browsing.loggable(&uri));
             }
             let tab = self.clone();
             exec::spawn(async move { then(&tab) });
@@ -1008,14 +1008,14 @@ impl Tab {
         match next {
             Next::Load => false,
             Next::Allow(url) => {
-                log::info!("tab {}: continuing to {url} without a secure connection", self.id);
+                log::info!("tab {}: continuing to {} without a secure connection", self.id, self.browsing.loggable(&url));
                 if let Err(e) = browser.core(|p| https_only::allow(p, self.browsing, &url)) {
-                    log::warn!("tab {}: HTTPS-only exception for {url}: {e}", self.id);
+                    log::warn!("tab {}: HTTPS-only exception for {}: {e}", self.id, self.browsing.loggable(&url));
                 }
                 false
             }
             Next::Upgrade(https) => {
-                log::debug!("tab {}: upgrading {uri} to {https}", self.id);
+                log::debug!("tab {}: upgrading {} to {}", self.id, self.browsing.loggable(&uri), self.browsing.loggable(&https));
                 stop(Box::new(move |tab| {
                     if let Some(core) = tab.core.get()
                         && let Err(e) = core.Navigate(https.as_str())
@@ -1034,7 +1034,7 @@ impl Tab {
 
     /// HTTPS-only's warning that `url` has no secure connection, shown at `url`.
     fn show_https_warning(&self, url: &Url) {
-        log::info!("tab {}: {url} has no secure connection", self.id);
+        log::info!("tab {}: {} has no secure connection", self.id, self.browsing.loggable(&url));
         let Some(core) = self.core.get() else { return };
         if let Err(e) = core.NavigateToString(&https_only::warning_page(url)) {
             log::warn!("tab {}: HTTPS-only warning: {e}", self.id);
@@ -1409,7 +1409,7 @@ impl Tab {
                 } else {
                     shown_url(url, self.view_source.borrow().as_deref())
                 };
-                log::debug!("tab {}: at {url}", self.id);
+                log::debug!("tab {}: at {}", self.id, self.browsing.loggable(&url));
                 self.state.borrow_mut().url = url;
             }
             Err(e) => log::warn!("tab {}: source: {e}", self.id),
@@ -1485,7 +1485,7 @@ impl Tab {
         let blocking = window.browser().is_none_or(|b| b.blocks_popups());
         if blocking && !args.IsUserInitiated().unwrap_or(false) {
             let url = args.Uri().unwrap_or_default();
-            log::info!("tab {}: blocked a popup to {url}: no user gesture", self.id);
+            log::info!("tab {}: blocked a popup to {}: no user gesture", self.id, self.browsing.loggable(&url));
             let _ = args.SetHandled(true);
             return;
         }
@@ -1664,7 +1664,11 @@ impl Tab {
             .permissions
             .blocks(&browser, origin.as_ref(), Permission::ScreenShare)
         {
-            log::info!("tab {}: screen sharing is blocked for {source}", self.id);
+            log::info!(
+                "tab {}: screen sharing is blocked for {}",
+                self.id,
+                self.browsing.loggable(&source)
+            );
             if let Err(e) = args.SetCancel(true) {
                 log::warn!("tab {}: cancel screen capture: {e}", self.id);
             }

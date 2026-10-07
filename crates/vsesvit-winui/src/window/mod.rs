@@ -1274,7 +1274,12 @@ impl BrowserWindow {
     /// Opens a closed tab again, at the end of this window's tabs, or of its group if this
     /// window still has that.
     fn reopen(&self, closed: ClosedTab) {
-        log::info!("reopening {} ({})", closed.url, closed.title);
+        let (url, title) = (&closed.url, &closed.title);
+        log::info!(
+            "reopening {} ({})",
+            self.browsing.loggable(url),
+            self.browsing.loggable(title)
+        );
         match self.open_url_tab(&closed.url, true) {
             Ok(tab) => {
                 if let Some(group) = closed.group {
@@ -1704,7 +1709,7 @@ impl BrowserWindow {
             },
         };
         if let Err(e) = result {
-            log::error!("open {url}: {e}");
+            log::error!("open {}: {e}", self.browsing.loggable(&url));
         }
     }
 

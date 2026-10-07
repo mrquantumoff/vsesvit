@@ -73,6 +73,11 @@ impl DownloadId {
     fn is_private(self) -> bool {
         self.0 < 0
     }
+
+    /// The kind of window the download started in.
+    pub fn browsing(self) -> Browsing {
+        if self.is_private() { Browsing::Private } else { Browsing::Normal }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
