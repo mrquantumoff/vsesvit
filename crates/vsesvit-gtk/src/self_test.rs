@@ -1205,6 +1205,46 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         }
         details.push("a click on the header hid the tab's row and selected the first tab, the header staying (tab-group-collapsed.png); another showed it again".to_owned());
 
+        let end = window.open_tab(Some(page2_url.as_str()), None, Focus::Background);
+        header.emit_clicked();
+        window.select_next_tab(false);
+        let forward = window.selected_tab();
+        window.select_next_tab(true);
+        let back = window.selected_tab();
+        window.select_tab(&end);
+        window.close_tab(&end);
+        let after_close = window.selected_tab();
+        let still_collapsed = window.group_of(&grouped).is_some_and(|g| g.collapsed);
+        header.emit_clicked();
+        if forward.as_ref() != Some(&end) || back.as_ref() != Some(&first) || after_close.as_ref() != Some(&first) || !still_collapsed {
+            return Err(format!(
+                "with the group collapsed: Ctrl+Tab from the first tab selected the last {}, Ctrl+Shift+Tab the first again {}; closing the selected last tab selected the first {}, the group staying collapsed {still_collapsed}",
+                forward.as_ref() == Some(&end),
+                back.as_ref() == Some(&first),
+                after_close.as_ref() == Some(&first),
+            ));
+        }
+        details.push("with the group collapsed, Ctrl+Tab and Ctrl+Shift+Tab passed over its tab, and closing the selected last tab selected the first, not the hidden one".to_owned());
+
+        let mate = window.open_tab(Some(page2_url.as_str()), Some(&grouped), Focus::Foreground);
+        wait_for(&last, || match mate.committed_uri() {
+            Some(uri) if uri == page2_url.as_str() => Ok(()),
+            uri => Err(format!("the tab opened from the grouped one is at {uri:?}")),
+        })
+        .await;
+        let joined = window.group_of(&mate).map(|g| g.id) == Some(group.id);
+        window.close_tab(&mate);
+        browser.reopen_closed_tab(window);
+        let reopened = window.selected_tab().filter(|t| *t != grouped && *t != first).ok_or_else(|| "reopening selected no new tab".to_owned())?;
+        let regrouped = (window.group_of(&reopened).map(|g| g.id) == Some(group.id), window.tabs() == [first.clone(), grouped.clone(), reopened.clone()]);
+        window.close_tab(&reopened);
+        if !joined || regrouped != (true, true) {
+            return Err(format!(
+                "the tab opened from the grouped one joined its group: {joined}; closed and reopened, it was back in the group, after the grouped tab: {regrouped:?}"
+            ));
+        }
+        details.push("a tab opened from the grouped one joined its group, and closed and reopened went back into it".to_owned());
+
         let saved = saved_group();
         WidgetExt::activate_action(window, "tab-group.ungroup", Some(&group.id.to_string().to_variant())).map_err(|e| format!("tab-group.ungroup: {e}"))?;
         let ungrouped = (window.group_of(&grouped), window.group_header(group.id).is_some(), saved_group());
