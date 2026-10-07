@@ -575,13 +575,29 @@ impl Transfer {
         self.samples.back().map_or(0, |&(_, received)| received)
     }
 
-    /// Where the download is at `now`: its speed is what arrived since the newest sample at the
-    /// start of the window or before it (else the oldest), over the time since.
+    /// The bytes received by `at`, no earlier than the oldest sample. Between two samples a step
+    /// apart the bytes came at an even pace; after a longer gap, a stall the engine reported
+    /// nothing in, they came at the end of it.
+    fn received_by(&self, at: Instant) -> u64 {
+        let Some(next) = self.samples.iter().position(|&(t, _)| t > at) else { return self.received() };
+        let ((t0, b0), (t1, b1)) = (self.samples[next.saturating_sub(1)], self.samples[next]);
+        let gap = t1.saturating_duration_since(t0);
+        if gap > 2 * SAMPLE_STEP {
+            return b0;
+        }
+        let part = u128::from(b1.saturating_sub(b0)) * at.saturating_duration_since(t0).as_nanos() / gap.as_nanos().max(1);
+        b0 + u64::try_from(part).unwrap_or(0)
+    }
+
+    /// Where the download is at `now`: its speed is what arrived over the window, or since the
+    /// download started when that is later.
     pub fn at(&self, now: Instant) -> Progress {
         let received = self.received();
-        let start = now.checked_sub(SPEED_WINDOW);
-        let from = self.samples.iter().rev().find(|&&(at, _)| start.is_some_and(|start| at <= start));
-        let (since, then) = from.or(self.samples.front()).copied().unwrap_or((now, received));
+        let start = now.checked_sub(SPEED_WINDOW).filter(|&start| self.samples.front().is_some_and(|&(at, _)| at <= start));
+        let (since, then) = match start {
+            Some(start) => (start, self.received_by(start)),
+            None => self.samples.front().copied().unwrap_or((now, received)),
+        };
         let span = now.saturating_duration_since(since).max(SHORTEST_SPAN);
         let per_second = u128::from(received.saturating_sub(then)) * 1000 / span.as_millis();
         Progress { received, total: self.total, per_second: u64::try_from(per_second).unwrap_or(u64::MAX) }
@@ -836,6 +852,22 @@ mod tests {
         assert_eq!(transfer.at(stalled + secs(10)).per_second, 0);
         let long_after = transfer.at(stalled + secs(600));
         assert_eq!((long_after.received, long_after.per_second), (20_000_000, 0));
+    }
+
+    #[test]
+    fn bytes_after_a_stall_count_over_the_window_only() {
+        let t0 = Instant::now();
+        let mut transfer = Transfer::new(t0, Some(100_000_000));
+        for second in 1..=20 {
+            transfer.update(t0 + secs(second), second * 1_000_000, Some(100_000_000));
+        }
+        let resumed = t0 + secs(320);
+        transfer.update(resumed, 21_000_000, Some(100_000_000));
+        let progress = transfer.at(resumed);
+        assert_eq!(progress.per_second, 100_000, "a megabyte in the last ten seconds, not over the stall");
+        assert_eq!(progress.seconds_left(), Some(790));
+        transfer.update(resumed + secs(1), 22_000_000, Some(100_000_000));
+        assert_eq!(transfer.at(resumed + secs(1)).per_second, 200_000);
     }
 
     #[test]
