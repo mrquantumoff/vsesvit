@@ -89,6 +89,10 @@ pub(crate) struct Inner {
     private: RefCell<Option<PrivateEngine>>,
     /// Why the runtime could not load an enabled extension, by extension.
     extension_errors: RefCell<HashMap<ExtensionId, String>>,
+    /// Set while an extension update check runs.
+    updating_extensions: Cell<bool>,
+    /// An open Extensions dialog, refreshed after an update check changed extensions.
+    extension_views: RefCell<Vec<Weak<dyn Fn()>>>,
     next_tab_id: Cell<u32>,
     next_window_id: Cell<u32>,
     /// The clock of tabs' use, for tab search's order: ticks each time a tab is opened or
@@ -191,6 +195,8 @@ impl Browser {
                 private_closed_tabs: RefCell::new(ClosedTabs::new(CLOSED_TABS_KEPT)),
                 private: RefCell::new(None),
                 extension_errors: RefCell::new(HashMap::new()),
+                updating_extensions: Cell::new(false),
+                extension_views: RefCell::new(Vec::new()),
                 next_tab_id: Cell::new(1),
                 next_window_id: Cell::new(1),
                 last_use: Cell::new(0),
@@ -243,7 +249,8 @@ impl Browser {
     /// rules' blockers, deletes the data of sites to clear on exit, and brings the extension
     /// runtime in line with the profile: loads every enabled extension, then reconciles against
     /// the synced desired state (installs missing store extensions, unloads ones removed
-    /// elsewhere). Then Memory Saver sweeps the tabs every [`memory_saver::SWEEP_EVERY`].
+    /// elsewhere), and schedules the extension update checks. Then Memory Saver sweeps the
+    /// tabs every [`memory_saver::SWEEP_EVERY`].
     pub(crate) fn start(&self) {
         self.apply_theme();
         self.apply_keymap();
@@ -261,6 +268,10 @@ impl Browser {
             Err(e) => log::warn!("cannot list extensions: {e}"),
         }
         self.reconcile_extensions();
+        // The self-test checks for updates only when it asks, so none races its own.
+        if !crate::SCRIPTED.get() {
+            self.schedule_extension_updates();
+        }
         self.preload_favicons();
         let weak = Rc::downgrade(&self.0);
         glib::timeout_add_local(memory_saver::SWEEP_EVERY, move || match weak.upgrade() {
@@ -365,6 +376,19 @@ impl Browser {
             Some(error) => errors.insert(id.clone(), error),
             None => errors.remove(id),
         };
+    }
+
+    pub(crate) fn updating_extensions(&self) -> &Cell<bool> {
+        &self.0.updating_extensions
+    }
+
+    /// Runs `refresh` after an update check changed extensions, for as long as the caller keeps it.
+    pub(crate) fn watch_extensions(&self, refresh: &Rc<dyn Fn()>) {
+        self.0.extension_views.borrow_mut().push(Rc::downgrade(refresh));
+    }
+
+    pub(crate) fn extensions_updated(&self) {
+        refresh_views(&self.0.extension_views);
     }
 
     /// `None` when this copy does not update itself.

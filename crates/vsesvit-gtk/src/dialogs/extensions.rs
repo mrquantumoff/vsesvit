@@ -1,11 +1,12 @@
 //! The Extensions dialog: install from a store link or id, a `.crx`/`.xpi` file or an
 //! unpacked folder, with the job's progress shown and Chrome's install prompt before a store
-//! or package install goes in; the installed list with icon, name,
-//! version, provenance, an enabled switch and removal; and, per extension, what its
-//! manifest asks for that the Linux runtime does not provide, whether its notifications
-//! may show and whether it runs in private windows.
+//! or package install goes in; the installed list with icon, name, version, provenance, an
+//! enabled switch and removal, and Chrome's Update, which checks them all for newer versions
+//! now; and, per extension, what its manifest asks for that the Linux runtime does not
+//! provide, the new permissions an update waits for the user to approve, whether its
+//! notifications may show and whether it runs in private windows.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -21,6 +22,8 @@ use crate::extensions::{
 use crate::window::BrowserWindow;
 
 pub(crate) const ALLOW_IN_PRIVATE_ROW: &str = "Allow in private windows";
+/// The widget name of the Update button.
+pub(crate) const UPDATE_BUTTON: &str = "update-extensions";
 
 /// Holds no [`Browser`] of its own: the widgets' handlers keep this state alive for as long
 /// as the dialog's widgets exist, which must not keep the profile open.
@@ -32,8 +35,11 @@ struct State {
     installing: Cell<u32>,
     installed: adw::PreferencesGroup,
     rows: RefCell<Vec<gtk::Widget>>,
+    update: gtk::Button,
     /// The extension whose row opens expanded.
     shown: Option<ExtensionId>,
+    /// Kept for [`Browser::watch_extensions`], which holds it weakly.
+    watch: OnceCell<Rc<dyn Fn()>>,
 }
 
 pub(crate) fn present(window: &BrowserWindow) {
@@ -76,7 +82,15 @@ fn build(window: &BrowserWindow, shown: Option<ExtensionId>) -> Rc<State> {
     install.add(&unpacked);
     install.add(&progress);
 
-    let installed = adw::PreferencesGroup::builder().title("Installed").build();
+    let update = gtk::Button::builder()
+        .label("_Update")
+        .use_underline(true)
+        .name(UPDATE_BUTTON)
+        .tooltip_text("Check every extension for a newer version now")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    let installed = adw::PreferencesGroup::builder().title("Installed").header_suffix(&update).build();
     let page = adw::PreferencesPage::new();
     page.add(&install);
     page.add(&installed);
@@ -90,9 +104,19 @@ fn build(window: &BrowserWindow, shown: Option<ExtensionId>) -> Rc<State> {
         installing: Cell::new(0),
         installed,
         rows: RefCell::new(Vec::new()),
+        update,
         shown,
+        watch: OnceCell::new(),
     });
     state.refresh();
+    let weak = Rc::downgrade(&state);
+    let watch: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(state) = weak.upgrade() {
+            state.refresh();
+        }
+    });
+    window.browser().watch_extensions(&watch);
+    let _ = state.watch.set(watch);
 
     source.connect_apply(glib::clone!(
         #[strong]
@@ -114,6 +138,11 @@ fn build(window: &BrowserWindow, shown: Option<ExtensionId>) -> Rc<State> {
         #[strong]
         state,
         move |_| state.choose_folder()
+    ));
+    state.update.connect_clicked(glib::clone!(
+        #[strong]
+        state,
+        move |_| state.update()
     ));
     state
 }
@@ -156,6 +185,21 @@ impl State {
                 Err(e) => state.toast(&format!("Install failed: {e}")),
             }
             state.refresh();
+        });
+    }
+
+    /// Chrome's Update. The rows follow through [`Browser::watch_extensions`].
+    fn update(self: &Rc<Self>) {
+        let Some(browser) = self.browser() else { return };
+        self.update.set_sensitive(false);
+        let state = self.clone();
+        glib::spawn_future_local(async move {
+            let result = browser.update_extensions().await;
+            state.update.set_sensitive(true);
+            match result {
+                Ok(report) => state.toast(&report.summary()),
+                Err(e) => state.toast(&format!("Cannot update the extensions: {e}")),
+            }
         });
     }
 
@@ -254,6 +298,7 @@ impl State {
 
         let enabled = gtk::Switch::builder()
             .active(ext.enabled)
+            .sensitive(ext.withheld.is_empty())
             .valign(gtk::Align::Center)
             .tooltip_text("Enabled")
             .build();
@@ -319,6 +364,10 @@ impl State {
             row.add_row(&unsupported);
             row.set_expanded(true);
         }
+        if let Some(notice) = ext.approval_notice() {
+            row.add_row(&self.approval_row(&ext.id, notice));
+            row.set_expanded(true);
+        }
         if let Some(error) = error {
             let failed = adw::ActionRow::builder()
                 .title("Not running")
@@ -369,6 +418,36 @@ impl State {
             .css_classes(["property"])
             .build();
         row.add_row(&dir_row);
+        row
+    }
+
+    /// What an update turned the extension off for, and the button that approves it.
+    fn approval_row(self: &Rc<Self>, id: &ExtensionId, notice: String) -> adw::ActionRow {
+        let row = adw::ActionRow::builder()
+            .title("Needs your approval")
+            .subtitle(notice)
+            .subtitle_lines(0)
+            .use_markup(false)
+            .css_classes(["warning"])
+            .build();
+        row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+        let approve = gtk::Button::builder().label("_Approve").use_underline(true).valign(gtk::Align::Center).build();
+        approve.connect_clicked(glib::clone!(
+            #[strong(rename_to = state)]
+            self,
+            #[strong]
+            id,
+            move |_| {
+                let Some(browser) = state.browser() else { return };
+                match browser.approve_extension_permissions(&id) {
+                    Ok(()) => {}
+                    Err(EnableFailure::Load(e)) => state.toast(&format!("Approved, but it cannot run: {e}")),
+                    Err(e) => state.toast(&format!("Cannot approve the permissions: {e}")),
+                }
+                state.refresh();
+            }
+        ));
+        row.add_suffix(&approve);
         row
     }
 
@@ -458,6 +537,55 @@ mod tests {
         std::iter::successors(widget.first_child(), |child| child.next_sibling())
             .flat_map(|child| std::iter::once(child.clone()).chain(descendants(&child)))
             .collect()
+    }
+
+    #[gtk::test]
+    async fn an_update_asking_for_new_permissions_waits_for_the_approve_button() {
+        use std::time::Duration;
+
+        use vsesvit_core::extensions::Stores;
+        use vsesvit_core::testkit::{CrxKey, FixtureServer, FixtureStore, update_probe_files};
+
+        let browser = browser();
+        let server = FixtureServer::start().unwrap();
+        let store = FixtureStore::start(&server);
+        browser.core().borrow_mut().set_stores(store.stores());
+        let id = store.publish_crx(&update_probe_files("1.0", &["storage"]), &CrxKey::second());
+        let installed = browser.install(InstallSource::ChromeWebStore { id: id.clone() }, |_| {}).await;
+        assert!(installed.is_ok_and(|ext| ext.is_some()), "the extension installs from the store");
+        let window = BrowserWindow::new(&browser);
+        let state = build(&window, None);
+
+        store.publish_crx(&update_probe_files("2.0", &["storage", "tabs"]), &CrxKey::second());
+        let (first, second) = futures_util::future::join(browser.update_extensions(), browser.update_extensions()).await;
+        let updated: Vec<(String, bool)> = first.expect("the first check runs").updated.iter().map(|ext| (ext.version.clone(), ext.enabled)).collect();
+        let second = second.err().map(|e| e.to_string());
+        let row = row_titled(&state, "Vsesvit update probe").expect("the extension's row");
+        let switch = switches(&row).pop().expect("its switch");
+        let withheld = (switch.is_sensitive(), switch.is_active(), browser.runtime().loaded().contains(&id));
+
+        state.update.emit_clicked();
+        let sensitive_while_running = state.update.is_sensitive();
+        while !state.update.is_sensitive() {
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let approve = |row: &gtk::Widget| descendants(row).into_iter().find_map(|w| w.downcast::<gtk::Button>().ok().filter(|b| b.label().as_deref() == Some("_Approve")));
+        let row = row_titled(&state, "Vsesvit update probe").expect("the extension's row");
+        approve(&row).expect("its Approve button").emit_clicked();
+        let approved = browser.runtime().loaded().contains(&id);
+        let row = row_titled(&state, "Vsesvit update probe").expect("the extension's row");
+        let switch = switches(&row).pop().expect("its switch");
+        let shown = (switch.is_sensitive(), switch.is_active(), approve(&row).is_some());
+
+        browser.uninstall_extension(&id).ok();
+        browser.core().borrow_mut().set_stores(Stores::default());
+        window.destroy();
+        assert_eq!(updated, [("2.0".to_owned(), false)]);
+        assert_eq!(second.as_deref(), Some("an update check is already running"));
+        assert_eq!(withheld, (false, false, false), "the open dialog shows the switch insensitive and off, and the extension is not running");
+        assert!(!sensitive_while_running, "the Update button stays insensitive while its check runs");
+        assert!(approved, "Approve runs it again");
+        assert_eq!(shown, (true, true, false));
     }
 
     #[gtk::test]

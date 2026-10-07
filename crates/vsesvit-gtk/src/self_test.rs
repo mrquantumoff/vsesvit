@@ -17,7 +17,7 @@ use gtk::{gdk, gio, glib};
 use vsesvit_core::bookmarks::{BookmarkId, ImportItem, InsertAt};
 use vsesvit_core::cookies::{self, ThirdPartyCookies};
 use vsesvit_core::downloads::{DownloadId, State, status_line, unconfirmed_path};
-use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Verification};
+use vsesvit_core::extensions::{ExtensionId, InstallPhase, InstallSource, Stores, Verification};
 use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::memory_saver::{self, MemorySaverMode};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
@@ -28,7 +28,7 @@ use vsesvit_core::search::{EngineForm, NavTarget, SearchEngineId};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::suggest::DEBOUNCE;
 use vsesvit_core::testkit::report::{Check, Report};
-use vsesvit_core::testkit::{self, FixtureServer};
+use vsesvit_core::testkit::{self, CrxKey, FixtureServer, FixtureStore};
 use vsesvit_core::trackers::{self, Category, TrackerList, TrackingProtection};
 use vsesvit_core::{OpenOptions, Profile};
 use vsesvit_sync::status::{Action, OFFER, passphrase_dialog};
@@ -39,6 +39,7 @@ use webkit::prelude::*;
 
 use crate::address_bar::Security;
 use crate::browser::Browser;
+use crate::dialogs::extensions::UPDATE_BUTTON;
 use crate::dialogs::settings::{
     HTTPS_ONLY_ROW, MEMORY_SAVINGS_ROW, PASSWORDS_NOTICE, PROFILE_PICKER_ROW, SECURE_DNS_ROW, SPELLCHECK_ROW, SPELLING_LANGUAGES_ROW,
     TRACKING_PROTECTION_ROW,
@@ -79,7 +80,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 59] = [
+const CHECKS: [&str; 60] = [
     "profile_open",
     "install_prompt",
     "install_crx",
@@ -109,6 +110,7 @@ const CHECKS: [&str; 59] = [
     "context_menus",
     "extension_commands",
     "extension_notifications",
+    "extension_update",
     "omnibox",
     "address_completion",
     "search_suggestions",
@@ -1545,6 +1547,90 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         dialog.close();
         let switched = switched?;
         Ok(format!("the probe's notification shows {:?} with {:?} and {:?}; its Open button fired {button}; its Settings button opened the Extensions dialog on the probe's row (extension-notifications.png), where {switched}", shown.title, shown.body, shown.buttons))
+    })
+    .await;
+
+    ctx.check("extension_update", CHECK_TIMEOUT, |last| async move {
+        let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
+        if tab.committed_uri().as_deref() != Some(index_url.as_str()) {
+            return Err(format!("the selected tab shows {:?}", tab.committed_uri()));
+        }
+        let view = tab.web_view();
+        let store = FixtureStore::start(&ctx.server);
+        let publish = |version: &str, permissions: &[&str]| store.publish_crx(&testkit::update_probe_files(version, permissions), &CrxKey::second());
+        let id = publish("1.0", &["storage"]);
+        browser.core().borrow_mut().set_stores(store.stores());
+        let _restore = Cleanup(|| {
+            browser.uninstall_extension(&id).ok();
+            browser.core().borrow_mut().set_stores(Stores::default());
+        });
+        let reload = async |want: &str| {
+            eval_js(view, "window.stale = true").await?;
+            view.reload();
+            Ok::<_, String>(wait_js(&last, view, "String(!window.stale && document.documentElement.dataset.vsesvitUpdateProbe)", |seen| seen == want).await)
+        };
+
+        browser
+            .install(InstallSource::ChromeWebStore { id: id.clone() }, |_| {})
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "the install committed nothing".to_owned())?;
+        let installed = reload("1.0:1.0").await?;
+
+        publish("2.0", &["storage"]);
+        let report = browser.update_extensions().await.map_err(|e| e.to_string())?;
+        let updated: Vec<(&str, &str, bool)> = report.updated.iter().map(|ext| (ext.id.as_str(), ext.version.as_str(), ext.enabled)).collect();
+        if updated != [(id.as_str(), "2.0", true)] {
+            return Err(format!("the update check reported {updated:?}: {}", report.summary()));
+        }
+        let kept = reload("2.0:1.0").await?;
+
+        publish("3.0", &["storage", "tabs"]);
+        gio::prelude::ActionGroupExt::activate_action(window, "show-extensions", None);
+        let dialog = window
+            .visible_dialog()
+            .and_downcast::<adw::PreferencesDialog>()
+            .filter(|dialog| dialog.title() == "Extensions")
+            .ok_or_else(|| "win.show-extensions opened no Extensions dialog".to_owned())?;
+        let approved = async {
+            let update = find::<gtk::Button>(dialog.upcast_ref(), |b| b.widget_name() == UPDATE_BUTTON).ok_or_else(|| "the Extensions dialog has no Update button".to_owned())?;
+            update.emit_clicked();
+            let insensitive = !update.is_sensitive();
+            wait_for(&last, || if update.is_sensitive() { Ok(()) } else { Err("the Update button is still insensitive".to_owned()) }).await;
+            let ext = browser.core().borrow_mut().extensions().get(&id).map_err(|e| e.to_string())?.ok_or_else(|| "the update uninstalled it".to_owned())?;
+            let withheld: Vec<&str> = ext.withheld.names().collect();
+            let running = browser.runtime().loaded().contains(&id);
+            if !insensitive || ext.version != "3.0" || withheld != ["tabs"] || ext.enabled || running {
+                return Err(format!("after Update (insensitive while it ran: {insensitive}): version {}, withheld {withheld:?}, enabled={}, running={running}", ext.version, ext.enabled));
+            }
+            let row = find::<adw::ExpanderRow>(dialog.upcast_ref(), |row| row.title() == "Vsesvit update probe").ok_or_else(|| "the dialog lists no update probe".to_owned())?;
+            let notice = find::<adw::ActionRow>(row.upcast_ref(), |row| row.title() == "Needs your approval").and_then(|row| row.subtitle()).map(String::from);
+            let switch = find::<gtk::Switch>(row.upcast_ref(), |s| s.tooltip_text().as_deref() == Some("Enabled")).ok_or_else(|| "the probe's row has no switch".to_owned())?;
+            if notice != ext.approval_notice() || switch.is_sensitive() || switch.is_active() {
+                return Err(format!("the probe's row shows {notice:?}, its switch sensitive={}, on={}", switch.is_sensitive(), switch.is_active()));
+            }
+            glib::timeout_future(Duration::from_millis(300)).await;
+            if let Some(scrolled) = row.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>() {
+                let at = scrolled.vadjustment();
+                at.set_value(at.upper() - at.page_size());
+            }
+            glib::timeout_future(Duration::from_millis(300)).await;
+            crate::screenshot::save_png(window, &ctx.out_dir.join("extension-update.png")).await.map_err(|e| e.to_string())?;
+            button_labelled(row.upcast_ref(), "_Approve").ok_or_else(|| "the probe's row has no Approve button".to_owned())?.emit_clicked();
+            if !browser.runtime().loaded().contains(&id) {
+                return Err("after Approve the runtime does not run it".to_owned());
+            }
+            Ok(format!(
+                "the Extensions dialog's Update, insensitive while it ran, left it at {}, withheld {withheld:?}, off and not running, its row showing {:?} with the switch insensitive (extension-update.png); Approve ran it again",
+                ext.version,
+                notice.unwrap_or_default()
+            ))
+        }
+        .await;
+        dialog.close();
+        let approved = approved?;
+        let after = reload("3.0:1.0").await?;
+        Ok(format!("installed 1.0 from the fixture Chrome Web Store, the page read {installed}; publishing 2.0, the update check reported {updated:?} ({}), the page read {kept}; publishing 3.0 asking for tabs, {approved}; the page read {after}", report.summary()))
     })
     .await;
 

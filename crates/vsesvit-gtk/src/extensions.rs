@@ -6,9 +6,14 @@
 //! loads the extension. A user's install the extensions dialog starts waits between the last
 //! two for Chrome's install prompt, which lists what the extension can do.
 //!
+//! An update check runs the same way: `prepare_update_check`, `UpdateCheck::run` on a worker
+//! thread, `commit_updates`, then the runtime reloads each updated extension at its new
+//! version, or stops one that waits for the user to approve new permissions.
+//!
 //! Every change to the enabled extensions applies the keymap again, which binds their commands.
 
 use std::fmt;
+use std::rc::Rc;
 
 use futures_channel::mpsc;
 use futures_util::StreamExt;
@@ -16,7 +21,7 @@ use gtk::{gio, glib};
 use vsesvit_core::extensions::manifest::Manifest;
 use adw::prelude::*;
 use vsesvit_core::extensions::{
-    ExtensionId, InstallError, InstallJob, InstallPhase, InstallSource, InstalledExtension, StagedInstall,
+    ExtensionId, InstallError, InstallJob, InstallPhase, InstallSource, InstalledExtension, StagedInstall, UPDATE_INTERVAL, UpdateReport,
 };
 use vsesvit_core::private::Browsing;
 use vsesvit_webext::{LoadError, Unsupported};
@@ -78,6 +83,27 @@ impl From<vsesvit_core::Error> for EnableFailure {
         EnableFailure::Core(e)
     }
 }
+
+/// Why an update check did not run to the end.
+#[derive(Debug)]
+pub(crate) enum UpdateFailure {
+    /// Another check is running; what it updates shows when it ends.
+    Running,
+    Prepare(vsesvit_core::Error),
+    WorkerPanicked,
+}
+
+impl fmt::Display for UpdateFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UpdateFailure::Running => write!(f, "an update check is already running"),
+            UpdateFailure::Prepare(e) => write!(f, "{e}"),
+            UpdateFailure::WorkerPanicked => write!(f, "the update thread panicked"),
+        }
+    }
+}
+
+impl std::error::Error for UpdateFailure {}
 
 impl Browser {
     /// Installs from a parsed source. `Ok(None)` means the extension was uninstalled on
@@ -193,6 +219,18 @@ impl Browser {
         enabled: bool,
     ) -> Result<(), EnableFailure> {
         self.core().borrow_mut().extensions().set_enabled(id, enabled)?;
+        self.extension_changed(id)
+    }
+
+    /// The user approved the new permissions an update asked for, so it runs again unless
+    /// they had turned it off.
+    pub(crate) fn approve_extension_permissions(&self, id: &ExtensionId) -> Result<(), EnableFailure> {
+        self.core().borrow_mut().extensions().approve_permissions(id)?;
+        self.extension_changed(id)
+    }
+
+    /// Runs `id` or stops it as the profile now has it.
+    fn extension_changed(&self, id: &ExtensionId) -> Result<(), EnableFailure> {
         self.apply_keymap();
         let ext = self.core().borrow_mut().extensions().get(id)?;
         match ext {
@@ -202,6 +240,55 @@ impl Browser {
                 Ok(())
             }
         }
+    }
+
+    /// Checks every store extension for a newer version, as Chrome does every few hours and
+    /// when the user presses Update, and runs what it installed. A load failure is logged and
+    /// shown on the extensions page, as after an install.
+    pub(crate) async fn update_extensions(&self) -> Result<UpdateReport, UpdateFailure> {
+        if self.updating_extensions().get() {
+            return Err(UpdateFailure::Running);
+        }
+        let check = self.core().borrow_mut().extensions().prepare_update_check();
+        let check = check.map_err(UpdateFailure::Prepare)?;
+        if check.is_empty() {
+            return Ok(UpdateReport::default());
+        }
+        self.updating_extensions().set(true);
+        let updates = gio::spawn_blocking(move || check.run()).await;
+        self.updating_extensions().set(false);
+        let updates = updates.map_err(|_| UpdateFailure::WorkerPanicked)?;
+        let report = self.core().borrow_mut().extensions().commit_updates(updates);
+        if !report.updated.is_empty() {
+            self.apply_keymap();
+            for ext in &report.updated {
+                let _ = self.load_into_runtime(ext);
+            }
+            self.extensions_updated();
+        }
+        Ok(report)
+    }
+
+    /// The periodic update checks, for as long as the browser lives: the first a minute after
+    /// startup, then every few hours. What they do shows only in the log.
+    pub(crate) fn schedule_extension_updates(&self) {
+        let browser = Rc::downgrade(&self.0);
+        glib::spawn_future_local(async move {
+            loop {
+                let Some(inner) = browser.upgrade() else { return };
+                let due = Browser(inner).core().borrow_mut().extensions().next_update_check();
+                let due = due.unwrap_or_else(|e| {
+                    log::warn!("cannot schedule the extension update check: {e}");
+                    UPDATE_INTERVAL
+                });
+                glib::timeout_future(due).await;
+                let Some(inner) = browser.upgrade() else { return };
+                match Browser(inner).update_extensions().await {
+                    Ok(report) => log::info!("extension update check: {}", report.summary()),
+                    Err(e) => log::warn!("extension update check failed: {e}"),
+                }
+            }
+        });
     }
 
     /// The user's "Allow in private windows" for `id`: it joins or leaves the open private tabs
