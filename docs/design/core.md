@@ -497,8 +497,8 @@ and requires a valid tree covering exactly the live records.
   a node (LWW liveness instead of terminal tombstones)?
 - `storage.sync` on Windows: accept that it syncs only between Linux devices, or build a shim that routes
   WebView2 extensions' `chrome.storage.sync` through core?
-- When WebView2 re-adds a new dir with an existing id, does the extension keep its `chrome.storage` data? This needs a
-  spike before updates ship, because the reconcile code assumes add-replaces without data loss.
+- Answered (2026-10-07, the Windows self-test's `extension_update`): when WebView2 adds a new dir with an existing id,
+  it replaces that extension in place and keeps its `chrome.storage` data, so an update is an add of the new version's dir.
 - Should a Linux device auto-install synced Chrome extensions that the WebKit runtime supports only partly? This may
   need a compatibility gate in `reconcile()`.
 - Pinning the Web Store publisher key means installs fail closed if Google ever serves ECDSA-only publisher proofs
