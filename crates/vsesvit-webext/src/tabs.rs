@@ -140,6 +140,9 @@ pub trait TabHost {
     /// Whether a cookie under `domain` (a leading dot for a domain cookie) belongs to a site the
     /// user set to Block, which extensions may not set cookies for.
     fn cookies_blocked(&self, domain: &str) -> bool;
+    /// The private windows' network session, from their first tab until the last of them
+    /// closes.
+    fn private_session(&self) -> Option<webkit::NetworkSession>;
 }
 
 #[cfg(test)]

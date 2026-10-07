@@ -1417,6 +1417,10 @@ impl TabHost for Host {
     fn cookies_blocked(&self, domain: &str) -> bool {
         self.browser().is_some_and(|b| vsesvit_core::cookies::site_rules(&mut b.core().borrow_mut()).blocks_cookie(domain))
     }
+
+    fn private_session(&self) -> Option<webkit::NetworkSession> {
+        self.0.upgrade()?.private.borrow().as_ref().map(|engine| engine.session.clone())
+    }
 }
 
 #[cfg(test)]

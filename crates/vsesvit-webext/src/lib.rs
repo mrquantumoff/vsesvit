@@ -77,8 +77,9 @@
 //! runtime.tab_load(tab_id, Load::Failed(&uri, NetError::of(&error)));
 //! runtime.tab_opened_by(new_tab_id, tab_id);
 //!
-//! // `chrome.cookies` works on `session`'s cookie manager; `TabHost::cookies_blocked` says
-//! // which sites the user blocked, for which extensions may set no cookie.
+//! // `chrome.cookies` works on `session`'s cookie manager, and on `TabHost::private_session`'s
+//! // for an extension allowed in private windows; `TabHost::cookies_blocked` says which sites
+//! // the user blocked, for which extensions may set no cookie.
 //!
 //! // Toolbar actions. `activate_action` hands the popup WebView to put in a popover to its
 //! // callback, possibly later (the shell owns it; drop it to close, which closes its

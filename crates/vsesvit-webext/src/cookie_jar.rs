@@ -12,6 +12,8 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 use webkit::{glib, soup};
 
+use vsesvit_core::private::Browsing;
+
 use crate::bridge::{self, Reply};
 use crate::cookies::{self, Cookie, SameSite, Store};
 use crate::extension::Extension;
@@ -23,28 +25,31 @@ pub(crate) fn call(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: R
         return reply.finish(Err(format!("{} requires the \"cookies\" permission", call.method)));
     }
     if call.method == Method::CookiesGetAllCookieStores {
-        return reply.finish(Ok(Some(stores(inner))));
+        return reply.finish(Ok(Some(stores(inner, ext))));
     }
     let (inner, ext, method, details) = (inner.clone(), ext.clone(), call.method, call.arg(0).clone());
     glib::spawn_future_local(async move { reply.finish(run(&inner, &ext, method, &details).await) });
 }
 
-/// Each store with an open tab, as Chrome lists them. Private windows' store ("1") joins with
-/// their tabs for an extension allowed in them, as [`manager`] reaches it.
-fn stores(inner: &Inner) -> Value {
-    let tabs: Vec<u32> = inner.host.tabs().iter().map(|t| t.id.0).collect();
-    if tabs.is_empty() {
-        return json!([]);
-    }
-    json!([{ "id": Store::Normal.id(), "tabIds": tabs }])
+/// Each store with an open tab and its tabs, as Chrome lists them: private windows' store
+/// ("1") only for an extension allowed in them.
+fn stores(inner: &Inner, ext: &Extension) -> Value {
+    let tabs = inner.host.tabs();
+    let list = [(Store::Normal, Browsing::Normal), (Store::Private, Browsing::Private)]
+        .into_iter()
+        .filter(|(_, browsing)| ext.runs_in(*browsing))
+        .map(|(store, browsing)| (store, tabs.iter().filter(|t| t.browsing == browsing).map(|t| t.id.0).collect::<Vec<u32>>()))
+        .filter(|(_, tabs)| !tabs.is_empty())
+        .map(|(store, tabs)| json!({ "id": store.id(), "tabIds": tabs }));
+    Value::Array(list.collect())
 }
 
-/// The cookie manager behind `store`. Private windows have none yet; theirs is to answer for
-/// an extension allowed in them while one is open, and be an invalid store id otherwise, as
-/// in Chrome.
-fn manager(inner: &Inner, store: Store) -> Result<webkit::CookieManager, String> {
+/// The cookie manager behind `store`. Private windows' store is there for an extension allowed
+/// in them while one is open, and an invalid store id otherwise, as in Chrome.
+fn manager(inner: &Inner, ext: &Extension, store: Store) -> Result<webkit::CookieManager, String> {
     match store {
         Store::Normal => inner.session.cookie_manager(),
+        Store::Private if ext.runs_in(Browsing::Private) => inner.host.private_session().and_then(|s| s.cookie_manager()),
         Store::Private => None,
     }
     .ok_or_else(|| cookies::invalid_store(store.id()))
@@ -99,7 +104,7 @@ async fn run(inner: &Inner, ext: &Extension, method: Method, details: &Value) ->
         return Err(cookies::no_host_permissions(url));
     }
     let store = Store::of(details)?.unwrap_or(Store::Normal);
-    let manager = manager(inner, store)?;
+    let manager = manager(inner, ext, store)?;
     let unpartitioned = cookies::reaches_unpartitioned(&details["partitionKey"])?;
     if method == Method::CookiesGetAll {
         let jar = if unpartitioned { read(&manager).await? } else { Vec::new() };

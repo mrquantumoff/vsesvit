@@ -98,8 +98,10 @@
 //!     answer as Chrome does; a host without permission, a malformed URL or cookie, the
 //!     private store and the blocked site are refused with Chrome's errors; `onChanged` reports each
 //!     change, an overwrite as a removal and an addition, and only for hosts the extension
-//!     has permission for, a page's own cookies included; an extension without the
-//!     permission has no `chrome.cookies`;
+//!     has permission for, a page's own cookies included; a private window's cookies stay in
+//!     its own store, which `getAll`, `onChanged` and `getAllCookieStores` keep from an
+//!     extension until the user allows it in private windows, and which it then reads and
+//!     sets as store "1"; an extension without the permission has no `chrome.cookies`;
 //! 17. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
@@ -1900,11 +1902,72 @@ mod linux {
             self.note("cookies_blocked_site", blocked == expected, format!("blocked.test, a domain cookie for it and open.test: {blocked}"));
             self.cookie_events(&popup, 4).await;
 
+            self.private_cookies(&popup, &call).await;
+
             let Some(other) = self.popup(&self.windows_id, self.tab).await else { return };
             let _other_window = self.park(&other);
             wait_until(|| other.title().as_deref() == Some("Vsesvit Windows"), TIMEOUT).await;
             let api = self.eval_async(&other, "return typeof chrome.cookies;").await;
             self.note("cookies_need_permission", api == Some(serde_json::json!("undefined")), format!("typeof chrome.cookies without the permission = {api:?}"));
+        }
+
+        /// A private window's cookie, which an extension sees as store "1" only once the user
+        /// allows it in private windows.
+        async fn private_cookies(&self, popup: &webkit::WebView, call: &impl AsyncFn(&str) -> Value) {
+            let page = self.url("/page2.html");
+            let Some(window) = self.host.create_window(&NewWindow { browsing: Browsing::Private, urls: vec![page.clone()], ..NewWindow::default() }) else {
+                self.note("cookies_private_hidden", false, "the host opened no private window");
+                return;
+            };
+            let tabs = self.host.tabs();
+            let of = |browsing| tabs.iter().filter(|t| t.browsing == browsing).map(|t| t.id.0).collect::<Vec<u32>>();
+            let (normal, private) = (of(Browsing::Normal), of(Browsing::Private));
+            let view = self.host.web_view(TabId(private[0])).expect("private tab view");
+            self.wait_for_js(&view, &format!("location.href === {} && document.readyState", Value::String(page)), None, |s| s == "complete").await;
+            self.eval(&view, "document.cookie = 'q=5; path=/'; 0", None).await;
+
+            let script = r#"const names = async (details) => (await chrome.cookies.getAll(details)).filter((c) => ["q", "r"].includes(c.name)).map((c) => [c.name, c.storeId]).sort();
+                const refused = (attempt) => attempt.then(() => null, (e) => e.message);
+                return {
+                    all: await names({}), stores: await chrome.cookies.getAllCookieStores(),
+                    read: await refused(names({ storeId: "1" })), set: await refused(chrome.cookies.set({ url, storeId: "1", name: "r", value: "6" })),
+                };"#;
+            let hidden = call(script).await;
+            let heard = self.cookie_events(popup, 0).await;
+            let invalid = "Invalid cookie store id: \"1\".";
+            let expected = serde_json::json!({ "all": [], "stores": [{ "id": "0", "tabIds": normal }], "read": invalid, "set": invalid });
+            self.note("cookies_private_hidden", hidden == expected && heard.is_empty(), format!("{hidden}; onChanged heard {heard:?}"));
+
+            let allow = |allowed: bool| {
+                let set = self.profile.borrow_mut().extensions().set_allowed_in_private(&self.cookies_id, allowed);
+                self.runtime.allowed_in_private_changed();
+                set
+            };
+            if let Err(e) = allow(true) {
+                self.note("cookies_private_allowed", false, format!("cannot allow it in private windows: {e}"));
+                self.host.remove_window(window);
+                return;
+            }
+            let allowed = call(
+                r#"const names = async (details) => (await chrome.cookies.getAll(details)).filter((c) => ["q", "r"].includes(c.name)).map((c) => [c.name, c.storeId]).sort();
+                const set = await chrome.cookies.set({ url, storeId: "1", name: "r", value: "6" });
+                return {
+                    set: [set.name, set.storeId], private: await names({ storeId: "1" }), all: await names({}),
+                    normal: await chrome.cookies.get({ url, name: "r" }), stores: await chrome.cookies.getAllCookieStores(),
+                };"#,
+            )
+            .await;
+            let sent = self.wait_for_js(&view, "document.cookie", None, |c| c.contains("r=6")).await.unwrap_or_default();
+            let expected = serde_json::json!({
+                "set": ["r", "1"], "private": [["q", "1"], ["r", "1"]], "all": [], "normal": null,
+                "stores": [{ "id": "0", "tabIds": normal }, { "id": "1", "tabIds": private }],
+            });
+            self.note("cookies_private_allowed", allowed == expected && sent.contains("q=5"), format!("{allowed}; the private page has {sent:?}"));
+            if let Err(e) = allow(false) {
+                println!("[harness] cannot keep the cookies extension out of private windows: {e}");
+            }
+            self.host.remove_window(window);
+            self.cookie_events(popup, 0).await;
         }
 
         async fn lifecycle(&self) {
@@ -2121,6 +2184,9 @@ mod linux {
         /// Most recently focused first; the first one has the focus.
         windows: RefCell<Vec<HostWindow>>,
         runtime: RefCell<Option<Runtime>>,
+        /// Private windows' session, as the GTK shell keeps it: made for their first tab, gone
+        /// with the last of them.
+        private: RefCell<Option<webkit::NetworkSession>>,
         /// Every URL `create_tab` was asked to open, for checks that expect none.
         created: RefCell<Vec<String>>,
         /// Every target a gate refused, for checks that wait on one.
@@ -2138,6 +2204,7 @@ mod linux {
                 tabs: RefCell::new(Vec::new()),
                 windows: RefCell::new(vec![HostWindow { id: FIRST_WINDOW, browsing: Browsing::Normal, state: WindowState::Normal, width: 800, height: 600 }]),
                 runtime: RefCell::new(None),
+                private: RefCell::new(None),
                 created: RefCell::new(Vec::new()),
                 refused: Rc::new(RefCell::new(Vec::new())),
                 next_id: Cell::new(1),
@@ -2182,6 +2249,9 @@ mod linux {
                 return;
             }
             self.windows.borrow_mut().retain(|w| w.id != window);
+            if !self.windows.borrow().iter().any(|w| w.browsing == Browsing::Private) {
+                self.private.take();
+            }
             self.runtime().windows_changed();
         }
 
@@ -2317,7 +2387,11 @@ mod linux {
             let window = tab.window.unwrap_or(FIRST_WINDOW);
             let browsing = self.windows.borrow().iter().find(|w| w.id == window).map_or(Browsing::Normal, |w| w.browsing);
             let id = self.next_id();
-            let view = webkit::WebView::builder().network_session(&self.session).user_content_manager(&runtime.user_content_manager(id, browsing)).build();
+            let session = match browsing {
+                Browsing::Normal => self.session.clone(),
+                Browsing::Private => self.private.borrow_mut().get_or_insert_with(webkit::NetworkSession::new_ephemeral).clone(),
+            };
+            let view = webkit::WebView::builder().network_session(&session).user_content_manager(&runtime.user_content_manager(id, browsing)).build();
             let gate = self.add(&runtime, id, &view, Gate::default(), window, tab.index);
             self.created.borrow_mut().push(tab.url.clone());
             println!("[harness] host: create_tab({}) -> tab {} in window {}", tab.url, id.0, window.0);
@@ -2403,6 +2477,10 @@ mod linux {
         fn cookies_blocked(&self, domain: &str) -> bool {
             let host = domain.trim_start_matches('.');
             host == "blocked.test" || host.ends_with(".blocked.test")
+        }
+
+        fn private_session(&self) -> Option<webkit::NetworkSession> {
+            self.private.borrow().clone()
         }
 
         fn remove_window(&self, window: WindowId) -> bool {
