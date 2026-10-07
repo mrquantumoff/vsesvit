@@ -192,6 +192,8 @@ A profile is a directory of its own, with its own bookmarks, history, settings, 
 
 Install sources are Chrome Web Store URLs or ids, AMO add-on URLs or gecko ids (a bare slug is not accepted, because it cannot be told apart from a relative path), local `.crx`/`.xpi` files, and unpacked developer directories. Each install records how it was verified.
 
+Extensions from a store update themselves, as in Chrome. Each device asks the stores a minute after startup when its last check is five hours old, and then every five hours (`extensions::update`): the Chrome Web Store through its gupdate XML check, Edge Add-ons through an Omaha 3.1 check, and AMO through its add-on API. A newer version is downloaded and verified exactly as an install is, and keeps the extension's id and storage. Linux reloads it in the runtime, which fires `runtime.onInstalled` with `update`; Windows loads its folder into WebView2, which replaces the old version in place. The Extensions dialog's Update button checks at once. A version that asks for permissions Chrome would warn about (`extensions::grants::permissions_added`) is installed but stays off on that device, with the new permissions under its row and an Approve button, until the user approves them. Local and unpacked installs have no store and are not checked.
+
 Extensions' keyboard shortcuts come from the manifest's `commands`, with Chrome's rules for suggested keys: Ctrl or Alt but not both, at most four per extension. Core resolves them against the browser's shortcuts (`extensions::commands`). The browser's own shortcuts always win. The user's changes come next, then suggested keys in install order, so the first extension installed keeps a contested key. The user's changes are stored with the browser's shortcut overrides in the synced `keyboard.shortcuts` register. Settings > Shortcuts lists them under Extension shortcuts, where they can be changed or reset, and Reset All resets them too.
 
 **Install prompt (both shells).** A user's install from a store or a package waits, once the package is verified, for Chrome's install prompt: `Add "<name>"?`, then "It can:" and the permission warnings. Core words them (`extensions::permissions`) with Chrome's message rules, coalesced as Chrome coalesces them, so `<all_urls>` with `tabs` reads as "Read and change all your data on all websites" alone; a content script's sites count too. The GTK shell shows an Adwaita alert, with what the Linux runtime lacks. The WinUI shell shows the prompt inside the Extensions dialog, since no dialog may open over it, and as a dialog over a store page. Loading an unpacked folder and installing what another device asked for do not ask, as in Chrome.
@@ -227,8 +229,6 @@ Extensions' keyboard shortcuts come from the manifest's `commands`, with Chrome'
 4. **Extensions end to end.** WebView2 loading and action popups on Windows, and the `vsesvit-webext` runtime on Linux.
 5. **Self-tests green on both platforms.**
 6. **Packaging and updates.** An NSIS installer on Windows. deb, rpm, pacman, AppImage and Flatpak on Linux. Every format but Flatpak updates itself through the Tauri updater protocol, so an existing Tauri update server serves Vsesvit (`design/packaging.md`).
-7. **Later.**
-   - Extension auto-update.
 
 ## Dependencies
 

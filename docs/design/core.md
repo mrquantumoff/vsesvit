@@ -425,7 +425,6 @@ and requires a valid tree covering exactly the live records.
 - No at-rest encryption yet.
 - No protobuf crate.
 - No XPI signature verification.
-- No automatic extension updates. The pipeline already supports them: an update is a newer-version install.
 - No DNR-to-WebKit translation. That is the Linux runtime's job, and it reads `Manifest.dnr_rulesets`.
 
 ## Synthesis decision
