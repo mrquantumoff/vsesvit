@@ -259,7 +259,7 @@ satisfies "apply in any order, idempotently".
 | Bookmarks (1) | random UUID; 4 fixed root UUIDs, never stored | `placement: Lww<{parent,pos}>` (one register, so a move is atomic), title/url LWW, `added_ms` min | terminal tombstone that **keeps placement** |
 | HistoryPages (2) | URL (natural) | title LWW, `visits` grow-only set of `{at_ms, device, transition}` | derived: a page with no surviving visits disappears |
 | HistoryDeletions (3) | random UUID | immutable `{url?, from_ms, to_ms}` (two bodies under one id: the greater wins), grow-only set | expire with retention |
-| Sessions (4) | DeviceId | whole `SessionSnapshot` in one `Lww<Option<..>>`, **one writer per record** | `None` = forgotten device |
+| Sessions (4) | DeviceId | whole `SessionSnapshot` in one `Lww<Option<..>>`, **one writer per record**; a grouped tab carries its tab group (optional, skipped when absent) | `None` = forgotten device |
 | Extensions (5) | extension id | desired state only: `store`, `installed`, `enabled` LWW | `installed = false` (reinstall allowed) |
 | ExtStorageSync (6) | (ext, key) | `Lww<Option<JsonText>>` per key, which is Chrome's own semantics | `None` |
 | Prefs (7) | key | `Lww<Option<JsonText>>`; `Scope::Local` rows never exported, and records for them rejected on apply (a shell's Local key with no local row yet stores one, which reads and writes of the pref ignore) | `None` = default |

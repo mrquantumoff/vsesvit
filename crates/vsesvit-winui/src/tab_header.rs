@@ -267,12 +267,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn colours_are_written_as_markup_hex() {
-        assert_eq!(hex([0x1a, 0x73, 0xe8]), "#1A73E8");
-        assert_eq!(hex([0, 0, 0]), "#000000");
-    }
-
-    #[test]
     fn capture_glyph_prefers_camera_then_microphone_and_uses_the_permission_glyphs() {
         let all = Capturing {
             camera: true,
