@@ -1,22 +1,27 @@
 //! `view-source:` pages. WebKitGTK has no view-source of its own, so the shell serves the
 //! scheme, the way GNOME Web serves its `ephy-source:`: the page's main resource as received,
 //! from a tab showing exactly that page, else loaded by a hidden view with scripts off, shown
-//! with numbered lines by core's `source_page`.
+//! with numbered lines by core's `source_page`. The hidden view loads as the asking tab would:
+//! in its session, with tracking protection and the cookie rules, and over https where
+//! HTTPS-only would upgrade the page.
 //!
 //! The scheme is local, so web pages can neither open nor embed it, and the tab's gate keeps
 //! local pages out too (`vsesvit_webext::Gate`); the browser's own loads (the address bar,
 //! Ctrl+U) still can.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Once;
 
 use futures_channel::oneshot;
 use gtk::prelude::*;
 use gtk::{gio, glib};
+use vsesvit_core::Url;
+use vsesvit_core::private::Browsing;
 use vsesvit_core::view_source::{source_page, viewed_url};
 use webkit::prelude::*;
 
+use crate::browser::Browser;
 use crate::tab::Tab;
 
 const SCHEME: &str = "view-source";
@@ -52,37 +57,47 @@ async fn serve(request: &webkit::URISchemeRequest) {
     }
 }
 
-/// The bytes `page` arrived as: from a tab other than `requester` showing it, else loaded
-/// again in `requester`'s network session.
+/// The bytes `page` arrived as: from a tab other than the asking one showing it, else loaded
+/// again for the asking tab.
 async fn source(requester: Option<webkit::WebView>, page: &str) -> Result<Vec<u8>, glib::Error> {
     let requester = requester.ok_or_else(|| failed("no view asked for the source"))?;
-    if let Some(shown) = shown_elsewhere(&requester, page) {
+    let asking = requester.ancestor(Tab::static_type()).and_downcast::<Tab>().ok_or_else(|| failed("no tab asked for the source"))?;
+    let browser = asking.window().ok_or_else(|| failed("the tab has no window"))?.browser().clone();
+    if let Some(shown) = shown_elsewhere(&browser, &asking, page) {
         return shown.data_future().await;
     }
-    let session = requester.network_session().ok_or_else(|| failed("the view has no network session"))?;
-    load_hidden(&session, page).await
+    load_hidden(&browser, asking.browsing(), page).await
 }
 
-/// The main resource of a tab other than `requester`, and of its kind, that has finished
-/// loading `page`: a private tab's page never shows in a normal one, nor the other way round.
-fn shown_elsewhere(requester: &webkit::WebView, page: &str) -> Option<webkit::WebResource> {
-    let asking = requester.ancestor(Tab::static_type()).and_downcast::<Tab>()?;
-    let window = asking.window()?;
-    let tabs = window.browser().windows().into_iter().flat_map(|window| window.tabs());
+/// The main resource of a tab other than `asking`, and of its kind, that has finished loading
+/// `page`: a private tab's page never shows in a normal one, nor the other way round.
+fn shown_elsewhere(browser: &Browser, asking: &Tab, page: &str) -> Option<webkit::WebResource> {
+    let tabs = browser.windows().into_iter().flat_map(|window| window.tabs());
     tabs.filter(|tab| tab.browsing() == asking.browsing()).find_map(|tab| {
         let view = tab.web_view();
         let resource = view.main_resource()?;
-        (view != requester && !view.is_loading() && resource.uri().as_deref() == Some(page)).then_some(resource)
+        (tab != *asking && !view.is_loading() && resource.uri().as_deref() == Some(page)).then_some(resource)
     })
 }
 
 /// Loads `page` in a view no one sees, with scripts and images off and every response shown
-/// rather than downloaded, and takes its main resource.
-async fn load_hidden(session: &webkit::NetworkSession, page: &str) -> Result<Vec<u8>, glib::Error> {
+/// rather than downloaded, and takes its main resource. Where HTTPS-only would upgrade the
+/// page it loads over https, and it refuses a redirect back to http, since there is no tab to
+/// show the warning in.
+async fn load_hidden(browser: &Browser, browsing: Browsing, page: &str) -> Result<Vec<u8>, glib::Error> {
+    let url = Url::parse(page).map_err(|e| failed(&format!("{page}: {e}")))?;
+    let upgraded = browser.https_upgrade(browsing, &url);
     let settings = webkit::Settings::new();
     settings.set_enable_javascript(false);
     settings.set_auto_load_images(false);
-    let view = webkit::WebView::builder().network_session(session).settings(&settings).build();
+    let content = webkit::UserContentManager::new();
+    browser.trackers().attach(&content);
+    browser.cookies().attach(&content);
+    let view = webkit::WebView::builder()
+        .network_session(&browser.network_session(browsing))
+        .user_content_manager(&content)
+        .settings(&settings)
+        .build();
     let (sender, loaded) = oneshot::channel();
     let sender = Rc::new(RefCell::new(Some(sender)));
     let send = move |outcome: Result<(), glib::Error>| {
@@ -91,23 +106,40 @@ async fn load_hidden(session: &webkit::NetworkSession, page: &str) -> Result<Vec
         }
     };
     let send_failure = send.clone();
+    let insecure = upgraded.is_some().then(|| url.clone());
     view.connect_load_failed(move |_, _, _, error| {
-        send_failure(Err(error.clone()));
+        let error = insecure.as_ref().map_or_else(|| error.clone(), |url| failed(&format!("{url} has no secure connection")));
+        send_failure(Err(error));
         true
     });
-    view.connect_load_changed(move |_, event| {
-        if event == webkit::LoadEvent::Finished {
-            send(Ok(()));
+    // Navigations before the page commits are its main frame's: the load and its redirects.
+    let committed = Rc::new(Cell::new(false));
+    let send_refusal = send.clone();
+    view.connect_load_changed({
+        let committed = committed.clone();
+        move |_, event| match event {
+            webkit::LoadEvent::Committed => committed.set(true),
+            webkit::LoadEvent::Finished => send(Ok(())),
+            _ => {}
         }
     });
-    view.connect_decide_policy(|_, decision, kind| {
-        if kind != webkit::PolicyDecisionType::Response {
-            return false;
+    let asking = browser.clone();
+    view.connect_decide_policy(move |_, decision, kind| match kind {
+        webkit::PolicyDecisionType::NavigationAction if !committed.get() => {
+            let Some(nav) = decision.downcast_ref::<webkit::NavigationPolicyDecision>() else { return false };
+            let target = nav.navigation_action().and_then(|a| a.request()).and_then(|r| r.uri()).and_then(|uri| Url::parse(&uri).ok());
+            let Some(http) = target.filter(|url| asking.https_upgrade(browsing, url).is_some()) else { return false };
+            decision.ignore();
+            send_refusal(Err(failed(&format!("{http} has no secure connection"))));
+            true
         }
-        decision.use_();
-        true
+        webkit::PolicyDecisionType::Response => {
+            decision.use_();
+            true
+        }
+        _ => false,
     });
-    view.load_uri(page);
+    view.load_uri(upgraded.as_ref().map_or(page, Url::as_str));
     loaded.await.unwrap_or_else(|_| Err(failed("the load went away")))?;
     let resource = view.main_resource().ok_or_else(|| failed("the page has no main resource"))?;
     resource.data_future().await
@@ -126,7 +158,9 @@ mod tests {
     use super::*;
     use crate::test_support::{Reply, Server, browser, scratch_dir, settle, wait_until};
     use crate::window::{BrowserWindow, Focus};
-    use vsesvit_core::private::Browsing;
+    use vsesvit_core::https_only::Reach;
+    use vsesvit_core::permissions::{Origin, Permission, Setting};
+    use vsesvit_core::prefs::keys;
 
     /// A page that embeds and then goes to the source of `page`, a script expression.
     fn lure_to(page: &str) -> String {
@@ -196,5 +230,44 @@ mod tests {
         assert_eq!(lured_locally, (Some(local), 0), "nor did a local page");
         assert_eq!(typed, 1, "the address bar's view-source loaded the page once");
         assert_eq!(downloaded, 0, "a file's source is shown, not downloaded");
+    }
+
+    #[gtk::test]
+    fn a_source_loaded_again_keeps_to_https_only() {
+        let fetched = Arc::new(AtomicUsize::new(0));
+        let server = Server::start("127.0.0.1", {
+            let fetched = fetched.clone();
+            move |path| match path {
+                "/page" => {
+                    fetched.fetch_add(1, Ordering::SeqCst);
+                    Reply::Page("Page")
+                }
+                _ => Reply::NotFound,
+            }
+        });
+        let browser = browser();
+        browser.set_pref(&keys::HTTPS_ONLY, &true);
+        browser.set_https_reach(Reach::Everywhere);
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        let page = server.url("/page");
+        let source = format!("view-source:{page}");
+        let tab = window.open_tab(Some(&source), None, Focus::Foreground);
+        wait_until("the error page", || tab.shows_error_page());
+        let upgraded = fetched.load(Ordering::SeqCst);
+
+        let origin = Origin::of(&Url::parse(&page).expect("the page's URL")).expect("an http origin");
+        let exception = |setting| browser.core().borrow_mut().site_permissions_in(Browsing::Normal).set(&origin, Permission::Http, setting);
+        exception(Some(Setting::Allow)).expect("the exception stored");
+        tab.load(&source);
+        wait_until("the source", || tab.web_view().title().as_deref() == Some(source.as_str()));
+        let excepted = fetched.load(Ordering::SeqCst);
+
+        exception(None).expect("the exception removed");
+        browser.set_https_reach(Reach::Public);
+        browser.reset_pref(&keys::HTTPS_ONLY);
+        window.destroy();
+        assert_eq!(upgraded, 0, "with HTTPS-only on, the page was not fetched over http");
+        assert_eq!(excepted, 1, "with an exception for the site it was");
     }
 }
