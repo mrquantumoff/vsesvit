@@ -501,8 +501,8 @@ pub(crate) fn sign_in(
 }
 
 /// Names and pictures the profile after the account just signed in, unless the user set its
-/// details by hand. The picture comes from a worker, so it holds up neither the sign-in nor a
-/// sync.
+/// details by hand. The picture is fetched on a worker, so it holds up neither the sign-in nor a
+/// sync, and taken here, so the list it shows is the newest.
 pub(crate) fn take_account_details(browser: &Rc<Browser>, details: AccountDetails) {
     let Some(home) = browser.home().cloned() else {
         return;
@@ -526,15 +526,15 @@ pub(crate) fn take_account_details(browser: &Rc<Browser>, details: AccountDetail
     };
     let browser = Rc::downgrade(browser);
     exec::spawn(async move {
-        let taken = exec::background(move || {
-            let picture = AccountPicture::fetch(&url)?;
-            Some(home.dir.take_account_details(&home.id, None, Some(&picture)))
-        })
-        .await;
-        match (taken, browser.upgrade()) {
-            (Ok(Some(Ok(registry))), Some(browser)) => browser.set_profiles(registry),
-            (Ok(Some(Err(e))), _) => log::warn!("the profile list: {e}"),
-            _ => {}
+        let Ok(Some(picture)) = exec::background(move || AccountPicture::fetch(&url)).await else {
+            return;
+        };
+        let Some(browser) = browser.upgrade() else {
+            return;
+        };
+        match home.dir.take_account_details(&home.id, None, Some(&picture)) {
+            Ok(registry) => browser.set_profiles(registry),
+            Err(e) => log::warn!("the profile list: {e}"),
         }
     });
 }

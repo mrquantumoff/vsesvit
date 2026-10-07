@@ -3715,7 +3715,17 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         .await;
         glib::timeout_future(POPOVER_SETTLE).await;
         crate::screenshot::save_png(window, &ctx.out_dir.join("profiles-account.png")).await.map_err(|e| e.to_string())?;
+        // A rename by hand while a newer picture is on its way: the picture's list must not
+        // replace the renamed one. Blocking, so the picture can only be taken after the rename.
+        let picture_file = || home.dir.load().get(&home.id).and_then(|e| home.dir.picture(e));
+        let first_picture = picture_file();
+        browser.sync().take_account_details(AccountDetails { name: Some("Alex".to_owned()), picture: Some(ctx.server.url("/vsesvit-blocked/pixel.png")) });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && picture_file() == first_picture {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         browser.edit_profile(&home.id, "Tester", ProfileColor::Teal).map_err(|e| e.to_string())?;
+        glib::timeout_future(Duration::from_secs(1)).await;
         let renamed = title();
         browser.sync().take_account_details(AccountDetails { name: Some("Sam".to_owned()), picture: None });
         let by_hand = (menu_names()?, window.shows_profile_picture());
@@ -3743,7 +3753,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         })
         .await;
         let detail = format!(
-            "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile menu {private_shown:?}; signed in to sync as Alex: menu {from_account:?} and the account picture shown (profiles-account.png); renamed and recoloured by hand: {renamed:?}, then a sync sign-in as Sam left menu and picture {by_hand:?}; Manage Profiles lists {manage_rows:?} (profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored on={picker_stored}; Work removed: menu {:?}, title {:?} (profiles.png)",
+            "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile menu {private_shown:?}; signed in to sync as Alex: menu {from_account:?} and the account picture shown (profiles-account.png); renamed and recoloured by hand while a newer account picture was on its way: {renamed:?}, then a sync sign-in as Sam left menu and picture {by_hand:?}; Manage Profiles lists {manage_rows:?} (profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored on={picker_stored}; Work removed: menu {:?}, title {:?} (profiles.png)",
             alone.0, alone.1, together.0, together.1, removed.0, removed.1
         );
         let ok = alone == (vec!["Person 1".to_owned()], page_title.clone())

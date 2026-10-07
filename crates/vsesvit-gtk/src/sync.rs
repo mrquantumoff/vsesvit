@@ -338,8 +338,8 @@ impl Syncer {
     }
 
     /// Names and pictures the profile after the account just signed in, unless the user set its
-    /// details by hand. The picture comes from a worker, so it holds up neither the sign-in nor a
-    /// sync.
+    /// details by hand. The picture is fetched on a worker, so it holds up neither the sign-in
+    /// nor a sync, and taken here, so the list it shows is the newest.
     pub(crate) fn take_account_details(&self, details: AccountDetails) {
         let Some(home) = self.browser().and_then(|b| b.home().cloned()) else { return };
         let registry = match home.dir.take_account_details(&home.id, details.name.as_deref(), None) {
@@ -356,15 +356,14 @@ impl Syncer {
         let Some(url) = details.picture.filter(|_| !by_hand) else { return };
         let syncer = self.clone();
         glib::spawn_future_local(async move {
-            let taken = on_worker(move || {
-                let picture = AccountPicture::fetch(&url)?;
-                Some(home.dir.take_account_details(&home.id, None, Some(&picture)))
-            })
-            .await;
-            match (taken, syncer.browser()) {
-                (Some(Ok(registry)), Some(browser)) => browser.set_profiles(registry),
-                (Some(Err(e)), _) => log::warn!("the profile list: {e}"),
-                _ => {}
+            let Some(picture) = on_worker(move || AccountPicture::fetch(&url)).await else { return };
+            match home.dir.take_account_details(&home.id, None, Some(&picture)) {
+                Ok(registry) => {
+                    if let Some(browser) = syncer.browser() {
+                        browser.set_profiles(registry);
+                    }
+                }
+                Err(e) => log::warn!("the profile list: {e}"),
             }
         });
     }
