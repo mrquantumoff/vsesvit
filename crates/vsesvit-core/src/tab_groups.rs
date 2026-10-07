@@ -144,6 +144,13 @@ pub struct TabGroup {
     pub collapsed: bool,
 }
 
+impl TabGroup {
+    /// How menus name it: its title, or its colour's while it has none ("Blue group").
+    pub fn name(&self) -> String {
+        if self.title.is_empty() { format!("{} group", self.color.label()) } else { self.title.clone() }
+    }
+}
+
 /// A window's tabs as the shell has them now, built for each call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowTabs<K> {
@@ -480,6 +487,8 @@ mod tests {
         let group: TabGroup = serde_json::from_str(&format!(r#"{{"id":"{}","title":"x","color":"teal"}}"#, Uuid::nil())).unwrap();
         assert_eq!(group.color, GroupColor::Grey);
         assert!(!group.collapsed);
+        assert_eq!(group.name(), "x");
+        assert_eq!(TabGroup { title: String::new(), color: GroupColor::Cyan, ..group }.name(), "Cyan group");
         assert_eq!(serde_json::to_string(&GroupColor::Cyan).unwrap(), r#""cyan""#);
     }
 
