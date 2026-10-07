@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
-use vsesvit_core::profiles::{self, NAME_MAX, ProfileColor, ProfileId, ProfilesDir};
+use gtk::{gdk, glib};
+use vsesvit_core::profiles::{self, NAME_MAX, ProfileColor, ProfileEntry, ProfileId, ProfilesDir};
 
 use crate::dialogs::{confirm, plain_toast, row_button};
 use crate::window::BrowserWindow;
@@ -36,26 +36,43 @@ fn color_class(color: ProfileColor) -> String {
     format!("profile-{}", color.label().to_lowercase())
 }
 
-/// A coloured circle with the profile's initial.
-pub(crate) fn avatar(name: &str, color: ProfileColor, large: bool) -> gtk::Label {
+/// The profile's sync account picture in a circle, else a coloured circle with its initial.
+pub(crate) fn avatar(
+    name: &str,
+    color: ProfileColor,
+    picture: Option<&Path>,
+    large: bool,
+) -> gtk::Widget {
+    let size = if large { 72 } else { 22 };
+    match picture.map(gdk::Texture::from_filename) {
+        Some(Ok(texture)) => {
+            let avatar = adw::Avatar::new(size, Some(name), false);
+            avatar.set_custom_image(Some(&texture));
+            return avatar.upcast();
+        }
+        Some(Err(e)) => log::warn!("the profile picture: {e}"),
+        None => {}
+    }
     let label = gtk::Label::builder()
+        .label(profiles::avatar_initial(name))
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
+        .css_classes(["profile-avatar", &color_class(color)])
         .build();
     if large {
         label.add_css_class("large");
     }
-    set_avatar(&label, name, color);
-    label
+    label.upcast()
 }
 
-pub(crate) fn set_avatar(label: &gtk::Label, name: &str, color: ProfileColor) {
-    let large = label.has_css_class("large");
-    label.set_css_classes(&["profile-avatar", &color_class(color)]);
-    if large {
-        label.add_css_class("large");
-    }
-    label.set_label(&profiles::avatar_initial(name));
+/// [`avatar`] for a listed profile.
+pub(crate) fn entry_avatar(dir: &ProfilesDir, entry: &ProfileEntry, large: bool) -> gtk::Widget {
+    avatar(
+        &entry.name,
+        entry.color,
+        dir.picture(entry).as_deref(),
+        large,
+    )
 }
 
 /// Asks for a profile's name and colour. `None` when cancelled.
@@ -82,7 +99,7 @@ async fn ask(
     let mut group: Option<gtk::ToggleButton> = None;
     for choice in ProfileColor::ALL {
         let button = gtk::ToggleButton::builder()
-            .child(&avatar("", choice, false))
+            .child(&avatar("", choice, None, false))
             .tooltip_text(choice.label())
             .active(choice == color)
             .css_classes(["flat", "circular"])
@@ -216,15 +233,15 @@ impl Manage {
         self.list.remove_all();
         let browser = self.window.browser();
         let registry = browser.profiles();
-        let current = browser.home().map(|home| home.id.clone());
+        let Some(home) = browser.home() else { return };
         for entry in registry.profiles() {
             let row = adw::ActionRow::builder()
                 .title(&entry.name)
                 .use_markup(false)
                 .build();
-            row.add_prefix(&avatar(&entry.name, entry.color, false));
+            row.add_prefix(&entry_avatar(&home.dir, entry, false));
             let id = entry.id.clone();
-            if Some(&id) == current.as_ref() {
+            if id == home.id {
                 row.set_subtitle("This profile");
             } else {
                 let open = row_button("window-new-symbolic", "Open");
@@ -331,10 +348,7 @@ pub(crate) fn picker(app: &adw::Application, dir: &ProfilesDir) -> adw::Applicat
         .row_spacing(12)
         .build();
     for entry in registry.profiles() {
-        let card = card(
-            &avatar(&entry.name, entry.color, true).upcast(),
-            &entry.name,
-        );
+        let card = card(&entry_avatar(dir, entry, true), &entry.name);
         let root = dir.root(&entry.id);
         card.connect_clicked(glib::clone!(
             #[weak]

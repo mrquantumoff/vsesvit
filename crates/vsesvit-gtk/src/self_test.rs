@@ -23,7 +23,7 @@ use vsesvit_core::memory_saver::{self, MemorySaverMode};
 use vsesvit_core::permissions::{Answer, Origin, Permission, Setting};
 use vsesvit_core::prefs::{DEFAULT_SYNC_SERVER, TabsPosition, Theme, keys};
 use vsesvit_core::private::Browsing;
-use vsesvit_core::profiles::{Home, ProfileColor, ProfileId, ProfilesDir};
+use vsesvit_core::profiles::{AccountDetails, Home, ProfileColor, ProfileId, ProfilesDir};
 use vsesvit_core::search::{EngineForm, NavTarget, SearchEngineId};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::suggest::DEBOUNCE;
@@ -3706,8 +3706,19 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         // Never shown, so `close` would do nothing.
         private.destroy();
         wait_for(&last, || if browser.windows_of(Browsing::Private).is_empty() { Ok(()) } else { Err("the private window is still open".to_owned()) }).await;
+        let picture = Some(ctx.server.url("/allowed.png"));
+        browser.sync().take_account_details(AccountDetails { name: Some("Alex".to_owned()), picture });
+        let from_account = wait_for(&last, || match (menu_names()?, window.shows_profile_picture()) {
+            (names, true) => Ok(names),
+            shown => Err(format!("signed in to sync, the profile menu and picture show {shown:?}")),
+        })
+        .await;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("profiles-account.png")).await.map_err(|e| e.to_string())?;
         browser.edit_profile(&home.id, "Tester", ProfileColor::Teal).map_err(|e| e.to_string())?;
         let renamed = title();
+        browser.sync().take_account_details(AccountDetails { name: Some("Sam".to_owned()), picture: None });
+        let by_hand = (menu_names()?, window.shows_profile_picture());
         gio::prelude::ActionGroupExt::activate_action(window, "manage-profiles", None);
         let manage = window.visible_dialog().ok_or("win.manage-profiles opened no dialog")?;
         let manage_rows: Vec<String> = ["Tester", "Work"].into_iter().filter(|name| find::<adw::ActionRow>(manage.upcast_ref(), |r| r.title() == *name).is_some()).map(str::to_owned).collect();
@@ -3732,13 +3743,15 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         })
         .await;
         let detail = format!(
-            "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile menu {private_shown:?}; renamed: {renamed:?}; Manage Profiles lists {manage_rows:?} (profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored on={picker_stored}; Work removed: menu {:?}, title {:?} (profiles.png)",
+            "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile menu {private_shown:?}; signed in to sync as Alex: menu {from_account:?} and the account picture shown (profiles-account.png); renamed and recoloured by hand: {renamed:?}, then a sync sign-in as Sam left menu and picture {by_hand:?}; Manage Profiles lists {manage_rows:?} (profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored on={picker_stored}; Work removed: menu {:?}, title {:?} (profiles.png)",
             alone.0, alone.1, together.0, together.1, removed.0, removed.1
         );
         let ok = alone == (vec!["Person 1".to_owned()], page_title.clone())
             && together == (vec!["Person 1".to_owned(), "Work".to_owned()], format!("{page_title} - Person 1"))
             && private_shown == private_expected
+            && from_account == ["Alex", "Work"]
             && renamed == format!("{page_title} - Tester")
+            && by_hand == (vec!["Tester".to_owned(), "Work".to_owned()], false)
             && manage_rows == ["Tester", "Work"]
             && picker_shown
             && !picker_stored

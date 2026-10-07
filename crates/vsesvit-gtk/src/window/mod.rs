@@ -101,7 +101,6 @@ struct Ui {
     /// The profile's avatar, opening the profile menu; hidden for a profile outside the list
     /// and, as Chrome hides it in incognito windows, in a private window.
     profile_button: gtk::MenuButton,
-    profile_avatar: gtk::Label,
     tab_view: adw::TabView,
     tab_bar: adw::TabBar,
     /// The tab groups' chips at the start of the tab bar, before the tabs.
@@ -327,7 +326,7 @@ impl BrowserWindow {
         let (menu_button, zoom_level) = menu::main_menu();
         let downloads_button = icon_button("folder-download-symbolic", "win.show-downloads", "Downloads");
         downloads_button.set_visible(false);
-        let (profile_button, profile_avatar) = menu::profile_button();
+        let profile_button = menu::profile_button();
 
         let header_start = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header_start.append(&icon_button("go-previous-symbolic", "win.back", "Back"));
@@ -418,7 +417,6 @@ impl BrowserWindow {
             zoom_level,
             downloads_button,
             profile_button,
-            profile_avatar,
             tab_view,
             tab_bar,
             group_chips,
@@ -1372,12 +1370,20 @@ impl BrowserWindow {
             return;
         };
         let registry = browser.profiles();
-        let (name, color) = registry
-            .get(&home.id)
-            .map_or((home.id.as_str(), ProfileColor::Slate), |p| (p.name.as_str(), p.color));
-        crate::profiles::set_avatar(&ui.profile_avatar, name, color);
+        let entry = registry.get(&home.id);
+        let name = entry.map_or(home.id.as_str(), |p| p.name.as_str());
+        let avatar = match entry {
+            Some(entry) => crate::profiles::entry_avatar(&home.dir, entry, false),
+            None => crate::profiles::avatar(name, ProfileColor::Slate, None, false),
+        };
+        ui.profile_button.set_child(Some(&avatar));
         ui.profile_button.set_tooltip_text(Some(name));
         ui.profile_button.set_menu_model(Some(&menu::profile_menu(&registry)));
+    }
+
+    #[cfg(feature = "self-test")]
+    pub(crate) fn shows_profile_picture(&self) -> bool {
+        self.ui().profile_button.child().is_some_and(|avatar| avatar.is::<adw::Avatar>())
     }
 
     #[cfg(feature = "self-test")]

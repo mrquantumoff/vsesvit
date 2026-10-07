@@ -88,14 +88,10 @@ fn zoom_controls() -> (gtk::Box, gtk::Button) {
     (row, level)
 }
 
-/// The profile button: the avatar `BrowserWindow::sync_profile` paints, and the menu it opens.
-pub(super) fn profile_button() -> (gtk::MenuButton, gtk::Label) {
-    let avatar = gtk::Label::new(None);
-    let button = gtk::MenuButton::builder()
-        .child(&avatar)
-        .css_classes(["flat"])
-        .build();
-    (button, avatar)
+/// The profile button, showing the avatar `BrowserWindow::sync_profile` puts in it, and the menu
+/// it opens.
+pub(super) fn profile_button() -> gtk::MenuButton {
+    gtk::MenuButton::builder().css_classes(["flat"]).build()
 }
 
 /// Every profile, the current one checked, then adding and managing them, as in Chrome's
