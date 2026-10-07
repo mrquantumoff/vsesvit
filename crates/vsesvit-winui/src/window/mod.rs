@@ -780,13 +780,11 @@ impl BrowserWindow {
     /// The page's title, the profile's when there is more than one profile and the app's (see
     /// [`window_title`]).
     fn show_title(&self, title: &str, url: &str) {
-        let _ = self.window.SetTitle(&self.title_text(title, url));
-    }
-
-    fn title_text(&self, title: &str, url: &str) -> String {
         let profile = self.browser().and_then(|b| b.profile_title());
         let page = if url.is_empty() { "" } else { title };
-        window_title(page, profile.as_deref(), self.browsing)
+        let _ = self
+            .window
+            .SetTitle(&window_title(page, profile.as_deref(), self.browsing));
     }
 
     /// The profile list changed: the avatar and the title follow.
@@ -854,13 +852,6 @@ impl BrowserWindow {
             .cast::<FlyoutBase>()?
             .ShowAtWithOptions(&self.ui.profile.cast::<FrameworkElement>()?, &options)?;
         Ok(self.ui.profile_menu.clone())
-    }
-
-    /// The window's title, as `show_title` last set it.
-    #[cfg(feature = "self-test")]
-    pub fn title(&self) -> String {
-        let state = self.active_tab().map(|t| t.state()).unwrap_or_default();
-        self.title_text(&state.title, &state.url)
     }
 
     /// The URL in readable form: whole while the user works in the address box or asked for
