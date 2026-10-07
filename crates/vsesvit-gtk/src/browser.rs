@@ -1414,8 +1414,8 @@ impl TabHost for Host {
         true
     }
 
-    fn cookies_blocked(&self, _domain: &str) -> bool {
-        false
+    fn cookies_blocked(&self, domain: &str) -> bool {
+        self.browser().is_some_and(|b| vsesvit_core::cookies::site_rules(&mut b.core().borrow_mut()).blocks_cookie(domain))
     }
 }
 
@@ -1684,6 +1684,20 @@ mod tests {
         assert_eq!(listed, installed);
         assert_eq!(pinned, installed);
         assert_eq!(saved, installed);
+    }
+
+    #[gtk::test]
+    fn extensions_may_not_set_cookies_for_a_site_set_to_block() {
+        use vsesvit_core::cookies;
+        use vsesvit_core::permissions::{Origin, Setting};
+
+        let browser = browser();
+        let host = Host(Rc::downgrade(&browser.0));
+        let origin = Origin::parse("https://blocked-for-extensions.test").unwrap();
+        cookies::set(&mut browser.core().borrow_mut(), &origin, Some(Setting::Block)).unwrap();
+        let blocked = ["blocked-for-extensions.test", ".blocked-for-extensions.test", "www.blocked-for-extensions.test", "open.test"].map(|d| host.cookies_blocked(d));
+        cookies::set(&mut browser.core().borrow_mut(), &origin, None).unwrap();
+        assert_eq!(blocked, [true, true, true, false]);
     }
 
     #[gtk::test]
