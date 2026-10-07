@@ -101,7 +101,7 @@ async fn newest_row_reads(preview: &Preview, p: &Probe, wanted: impl Fn(&str) ->
 
 async fn cancel(browser: &Browser, url: &Url, p: &Probe) -> Result<(), String> {
     let entry = browser
-        .download_list()
+        .download_list(Browsing::Normal)
         .into_iter()
         .find(|d| d.url == url.as_str())
         .ok_or_else(|| format!("no list entry for {url}"))?;

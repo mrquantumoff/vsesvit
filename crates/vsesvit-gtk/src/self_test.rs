@@ -2250,7 +2250,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     ctx.check("download_speed", CHECK_TIMEOUT * 2, |last| async move {
         let tab = window.selected_tab().ok_or_else(|| "no selected tab".to_owned())?;
         gio::prelude::ActionGroupExt::activate_action(window, "show-downloads", None);
-        let view = browser.windowed(Windowed::Downloads).ok_or_else(|| "win.show-downloads opened no window".to_owned())?;
+        let view = browser.windowed(Windowed::Downloads(Browsing::Normal)).ok_or_else(|| "win.show-downloads opened no window".to_owned())?;
         let _view = Cleanup(|| view.close());
 
         let slow = ctx.server.url("/slow.bin");
@@ -3962,10 +3962,10 @@ fn newest_row_reads(view: &impl IsA<gtk::Widget>, wanted: fn(&str) -> bool) -> R
 
 /// Cancels the newest download of `url` and waits until its entry says so.
 async fn cancel_download(browser: &Browser, last: &Last, url: &Url) -> Result<(), String> {
-    let entry = browser.downloads().list().into_iter().find(|d| d.url == url.as_str());
+    let entry = browser.downloads().list(Browsing::Normal).into_iter().find(|d| d.url == url.as_str());
     let id = entry.ok_or_else(|| format!("no list entry for {url}"))?.id;
     browser.downloads().cancel(id);
-    wait_for(last, || match browser.downloads().list().into_iter().find(|d| d.id == id) {
+    wait_for(last, || match browser.downloads().list(Browsing::Normal).into_iter().find(|d| d.id == id) {
         Some(d) if d.state == State::Cancelled => Ok(()),
         other => Err(format!("the entry is {:?}", other.map(|d| d.state))),
     })
