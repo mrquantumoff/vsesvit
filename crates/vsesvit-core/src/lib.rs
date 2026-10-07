@@ -117,6 +117,8 @@ pub struct Profile {
     /// bookmarks-bar paint, so reads never touch SQLite.
     pub(crate) bookmarks: bookmarks::Model,
     pub(crate) chrome_version: String,
+    /// Where extension installs and updates go: the real stores, except in tests.
+    pub(crate) stores: extensions::Stores,
     key_store: vault::KeyStore,
     /// Fetched on first use, then kept for the process lifetime.
     vault_key: Option<vault::Key>,
@@ -248,6 +250,7 @@ impl Profile {
             next_seq: meta.next_seq,
             bookmarks: bookmarks::Model::new(records),
             chrome_version: opts.chrome_version,
+            stores: extensions::Stores::default(),
             key_store: opts.key_store,
             vault_key: None,
             created: meta.created,
@@ -277,6 +280,13 @@ impl Profile {
     /// The Chromium version presented to the Chrome Web Store.
     pub fn chrome_version(&self) -> &str {
         &self.chrome_version
+    }
+
+    /// Points extension installs and updates prepared from now on at `stores`, such as
+    /// `testkit::FixtureStore`'s stand-ins.
+    #[cfg(feature = "testkit")]
+    pub fn set_stores(&mut self, stores: extensions::Stores) {
+        self.stores = stores;
     }
 
     pub fn bookmarks(&mut self) -> bookmarks::Bookmarks<'_> {

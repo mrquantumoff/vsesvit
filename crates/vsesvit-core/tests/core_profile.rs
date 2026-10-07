@@ -77,5 +77,5 @@ fn a_newer_schema_is_refused_untouched() {
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
     conn.pragma_update(None, "user_version", 99).unwrap();
     drop(conn);
-    assert!(matches!(Profile::open(&dir.0, opts(1, Some(1))), Err(OpenError::TooNew { found: 99, supported: 10 })));
+    assert!(matches!(Profile::open(&dir.0, opts(1, Some(1))), Err(OpenError::TooNew { found: 99, supported: 11 })));
 }

@@ -223,9 +223,8 @@ pub fn verify(crx: &Crx3<'_>, policy: &VerifyPolicy) -> Result<VerifiedCrx, CrxE
     verify_with_publisher(crx, policy, publisher)
 }
 
-/// [`verify`] with the publisher key hash as a parameter, so tests can stand in for
-/// a store with a key they hold.
-#[doc(hidden)]
+/// [`verify`] with the publisher key hash as a parameter: installs take it from the
+/// profile's `Stores`, so tests can stand in for a store with a key they hold.
 pub fn verify_with_publisher(crx: &Crx3<'_>, policy: &VerifyPolicy, publisher_key_sha256: &[u8; 32]) -> Result<VerifiedCrx, CrxError> {
     let digest = crx.signed_digest();
     let mut developer_key = None;

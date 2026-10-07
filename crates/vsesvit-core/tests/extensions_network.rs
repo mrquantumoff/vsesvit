@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 use vsesvit_core::extensions::crx::{self, CWS_PUBLISHER_KEY_SHA256, CrxStore, EDGE_PUBLISHER_KEY_SHA256};
-use vsesvit_core::extensions::{DEFAULT_CHROME_VERSION, ExtensionId, InstallPhase, InstallSource, Verification};
+use vsesvit_core::extensions::{DEFAULT_CHROME_VERSION, ExtensionId, InstallPhase, InstallSource, Stores, Verification};
 use vsesvit_core::onboarding::{RECOMMENDED_EXTENSIONS, Recommended};
 use vsesvit_core::{OpenOptions, Profile};
 
@@ -65,7 +65,7 @@ fn print_proofs(url: &str) {
 #[ignore = "downloads uBlock Origin Lite from the Chrome Web Store"]
 fn installs_ublock_origin_lite_from_the_chrome_web_store() {
     let id = ExtensionId::parse(UBO_LITE).unwrap();
-    print_proofs(InstallSource::cws_download_url(&id, DEFAULT_CHROME_VERSION).as_str());
+    print_proofs(Stores::default().cws_download_url(&id, DEFAULT_CHROME_VERSION).as_str());
 
     let t = TempDir::new();
     let mut p = Profile::open(&t.0.join("profile"), OpenOptions::default()).unwrap();

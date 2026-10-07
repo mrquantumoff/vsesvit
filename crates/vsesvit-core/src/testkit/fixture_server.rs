@@ -1,9 +1,10 @@
 //! A tiny HTTP/1.1 server for `tests/fixtures/site/`, bound to 127.0.0.1 on a random
 //! port, plus `/suggest?q=<terms>`, a search engine's suggestions for the terms,
 //! `/set-cookie`, a page that sets a cookie in its response header, and `/stalled.bin`, a
-//! download that never finishes. It records the path of every request, so a test can prove
-//! that a request was made (`/allowed.png`) or was blocked before it left the engine
-//! (`/vsesvit-blocked/pixel.png`).
+//! download that never finishes. A test adds answers of its own with
+//! [`FixtureServer::route`] (`testkit::FixtureStore` serves the extension stores that way).
+//! It records the path of every request, so a test can prove that a request was made
+//! (`/allowed.png`) or was blocked before it left the engine (`/vsesvit-blocked/pixel.png`).
 
 use std::borrow::Cow;
 use std::io::{self, Read, Write};
@@ -66,17 +67,63 @@ pub const STALLED_SENT: usize = 1_000;
 const COOKIE_SET_PAGE: &[u8] = b"<!doctype html><html><head><title>Cookie set</title></head><body></body></html>";
 
 const MAX_REQUEST_HEAD: usize = 16 * 1024;
+const MAX_REQUEST_BODY: usize = 1 << 20;
 /// Engines open speculative connections that never send a request; each connection
 /// thread gives up after this long.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The first byte of a TLS handshake record.
 const TLS_HANDSHAKE: u8 = 0x16;
 
+/// A request a [`FixtureServer::route`] handler answers.
+#[derive(Clone, Debug)]
+pub struct FixtureRequest {
+    pub method: String,
+    /// The path and query, as the request line has them.
+    pub target: String,
+    /// Read up to the request's `Content-Length`.
+    pub body: Vec<u8>,
+}
+
+impl FixtureRequest {
+    /// The target without its query.
+    pub fn path(&self) -> &str {
+        request_path(&self.target)
+    }
+
+    /// The query's pairs in order, decoded.
+    pub fn query(&self) -> Vec<(String, String)> {
+        let query = self.target.split_once('?').map_or("", |(_, query)| query);
+        url::form_urlencoded::parse(query.as_bytes()).into_owned().collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FixtureResponse {
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
+}
+
+impl FixtureResponse {
+    pub fn ok(content_type: &str, body: impl Into<Vec<u8>>) -> FixtureResponse {
+        FixtureResponse { status: 200, content_type: content_type.to_owned(), body: body.into() }
+    }
+
+    /// An empty response with `status`: 204, 404.
+    pub fn status(status: u16) -> FixtureResponse {
+        FixtureResponse { status, content_type: "text/plain; charset=utf-8".to_owned(), body: Vec::new() }
+    }
+}
+
+type Handler = dyn Fn(&FixtureRequest) -> FixtureResponse + Send + Sync;
+type Routes = Mutex<Vec<(String, Arc<Handler>)>>;
+
 /// Serves until dropped. Each connection gets its own thread and one response
 /// (`Connection: close`, `Cache-Control: no-store`, so every page load hits the server).
 pub struct FixtureServer {
     addr: SocketAddr,
     hits: Arc<Mutex<Vec<String>>>,
+    routes: Arc<Routes>,
     stop: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
 }
@@ -86,9 +133,11 @@ impl FixtureServer {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let addr = listener.local_addr()?;
         let hits = Arc::new(Mutex::new(Vec::new()));
+        let routes = Arc::new(Routes::default());
         let stop = Arc::new(AtomicBool::new(false));
         let accept = std::thread::Builder::new().name("fixture-server".into()).spawn({
             let hits = Arc::clone(&hits);
+            let routes = Arc::clone(&routes);
             let stop = Arc::clone(&stop);
             move || {
                 for stream in listener.incoming() {
@@ -97,13 +146,21 @@ impl FixtureServer {
                     }
                     let Ok(stream) = stream else { continue };
                     let hits = Arc::clone(&hits);
+                    let routes = Arc::clone(&routes);
                     let _ = std::thread::Builder::new().name("fixture-conn".into()).spawn(move || {
-                        let _ = serve(stream, &hits);
+                        let _ = serve(stream, &hits, &routes);
                     });
                 }
             }
         })?;
-        Ok(FixtureServer { addr, hits, stop, accept: Some(accept) })
+        Ok(FixtureServer { addr, hits, routes, stop, accept: Some(accept) })
+    }
+
+    /// Answers every request whose path starts with `path_prefix` with `handler`, on the
+    /// connection's thread. Routes come before the site's files; of two routes that both
+    /// match, the one added last answers.
+    pub fn route(&self, path_prefix: &str, handler: impl Fn(&FixtureRequest) -> FixtureResponse + Send + Sync + 'static) {
+        self.routes.lock().unwrap_or_else(PoisonError::into_inner).push((path_prefix.to_owned(), Arc::new(handler)));
     }
 
     pub fn port(&self) -> u16 {
@@ -137,14 +194,25 @@ impl Drop for FixtureServer {
     }
 }
 
-fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>) -> io::Result<()> {
+fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>, routes: &Routes) -> io::Result<()> {
     stream.set_read_timeout(Some(IDLE_TIMEOUT))?;
     stream.set_write_timeout(Some(IDLE_TIMEOUT))?;
-    let Some(head) = read_head(&mut stream)? else { return Ok(()) };
+    let Some((head, body_start)) = read_head(&mut stream)? else { return Ok(()) };
     let mut request_line = head.lines().next().unwrap_or_default().split_ascii_whitespace();
     let (method, target) = (request_line.next().unwrap_or_default(), request_line.next().unwrap_or_default());
     let path = request_path(target);
     hits.lock().unwrap_or_else(PoisonError::into_inner).push(path.to_owned());
+
+    let routed = {
+        let routes = routes.lock().unwrap_or_else(PoisonError::into_inner);
+        routes.iter().rev().find(|(prefix, _)| path.starts_with(prefix.as_str())).map(|(_, handler)| Arc::clone(handler))
+    };
+    if let Some(handler) = routed {
+        let body = read_body(&mut stream, &head, body_start)?;
+        let response = handler(&FixtureRequest { method: method.to_owned(), target: target.to_owned(), body });
+        let status = format!("{} {}", response.status, reason(response.status));
+        return respond(stream, &status, "", &response.content_type, &response.body, method != "HEAD");
+    }
 
     let lookup = if path == "/" { "/index.html" } else { path };
     let get = method == "GET" || method == "HEAD";
@@ -159,15 +227,31 @@ fn serve(mut stream: TcpStream, hits: &Mutex<Vec<String>>) -> io::Result<()> {
         _ => ("404 Not Found", "text/plain; charset=utf-8", Cow::Borrowed(b"not found".as_slice())),
     };
     let cookie = if set_cookie { "Set-Cookie: served=1; Path=/\r\n" } else { "" };
+    respond(stream, status, cookie, content_type, &body, method != "HEAD")
+}
+
+/// One response, then the connection closes. `headers` are extra header lines, each ending in CRLF.
+fn respond(mut stream: TcpStream, status: &str, headers: &str, content_type: &str, body: &[u8], send_body: bool) -> io::Result<()> {
     let head = format!(
-        "HTTP/1.1 {status}\r\n{cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes())?;
-    if method != "HEAD" {
-        stream.write_all(&body)?;
+    if send_body {
+        stream.write_all(body)?;
     }
     stream.flush()
+}
+
+fn reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        204 => "No Content",
+        400 => "Bad Request",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        _ => "Status",
+    }
 }
 
 fn stall(mut stream: TcpStream) -> io::Result<()> {
@@ -189,13 +273,18 @@ fn suggestions(target: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!([terms, [format!("{terms} one"), format!("{terms} two")]])).expect("JSON of strings")
 }
 
-/// Reads up to the blank line that ends the request head. `None` if the peer closed or
-/// went idle first, or opened with a TLS handshake: an https load of this plain server, as the
-/// HTTPS-only self-tests make, is refused at once rather than left to go idle.
-fn read_head(stream: &mut TcpStream) -> io::Result<Option<String>> {
+/// Reads up to the blank line that ends the request head, and returns the head and the
+/// body bytes that arrived with it. `None` if the peer closed or went idle first, or opened
+/// with a TLS handshake: an https load of this plain server, as the HTTPS-only self-tests
+/// make, is refused at once rather than left to go idle.
+fn read_head(stream: &mut TcpStream) -> io::Result<Option<(String, Vec<u8>)>> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 2048];
-    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+    loop {
+        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            let body_start = buf.split_off(end + 4);
+            return Ok(Some((String::from_utf8_lossy(&buf).into_owned(), body_start)));
+        }
         if buf.len() > MAX_REQUEST_HEAD || buf.first() == Some(&TLS_HANDSHAKE) {
             return Ok(None);
         }
@@ -207,7 +296,27 @@ fn read_head(stream: &mut TcpStream) -> io::Result<Option<String>> {
             Err(e) => return Err(e),
         }
     }
-    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+/// `body_start` and the rest of the body, up to the head's `Content-Length` (at most
+/// [`MAX_REQUEST_BODY`]); none without one.
+fn read_body(stream: &mut TcpStream, head: &str, mut body: Vec<u8>) -> io::Result<Vec<u8>> {
+    let length = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(MAX_REQUEST_BODY);
+    let mut chunk = [0u8; 4096];
+    while body.len() < length {
+        match stream.read(&mut chunk)? {
+            0 => break,
+            n => body.extend_from_slice(&chunk[..n]),
+        }
+    }
+    body.truncate(length);
+    Ok(body)
 }
 
 /// `/a/b?x#y` -> `/a/b`. Absolute-form targets (`http://host/a`) keep only the path.

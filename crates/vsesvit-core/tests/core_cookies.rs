@@ -264,6 +264,7 @@ fn a_v8_profile_gains_clear_on_exit() {
          DROP TABLE site_permissions;
          ALTER TABLE v8 RENAME TO site_permissions;
          CREATE INDEX site_permissions_seq ON site_permissions(seq);
+         ALTER TABLE extension_installs DROP COLUMN granted;
          PRAGMA user_version = 8;",
     )
     .unwrap();
@@ -277,7 +278,7 @@ fn a_v8_profile_gains_clear_on_exit() {
     drop(p);
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     let indexed: bool = conn.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'site_permissions_seq'", [], |r| r.get(0)).unwrap();
     assert!(indexed);
     drop(conn);

@@ -13,7 +13,7 @@
 //!                 ─▶ StagedInstall
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -23,7 +23,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::crx::{self, CrxError, CrxStore, VerifyPolicy};
+use super::crx::{self, CWS_PUBLISHER_KEY_SHA256, CrxError, CrxStore, EDGE_PUBLISHER_KEY_SHA256, VerifyPolicy};
 use super::manifest::{self, Manifest, ManifestError};
 use super::{ExtensionId, StoreRef, Verification, is_windows_reserved_name};
 use crate::Url;
@@ -39,11 +39,78 @@ pub const MAX_ENTRIES: usize = 20_000;
 /// `RATIO_ALLOWANCE` bytes of slack so a tiny package of empty-ish files is not refused.
 const MAX_RATIO: u64 = 100;
 const RATIO_ALLOWANCE: u64 = 1 << 20;
-const MAX_API_RESPONSE_BYTES: u64 = 1 << 20;
-/// Edge Add-ons' update service. Its `?response=redirect` form sends downloads to a
-/// plain-http CDN URL, which the https-only agent refuses, so installs go through an
-/// update check, which names an https one.
-const EDGE_UPDATE_URL: &str = "https://edge.microsoft.com/extensionwebstorebase/v1/crx";
+pub(super) const MAX_API_RESPONSE_BYTES: u64 = 1 << 20;
+
+/// The stores installs and updates talk to, and the keys their packages must be signed
+/// with. [`Stores::default`] is the real stores. Tests point a profile at a stand-in
+/// (`testkit::FixtureStore`) with `Profile::set_stores`; nothing else changes it.
+#[derive(Clone, Debug)]
+pub struct Stores {
+    /// The Chrome Web Store's update service: `?response=redirect` downloads,
+    /// `?response=xml` checks for updates.
+    pub cws_update_url: Url,
+    /// Edge Add-ons' update service. Its `?response=redirect` form sends downloads to a
+    /// plain-http CDN URL, which the https-only agent refuses, so installs go through an
+    /// update check, which names an https one.
+    pub edge_update_url: Url,
+    /// addons.mozilla.org's add-on API, ending in `/`.
+    pub amo_api_url: Url,
+    /// SHA-256 of the SPKI DER of the key each store countersigns its CRX files with.
+    pub cws_publisher_key_sha256: [u8; 32],
+    pub edge_publisher_key_sha256: [u8; 32],
+    /// Refuse plain-http URLs, redirects included. Only a local stand-in turns this off.
+    pub https_only: bool,
+}
+
+impl Default for Stores {
+    fn default() -> Self {
+        let url = |s: &str| Url::parse(s).expect("a valid constant URL");
+        Stores {
+            cws_update_url: url("https://clients2.google.com/service/update2/crx"),
+            edge_update_url: url("https://edge.microsoft.com/extensionwebstorebase/v1/crx"),
+            amo_api_url: url("https://addons.mozilla.org/api/v5/addons/addon/"),
+            cws_publisher_key_sha256: CWS_PUBLISHER_KEY_SHA256,
+            edge_publisher_key_sha256: EDGE_PUBLISHER_KEY_SHA256,
+            https_only: true,
+        }
+    }
+}
+
+impl Stores {
+    /// `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=<v>&acceptformat=crx2,crx3&x=id%3D<id>%26uc`
+    pub fn cws_download_url(&self, id: &ExtensionId, chrome_version: &str) -> Url {
+        let version: String = url::form_urlencoded::byte_serialize(chrome_version.as_bytes()).collect();
+        let mut url = self.cws_update_url.clone();
+        url.set_query(Some(&format!("response=redirect&prodversion={version}&acceptformat=crx2,crx3&x=id%3D{}%26uc", id.as_str())));
+        url
+    }
+
+    /// `https://addons.mozilla.org/api/v5/addons/addon/<slug_or_guid>/`. The response's
+    /// `guid`, `current_version.file.url` and `current_version.file.hash` ("sha256:<hex>")
+    /// drive the XPI fetch, and `current_version.version` the update check.
+    pub fn amo_api_url(&self, slug_or_guid: &str) -> Url {
+        let mut url = self.amo_api_url.clone();
+        url.path_segments_mut().expect("an http(s) URL has a path").pop_if_empty().push(slug_or_guid).push("");
+        url
+    }
+
+    pub fn publisher_key_sha256(&self, store: CrxStore) -> &[u8; 32] {
+        match store {
+            CrxStore::ChromeWebStore => &self.cws_publisher_key_sha256,
+            CrxStore::EdgeAddons => &self.edge_publisher_key_sha256,
+        }
+    }
+
+    pub(super) fn agent(&self) -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .https_only(self.https_only)
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(60)))
+            .timeout_recv_body(Some(Duration::from_secs(600)))
+            .build()
+            .into()
+    }
+}
 
 /// What the user gave us, parsed once at the boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,25 +240,6 @@ impl InstallSource {
             InstallSource::Unpacked { .. } => "unpacked",
         }
     }
-
-    /// `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=<v>&acceptformat=crx2,crx3&x=id%3D<id>%26uc`
-    pub fn cws_download_url(id: &ExtensionId, chrome_version: &str) -> Url {
-        let version: String = url::form_urlencoded::byte_serialize(chrome_version.as_bytes()).collect();
-        let url = format!(
-            "https://clients2.google.com/service/update2/crx?response=redirect&prodversion={version}&acceptformat=crx2,crx3&x=id%3D{}%26uc",
-            id.as_str()
-        );
-        Url::parse(&url).expect("the id charset and the encoded version keep the URL valid")
-    }
-
-    /// `https://addons.mozilla.org/api/v5/addons/addon/<slug_or_guid>/`. The response's
-    /// `guid`, `current_version.file.url` and `current_version.file.hash`
-    /// ("sha256:<hex>") drive the XPI fetch.
-    pub fn amo_api_url(slug_or_guid: &str) -> Url {
-        let mut url = Url::parse("https://addons.mozilla.org/api/v5/addons/addon/").expect("a valid constant URL");
-        url.path_segments_mut().expect("an https URL has a path").pop_if_empty().push(slug_or_guid).push("");
-        url
-    }
 }
 
 /// Absolute, with `.` and `..` resolved lexically. `std::path::absolute` already does
@@ -261,6 +309,10 @@ pub enum Intent {
     /// `reconcile()` is realizing desired state from another device: commit never
     /// changes desired state, and discards the result if it is no longer wanted.
     Reconcile,
+    /// The update check found a newer version of an installed store extension: commit
+    /// never changes desired state, and discards the result unless this device still has
+    /// the extension from the same source and the synced record still wants it.
+    Update,
 }
 
 /// Where a running job is, for the install UI.
@@ -306,8 +358,8 @@ impl InstallPhase {
     }
 }
 
-/// `Send`, no DB handle, no `Profile` borrow. Built by `Extensions::prepare_install` or
-/// `reconcile()`, run on any thread.
+/// `Send`, no DB handle, no `Profile` borrow. Built by `Extensions::prepare_install`,
+/// `reconcile()` or `prepare_update_check()`, run on any thread.
 #[derive(Debug)]
 pub struct InstallJob {
     pub(crate) source: InstallSource,
@@ -315,6 +367,8 @@ pub struct InstallJob {
     pub(crate) staging: StagingDir,
     pub(crate) chrome_version: String,
     pub(crate) ui_locale: String,
+    /// The profile's stores when the job was prepared.
+    pub(crate) stores: Stores,
     /// The id the job must produce: the requested Chrome Web Store or Edge Add-ons id, or
     /// the synced record's id for a reconcile job.
     pub(crate) expected_id: Option<ExtensionId>,
@@ -343,8 +397,8 @@ impl InstallJob {
     /// `staging/root`, set `key` (CRX: the verified one; XPI: none), load the manifest, and
     /// check the id against `expected_id`.
     pub fn run(self, progress: &mut dyn FnMut(InstallPhase)) -> Result<StagedInstall, InstallError> {
-        let InstallJob { source, intent, staging, chrome_version, ui_locale, expected_id } = self;
-        let (id, manifest, files, verification) = match fetch(&source, &chrome_version, progress)? {
+        let InstallJob { source, intent, staging, chrome_version, ui_locale, stores, expected_id } = self;
+        let (id, manifest, files, verification) = match fetch(&source, &stores, &chrome_version, progress)? {
             Fetched::InPlace(dir) => {
                 progress(InstallPhase::ReadingManifest);
                 let manifest = Manifest::load(&dir, &ui_locale)?;
@@ -352,7 +406,7 @@ impl InstallJob {
             }
             Fetched::Package(package) => {
                 fs::create_dir_all(&staging.0)?;
-                let (id, manifest, verification) = stage(&package, &staging.root(), &ui_locale, progress)?;
+                let (id, manifest, verification) = stage(&package, &stores, &staging.root(), &ui_locale, progress)?;
                 let dir_name = format!("{}_{}", manifest.version, hex(&package.sha256[..16]));
                 (id, manifest, StagedFiles::Staged { staging, dir_name }, verification)
             }
@@ -400,17 +454,22 @@ impl Package {
     }
 }
 
-fn fetch(source: &InstallSource, chrome_version: &str, progress: &mut dyn FnMut(InstallPhase)) -> Result<Fetched, InstallError> {
+fn fetch(
+    source: &InstallSource,
+    stores: &Stores,
+    chrome_version: &str,
+    progress: &mut dyn FnMut(InstallPhase),
+) -> Result<Fetched, InstallError> {
     Ok(Fetched::Package(match source {
         InstallSource::Unpacked { dir } => return Ok(Fetched::InPlace(dir.clone())),
         InstallSource::ChromeWebStore { id } => {
-            let bytes = download(&agent(), InstallSource::cws_download_url(id, chrome_version).as_str(), progress)?;
+            let bytes = download(&stores.agent(), stores.cws_download_url(id, chrome_version).as_str(), progress)?;
             Package::new(bytes, Format::Crx(VerifyPolicy::WebStore { store: CrxStore::ChromeWebStore, expected: id.clone() }))
         }
         InstallSource::EdgeAddons { id } => {
             progress(InstallPhase::Resolving);
-            let agent = agent();
-            let (url, expected_sha256) = edge_package(&agent, id, chrome_version)?;
+            let agent = stores.agent();
+            let (url, expected_sha256) = edge_package(&agent, stores, id, chrome_version)?;
             let bytes = download(&agent, &url, progress)?;
             let package = Package::new(bytes, Format::Crx(VerifyPolicy::WebStore { store: CrxStore::EdgeAddons, expected: id.clone() }));
             if package.sha256 != expected_sha256 {
@@ -420,8 +479,8 @@ fn fetch(source: &InstallSource, chrome_version: &str, progress: &mut dyn FnMut(
         }
         InstallSource::Amo { slug_or_guid } => {
             progress(InstallPhase::Resolving);
-            let agent = agent();
-            let addon = amo_addon(&agent, slug_or_guid)?;
+            let agent = stores.agent();
+            let addon = amo_addon(&agent, stores, slug_or_guid)?;
             let expected_sha256 = parse_sha256(&addon.current_version.file.hash)?;
             let guid = xpi_id(&addon.guid).ok_or_else(|| InstallError::BadStoreResponse(format!("guid {:?}", addon.guid)))?;
             let bytes = download(&agent, &addon.current_version.file.url, progress)?;
@@ -439,6 +498,7 @@ fn fetch(source: &InstallSource, chrome_version: &str, progress: &mut dyn FnMut(
 /// Verify, unpack into `root`, inject the key, load the manifest.
 fn stage(
     package: &Package,
+    stores: &Stores,
     root: &Path,
     ui_locale: &str,
     progress: &mut dyn FnMut(InstallPhase),
@@ -447,7 +507,11 @@ fn stage(
         Format::Crx(policy) => {
             progress(InstallPhase::Verifying);
             let crx = crx::parse(&package.bytes)?;
-            let verified = crx::verify(&crx, policy)?;
+            let publisher = match policy {
+                VerifyPolicy::WebStore { store, .. } => stores.publisher_key_sha256(*store),
+                VerifyPolicy::AnyDeveloperKey => &stores.cws_publisher_key_sha256,
+            };
+            let verified = crx::verify_with_publisher(&crx, policy, publisher)?;
             progress(InstallPhase::Unpacking);
             unpack_zip(crx.zip, root)?;
             set_key(root, Some(&verified.developer_key))?;
@@ -522,17 +586,7 @@ fn ui_locale_from(vars: [Option<String>; 3]) -> String {
 // Network
 // ---------------------------------------------------------------------------
 
-fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .https_only(true)
-        .timeout_connect(Some(Duration::from_secs(30)))
-        .timeout_recv_response(Some(Duration::from_secs(60)))
-        .timeout_recv_body(Some(Duration::from_secs(600)))
-        .build()
-        .into()
-}
-
-fn network_error(e: ureq::Error) -> InstallError {
+pub(super) fn network_error(e: ureq::Error) -> InstallError {
     match e {
         ureq::Error::StatusCode(code) => InstallError::Http(code),
         other => InstallError::Network(other.to_string()),
@@ -573,13 +627,14 @@ fn download(agent: &ureq::Agent, url: &str, progress: &mut dyn FnMut(InstallPhas
 }
 
 #[derive(Deserialize)]
-struct AmoAddon {
+pub(super) struct AmoAddon {
     guid: String,
-    current_version: AmoVersion,
+    pub(super) current_version: AmoVersion,
 }
 
 #[derive(Deserialize)]
-struct AmoVersion {
+pub(super) struct AmoVersion {
+    pub(super) version: String,
     file: AmoFile,
 }
 
@@ -589,39 +644,74 @@ struct AmoFile {
     hash: String,
 }
 
-fn amo_addon(agent: &ureq::Agent, slug_or_guid: &str) -> Result<AmoAddon, InstallError> {
+pub(super) fn amo_addon(agent: &ureq::Agent, stores: &Stores, slug_or_guid: &str) -> Result<AmoAddon, InstallError> {
     let mut response =
-        agent.get(InstallSource::amo_api_url(slug_or_guid).as_str()).header("Accept", "application/json").call().map_err(network_error)?;
+        agent.get(stores.amo_api_url(slug_or_guid).as_str()).header("Accept", "application/json").call().map_err(network_error)?;
     let body = response.body_mut().with_config().limit(MAX_API_RESPONSE_BYTES).read_to_vec().map_err(network_error)?;
     serde_json::from_slice(&body).map_err(|e| InstallError::BadStoreResponse(e.to_string()))
 }
 
-/// The Omaha 3.1 update check Edge itself POSTs to [`EDGE_UPDATE_URL`] for a fresh install.
-fn edge_update_request(id: &ExtensionId, chrome_version: &str) -> serde_json::Value {
-    serde_json::json!({ "request": {
-        "protocol": "3.1",
-        "acceptformat": "crx3",
-        "prodversion": chrome_version,
-        "app": [{ "appid": id.as_str(), "installsource": "ondemand", "version": "0.0.0.0", "updatecheck": {} }],
-    }})
+/// The Omaha 3.1 update check Edge itself POSTs to [`Stores::edge_update_url`], for each
+/// extension and its installed version: `0.0.0.0` for a fresh install.
+fn edge_update_request(apps: &[(&ExtensionId, &str)], chrome_version: &str) -> serde_json::Value {
+    let apps: Vec<serde_json::Value> = apps
+        .iter()
+        .map(|(id, version)| serde_json::json!({ "appid": id.as_str(), "installsource": "ondemand", "version": version, "updatecheck": {} }))
+        .collect();
+    serde_json::json!({ "request": { "protocol": "3.1", "acceptformat": "crx3", "prodversion": chrome_version, "app": apps }})
+}
+
+/// POSTs the update check for `apps` and returns the response body.
+pub(super) fn edge_update_check(
+    agent: &ureq::Agent,
+    stores: &Stores,
+    apps: &[(&ExtensionId, &str)],
+    chrome_version: &str,
+) -> Result<Vec<u8>, InstallError> {
+    let request = edge_update_request(apps, chrome_version).to_string();
+    let mut response =
+        agent.post(stores.edge_update_url.as_str()).header("Content-Type", "application/json").send(&request).map_err(network_error)?;
+    response.body_mut().with_config().limit(MAX_API_RESPONSE_BYTES).read_to_vec().map_err(network_error)
 }
 
 /// The codebase URL and sha256 of the CRX Edge Add-ons serves for `id`.
-fn edge_package(agent: &ureq::Agent, id: &ExtensionId, chrome_version: &str) -> Result<(String, [u8; 32]), InstallError> {
-    let request = edge_update_request(id, chrome_version).to_string();
-    let mut response = agent.post(EDGE_UPDATE_URL).header("Content-Type", "application/json").send(&request).map_err(network_error)?;
-    let body = response.body_mut().with_config().limit(MAX_API_RESPONSE_BYTES).read_to_vec().map_err(network_error)?;
-    parse_edge_update(&body)
+fn edge_package(agent: &ureq::Agent, stores: &Stores, id: &ExtensionId, chrome_version: &str) -> Result<(String, [u8; 32]), InstallError> {
+    parse_edge_update(&edge_update_check(agent, stores, &[(id, "0.0.0.0")], chrome_version)?)
 }
 
 /// An Omaha 3.1 JSON response, which starts with the `)]}'` line that guards against JSON
-/// hijacking. An app status other than `ok` (`error-unknownApplication` for an id the
-/// store does not have) or an update check other than `ok` means nothing to install.
-fn parse_edge_update(body: &[u8]) -> Result<(String, [u8; 32]), InstallError> {
+/// hijacking.
+fn edge_response(body: &[u8]) -> Result<serde_json::Value, InstallError> {
     let json = body.strip_prefix(b")]}'").unwrap_or(body);
-    let value: serde_json::Value = serde_json::from_slice(json).map_err(|e| InstallError::BadStoreResponse(e.to_string()))?;
+    serde_json::from_slice(json).map_err(|e| InstallError::BadStoreResponse(e.to_string()))
+}
+
+/// An app status other than `ok` (`error-unknownApplication` for an id the store does not
+/// have) or an update check other than `ok` (`noupdate`) means the store offers nothing.
+fn edge_offers(app: &serde_json::Value) -> bool {
+    app["status"] == "ok" && app["updatecheck"]["status"] == "ok"
+}
+
+/// The version Edge Add-ons offers for each app of an update check's response. An app it
+/// offers nothing for, or whose id or version is missing, is left out.
+pub(super) fn parse_edge_updates(body: &[u8]) -> Result<HashMap<ExtensionId, String>, InstallError> {
+    let value = edge_response(body)?;
+    let apps = value["response"]["app"].as_array().ok_or_else(|| InstallError::BadStoreResponse("no response.app".into()))?;
+    Ok(apps
+        .iter()
+        .filter(|app| edge_offers(app))
+        .filter_map(|app| {
+            let id = ExtensionId::parse(app["appid"].as_str()?).ok()?;
+            Some((id, app["updatecheck"]["manifest"]["version"].as_str()?.to_owned()))
+        })
+        .collect())
+}
+
+/// The codebase and sha256 of the first app of an update check's response.
+fn parse_edge_update(body: &[u8]) -> Result<(String, [u8; 32]), InstallError> {
+    let value = edge_response(body)?;
     let app = &value["response"]["app"][0];
-    if app["status"] != "ok" || app["updatecheck"]["status"] != "ok" {
+    if !edge_offers(app) {
         return Err(InstallError::NotAvailable);
     }
     let field = |pointer: &str| {
@@ -951,19 +1041,20 @@ mod tests {
 
     #[test]
     fn download_url_shapes() {
+        let stores = Stores::default();
         let id = ExtensionId::parse("ddkjiahejlhfcafbddmgiahcphecmpfh").unwrap();
         assert_eq!(
-            InstallSource::cws_download_url(&id, "150.0.7000.1").as_str(),
+            stores.cws_download_url(&id, "150.0.7000.1").as_str(),
             "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=150.0.7000.1&acceptformat=crx2,crx3&x=id%3Dddkjiahejlhfcafbddmgiahcphecmpfh%26uc"
         );
         let id = ExtensionId::parse("gcllgfdnfnllodcaambdaknbipemelie").unwrap();
         assert_eq!(
-            edge_update_request(&id, "150.0.7000.1").to_string(),
+            edge_update_request(&[(&id, "0.0.0.0")], "150.0.7000.1").to_string(),
             r#"{"request":{"acceptformat":"crx3","app":[{"appid":"gcllgfdnfnllodcaambdaknbipemelie","installsource":"ondemand","updatecheck":{},"version":"0.0.0.0"}],"prodversion":"150.0.7000.1","protocol":"3.1"}}"#
         );
-        assert_eq!(InstallSource::amo_api_url("ublock-origin").as_str(), "https://addons.mozilla.org/api/v5/addons/addon/ublock-origin/");
+        assert_eq!(stores.amo_api_url("ublock-origin").as_str(), "https://addons.mozilla.org/api/v5/addons/addon/ublock-origin/");
         assert_eq!(
-            InstallSource::amo_api_url("{d10d0bf8-f5b5-c8b4-a8b2-2b9879e08c5d}").as_str(),
+            stores.amo_api_url("{d10d0bf8-f5b5-c8b4-a8b2-2b9879e08c5d}").as_str(),
             "https://addons.mozilla.org/api/v5/addons/addon/%7Bd10d0bf8-f5b5-c8b4-a8b2-2b9879e08c5d%7D/"
         );
     }
@@ -989,6 +1080,31 @@ mod tests {
         let no_hash = br#"{"response":{"app":[{"status":"ok","updatecheck":{"status":"ok","urls":{"url":[{"codebase":"https://x/"}]}}}]}}"#;
         assert!(matches!(parse_edge_update(no_hash), Err(InstallError::BadStoreResponse(_))));
         assert!(matches!(parse_edge_update(b"<html>"), Err(InstallError::BadStoreResponse(_))));
+    }
+
+    #[test]
+    fn edge_update_checks_name_every_app_and_its_version() {
+        let a = ExtensionId::parse("gcllgfdnfnllodcaambdaknbipemelie").unwrap();
+        let b = ExtensionId::parse("ddkjiahejlhfcafbddmgiahcphecmpfh").unwrap();
+        let request = edge_update_request(&[(&a, "1.2.3"), (&b, "4.0")], "150.0.7000.1");
+        assert_eq!(request["request"]["app"][0]["version"], "1.2.3");
+        assert_eq!(request["request"]["app"][1]["appid"], b.as_str());
+        assert_eq!(request["request"]["app"][1]["version"], "4.0");
+
+        let response = format!(
+            ")]}}'\n{}",
+            serde_json::json!({ "response": { "app": [
+                { "appid": a.as_str(), "status": "ok", "updatecheck": { "status": "ok", "manifest": { "version": "1.3.0" } } },
+                { "appid": b.as_str(), "status": "ok", "updatecheck": { "status": "noupdate" } },
+                { "appid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "error-unknownApplication" },
+                { "appid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "status": "ok", "updatecheck": { "status": "ok" } },
+                { "appid": "../x", "status": "ok", "updatecheck": { "status": "ok", "manifest": { "version": "1" } } },
+            ]}})
+        );
+        assert_eq!(parse_edge_updates(response.as_bytes()).unwrap(), HashMap::from([(a, "1.3.0".to_owned())]));
+        assert!(parse_edge_updates(br#"{"response":{"app":[]}}"#).unwrap().is_empty());
+        assert!(matches!(parse_edge_updates(br#"{"response":{}}"#), Err(InstallError::BadStoreResponse(_))));
+        assert!(matches!(parse_edge_updates(b"<html>"), Err(InstallError::BadStoreResponse(_))));
     }
 
     #[test]

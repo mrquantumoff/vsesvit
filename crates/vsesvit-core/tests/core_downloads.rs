@@ -190,17 +190,17 @@ fn a_v1_profile_gains_the_table_and_keeps_its_data() {
         p.bookmarks().add_url(BookmarkId::TOOLBAR, InsertAt::End, "Kept", &bookmark).unwrap();
     }
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
-    conn.execute_batch("DROP TABLE downloads; DROP TABLE favicons; DROP TABLE favicon_failures; DROP TABLE site_permissions; DROP TABLE site_zoom; DROP TABLE vault_key; DROP TABLE sync_secrets; PRAGMA user_version = 1;").unwrap();
+    conn.execute_batch("DROP TABLE downloads; DROP TABLE favicons; DROP TABLE favicon_failures; DROP TABLE site_permissions; DROP TABLE site_zoom; DROP TABLE vault_key; DROP TABLE sync_secrets; ALTER TABLE extension_installs DROP COLUMN granted; PRAGMA user_version = 1;").unwrap();
     drop(conn);
 
     let mut p = open_at(&dir.0);
     assert!(p.bookmarks().is_bookmarked(&bookmark));
     let d = p.downloads().start("https://example.com/", Path::new("/dl/f"), None, T0, Browsing::Normal).unwrap();
     drop(p);
-    assert_eq!(user_version(&dir.0), 10);
+    assert_eq!(user_version(&dir.0), 11);
 
     let mut p = open_at(&dir.0);
-    assert_eq!(user_version(&dir.0), 10, "reopening migrates nothing");
+    assert_eq!(user_version(&dir.0), 11, "reopening migrates nothing");
     assert_eq!(p.downloads().list(10).unwrap(), vec![d]);
     assert!(p.bookmarks().is_bookmarked(&bookmark));
 }
@@ -220,6 +220,7 @@ fn a_v9_profile_takes_the_new_states_and_keeps_its_rows() {
          INSERT INTO v9 SELECT * FROM downloads;
          DROP TABLE downloads;
          ALTER TABLE v9 RENAME TO downloads;
+         ALTER TABLE extension_installs DROP COLUMN granted;
          PRAGMA user_version = 9;",
     )
     .unwrap();
@@ -231,7 +232,7 @@ fn a_v9_profile_takes_the_new_states_and_keeps_its_rows() {
     let paused = p.downloads().start("https://example.com/b.zip", Path::new("/dl/b.zip"), None, T0 + 1, Browsing::Normal).unwrap();
     p.downloads().update(paused.id, State::Paused, 1, None).unwrap();
     drop(p);
-    assert_eq!(user_version(&dir.0), 10);
+    assert_eq!(user_version(&dir.0), 11);
     assert_eq!(states(&mut open_at(&dir.0)), [("https://example.com/b.zip".to_owned(), State::Paused), (d.url, State::Completed)]);
 }
 

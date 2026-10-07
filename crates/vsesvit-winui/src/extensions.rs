@@ -698,6 +698,7 @@ mod tests {
             source: InstallSource::XpiFile {
                 path: PathBuf::from(r"C:\x.xpi"),
             },
+            withheld: Default::default(),
             verification: Verification::LocalXpi,
             engine_id: engine_id.map(Into::into),
         }

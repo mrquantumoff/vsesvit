@@ -268,6 +268,7 @@ mod tests {
             source: InstallSource::Unpacked {
                 dir: PathBuf::from(r"C:\ext"),
             },
+            withheld: Default::default(),
             verification: Verification::Unpacked,
             engine_id: engine_id.map(str::to_owned),
         }

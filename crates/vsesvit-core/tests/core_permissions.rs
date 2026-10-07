@@ -499,7 +499,7 @@ fn a_v5_profile_gains_the_table() {
     let site = origin("https://kept.example");
     drop(open_at(&dir, 1));
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
-    conn.execute_batch("DROP TABLE site_permissions; DROP TABLE site_zoom; DROP TABLE vault_key; DROP TABLE sync_secrets; PRAGMA user_version = 5;").unwrap();
+    conn.execute_batch("DROP TABLE site_permissions; DROP TABLE site_zoom; DROP TABLE vault_key; DROP TABLE sync_secrets; ALTER TABLE extension_installs DROP COLUMN granted; PRAGMA user_version = 5;").unwrap();
     drop(conn);
 
     let mut p = open_at(&dir, 1);
@@ -507,7 +507,7 @@ fn a_v5_profile_gains_the_table() {
     drop(p);
     let conn = rusqlite::Connection::open(dir.0.join("vsesvit.db")).unwrap();
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     drop(conn);
     assert_eq!(open_at(&dir, 1).site_permissions().get(&site, Location), Some(Setting::Allow));
 }

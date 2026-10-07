@@ -34,6 +34,7 @@ const MIGRATIONS: &[&[&str]] = &[
     &[crate::vault::SCHEMA, crate::sync::SECRETS_SCHEMA],
     &[crate::permissions::SCHEMA_CLEAR_ON_EXIT],
     &[crate::downloads::SCHEMA_STATES],
+    &[crate::extensions::SCHEMA_GRANTED],
 ];
 
 /// `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=0`
@@ -83,8 +84,15 @@ pub(crate) struct Meta {
     pub created: bool,
 }
 
-fn meta_get(conn: &Connection, key: &str) -> Result<Option<i64>, rusqlite::Error> {
+pub(crate) fn meta_get(conn: &Connection, key: &str) -> Result<Option<i64>, rusqlite::Error> {
     conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional()
+}
+
+/// For the LOCAL `meta` rows a module keeps for itself, such as
+/// `extensions_update_checked_ms`. Never syncs.
+pub(crate) fn meta_set(conn: &Connection, key: &str, value: i64) -> Result<(), rusqlite::Error> {
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", params![key, value])?;
+    Ok(())
 }
 
 pub(crate) fn load_or_init_meta(

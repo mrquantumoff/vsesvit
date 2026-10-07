@@ -1142,6 +1142,43 @@ mod tests {
     }
 
     #[test]
+    fn a_host_permission_covers_the_origins_it_grants_whatever_the_path() {
+        let covers = |grant: &str, pattern: &str| MatchPattern::parse(grant).unwrap().covers(&MatchPattern::parse(pattern).unwrap());
+        for (grant, pattern) in [
+            ("<all_urls>", "<all_urls>"),
+            ("<all_urls>", "https://a.com/*"),
+            ("<all_urls>", "*://*/*"),
+            ("<all_urls>", "file:///home/*"),
+            ("*://*/*", "https://a.com/x*"),
+            ("*://*/*", "*://*.a.com/*"),
+            ("*://*.a.com/*", "https://x.a.com/*"),
+            ("*://*.a.com/*", "http://a.com/*"),
+            ("https://*.a.com/*", "https://*.x.a.com/*"),
+            ("https://a.com/only/this", "https://a.com/*"),
+            ("http://a.com/*", "http://a.com:8080/*"),
+            ("http://a.com:8080/*", "http://a.com:8080/x"),
+            ("http://A.com/*", "http://a.com/*"),
+        ] {
+            assert!(covers(grant, pattern), "{grant} covers {pattern}");
+        }
+        for (grant, pattern) in [
+            ("*://*/*", "<all_urls>"),
+            ("*://*/*", "file:///*"),
+            ("*://*/*", "ftp://a.com/*"),
+            ("https://a.com/*", "*://a.com/*"),
+            ("http://a.com/*", "https://a.com/*"),
+            ("https://x.a.com/*", "https://*.a.com/*"),
+            ("https://*.x.a.com/*", "https://*.a.com/*"),
+            ("https://a.com/*", "https://b.a.com/*"),
+            ("http://a.com:8080/*", "http://a.com/*"),
+            ("http://a.com:8080/*", "http://a.com:9090/*"),
+            ("https://*.a.com/*", "https://*.b.com/*"),
+        ] {
+            assert!(!covers(grant, pattern), "{grant} does not cover {pattern}");
+        }
+    }
+
+    #[test]
     fn rel_paths() {
         assert_eq!(RelPath::parse("./js/a.js").unwrap().as_str(), "js/a.js");
         for bad in ["", "/etc/passwd", "../x", "a/../../x", "a\\b", "C:/x", "a/./b"] {

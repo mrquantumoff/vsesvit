@@ -3388,6 +3388,7 @@ dependencies = [
  "log",
  "p256",
  "proptest",
+ "roxmltree 0.21.1",
  "rsa",
  "rusqlite",
  "secret-service",

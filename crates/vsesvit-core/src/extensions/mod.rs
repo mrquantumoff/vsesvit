@@ -22,18 +22,24 @@
 //!   desired.installed && no local row          ──reconcile()──▶ InstallJob (Intent::Reconcile)
 //!     (or one holding the id less firmly)
 //!   !desired.installed && local row from store ──reconcile()──▶ uninstalled locally (no new stamp)
+//!   store row, newer version in the store      ──prepare_update_check()──▶ InstallJob (Intent::Update)
 //! ```
+//!
+//! An update that asks for permissions Chrome warns about is installed, but stays off on
+//! this device until the user approves them ([`InstalledExtension::withheld`]).
 
 mod sync_table;
 pub(crate) use sync_table::ExtensionsTable;
 pub mod commands;
 pub mod crx;
+pub mod grants;
 mod install;
 pub mod manifest;
 pub mod notifications;
 pub mod permissions;
 pub mod private;
 pub mod toolbar;
+mod update;
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -47,10 +53,12 @@ use sha2::{Digest, Sha256};
 
 pub use install::{
     InstallError, InstallJob, InstallPhase, InstallSource, Intent, MAX_ARCHIVE_BYTES, MAX_ENTRIES, MAX_UNPACKED_BYTES, SourceParseError,
-    StagedInstall, ui_locale,
+    StagedInstall, Stores, ui_locale,
 };
 use install::{StagedFiles, StagingDir};
 use manifest::{Manifest, cmp_versions};
+use grants::{PermissionSet, permissions_added};
+pub use update::{FIRST_CHECK_DELAY, UPDATE_INTERVAL, UpdateCheck, UpdateReport, Updates};
 
 use crate::crdt::{Extra, Lww};
 use crate::db::Tx;
@@ -61,6 +69,11 @@ use crate::{Error, Profile};
 /// compatible with it and returns nothing for a version it considers too old, so bump
 /// this with releases. Windows overrides it with the WebView2 runtime's real version.
 pub const DEFAULT_CHROME_VERSION: &str = "150.0.0.0";
+
+/// Migration v11: the permissions the user approved, as JSON [`PermissionSet`], kept only
+/// while they are less than what the installed version asks for (an update added some).
+/// NULL, as in every row before it, is everything the installed version asks for.
+pub(crate) const SCHEMA_GRANTED: &str = "ALTER TABLE extension_installs ADD COLUMN granted TEXT;";
 
 /// Validated extension id. It is also a directory name, so the charset is restricted
 /// here, once: `[A-Za-z0-9._@{}-]`, 1..=80 chars, not `.`/`..`, no trailing `.`, not a
@@ -287,8 +300,14 @@ pub struct InstalledExtension {
     pub dir: PathBuf,
     /// Parsed and localized at install time. The dir is immutable, so this never goes stale.
     pub manifest: Manifest,
-    /// Owned by the synced record for store installs, by the local row otherwise.
+    /// Whether the engine runs it: the user's choice, owned by the synced record for store
+    /// installs and by the local row otherwise, and nothing [`withheld`](Self::withheld).
     pub enabled: bool,
+    /// What this version asks for beyond what the user approved: an update added
+    /// permissions Chrome warns about. While this is not empty the extension is off on this
+    /// device, whatever the user's choice, until `Extensions::approve_permissions`. Local:
+    /// another device decides for itself.
+    pub withheld: PermissionSet,
     pub source: InstallSource,
     pub verification: Verification,
     /// The id WebView2 assigned when it loaded *this* `dir`
@@ -298,6 +317,21 @@ pub struct InstalledExtension {
     /// manifest carries `key` (every CRX install) and differs for XPI (whose `key` is
     /// removed at install) and keyless unpacked installs, which is why it is stored.
     pub engine_id: Option<String>,
+}
+
+impl InstalledExtension {
+    /// The line both shells show under an extension an update turned off, `None` for any other.
+    pub fn approval_notice(&self) -> Option<String> {
+        if self.withheld.is_empty() {
+            return None;
+        }
+        let names: Vec<&str> = self.withheld.names().collect();
+        Some(format!(
+            "Turned off: version {} asks for new permissions: {}. Approve them to turn it back on.",
+            self.version,
+            names.join(", ")
+        ))
+    }
 }
 
 /// Work `reconcile()` found.
@@ -350,9 +384,11 @@ impl Extensions<'_> {
 
     /// UI thread, one transaction plus one rename. Idempotent:
     ///
-    /// 1. `Intent::Reconcile`: returns `Ok(None)` and discards the files if the desired
-    ///    record no longer wants this extension (it was uninstalled on another device
-    ///    while we downloaded). Reconcile commits never touch desired state.
+    /// 1. `Intent::Reconcile` and `Intent::Update`: returns `Ok(None)` and discards the
+    ///    files if the desired record no longer wants this extension (it was uninstalled on
+    ///    another device while we downloaded). These commits never touch desired state. An
+    ///    update is also dropped when this device no longer has the extension from the
+    ///    source it was checked against (uninstalled, or replaced by a local copy).
     /// 2. Refuse an id this install may not take (see `check_id`).
     /// 3. If a staged package is older than the installed one, keep the installed one,
     ///    unless that holds its id less firmly (`IdHold`): a store copy replaces an
@@ -368,13 +404,18 @@ impl Extensions<'_> {
     ///    the same version changes nothing and causes no sync traffic.
     /// 6. Upsert the `extension_installs` row. Crash after the rename but before the
     ///    commit leaves an unreferenced dir that the next open GCs or the next install reuses.
+    ///    An update keeps what the user approved before (`granted`), so a version asking
+    ///    for more is [`InstalledExtension::withheld`]; any other install is approved as is.
     pub fn commit(&mut self, staged: StagedInstall) -> Result<Option<InstalledExtension>, Error> {
         let StagedInstall { id, source, intent, files, manifest, verification } = staged;
-        if intent == Intent::Reconcile && !self.desired_installed(&id)? {
+        if matches!(intent, Intent::Reconcile | Intent::Update) && !self.desired_installed(&id)? {
             return Ok(None);
         }
         let wanted_store = source.store().filter(|_| intent == Intent::User);
         let existing = self.row(&id)?;
+        if intent == Intent::Update && existing.as_ref().is_none_or(|r| r.source != source) {
+            return Ok(None);
+        }
         self.check_id(&id, &verification, existing.as_ref())?;
         if let Some(row) = &existing
             && matches!(files, StagedFiles::Staged { .. })
@@ -397,6 +438,10 @@ impl Extensions<'_> {
             StagedFiles::InPlace { dir } => dir.to_str().ok_or_else(|| InstallError::PathNotUnicode(dir.clone()))?.to_owned(),
         };
         let same_dir = existing.as_ref().is_some_and(|r| r.dir == dir_text);
+        let granted = existing.as_ref().filter(|_| intent == Intent::Update).and_then(|r| {
+            let granted = r.granted.clone().unwrap_or_else(|| PermissionSet::required(&r.manifest));
+            (!permissions_added(&granted, &PermissionSet::required(&manifest)).is_empty()).then_some(granted)
+        });
         let row = InstallRow {
             local_enabled: match source.store() {
                 Some(_) => None,
@@ -410,6 +455,7 @@ impl Extensions<'_> {
             source,
             verification,
             manifest,
+            granted,
         };
         self.p.write(|tx| {
             if let Some(store) = wanted_store {
@@ -539,6 +585,16 @@ impl Extensions<'_> {
         Ok(Reconcile { install, removed })
     }
 
+    /// The user approved what the installed version asks for, so nothing is
+    /// [`withheld`](InstalledExtension::withheld) any more and it runs again if the user's
+    /// choice has it enabled. Local to this device, like the withholding.
+    pub fn approve_permissions(&mut self, id: &ExtensionId) -> Result<(), Error> {
+        self.p.write(|tx| {
+            let n = tx.sql.execute("UPDATE extension_installs SET granted = NULL WHERE id = ?1", [id.as_str()])?;
+            if n == 0 { Err(Error::NotFound) } else { Ok(()) }
+        })
+    }
+
     /// Windows shell only: remember WebView2's id for this extension's current dir.
     pub fn set_engine_id(&mut self, id: &ExtensionId, engine_id: &str) -> Result<(), Error> {
         self.p.write(|tx| {
@@ -549,7 +605,7 @@ impl Extensions<'_> {
 
     /// Unpacked dev extensions: re-read the manifest in place, after the developer
     /// clicks "reload". The id must not change (a `key` added or removed changes it; that
-    /// is a new extension).
+    /// is a new extension). The developer approves whatever it now asks for.
     pub fn reload_unpacked(&mut self, id: &ExtensionId) -> Result<InstalledExtension, Error> {
         let row = self.row(id)?.ok_or(Error::NotFound)?;
         let InstallSource::Unpacked { dir } = &row.source else {
@@ -563,7 +619,7 @@ impl Extensions<'_> {
         let manifest_json = to_json(&manifest);
         self.p.write(|tx| {
             tx.sql.execute(
-                "UPDATE extension_installs SET version = ?2, manifest = ?3 WHERE id = ?1",
+                "UPDATE extension_installs SET version = ?2, manifest = ?3, granted = NULL WHERE id = ?1",
                 params![id.as_str(), manifest.version, manifest_json],
             )?;
             Ok(())
@@ -586,6 +642,7 @@ impl Extensions<'_> {
             staging: StagingDir(self.p.paths.staging.join(uuid::Uuid::new_v4().simple().to_string())),
             chrome_version: self.p.chrome_version.clone(),
             ui_locale: install::ui_locale(),
+            stores: self.p.stores.clone(),
             expected_id,
         }
     }
@@ -709,10 +766,10 @@ fn conversion_error(column: usize, e: impl std::error::Error + Send + Sync + 'st
     rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(e))
 }
 
-/// Every `extension_installs` column, then `enabled`: the local column for local
-/// installs, the synced register for store installs.
+/// Every `extension_installs` column, then the user's enabled choice: the local column
+/// for local installs, the synced register for store installs.
 const SELECT_INSTALLED: &str = "SELECT i.id, i.version, i.dir, i.source, i.verification, i.manifest, i.local_enabled, \
-     i.engine_id, i.installed_ms, COALESCE(i.local_enabled, e.enabled, 0) \
+     i.engine_id, i.installed_ms, i.granted, COALESCE(i.local_enabled, e.enabled, 0) \
      FROM extension_installs i LEFT JOIN extensions e ON e.id = i.id";
 
 /// One `extension_installs` row.
@@ -727,11 +784,14 @@ struct InstallRow {
     engine_id: Option<String>,
     /// When this extension was first installed on this device; `list` orders by it.
     installed_ms: i64,
+    /// What the user approved, when it is less than `manifest` asks for (`SCHEMA_GRANTED`).
+    granted: Option<PermissionSet>,
 }
 
 /// A row as `SELECT_INSTALLED` reads it.
 struct LoadedRow {
     row: InstallRow,
+    /// The user's choice, before anything is withheld.
     enabled: bool,
     /// The stored manifest predates [`Manifest::commands`].
     without_commands: bool,
@@ -754,8 +814,12 @@ impl LoadedRow {
             local_enabled: r.get(6)?,
             engine_id: r.get(7)?,
             installed_ms: r.get(8)?,
+            granted: r
+                .get::<_, Option<String>>(9)?
+                .map(|text| serde_json::from_str(&text).map_err(|e| conversion_error(9, e)))
+                .transpose()?,
         };
-        Ok(LoadedRow { row, enabled: r.get(9)?, without_commands })
+        Ok(LoadedRow { row, enabled: r.get(10)?, without_commands })
     }
 
     fn into_installed(self, extensions_root: &Path) -> InstalledExtension {
@@ -765,12 +829,14 @@ impl LoadedRow {
         if without_commands {
             manifest.commands = manifest.commands_from_raw(&dir, &install::ui_locale());
         }
+        let withheld = row.granted.map(|granted| permissions_added(&granted, &PermissionSet::required(&manifest))).unwrap_or_default();
         InstalledExtension {
             dir,
             id: row.id,
             version: row.version,
             manifest,
-            enabled,
+            enabled: enabled && withheld.is_empty(),
+            withheld,
             source: row.source,
             verification: row.verification,
             engine_id: row.engine_id,
@@ -786,8 +852,8 @@ impl InstallRow {
     fn upsert(&self, tx: &mut Tx<'_>) -> Result<(), Error> {
         tx.sql.execute(
             "INSERT OR REPLACE INTO extension_installs \
-             (id, version, dir, source_kind, source, verification, manifest, local_enabled, engine_id, installed_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (id, version, dir, source_kind, source, verification, manifest, local_enabled, engine_id, installed_ms, granted) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 self.id.as_str(),
                 self.version,
@@ -799,6 +865,7 @@ impl InstallRow {
                 self.local_enabled,
                 self.engine_id,
                 self.installed_ms,
+                self.granted.as_ref().map(to_json),
             ],
         )?;
         Ok(())

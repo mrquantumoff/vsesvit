@@ -26,6 +26,8 @@ p256 = { version = "0.14", features = ["ecdsa"] }
 base64 = "0.23"
 zip = { version = "9.0.0-pre3", default-features = false, features = ["deflate"] }
 ureq = "3.4"
+# The Chrome Web Store answers extension update checks in XML (extensions/update.rs).
+roxmltree = "0.21"
 # The certificate details shown from the address bar lock.
 x509-parser = "0.18"
 # Favicons fetched for bookmarks are decoded and scaled to a 32x32 PNG. Only the formats sites serve icons in.
