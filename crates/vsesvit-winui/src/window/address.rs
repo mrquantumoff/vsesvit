@@ -63,6 +63,17 @@ impl BrowserWindow {
         }
     }
 
+    /// Puts `text` in the box's text box with the caret at its end, as key presses do, and
+    /// leaves the box to report the change when it gets to it; a scripted run's keyboard,
+    /// faster than the box.
+    pub fn type_unreported(&self, text: &str) {
+        if let Some(text_box) = self.address_text_box() {
+            let _ = text_box.SetText(text);
+            let end = i32::try_from(text.encode_utf16().count()).unwrap_or(i32::MAX);
+            let _ = text_box.Select(end, 0);
+        }
+    }
+
     fn suggest_for(&self, typed: String, allow_inline: bool) {
         let Some(browser) = self.browser() else {
             return;

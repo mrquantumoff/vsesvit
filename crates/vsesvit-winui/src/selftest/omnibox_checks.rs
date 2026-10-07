@@ -164,6 +164,40 @@ async fn keys(
         "Enter: handled {handled}, tab at {opened}, list open {}",
         window.suggestions_open()
     ));
+    back_to_index(window, tab, server, p).await;
+    if !(handled && !window.suggestions_open()) {
+        return Err(detail.join("; "));
+    }
+
+    // Keys reach the box before it reports what they typed: Enter right after the last one
+    // opens all of the text.
+    let typed_on = format!("{host}/page2.html");
+    let page2 = server.url("/page2.html");
+    window.type_address(TYPED);
+    until(p, |p| {
+        p.observe(format!("typed {TYPED:?} again: {}", describe(window)));
+        (window.highlighted_suggestion() == Some(0)).then_some(())
+    })
+    .await;
+    window.type_unreported(&typed_on);
+    let handled = window.address_key_down(ENTER, Mods::NONE);
+    let opened = until(p, |p| {
+        let url = tab.state().url;
+        p.observe(format!(
+            "typed on to {typed_on:?}, Enter before the box reported it: tab at {url:?}"
+        ));
+        (url == page2.as_str()).then_some(url)
+    })
+    .await;
+    detail.push(format!(
+        "typed on to {typed_on:?}, Enter at once: handled {handled}, tab at {opened}"
+    ));
+    back_to_index(window, tab, server, p).await;
+    let detail = detail.join("; ");
+    handled.then_some(detail.clone()).ok_or(detail)
+}
+
+async fn back_to_index(window: &BrowserWindow, tab: &Tab, server: &FixtureServer, p: &Probe) {
     let index = server.url("/index.html");
     window.address_submitted(index.as_str());
     until(p, |p| {
@@ -176,9 +210,6 @@ async fn keys(
         (s.url == index.as_str() && s.title == FIXTURE_TITLE && !s.loading()).then_some(())
     })
     .await;
-    let ok = handled && !window.suggestions_open();
-    let detail = detail.join("; ");
-    ok.then_some(detail.clone()).ok_or(detail)
 }
 
 /// With a default search engine that searches and suggests on the fixture server, and search
