@@ -30,6 +30,8 @@ pub struct TabInfo {
     pub active: bool,
     /// The kind of its window: `incognito` in `chrome.tabs`.
     pub browsing: Browsing,
+    /// `groupId`: -1 for a tab in no group (see `vsesvit_core::tab_groups::extension_group_id`).
+    pub group_id: i32,
 }
 
 impl TabInfo {
@@ -45,6 +47,7 @@ impl TabInfo {
             "selected": self.active,
             "pinned": false,
             "incognito": self.browsing == Browsing::Private,
+            "groupId": self.group_id,
             "status": "complete",
         });
         if sees_content {
@@ -155,7 +158,7 @@ mod tests {
     use serde_json::json;
 
     fn tab() -> TabInfo {
-        TabInfo { id: TabId(7), window_id: WindowId(1), index: 2, url: "http://127.0.0.1:8080/index.html".into(), title: "Vsesvit fixture".into(), active: true, browsing: Browsing::Normal }
+        TabInfo { id: TabId(7), window_id: WindowId(1), index: 2, url: "http://127.0.0.1:8080/index.html".into(), title: "Vsesvit fixture".into(), active: true, browsing: Browsing::Normal, group_id: -1 }
     }
 
     /// The caller's window is 1, the last focused 3.
@@ -205,6 +208,8 @@ mod tests {
         assert_eq!(v["title"], "Vsesvit fixture");
         assert_eq!(v["incognito"], false);
         assert_eq!(TabInfo { browsing: Browsing::Private, ..tab() }.to_json_for(true)["incognito"], true);
+        assert_eq!(v["groupId"], -1);
+        assert_eq!(TabInfo { group_id: 42, ..tab() }.to_json_for(false)["groupId"], 42);
         assert_eq!(TabId::from_json(&json!(7)), Some(TabId(7)));
         assert_eq!(TabId::from_json(&json!("7")), None);
         assert_eq!(TabId::from_json(&json!(-1)), None);

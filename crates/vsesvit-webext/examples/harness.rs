@@ -2595,6 +2595,7 @@ mod linux {
                         title: t.view.title().map(String::from).unwrap_or_default(),
                         active: i == 0,
                         browsing,
+                        group_id: -1,
                     })
                 })
                 .collect()
