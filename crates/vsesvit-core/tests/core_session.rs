@@ -34,6 +34,7 @@ fn tab(n: u128, blob: Option<Vec<u8>>) -> TabSnapshot {
         title: format!("tab {n}"),
         pinned: n == 1,
         last_active_ms: n as i64,
+        group: None,
         restore_state: blob,
     }
 }

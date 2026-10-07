@@ -136,6 +136,7 @@ pub(crate) fn tab_snapshot(
         title: title.to_owned(),
         pinned,
         last_active_ms,
+        group: None,
         restore_state: None,
     }
 }

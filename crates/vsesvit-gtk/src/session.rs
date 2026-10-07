@@ -51,6 +51,7 @@ fn window_snapshot(window: &BrowserWindow) -> Option<WindowSnapshot> {
             title: tab.display_title(),
             pinned: window.is_pinned(&tab),
             last_active_ms: tab.last_active_ms(),
+            group: None,
             restore_state: tab.session_state_bytes(),
         });
     }
@@ -193,6 +194,7 @@ mod tests {
             title: String::new(),
             pinned,
             last_active_ms: 0,
+            group: None,
             restore_state: None,
         };
         restore(
@@ -228,6 +230,7 @@ mod tests {
                 title: String::new(),
                 pinned: false,
                 last_active_ms: 0,
+                group: None,
                 restore_state: None,
             }],
             active_tab: 0,

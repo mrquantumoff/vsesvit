@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::crdt::{DeviceId, Lattice, Lww, Seq, Stamp};
 use crate::db::{seq_col, stamp_col, uuid_col};
 use crate::sync::{Kind, SyncTable, changed_rows};
+use crate::tab_groups::TabGroup;
 use crate::{Error, Profile, Url};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -63,6 +64,10 @@ pub struct TabSnapshot {
     pub title: String,
     pub pinned: bool,
     pub last_active_ms: i64,
+    /// The tab's group, which each of its tabs carries a copy of, so a record never names a group
+    /// without its tabs. Records from before groups have none, and older builds skip it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<TabGroup>,
     /// Engine back/forward state. Stored in `tab_restore_state`, never serialized, and
     /// not part of equality or ordering.
     #[serde(skip)]
@@ -70,8 +75,8 @@ pub struct TabSnapshot {
 }
 
 impl TabSnapshot {
-    fn key(&self) -> (TabId, &Url, &str, bool, i64) {
-        (self.id, &self.url, &self.title, self.pinned, self.last_active_ms)
+    fn key(&self) -> (TabId, &Url, &str, bool, i64, Option<&TabGroup>) {
+        (self.id, &self.url, &self.title, self.pinned, self.last_active_ms, self.group.as_ref())
     }
 }
 
@@ -263,7 +268,7 @@ mod tests {
     #[test]
     fn tab_equality_ignores_restore_state() {
         let url = Url::parse("https://a.example/").unwrap();
-        let a = TabSnapshot { id: TabId(Uuid::from_u128(7)), url: url.clone(), title: "t".into(), pinned: false, last_active_ms: 1, restore_state: None };
+        let a = TabSnapshot { id: TabId(Uuid::from_u128(7)), url: url.clone(), title: "t".into(), pinned: false, last_active_ms: 1, group: None, restore_state: None };
         let b = TabSnapshot { restore_state: Some(vec![1, 2, 3]), ..a.clone() };
         assert_eq!(a, b);
         assert_eq!(a.cmp(&b), Ordering::Equal);
@@ -271,6 +276,34 @@ mod tests {
         assert_ne!(a, c);
         assert!(serde_json::to_string(&b).unwrap().contains("\"title\":\"t\""));
         assert!(!serde_json::to_string(&b).unwrap().contains("restore_state"));
+    }
+
+    #[test]
+    fn a_tabs_group_reads_back_and_records_without_one_still_read() {
+        use crate::tab_groups::{GroupColor, GroupId};
+
+        let url = Url::parse("https://a.example/").unwrap();
+        let plain = TabSnapshot { id: TabId(Uuid::from_u128(7)), url, title: "t".into(), pinned: false, last_active_ms: 1, group: None, restore_state: None };
+        let old = r#"{"id":"00000000-0000-0000-0000-000000000007","url":"https://a.example/","title":"t","pinned":false,"last_active_ms":1}"#;
+        assert_eq!(serde_json::to_string(&plain).unwrap(), old, "an ungrouped tab is written as before groups");
+        assert_eq!(serde_json::from_str::<TabSnapshot>(old).unwrap(), plain);
+
+        let group = TabGroup { id: GroupId(Uuid::from_u128(1)), title: "Work".into(), color: GroupColor::Blue, collapsed: true };
+        let grouped = TabSnapshot { group: Some(group), ..plain.clone() };
+        assert_ne!(grouped, plain, "grouping a tab is a change to save and sync");
+        let json = serde_json::to_string(&grouped).unwrap();
+        assert_eq!(serde_json::from_str::<TabSnapshot>(&json).unwrap(), grouped);
+
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OlderTab {
+            id: TabId,
+            url: Url,
+            title: String,
+            pinned: bool,
+            last_active_ms: i64,
+        }
+        assert!(serde_json::from_str::<OlderTab>(&json).is_ok(), "an older build skips the group");
     }
 
     #[test]

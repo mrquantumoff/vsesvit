@@ -40,6 +40,7 @@
 //! | [`search`]       | search engines, omnibox resolve + suggest                             |
 //! | [`shortcuts`]    | commands, default chords, the user's keymap                           |
 //! | [`suggest`]      | the default engine's search suggestions: request, fetch, parsing      |
+//! | [`tab_groups`]   | tab groups: which tabs are in which, where actions move them          |
 //! | [`tab_place`]    | a tab's place in its window, which other tabs the tab menu closes     |
 //! | [`trackers`]     | tracking protection: the bundled tracker list, level, site exceptions |
 //! | [`extensions`]   | desired set (synced) vs installed set (local), CRX3/XPI/unpacked      |
@@ -80,6 +81,7 @@ pub mod session;
 pub mod shortcuts;
 pub mod spellcheck;
 pub mod suggest;
+pub mod tab_groups;
 pub mod sync;
 pub mod tab_place;
 pub mod tab_search;
