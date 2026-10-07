@@ -28,7 +28,7 @@ use vsesvit_core::search::{EngineForm, NavTarget, SearchEngineId};
 use vsesvit_core::shortcuts::{Chord, Command, Keymap};
 use vsesvit_core::suggest::DEBOUNCE;
 use vsesvit_core::testkit::report::{Check, Report};
-use vsesvit_core::testkit::{self, CrxKey, FixtureServer, FixtureStore};
+use vsesvit_core::testkit::{self, CrxKey, FixtureResponse, FixtureServer, FixtureStore};
 use vsesvit_core::trackers::{self, Category, TrackerList, TrackingProtection};
 use vsesvit_core::{OpenOptions, Profile, Url};
 use vsesvit_sync::status::{Action, OFFER, passphrase_dialog};
@@ -3720,11 +3720,17 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         glib::timeout_future(POPOVER_SETTLE).await;
         crate::screenshot::save_png(window, &ctx.out_dir.join("profiles-account.png")).await.map_err(|e| e.to_string())?;
         // A rename by hand while a newer picture is on its way: the picture's list must not
-        // replace the renamed one. Blocking, so the picture can only be taken after the rename.
+        // replace the renamed one. The picture is slow to come, and this blocks once its fetch
+        // has started, so the picture can only be taken after the rename.
+        ctx.server.route("/slow-picture.png", |_| {
+            std::thread::sleep(Duration::from_millis(500));
+            FixtureResponse::ok("image/png", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/site/vsesvit-blocked/pixel.png")).to_vec())
+        });
         let picture_file = || home.dir.load().get(&home.id).and_then(|e| home.dir.picture(e));
         let first_picture = picture_file();
-        browser.sync().take_account_details(AccountDetails { name: Some("Alex".to_owned()), picture: Some(ctx.server.url("/vsesvit-blocked/pixel.png")) });
-        let deadline = Instant::now() + Duration::from_secs(3);
+        browser.sync().take_account_details(AccountDetails { name: Some("Alex".to_owned()), picture: Some(ctx.server.url("/slow-picture.png")) });
+        glib::timeout_future(Duration::from_millis(50)).await;
+        let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && picture_file() == first_picture {
             std::thread::sleep(Duration::from_millis(20));
         }
