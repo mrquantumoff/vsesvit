@@ -875,7 +875,8 @@ impl Inner {
             *ext.grants.borrow_mut() = grants;
             filters::compile(self, ext);
         }
-        cookie_jar::changed(self);
+        cookie_jar::changed(self, Store::Normal);
+        cookie_jar::changed(self, Store::Private);
     }
 
     /// `ext`'s dynamic content scripts changed: every tab gets their new user content, which
