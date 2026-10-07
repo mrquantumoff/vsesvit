@@ -483,6 +483,8 @@ mod tests {
 #[cfg(test)]
 mod profile_tests {
     use super::*;
+    use crate::crdt::Seq;
+    use crate::sync::Kind;
     use crate::{OpenOptions, Profile};
 
     fn manifest() -> Manifest {
@@ -526,5 +528,22 @@ mod profile_tests {
         assert_eq!(p.extensions().active_permissions(&id, &m), required(&m));
         drop(p);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn grants_stay_in_their_profile_on_this_device() {
+        let root = std::env::temp_dir().join(format!("vsesvit-ext-permissions-{}", uuid::Uuid::new_v4().simple()));
+        let mut first = Profile::open(&root.join("Default"), OpenOptions::default()).unwrap();
+        let mut second = Profile::open(&root.join("Profile 1"), OpenOptions::default()).unwrap();
+        let id = ExtensionId::parse("abcdefghijklmnopabcdefghijklmnop").unwrap();
+        let m = manifest();
+        first.extensions().grant_permissions(&id, &set(&["tabs"], &[])).unwrap();
+        assert!(first.extensions().active_permissions(&id, &m).apis.contains("tabs"));
+        assert_eq!(second.extensions().active_permissions(&id, &m), required(&m), "another profile's extension holds only what it requires");
+
+        let upload = first.sync().changes_since(Kind::Prefs, Seq::ZERO, usize::MAX).unwrap();
+        assert!(upload.records.iter().all(|r| r.id.as_str() != GRANTED_PERMISSIONS.key), "grants are never synced");
+        drop((first, second));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
