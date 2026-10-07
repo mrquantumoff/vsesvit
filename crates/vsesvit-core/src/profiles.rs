@@ -441,31 +441,37 @@ impl ProfilesDir {
     }
 
     /// Renames and recolours `id`, by hand: its sync account no longer changes it. A new colour
-    /// shows in place of the account's picture, which is dropped.
+    /// shows in place of the account's picture, which is dropped once the list no longer names it.
     pub fn edit_profile(&self, id: &ProfileId, name: &str, color: ProfileColor) -> Result<Registry, EditError> {
         let name = valid_name(name)?;
-        self.edit(|registry| {
+        let mut dropped = None;
+        let registry = self.edit(|registry| {
             let entry = registry.profiles.iter_mut().find(|p| &p.id == id).ok_or(EditError::NotListed)?;
             if entry.name == name && entry.color == color {
                 return Ok(false);
             }
-            if entry.color != color
-                && let Some(old) = entry.picture.take()
-            {
-                self.delete_picture(id, &old);
+            if entry.color != color {
+                dropped = entry.picture.take();
             }
             entry.name = name;
             entry.color = color;
             entry.set_by_hand = Some(true);
             Ok(true)
-        })
+        })?;
+        if let Some(old) = dropped {
+            self.delete_picture(id, &old);
+        }
+        Ok(registry)
     }
 
     /// Takes the name and picture of the sync account `id` is signed in to, unless the user set
-    /// its details by hand. Either may be `None`, which keeps the profile's own.
+    /// its details by hand. Either may be `None`, which keeps the profile's own. The picture it
+    /// replaces is deleted once the list names the new one; if the list cannot be written, the
+    /// new one is deleted instead.
     pub fn take_account_details(&self, id: &ProfileId, name: Option<&str>, picture: Option<&AccountPicture>) -> Result<Registry, EditError> {
         let name = name.and_then(|name| valid_name(name).ok());
-        self.edit(|registry| {
+        let (mut written, mut replaced) = (None, None);
+        let edited = self.edit(|registry| {
             let entry = registry.profiles.iter_mut().find(|p| &p.id == id).ok_or(EditError::NotListed)?;
             if entry.set_by_hand() {
                 return Ok(false);
@@ -478,13 +484,17 @@ impl ProfilesDir {
             }
             if let Some((picture, file)) = picture.map(|p| (p, p.file_name())).filter(|(_, file)| entry.picture.as_ref() != Some(file)) {
                 write_atomically(&self.root(id).join(&file), picture.png())?;
-                if let Some(old) = entry.picture.replace(file) {
-                    self.delete_picture(id, &old);
-                }
+                written = Some(file.clone());
+                replaced = entry.picture.replace(file);
                 changed = true;
             }
             Ok(changed)
-        })
+        });
+        let stale = if edited.is_ok() { replaced } else { written };
+        if let Some(file) = stale {
+            self.delete_picture(id, &file);
+        }
+        edited
     }
 
     /// The file of `entry`'s account picture, when it has one and the file is there: another
@@ -913,6 +923,40 @@ mod tests {
         let registry = dir.edit_profile(&default, "Me", ProfileColor::Red).unwrap();
         assert_eq!(dir.picture(registry.get(&default).unwrap()), None, "a colour chosen by hand replaces the picture");
         assert!(!second_file.exists());
+    }
+
+    #[test]
+    fn a_picture_stays_until_the_list_names_its_replacement() {
+        let dir = dir();
+        let default = ProfileId::default_profile();
+        fs::create_dir_all(dir.root(&default)).unwrap();
+        dir.opened(&default).unwrap();
+        let registry = dir.take_account_details(&default, None, Some(&picture([1, 2, 3, 255]))).unwrap();
+        let first = dir.picture(registry.get(&default).unwrap()).unwrap();
+        // Read-only, the list (Windows) or its directory (Unix) cannot be replaced.
+        let list = dir.path().join(FILE);
+        let blocked = |on: bool| {
+            let mut permissions = fs::metadata(&list).unwrap().permissions();
+            permissions.set_readonly(on);
+            fs::set_permissions(&list, permissions).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if on { 0o555 } else { 0o755 };
+                fs::set_permissions(dir.path(), fs::Permissions::from_mode(mode)).unwrap();
+            }
+        };
+        blocked(true);
+        let failed = dir.take_account_details(&default, None, Some(&picture([3, 2, 1, 255])));
+        blocked(false);
+        assert!(failed.is_err(), "the list could not be written");
+        let pictures: Vec<String> = fs::read_dir(dir.root(&default))
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|name| name.starts_with("Account Picture"))
+            .collect();
+        assert_eq!(dir.picture(dir.load().get(&default).unwrap()), Some(first.clone()), "the list still names the first picture");
+        assert_eq!(pictures, [first.file_name().unwrap().to_str().unwrap()], "which is still there, alone");
     }
 
     #[test]
