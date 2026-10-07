@@ -859,8 +859,8 @@ impl Inner {
     }
 
     /// The user granted `ext` permissions or it gave some back: it holds what core says now,
-    /// which widens or narrows the hosts its pages fetch from, its registered content scripts
-    /// and its declarativeNetRequest rules reach, and the tabs it sees.
+    /// which widens or narrows the hosts its pages fetch from, its registered content scripts,
+    /// declarativeNetRequest rules, cookie calls and cookie events reach, and the tabs it sees.
     pub(crate) fn permissions_changed(self: &Rc<Self>, ext: &Rc<Extension>) {
         let active = self.profile.borrow_mut().extensions().active_permissions(&ext.id, &ext.manifest);
         let grants = crate::extension::dnr_grants(&active);
@@ -873,6 +873,7 @@ impl Inner {
             *ext.grants.borrow_mut() = grants;
             filters::compile(self, ext);
         }
+        cookie_jar::changed(self);
     }
 
     /// `ext`'s dynamic content scripts changed: every tab gets their new user content, which

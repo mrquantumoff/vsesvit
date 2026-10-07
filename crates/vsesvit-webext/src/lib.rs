@@ -179,11 +179,13 @@
 //! - Optional permissions as in Chrome: `permissions.request` during a user gesture, for
 //!   permissions the manifest lists, answers at once for what the extension holds or what has
 //!   no warning, and otherwise asks the user through [`TabHost::ask_permissions`] with
-//!   Chrome's warnings ([`permissions::Prompt`]). Core keeps the grants
-//!   (`Extensions::active_permissions`), which `permissions.remove` takes back, refusing
-//!   required ones. Granted hosts widen at once where the extension's pages fetch from across
-//!   origins, its registered content scripts and declarativeNetRequest rules reach and the
-//!   tabs it sees; a grant's namespace is there from the start in every page.
+//!   Chrome's warnings ([`permissions::Prompt`]), over the window the request came from or
+//!   the last focused one the extension may know (a private one only where it runs). Core
+//!   keeps the grants (`Extensions::active_permissions`), per profile and never synced, which
+//!   `permissions.remove` takes back, refusing required ones. Granted hosts widen at once
+//!   where the extension's pages fetch from across origins, its registered content scripts,
+//!   declarativeNetRequest rules and `chrome.cookies` reach and the tabs it sees; a grant's
+//!   namespace is there from the start in every page.
 //! - Private tabs only where the user allowed the extension in private windows (Chrome's
 //!   "Allow in Incognito"; [`Runtime::allowed_in_private_changed`] applies a change): elsewhere
 //!   a private tab gets none of its content scripts or rulesets, `chrome.tabs` neither lists it

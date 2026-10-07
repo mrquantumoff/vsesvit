@@ -103,13 +103,15 @@
 //!     extension until the user allows it in private windows, and which it then reads and
 //!     sets as store "1"; an extension without the permission has no `chrome.cookies`;
 //! 17. optional permissions (`tests/fixtures/extensions/permissions/`, optional `tabs`,
-//!     `alarms` and the fixture server's host): `getAll` and `contains` answer what it holds;
-//!     `request` grants what has no warning without asking, refuses with Chrome's messages
-//!     what the manifest does not list, a `file:` pattern and a request when no user acts,
-//!     and asks the shell with Chrome's warnings otherwise; a denial grants nothing; a grant
-//!     fires `onAdded`, shows the tab's URL, lets the popup fetch the site and runs a content
-//!     script registered for it before; the grant outlives a reload; `remove` refuses a
-//!     required permission and fires `onRemoved`;
+//!     `alarms`, `cookies` and the fixture server's host): `getAll` and `contains` answer
+//!     what it holds; `request` grants what has no warning without asking, refuses with
+//!     Chrome's messages what the manifest does not list, a `file:` pattern and a request when
+//!     no user acts, and asks the shell with Chrome's warnings otherwise; a denial grants
+//!     nothing, and the prompt is over a normal window, not a private one focused since; a
+//!     grant fires `onAdded`, shows the tab's URL, lets the popup fetch the site, lets
+//!     `cookies.get` read the site's cookies and `cookies.onChanged` report them, and runs a
+//!     content script registered for it before; the grant outlives a reload; `remove` refuses
+//!     a required permission, fires `onRemoved` and keeps `cookies.get` from the site;
 //! 18. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
@@ -1990,6 +1992,10 @@ mod linux {
         }
 
         async fn optional_permissions(&self) {
+            // With no other extension holding `cookies`, the grant itself must start the watch
+            // that `cookies.onChanged` comes from. The later steps need neither.
+            self.runtime.unload(&self.cookies_id);
+            self.runtime.unload(&self.probe.id);
             let id = self.permissions.id.clone();
             let Some(popup) = self.popup(&id, self.tab).await else {
                 self.note("permissions_before_grant", false, "no popup view");
@@ -2013,6 +2019,7 @@ mod linux {
                 tab = tab.0
             );
             let events = async || self.eval_async(&popup, r#"return chrome.runtime.sendMessage("events");"#).await.unwrap_or(Value::Null);
+            let cookie = format!(r#"return await chrome.cookies.get({{ url: {page:?}, name: "granted" }}).then((c) => c && c.value, (e) => e.message);"#);
             let marked = async || {
                 view.reload();
                 glib::timeout_future(Duration::from_millis(100)).await;
@@ -2026,6 +2033,8 @@ mod linux {
                 .eval_async(&popup, &format!(r#"await chrome.scripting.registerContentScripts([{{ id: "mark", matches: ["{origin}"], js: ["mark.js"], persistAcrossSessions: false }}]); return true;"#))
                 .await;
             let unmarked = marked().await;
+            self.eval(&view, "document.cookie = 'granted=1; path=/'; 0", None).await;
+            let ungranted_cookie = self.eval_async(&popup, &cookie).await;
             let expected = serde_json::json!({ "all": { "permissions": ["scripting", "storage"], "origins": [] }, "contains": false, "url": null, "fetched": "refused" });
             self.note(
                 "permissions_before_grant",
@@ -2062,18 +2071,27 @@ mod linux {
             );
             events().await;
 
-            let ask = format!(r#"return await chrome.permissions.request({{ permissions: ["tabs"], origins: ["{origin}"] }});"#);
+            let ask = format!(r#"return await chrome.permissions.request({{ permissions: ["tabs", "cookies"], origins: ["{origin}"] }});"#);
+            // A private window focused since is not one the extension may know, so the prompt
+            // stays over the normal window.
+            let private = self.host.create_window(&NewWindow { browsing: Browsing::Private, focused: true, ..NewWindow::default() });
+            let normal = self.host.windows().into_iter().find(|w| w.browsing == Browsing::Normal).map(|w| w.id);
             let denied = self.eval_async(&popup, &ask).await;
-            let prompt = self.host.prompts.borrow().first().cloned();
+            if let Some(private) = private {
+                self.host.remove_window(private);
+            }
+            let (over, prompt) = self.host.prompts.borrow().first().cloned().unzip();
             let warnings: Vec<String> = prompt.iter().flat_map(|p| p.warnings.iter().map(|w| w.text.clone())).collect();
             let still = self.eval_async(&popup, &state).await;
             self.note(
                 "permissions_request_denied",
                 denied == Some(Value::Bool(false))
+                    && private.is_some()
+                    && over.is_some_and(|w| Some(w) == normal)
                     && prompt.as_ref().is_some_and(|p| p.name == "Vsesvit Permissions")
                     && warnings == ["Read and change your data on 127.0.0.1", "Read your browsing history"]
                     && still.as_ref().map(|s| &s["contains"]) == Some(&Value::Bool(false)),
-                format!("request = {denied:?}; prompt = {prompt:?}; after = {still:?}"),
+                format!("request = {denied:?}; over window {over:?} (normal {normal:?}, private {private:?}); prompt = {prompt:?}; after = {still:?}"),
             );
 
             self.host.allow_permissions.set(true);
@@ -2081,13 +2099,21 @@ mod linux {
             let after = self.eval_async(&popup, &state).await;
             let added = events().await;
             let injected = marked().await;
-            let expected = serde_json::json!({ "all": { "permissions": ["alarms", "scripting", "storage", "tabs"], "origins": [origin] }, "contains": true, "url": page, "fetched": 200 });
-            let event = serde_json::json!([["onAdded", { "permissions": ["tabs"], "origins": [origin] }]]);
+            let expected = serde_json::json!({ "all": { "permissions": ["alarms", "cookies", "scripting", "storage", "tabs"], "origins": [origin] }, "contains": true, "url": page, "fetched": 200 });
+            let event = serde_json::json!([["onAdded", { "permissions": ["cookies", "tabs"], "origins": [origin] }]]);
             self.note(
                 "permissions_request_granted",
                 allowed == Some(Value::Bool(true)) && after.as_ref() == Some(&expected) && added == event && injected.as_deref() == Some("injected") && self.host.prompts.borrow().len() == 2,
                 format!("request = {allowed:?}; after = {after:?}; events = {added}; content script = {injected:?}"),
             );
+            let granted_cookie = self.eval_async(&popup, &cookie).await;
+            self.eval(&view, "document.cookie = 'heard=1; path=/'; 0", None).await;
+            let mut heard = Vec::new();
+            let deadline = Instant::now() + TIMEOUT;
+            while heard.is_empty() && Instant::now() < deadline {
+                glib::timeout_future(Duration::from_millis(100)).await;
+                heard.extend(self.eval_async(&popup, r#"return chrome.runtime.sendMessage("cookies");"#).await.and_then(|c| c.as_array().cloned()).unwrap_or_default());
+            }
 
             self.runtime.unload(&id);
             if let Err(e) = self.runtime.load(&self.permissions) {
@@ -2124,10 +2150,20 @@ mod linux {
             self.note(
                 "permissions_remove",
                 removed.as_ref() == Some(&expected)
-                    && after.as_ref().is_some_and(|a| a["contains"] == false && a["url"].is_null() && a["all"]["permissions"] == serde_json::json!(["alarms", "scripting", "storage"]))
+                    && after.as_ref().is_some_and(|a| a["contains"] == false && a["url"].is_null() && a["all"]["permissions"] == serde_json::json!(["alarms", "cookies", "scripting", "storage"]))
                     && removal == event,
                 format!("remove = {removed:?}; after = {after:?}; events = {removal}"),
             );
+            let removed_cookie = self.eval_async(&popup, &cookie).await;
+            let cookies = serde_json::json!([ungranted_cookie, granted_cookie, heard, removed_cookie]);
+            let expected = serde_json::json!([
+                "cookies.get requires the \"cookies\" permission",
+                "1",
+                [[false, "heard", "1"]],
+                format!("No host permissions for cookies at url: \"{page}\"."),
+            ]);
+            self.note("permissions_reach_cookies", cookies == expected, format!("before the grant, after it, heard, after the removal: {cookies}"));
+            self.eval(&view, "document.cookie = 'granted=; max-age=0; path=/'; document.cookie = 'heard=; max-age=0; path=/'; 0", None).await;
             self.host.remove_tab(tab);
         }
 
@@ -2352,8 +2388,9 @@ mod linux {
         created: RefCell<Vec<String>>,
         /// Every target a gate refused, for checks that wait on one.
         refused: Rc<RefCell<Vec<String>>>,
-        /// Every `permissions.request` prompt, and how the user answers the next ones.
-        prompts: RefCell<Vec<Prompt>>,
+        /// Every `permissions.request` prompt with the window it is over, and how the user
+        /// answers the next ones.
+        prompts: RefCell<Vec<(WindowId, Prompt)>>,
         allow_permissions: Cell<bool>,
         next_id: Cell<u32>,
         next_window: Cell<u32>,
@@ -2650,8 +2687,8 @@ mod linux {
         }
 
         /// Answers later, as a dialog would.
-        fn ask_permissions(&self, prompt: Prompt, answer: Box<dyn FnOnce(bool)>) {
-            self.prompts.borrow_mut().push(prompt);
+        fn ask_permissions(&self, window: WindowId, prompt: Prompt, answer: Box<dyn FnOnce(bool)>) {
+            self.prompts.borrow_mut().push((window, prompt));
             let allow = self.allow_permissions.get();
             glib::idle_add_local_once(move || answer(allow));
         }

@@ -1565,9 +1565,8 @@ impl TabHost for Host {
         self.0.upgrade()?.private.borrow().as_ref().map(|engine| engine.session.clone())
     }
 
-    /// Over the window the user used last, as Chrome asks over the extension's window.
-    fn ask_permissions(&self, prompt: Prompt, answer: Box<dyn FnOnce(bool)>) {
-        let Some(window) = self.browser().and_then(|b| b.windows().into_iter().next()) else {
+    fn ask_permissions(&self, window: WindowId, prompt: Prompt, answer: Box<dyn FnOnce(bool)>) {
+        let Some(window) = self.window(window) else {
             return answer(false);
         };
         let dialog = extension_prompts::request_dialog(&prompt);
@@ -1586,13 +1585,13 @@ mod tests {
     use crate::test_support::{Reply, Server, browser, wait_until};
 
     #[gtk::test]
-    fn an_extensions_permission_request_asks_over_the_last_window_used() {
+    fn an_extensions_permission_request_asks_over_the_window_it_names() {
         use vsesvit_core::extensions::permissions::PermissionMessage;
 
         let browser = browser();
         let window = BrowserWindow::new(&browser);
         let answers = Rc::new(RefCell::new(Vec::new()));
-        let shown = || browser.windows().into_iter().next().and_then(|w| w.visible_dialog()).and_downcast::<adw::AlertDialog>();
+        let shown = || window.visible_dialog().and_downcast::<adw::AlertDialog>();
         let ask = |after: Option<&adw::AlertDialog>| {
             let prompt = Prompt {
                 extension: vsesvit_core::extensions::ExtensionId::parse("asker@vsesvit.test").unwrap(),
@@ -1600,8 +1599,8 @@ mod tests {
                 warnings: vec![PermissionMessage { text: "Read your browsing history".into(), details: Vec::new() }],
             };
             let answers = answers.clone();
-            Host(Rc::downgrade(&browser.0)).ask_permissions(prompt, Box::new(move |allowed| answers.borrow_mut().push(allowed)));
-            wait_until("the prompt over the last window used", || shown().is_some_and(|d| Some(&d) != after));
+            Host(Rc::downgrade(&browser.0)).ask_permissions(WindowId(window.id()), prompt, Box::new(move |allowed| answers.borrow_mut().push(allowed)));
+            wait_until("the prompt over the window", || shown().is_some_and(|d| Some(&d) != after));
             shown().unwrap()
         };
         let first = ask(None);

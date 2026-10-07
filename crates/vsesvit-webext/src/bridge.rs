@@ -206,7 +206,7 @@ fn dispatch(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: Call, 
         }
         Method::PermissionsGetAll => reply.ok(Some(permissions::to_json(&ext.permissions.borrow()))),
         Method::PermissionsContains => reply.finish(permissions_contain(ext, &call)),
-        Method::PermissionsRequest => request_permissions(inner, ext, &call, reply),
+        Method::PermissionsRequest => request_permissions(inner, ext, origin, &call, reply),
         Method::PermissionsRemove => reply.finish(remove_permissions(inner, ext, &call)),
     }
 }
@@ -1303,8 +1303,9 @@ fn permissions_contain(ext: &Extension, call: &Call) -> Result<Option<Value>, St
 }
 
 /// `permissions.request`: what the extension holds already, or what adds no warning, answers
-/// at once; anything else waits for the user's choice in the shell's prompt.
-fn request_permissions(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, reply: Reply) {
+/// at once; anything else waits for the user's choice in the shell's prompt, over the window
+/// the request came from (Chrome's current window), or no when there is none.
+fn request_permissions(inner: &Rc<Inner>, ext: &Rc<Extension>, origin: Origin, call: &Call, reply: Reply) {
     let requested = match permissions::parse(call.arg(0)) {
         Ok(requested) => requested,
         Err(e) => return reply.err(&e),
@@ -1315,9 +1316,13 @@ fn request_permissions(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, repl
         Ok(Request::Held) => reply.ok(Some(json!(true))),
         Ok(Request::Grant(new)) => reply.finish(grant_permissions(inner, &ext.id, &new).map(|()| Some(json!(true)))),
         Ok(Request::Ask(new, warnings)) => {
+            let Some(window) = window_scope(inner, ext, origin).current else {
+                return reply.ok(Some(json!(false)));
+            };
             let prompt = Prompt { extension: ext.id.clone(), name: ext.manifest.name.clone(), warnings };
             let (weak, id) = (Rc::downgrade(inner), ext.id.clone());
             inner.host.ask_permissions(
+                window,
                 prompt,
                 Box::new(move |allowed| {
                     let granted = match weak.upgrade() {

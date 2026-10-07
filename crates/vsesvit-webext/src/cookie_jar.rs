@@ -160,9 +160,9 @@ pub(crate) struct Watch {
     again: bool,
 }
 
-/// The normal store changed, or an extension that may hear of it loaded. With no such
-/// extension loaded nothing is read, and the last reading is forgotten: the first reading
-/// after one loads fires nothing.
+/// The normal store changed, or an extension that may hear of it loaded or was granted
+/// permissions. With no such extension loaded nothing is read, and the last reading is
+/// forgotten: the first reading after one loads fires nothing.
 pub(crate) fn changed(inner: &Rc<Inner>) {
     let listening = inner.loaded_extensions().iter().any(|e| e.has_permission("cookies"));
     {

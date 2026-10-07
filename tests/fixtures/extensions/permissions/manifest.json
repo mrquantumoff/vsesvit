@@ -5,7 +5,7 @@
   "description": "Test extension for optional permissions.",
   "browser_specific_settings": { "gecko": { "id": "permissions@vsesvit.test" } },
   "permissions": ["scripting", "storage"],
-  "optional_permissions": ["tabs", "alarms"],
+  "optional_permissions": ["tabs", "alarms", "cookies"],
   "optional_host_permissions": ["http://127.0.0.1/*"],
   "background": { "service_worker": "background.js" },
   "action": { "default_title": "Vsesvit Permissions", "default_popup": "popup.html" }

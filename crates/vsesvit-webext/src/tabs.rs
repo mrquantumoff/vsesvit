@@ -143,9 +143,10 @@ pub trait TabHost {
     /// The private windows' network session, from their first tab until the last of them
     /// closes.
     fn private_session(&self) -> Option<webkit::NetworkSession>;
-    /// Asks the user whether to grant what an extension's `permissions.request` adds, as
-    /// Chrome's prompt does, and calls `answer` with the choice (at most once; never is a no).
-    fn ask_permissions(&self, prompt: crate::permissions::Prompt, answer: Box<dyn FnOnce(bool)>);
+    /// Asks the user over `window` whether to grant what an extension's `permissions.request`
+    /// adds, as Chrome's prompt does, and calls `answer` with the choice (at most once; never
+    /// is a no). `window` is one the extension may know: a private one only where it runs.
+    fn ask_permissions(&self, window: WindowId, prompt: crate::permissions::Prompt, answer: Box<dyn FnOnce(bool)>);
 }
 
 #[cfg(test)]
