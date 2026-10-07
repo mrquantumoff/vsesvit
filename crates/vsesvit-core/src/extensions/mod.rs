@@ -31,6 +31,7 @@ pub mod crx;
 mod install;
 pub mod manifest;
 pub mod notifications;
+pub mod permissions;
 pub mod private;
 pub mod toolbar;
 
@@ -463,7 +464,15 @@ impl Extensions<'_> {
         if row.is_some_and(|r| r.is_managed()) {
             remove_whole(&self.p.paths.extensions.join(id.as_str()), &self.p.paths.staging);
         }
+        self.forget(id);
         Ok(())
+    }
+
+    /// What this device kept about an extension it no longer has, beside its row.
+    fn forget(&mut self, id: &ExtensionId) {
+        if let Err(e) = self.forget_permissions(id) {
+            log::warn!("{}: cannot forget its granted permissions: {e}", id.as_str());
+        }
     }
 
     /// Called at startup and whenever `ApplyReport::changed.extensions` is set.
@@ -523,6 +532,9 @@ impl Extensions<'_> {
         removed.sort();
         if !removed.is_empty() {
             self.p.write(|tx| removed.iter().try_for_each(|id| delete_local(tx, id)))?;
+            for id in &removed {
+                self.forget(id);
+            }
         }
         Ok(Reconcile { install, removed })
     }
@@ -988,9 +1000,12 @@ mod store_tests {
         let staged = staged_from_store(&mut t, Intent::User);
         assert!(!t.p().extensions().commit(staged).unwrap().unwrap().enabled, "re-install keeps the synced enabled state");
 
+        let tabs = permissions::PermissionSet { apis: ["tabs".to_owned()].into(), ..Default::default() };
+        t.p().extensions().grant_permissions(&ext.id, &tabs).unwrap();
         t.p().extensions().uninstall(&ext.id).unwrap();
         let (gone, _) = desired(&mut t).unwrap();
         assert!(!gone.installed.v, "uninstall is synced");
+        assert!(t.p().prefs().get(&permissions::GRANTED_PERMISSIONS).is_empty(), "its granted permissions go with it");
         assert!(t.p().extensions().list().unwrap().is_empty());
         let work = t.p().extensions().reconcile().unwrap();
         assert!(work.install.is_empty() && work.removed.is_empty());

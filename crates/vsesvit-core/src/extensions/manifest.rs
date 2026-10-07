@@ -343,6 +343,56 @@ impl MatchPattern {
         let path = if self.scheme == AllUrls { "/*" } else { &self.path };
         MatchPattern::parse(&format!("{scheme}://{host}{port}{path}")).ok()
     }
+
+    /// Whether the host permission `self` grants every origin `other` names. Paths do not
+    /// count, as host permissions grant whole origins.
+    pub fn covers(&self, other: &MatchPattern) -> bool {
+        other.within(self).is_some_and(|w| (w.scheme, w.host, w.port) == (other.scheme.clone(), other.host.clone(), other.port))
+    }
+
+    /// Whether it reaches every host on the web, as `<all_urls>`, `*://*/*` or `*://*.com/*`
+    /// do. Without a public suffix list, a domain with no dot counts as a suffix.
+    pub fn matches_all_hosts(&self) -> bool {
+        self.reaches_web()
+            && match &self.host {
+                HostMatch::Any => true,
+                HostMatch::DomainAndSubdomains(d) => !d.contains('.'),
+                HostMatch::Exact(_) => false,
+            }
+    }
+
+    /// The host as Chrome's permission warnings name it: `*.example.com` for a domain and
+    /// its subdomains. `None` for a pattern that reaches no web host (`file:`, `urn:`).
+    pub fn warning_host(&self) -> Option<String> {
+        if !self.reaches_web() {
+            return None;
+        }
+        match &self.host {
+            HostMatch::Any => Some("*".into()),
+            HostMatch::DomainAndSubdomains(d) => Some(format!("*.{d}")),
+            HostMatch::Exact(h) => Some(h.clone()),
+        }
+    }
+
+    fn reaches_web(&self) -> bool {
+        match &self.scheme {
+            SchemeMatch::AllUrls | SchemeMatch::Web => true,
+            SchemeMatch::Exact(s) => matches!(s.as_str(), "http" | "https" | "ws" | "wss" | "ftp"),
+        }
+    }
+}
+
+/// By the text, which fixes everything else.
+impl Ord for MatchPattern {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.source.cmp(&other.source)
+    }
+}
+
+impl PartialOrd for MatchPattern {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// `*` matches any run of characters, everything else matches literally.
