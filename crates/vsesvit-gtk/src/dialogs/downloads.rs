@@ -156,15 +156,20 @@ impl State {
 
     fn update_progress(&self, id: DownloadId) {
         let Some(downloads) = self.downloads.upgrade() else { return };
-        if let Some(row) = self.rows.borrow().iter().find(|row| row.download.id == id) {
-            row.show_live(&downloads);
+        let live = downloads.progress(id);
+        let rows = self.rows.borrow();
+        let Some(row) = rows.iter().find(|row| row.download.id == id) else { return };
+        row.widget.set_subtitle(&status_line(&row.download, live, true));
+        if let Some(bar) = &row.bar {
+            show_progress(bar, live);
         }
     }
 
+    /// Rewords the rows in progress; their bars move only as bytes arrive.
     fn update_running(&self) {
         let Some(downloads) = self.downloads.upgrade() else { return };
         for row in self.rows.borrow().iter().filter(|row| row.download.state.is_live()) {
-            row.show_live(&downloads);
+            row.widget.set_subtitle(&status_line(&row.download, downloads.progress(row.download.id), true));
         }
     }
 
@@ -277,16 +282,6 @@ impl State {
             log::warn!("cannot create {}: {e}", dir.display());
         }
         self.with_window(|window| downloads::open(window, &dir));
-    }
-}
-
-impl Row {
-    fn show_live(&self, downloads: &Downloads) {
-        let live = downloads.progress(self.download.id);
-        self.widget.set_subtitle(&status_line(&self.download, live, true));
-        if let Some(bar) = &self.bar {
-            show_progress(bar, live);
-        }
     }
 }
 

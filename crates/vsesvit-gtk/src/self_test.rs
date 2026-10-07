@@ -3952,7 +3952,6 @@ async fn wait_cookies(last: &Last, jar: &webkit::CookieManager, url: &str, done:
     }
 }
 
-/// Waits until tracking protection's latest blocker is on every tab.
 /// The status line of the Downloads window's newest row, once `wanted` holds for it.
 fn newest_row_reads(view: &impl IsA<gtk::Widget>, wanted: fn(&str) -> bool) -> Result<String, String> {
     match find::<adw::ActionRow>(view.upcast_ref(), |_| true).and_then(|row| row.subtitle()) {
@@ -3974,6 +3973,7 @@ async fn cancel_download(browser: &Browser, last: &Last, url: &Url) -> Result<()
     Ok(())
 }
 
+/// Waits until tracking protection's latest blocker is on every tab.
 async fn tracking_applied(browser: &Browser) {
     let (done, applied) = futures_channel::oneshot::channel();
     browser.trackers().when_applied(move || {
