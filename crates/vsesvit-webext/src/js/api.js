@@ -561,7 +561,7 @@
         TransitionQualifier: values(["client_redirect", "server_redirect", "forward_back", "from_address_bar"]),
       };
     }
-    if (grantedPermissions.has("cookies")) {
+    if (availablePermissions.has("cookies")) {
       const details = (args) => [args[0] || {}];
       const values = (list) => Object.fromEntries(list.map((v) => [v.toUpperCase(), v]));
       api.cookies = {
