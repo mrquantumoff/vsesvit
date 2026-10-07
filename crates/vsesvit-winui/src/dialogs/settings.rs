@@ -576,7 +576,6 @@ pub(super) fn wire(
     })
 }
 
-/// Sets the switch `name` to `on`, and calls `toggled` when the user flips it.
 /// The picker switch is the install's, as in Chrome, so it writes the profile list rather than
 /// this profile's preferences. A profile outside the list has neither row.
 fn wire_profiles(
@@ -602,6 +601,7 @@ fn wire_profiles(
     })
 }
 
+/// Sets the switch `name` to `on`, and calls `toggled` when the user flips it.
 fn switch(
     root: &FrameworkElement,
     browser: &Rc<Browser>,
