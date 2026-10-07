@@ -50,7 +50,7 @@ Settings come from environment variables, or from a `.env` file in the working d
 | `OIDC_ISSUER` | required | The provider's issuer URL, exactly as its `/.well-known/openid-configuration` states it. HTTPS, or HTTP on `localhost` or a loopback IP. |
 | `OIDC_CLIENT_ID` | required | The client the server signs people in as. |
 | `OIDC_CLIENT_SECRET` | none | The client's secret, for a confidential client. Without it the server is a public client; it uses PKCE either way. |
-| `OIDC_SCOPES` | `openid profile email` | Must include `openid`. Without `profile` and `email`, browsers cannot name their profiles after the person. |
+| `OIDC_SCOPES` | `openid profile email` | Must include `openid`. Without `profile` and `email`, browsers cannot name their profiles after the person. Older versions asked for `openid profile`; if the provider refuses that scope for the client, allow it there or set `openid profile`. |
 | `SESSION_IDLE_DAYS` | `180` | A browser's session ends after this many days unused, 1 to 3650. |
 | `MAX_BATCH` | `500` | Records per upload and per download page, 1 to 10000. |
 | `MAX_RECORD_BYTES` | `1048576` | One record's body. At most half of `MAX_REQUEST_BYTES`. |

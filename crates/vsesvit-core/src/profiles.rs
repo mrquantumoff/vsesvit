@@ -21,7 +21,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ProfilePaths;
 
@@ -163,7 +163,7 @@ pub struct ProfileEntry {
     pub color: ProfileColor,
     /// The sync account's picture, shown in place of the coloured initial: a PNG in the
     /// profile's directory, by its file name ([`ProfilesDir::picture`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "picture_file")]
     picture: Option<String>,
     /// The user named or coloured the profile: its sync account no longer changes it. `None` in
     /// lists from before profiles took details from sync, see [`ProfileEntry::set_by_hand`].
@@ -186,6 +186,13 @@ impl ProfileEntry {
     pub fn initial(&self) -> String {
         avatar_initial(&self.name)
     }
+}
+
+/// A picture's file name from the list, kept only when it names a PNG directly in the profile's
+/// directory, so neither showing nor deleting it reaches another file.
+fn picture_file<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let file = Option::<String>::deserialize(d)?;
+    Ok(file.filter(|f| !f.starts_with('.') && !f.contains(['/', '\\', ':']) && f.ends_with(".png")))
 }
 
 /// "Person N", as [`Registry::next_name`] names profiles.
@@ -463,7 +470,8 @@ impl ProfilesDir {
             if entry.set_by_hand() {
                 return Ok(false);
             }
-            let mut changed = false;
+            // Settled, so the account's name is not taken for one the user gave.
+            let mut changed = entry.set_by_hand.replace(false).is_none();
             if let Some(name) = name.filter(|name| *name != entry.name) {
                 entry.name = name;
                 changed = true;
@@ -479,10 +487,10 @@ impl ProfilesDir {
         })
     }
 
-    /// The file of `entry`'s account picture, when it has one.
+    /// The file of `entry`'s account picture, when it has one and the file is there: another
+    /// process may have replaced it since this list was read.
     pub fn picture(&self, entry: &ProfileEntry) -> Option<PathBuf> {
-        let file = entry.picture.as_deref().filter(|f| !f.starts_with('.') && !f.contains(['/', '\\', ':']) && f.ends_with(".png"))?;
-        Some(self.root(&entry.id).join(file))
+        Some(self.root(&entry.id).join(entry.picture.as_deref()?)).filter(|path| path.is_file())
     }
 
     fn delete_picture(&self, id: &ProfileId, file: &str) {
@@ -932,7 +940,13 @@ mod tests {
         let registry = dir.load();
         let by_hand: Vec<bool> = registry.profiles().iter().map(ProfileEntry::set_by_hand).collect();
         assert_eq!(by_hand, [false, true, false]);
-        assert_eq!(dir.picture(&registry.profiles()[2]), None, "a picture outside the profile's directory is never read");
+        assert_eq!(registry.profiles()[2].picture, None, "a picture outside the profile's directory is never read or deleted");
+
+        let default = ProfileId::default_profile();
+        let registry = dir.take_account_details(&default, Some("Demir"), None).unwrap();
+        assert!(!registry.get(&default).unwrap().set_by_hand(), "named by its account, not by hand");
+        let registry = dir.take_account_details(&default, Some("Demir Yerli"), None).unwrap();
+        assert_eq!(registry.get(&default).unwrap().name, "Demir Yerli");
     }
 
     #[test]

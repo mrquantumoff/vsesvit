@@ -69,7 +69,7 @@ impl FaviconFetch {
 
     /// Blocks until every page is done, [`WORKERS`] at a time. Results are in page order.
     pub fn run(self) -> Vec<Fetched> {
-        let agent = agent();
+        let agent = agent(false);
         let next = AtomicUsize::new(0);
         let mut icons = vec![Outcome::NoIcon; self.pages.len()];
         std::thread::scope(|s| {
@@ -112,11 +112,13 @@ pub(crate) fn local_hosts_allowed() -> bool {
     ALLOW_LOCAL.load(Ordering::Relaxed)
 }
 
-/// Fetches from public addresses only, giving up after 10 seconds.
-pub(crate) fn agent() -> ureq::Agent {
+/// Fetches from public addresses only, giving up after 10 seconds. With `https_only`, a redirect
+/// to plain HTTP fails too.
+pub(crate) fn agent(https_only: bool) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .user_agent(USER_AGENT)
+        .https_only(https_only)
         .build();
     ureq::Agent::with_parts(config, DefaultConnector::default(), PublicOnly::default())
 }

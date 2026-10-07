@@ -66,7 +66,7 @@ impl AccountPicture {
     /// Blocking: run it on a worker thread. Public addresses only, like favicons. `None` when the
     /// picture cannot be fetched or decoded.
     pub fn fetch(url: &Url) -> Option<AccountPicture> {
-        let fetched = fetch_agent()
+        let fetched = fetch_agent(!local_hosts_allowed())
             .get(url.as_str())
             .call()
             .and_then(|mut response| response.body_mut().with_config().limit(MAX_DOWNLOAD_BYTES).read_to_vec());
