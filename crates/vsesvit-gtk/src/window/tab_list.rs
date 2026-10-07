@@ -9,7 +9,8 @@
 //! A tab group's header is the list box header of its first row, so a row's index stays its
 //! page's. A collapsed group's rows stay in the list with their content shrunk away, taking no
 //! selection, focus or clicks; the first keeps its header, and the keyboard reaches the header
-//! through it.
+//! through it. Tab and Shift+Tab pass a hidden row by, and the arrow keys, Home, End, Page Up
+//! and Page Down only land on shown rows.
 //!
 //! A `GtkListBox` rather than a `GtkListView`, because the list owns its rows: a new tab's
 //! row grows in, and a closed tab's row shrinks out after its page is gone. The tab view
@@ -48,8 +49,6 @@ struct Rows {
     /// Each shown group's header, kept from one redraw to the next so an editor open on it
     /// stays.
     headers: RefCell<HashMap<GroupId, GroupHeader>>,
-    /// Set while a cursor move is sent on past hidden rows.
-    redirecting: Cell<bool>,
 }
 
 /// A page's row in the list box: the row, the revealer that grows and shrinks it, and
@@ -83,7 +82,6 @@ impl TabList {
             live: RefCell::new(Vec::new()),
             leaving: RefCell::new(Vec::new()),
             headers: RefCell::default(),
-            redirecting: Cell::new(false),
         });
         let weak = Rc::downgrade(&rows);
         list.set_header_func(move |row, _| {
@@ -94,9 +92,11 @@ impl TabList {
             row.set_header(header.as_ref());
         });
         let weak = Rc::downgrade(&rows);
-        list.connect_move_cursor(move |_, step, count, extend, modify| {
-            if let Some(rows) = weak.upgrade() {
-                rows.skip_hidden(step, count, extend, modify);
+        list.connect_move_cursor(move |list, step, count, _, modify| {
+            if let Some(rows) = weak.upgrade()
+                && rows.move_cursor(step, count, modify)
+            {
+                list.stop_signal_emission_by_name("move-cursor");
             }
         });
         let weak = Rc::downgrade(&rows);
@@ -163,14 +163,21 @@ impl TabList {
         Some(slot.0.hidden.get() && !slot.0.revealer.reveals_child() && !slot.0.row.can_target())
     }
 
-    /// Puts the focus on the row showing `page` and moves it `count` rows, as the arrow keys do.
+    /// Puts the focus on the row showing `page` and moves it by `count` of `step`, as the arrow
+    /// keys (`DisplayLines`), Home and End (`BufferEnds`) and Page Up and Down (`Pages`) do.
     #[cfg(test)]
-    pub(crate) fn step_from(&self, page: &adw::TabPage, count: i32) {
-        let row = self.rows.live.borrow().iter().find(|slot| slot.page().as_ref() == Some(page)).map(|slot| slot.0.row.clone());
-        if let Some(row) = row {
+    pub(crate) fn move_from(&self, page: &adw::TabPage, step: gtk::MovementStep, count: i32) {
+        if let Some(row) = self.row_of(page) {
             row.grab_focus();
-            self.rows.list.emit_by_name::<()>("move-cursor", &[&gtk::MovementStep::DisplayLines, &count, &false, &false]);
+            self.rows.list.emit_by_name::<()>("move-cursor", &[&step, &count, &false, &false]);
         }
+    }
+
+    /// The row showing `page`.
+    #[cfg(test)]
+    pub(crate) fn row_of(&self, page: &adw::TabPage) -> Option<gtk::Widget> {
+        let live = self.rows.live.borrow();
+        live.iter().find(|slot| slot.page().as_ref() == Some(page)).map(|slot| slot.0.row.clone().upcast())
     }
 
     /// The rows the list shows now, `(live, leaving)`, and whether every live row has
@@ -403,29 +410,57 @@ impl Rows {
         self.sync_selection();
     }
 
-    /// Arrow keys step over hidden rows, which take no focus, rather than onto them.
-    fn skip_hidden(&self, step: gtk::MovementStep, count: i32, extend: bool, modify: bool) {
-        if step != gtk::MovementStep::DisplayLines || count == 0 || self.redirecting.get() {
-            return;
+    /// Moves the cursor as the list box would, `count` rows (the arrow keys), to an end (Home
+    /// and End) or a page (Page Up and Down), but only ever onto a shown row; past the last
+    /// one there is nowhere to go. A focused header stands just above its row. Says whether
+    /// the move was handled here.
+    fn move_cursor(&self, step: gtk::MovementStep, count: i32, modify: bool) -> bool {
+        use gtk::MovementStep::{BufferEnds, DisplayLines, Pages};
+        if !matches!(step, DisplayLines | BufferEnds | Pages) || count == 0 {
+            return false;
         }
-        let Some(from) = self.list.focus_child().and_downcast::<gtk::ListBoxRow>() else { return };
-        let (by, mut left, mut at, mut steps) = (count.signum(), count.abs(), from.index(), 0);
-        loop {
-            at += by;
-            steps += 1;
-            match self.list.row_at_index(at) {
-                Some(row) if !row.can_focus() => {}
-                Some(_) if left > 1 => left -= 1,
-                _ => break,
+        let rows: Vec<gtk::ListBoxRow> = (0..).map_while(|i| self.list.row_at_index(i)).collect();
+        let Some(focus) = self.list.focus_child() else { return false };
+        let (at, on_header) = match rows.iter().position(|row| *row.upcast_ref::<gtk::Widget>() == focus) {
+            Some(at) => (at, false),
+            None => match rows.iter().position(|row| row.header().as_ref() == Some(&focus)) {
+                Some(at) => (at, true),
+                None => return false,
+            },
+        };
+        let shown = |row: &&gtk::ListBoxRow| row.is_focusable() && row.is_sensitive();
+        let ahead: Vec<&gtk::ListBoxRow> = if count > 0 {
+            rows[at + usize::from(!on_header)..].iter().filter(shown).collect()
+        } else {
+            rows[..at].iter().rev().filter(shown).collect()
+        };
+        let target = match step {
+            DisplayLines => ahead.get(count.unsigned_abs() as usize - 1).copied(),
+            BufferEnds if count < 0 => rows.iter().find(shown),
+            BufferEnds => rows.iter().rfind(shown),
+            _ => {
+                let y = |row: &gtk::ListBoxRow| {
+                    row.compute_point(&self.list, &gtk::graphene::Point::zero()).map_or(0.0, |p| f64::from(p.y()))
+                };
+                let page = self.list.adjustment().map_or(100.0, |a| a.page_increment());
+                let start = y(&rows[at]);
+                let target = ahead.into_iter().take_while(|row| (y(row) - start).abs() <= page).last();
+                if let (Some(row), Some(adjustment)) = (target, self.list.adjustment()) {
+                    adjustment.set_value(adjustment.value() + y(row) - start);
+                }
+                target
             }
+        };
+        match target.filter(|row| on_header || **row != rows[at]) {
+            Some(row) => {
+                row.grab_focus();
+                if !modify {
+                    self.list.select_row(Some(row));
+                }
+            }
+            None => self.list.error_bell(),
         }
-        if steps == count.abs() {
-            return;
-        }
-        self.redirecting.set(true);
-        self.list.emit_by_name::<()>("move-cursor", &[&step, &(steps * by), &extend, &modify]);
-        self.redirecting.set(false);
-        self.list.stop_signal_emission_by_name("move-cursor");
+        true
     }
 
     fn leave(self: &Rc<Self>, slot: Slot) {
@@ -436,7 +471,7 @@ impl Rows {
         row.set_selectable(false);
         row.set_activatable(false);
         row.set_can_target(false);
-        row.set_can_focus(false);
+        row.set_focusable(false);
         slot.0.header.take();
         self.leaving.borrow_mut().push(slot.clone());
         let weak: Weak<Self> = Rc::downgrade(self);
@@ -503,7 +538,7 @@ impl Slot {
         if collapsed {
             revealer.set_opacity(0.0);
         }
-        let row = gtk::ListBoxRow::builder().child(&revealer).build();
+        let row: gtk::ListBoxRow = glib::Object::builder::<ListRow>().property("child", &revealer).build().upcast();
         let menu_key = gtk::Shortcut::new(
             gtk::ShortcutTrigger::parse_string("<Shift>F10|Menu"),
             Some(gtk::CallbackAction::new(glib::clone!(
@@ -543,7 +578,8 @@ impl Slot {
     }
 
     /// Hides the row in a collapsed group, or shows it again. The first row of a group stays
-    /// sensitive, which lets the keyboard reach the header before it.
+    /// sensitive, which lets the keyboard reach the header before it, and passes the focus on
+    /// ([`ListRow`]).
     fn set_hidden(&self, hidden: bool, heads_group: bool) {
         let inner = &self.0;
         inner.hidden.set(hidden);
@@ -561,7 +597,7 @@ impl Slot {
         let row = &inner.row;
         row.set_selectable(!hidden);
         row.set_activatable(!hidden);
-        row.set_can_focus(!hidden);
+        row.set_focusable(!hidden);
         row.set_can_target(!hidden);
         row.set_sensitive(!hidden || heads_group);
     }
@@ -582,6 +618,61 @@ impl Slot {
         self.0.fade.replace(Some(animation.clone()));
         animation.play();
     }
+}
+
+glib::wrapper! {
+    /// A row of the list. One that takes no focus, hidden in a collapsed group or leaving,
+    /// passes the focus on in the direction it moves, where the list box would stop on it: on
+    /// Tab to the next row (or its header) that takes it, on Shift+Tab to its own header or the
+    /// row before.
+    struct ListRow(ObjectSubclass<list_row::ListRow>)
+        @extends gtk::ListBoxRow, gtk::Widget,
+        @implements gtk::Accessible, gtk::Actionable, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+impl ListRow {
+    fn pass_focus(&self, direction: gtk::DirectionType) -> bool {
+        let Some(list) = self.parent().and_downcast::<gtk::ListBox>() else { return false };
+        let at = self.index();
+        match direction {
+            gtk::DirectionType::TabForward | gtk::DirectionType::Down => {
+                let mut after = (at + 1..).map_while(|i| list.row_at_index(i));
+                let Some(next) = after.find(WidgetExt::is_sensitive) else { return false };
+                next.header().is_some_and(|header| header.child_focus(direction)) || next.child_focus(direction)
+            }
+            gtk::DirectionType::TabBackward | gtk::DirectionType::Up => {
+                let mut before = (0..at).rev().filter_map(|i| list.row_at_index(i));
+                self.header().is_some_and(|header| header.child_focus(direction))
+                    || before.find(WidgetExt::is_sensitive).is_some_and(|previous| previous.child_focus(direction))
+            }
+            _ => false,
+        }
+    }
+}
+
+mod list_row {
+    use super::*;
+
+    #[derive(Default)]
+    pub(super) struct ListRow;
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for ListRow {
+        const NAME: &'static str = "VsesvitTabListRow";
+        type Type = super::ListRow;
+        type ParentType = gtk::ListBoxRow;
+    }
+
+    impl ObjectImpl for ListRow {}
+
+    impl WidgetImpl for ListRow {
+        fn focus(&self, direction: gtk::DirectionType) -> bool {
+            let row = self.obj();
+            if row.is_focusable() { self.parent_focus(direction) } else { row.pass_focus(direction) }
+        }
+    }
+
+    impl ListBoxRowImpl for ListRow {}
 }
 
 mod imp {

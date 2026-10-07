@@ -613,9 +613,9 @@ mod tests {
         window.toggle_group(id);
         let collapsed = (header.is_mapped(), window.tab_row_hidden(&grouped), window.selected_tab() == Some(last.clone()));
         let list = &window.ui().tab_list;
-        list.step_from(&window.page_of(&last).expect("the last tab's page"), -1);
+        list.move_from(&window.page_of(&last).expect("the last tab's page"), gtk::MovementStep::DisplayLines, -1);
         let stepped_up = window.selected_tab() == Some(first.clone());
-        list.step_from(&window.page_of(&first).expect("the first tab's page"), 1);
+        list.move_from(&window.page_of(&first).expect("the first tab's page"), gtk::MovementStep::DisplayLines, 1);
         let stepped_down = window.selected_tab() == Some(last.clone());
         window.select_tab(&grouped);
         let reselected = (window.group_of(&grouped).map(|g| g.collapsed), window.tab_row_hidden(&grouped));
@@ -692,5 +692,68 @@ mod tests {
         window.destroy();
         assert_eq!(before, (Some(1), Some((id, false))), "at the group's start, which expands");
         assert_eq!(gone, (Some(3), None), "its group is gone");
+    }
+
+    #[gtk::test]
+    fn the_keyboard_never_lands_on_a_collapsed_groups_rows_in_the_tab_list() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.present();
+        let tabs: Vec<Tab> = (0..7).map(|_| window.open_tab(None, None, Focus::Foreground)).collect();
+        let [p, q, a, b, c, d, e] = <[Tab; 7]>::try_from(tabs).expect("seven tabs");
+        let mut ids = Vec::new();
+        for (head, rest) in [(&p, Some(&q)), (&b, Some(&c)), (&e, None)] {
+            window.group_tab(head);
+            window.close_group_editor();
+            let id = window.group_of(head).expect("the tab is in its new group").id;
+            if let Some(rest) = rest {
+                window.add_tab_to_group(rest, id);
+            }
+            ids.push(id);
+        }
+        window.select_tab(&a);
+        for &id in &ids {
+            window.toggle_group(id);
+        }
+        let list = &window.ui().tab_list;
+        let page = |tab: &Tab| window.page_of(tab).expect("the tab's page");
+        let at = |tab: Option<Tab>| tab.and_then(|tab| window.tabs().iter().position(|t| *t == tab));
+        let moved = |from: &Tab, step, count| {
+            window.select_tab(from);
+            list.move_from(&page(from), step, count);
+            at(window.selected_tab())
+        };
+        use gtk::MovementStep::{BufferEnds, DisplayLines, Pages};
+        let keys = [
+            ("Down", moved(&a, DisplayLines, 1)),
+            ("Up", moved(&d, DisplayLines, -1)),
+            ("Home", moved(&d, BufferEnds, -1)),
+            ("End", moved(&a, BufferEnds, 1)),
+            ("Page Down", moved(&a, Pages, 1)),
+            ("Page Up", moved(&d, Pages, -1)),
+        ];
+
+        let header = |i: usize| list.group_header(ids[i]).expect("the group has a header");
+        let row = |tab: &Tab| list.row_of(&page(tab)).expect("the tab's row");
+        header(1).grab_focus();
+        window.child_focus(gtk::DirectionType::TabForward);
+        let tab_past_group = at(window.selected_tab());
+        // Shift+Tab from a row only leaves it in a window that has the keyboard, which one
+        // under a headless compositor never does; from there the list box hands the focus to
+        // the sensitive row before, the collapsed group's first.
+        let back_to_header = row(&b).child_focus(gtk::DirectionType::TabBackward)
+            && gtk::prelude::RootExt::focus(&window) == Some(header(1));
+        let back_over_group = row(&p).child_focus(gtk::DirectionType::TabBackward)
+            && gtk::prelude::RootExt::focus(&window) == Some(header(0));
+        window.destroy();
+
+        let (shown_a, shown_d) = (Some(2), Some(5));
+        assert_eq!(
+            keys,
+            [("Down", shown_d), ("Up", shown_a), ("Home", shown_a), ("End", shown_d), ("Page Down", shown_d), ("Page Up", shown_a)],
+            "each key selects a shown tab"
+        );
+        assert_eq!(tab_past_group, shown_d, "Tab from a collapsed group's header goes past its rows");
+        assert!(back_to_header && back_over_group, "Shift+Tab from the row after a collapsed group goes to its header");
     }
 }
