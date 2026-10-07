@@ -1597,7 +1597,6 @@ mod tests {
             let prompt = Prompt {
                 extension: vsesvit_core::extensions::ExtensionId::parse("asker@vsesvit.test").unwrap(),
                 name: "Asker".into(),
-                icon: None,
                 warnings: vec![PermissionMessage { text: "Read your browsing history".into(), details: Vec::new() }],
             };
             let answers = answers.clone();

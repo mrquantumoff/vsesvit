@@ -113,7 +113,7 @@ mod tests {
             "https://c.example/*",
             "https://d.example/*",
         ]));
-        let prompt = Prompt { extension: vsesvit_core::extensions::ExtensionId::parse("x@y").unwrap(), name: "Sites".into(), icon: None, warnings };
+        let prompt = Prompt { extension: vsesvit_core::extensions::ExtensionId::parse("x@y").unwrap(), name: "Sites".into(), warnings };
         assert_eq!(
             shown_lines(&request_dialog(&prompt)),
             [

@@ -1315,7 +1315,7 @@ fn request_permissions(inner: &Rc<Inner>, ext: &Rc<Extension>, call: &Call, repl
         Ok(Request::Held) => reply.ok(Some(json!(true))),
         Ok(Request::Grant(new)) => reply.finish(grant_permissions(inner, &ext.id, &new).map(|()| Some(json!(true)))),
         Ok(Request::Ask(new, warnings)) => {
-            let prompt = Prompt { extension: ext.id.clone(), name: ext.manifest.name.clone(), icon: ext.icon(), warnings };
+            let prompt = Prompt { extension: ext.id.clone(), name: ext.manifest.name.clone(), warnings };
             let (weak, id) = (Rc::downgrade(inner), ext.id.clone());
             inner.host.ask_permissions(
                 prompt,

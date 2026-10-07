@@ -2,11 +2,9 @@
 //! Which permissions an extension holds, may ask for and how Chrome words them is core's
 //! (`vsesvit_core::extensions::permissions`).
 
-use std::path::PathBuf;
-
 use serde_json::{Value, json};
 use vsesvit_core::extensions::ExtensionId;
-use vsesvit_core::extensions::permissions::{PermissionMessage, PermissionSet, PermissionsError};
+use vsesvit_core::extensions::permissions::{PermissionMessage, PermissionSet};
 
 /// A `permissions.request` the user decides on, worded as Chrome's prompt: the heading is
 /// `request_heading(name)`, then `REQUEST_LEAD` and the warnings, then Allow and Deny.
@@ -14,20 +12,20 @@ use vsesvit_core::extensions::permissions::{PermissionMessage, PermissionSet, Pe
 pub struct Prompt {
     pub extension: ExtensionId,
     pub name: String,
-    pub icon: Option<PathBuf>,
     pub warnings: Vec<PermissionMessage>,
 }
 
 /// `chrome.permissions.Permissions` from the shim: `permissions` and `origins`, both optional.
 pub fn parse(value: &Value) -> Result<PermissionSet, String> {
     let strings = |key: &str| -> Result<Vec<String>, String> {
+        let malformed = || format!("Error in invocation of permissions: '{key}' must be an array of strings");
         match value.get(key) {
             None | Some(Value::Null) => Ok(Vec::new()),
-            Some(Value::Array(items)) => items.iter().map(|v| v.as_str().map(str::to_owned).ok_or_else(|| format!("Error in invocation of permissions: '{key}' must be an array of strings"))).collect(),
-            Some(_) => Err(format!("Error in invocation of permissions: '{key}' must be an array of strings")),
+            Some(Value::Array(items)) => items.iter().map(|v| v.as_str().map(str::to_owned).ok_or_else(malformed)).collect(),
+            Some(_) => Err(malformed()),
         }
     };
-    PermissionSet::from_request(&strings("permissions")?, &strings("origins")?).map_err(|e: PermissionsError| e.to_string())
+    PermissionSet::from_request(&strings("permissions")?, &strings("origins")?).map_err(|e| e.to_string())
 }
 
 pub fn to_json(set: &PermissionSet) -> Value {

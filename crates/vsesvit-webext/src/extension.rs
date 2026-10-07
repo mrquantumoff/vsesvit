@@ -309,11 +309,6 @@ impl Extension {
         self.active_tabs.borrow_mut().remove(&tab);
     }
 
-    /// Its largest icon, as prompts about it show it.
-    pub fn icon(&self) -> Option<PathBuf> {
-        largest_icon(&self.dir, &self.manifest.icons)
-    }
-
     pub fn background_url(&self) -> Option<String> {
         match &self.manifest.background {
             Some(Background::Page { page, .. }) => Some(self.url(page.as_str())),
