@@ -41,6 +41,20 @@ impl Default for GroupId {
     }
 }
 
+impl std::fmt::Display for GroupId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for GroupId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(GroupId)
+    }
+}
+
 /// `chrome.tabs.Tab.groupId`: -1 (`chrome.tabGroups.TAB_GROUP_ID_NONE`) for a tab in no group,
 /// else a positive integer folded from the group's id, so every part of the extension runtime
 /// agrees on it without keeping a table.
@@ -499,6 +513,7 @@ mod tests {
         assert!(extension_group_id(Some(id)) > 0);
         assert_eq!(extension_group_id(Some(id)), extension_group_id(Some(id)));
         assert_eq!(extension_group_id(Some(GroupId(Uuid::nil()))), 1);
+        assert_eq!(id.to_string().parse::<GroupId>().unwrap(), id);
     }
 
     #[test]
