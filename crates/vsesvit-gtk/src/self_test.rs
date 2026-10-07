@@ -3886,7 +3886,7 @@ mod tests {
         let mut report = report.into_inner();
         assert!(!report.ok());
         report.complete("stopped");
-        assert_eq!(report.checks()[1].name, "install_crx");
+        assert_eq!(report.checks()[1].name, "install_prompt");
         assert!(!report.checks()[1].ok);
         assert!(!report.ok());
     }
