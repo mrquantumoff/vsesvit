@@ -1,23 +1,28 @@
 //! A tab's context menu, with Chrome's items, the same on the top tab bar and in the tab list.
 //! `AdwTabView` holds the menu: the tab bar opens it on a right click after `setup-menu`
 //! names the page, and the list does the same for its rows. The menu is rebuilt for each
-//! page, so its labels follow the tab (Pin or Unpin, to the Right or Below), and its actions
-//! (`tab.*`) act on the page it was set up for.
+//! page, so its labels follow the tab (Pin or Unpin, to the Right or Below, the window's tab
+//! groups), and its actions (`tab.*`) act on the page it was set up for.
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::history::Transition;
+use vsesvit_core::tab_groups::{GroupId, TabGroup};
 use vsesvit_core::tab_place::TabPlace;
 use webkit::prelude::*;
 
-use super::{BrowserWindow, Layout};
+use super::{BrowserWindow, Layout, groups};
 use crate::tab::Tab;
 
 /// What a tab's menu does to its tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TabAction {
     NewTabNext,
+    NewGroup,
+    /// A submenu, whose entries name the group.
+    AddToGroup,
+    RemoveFromGroup,
     MoveToNewWindow,
     Reload,
     Duplicate,
@@ -32,8 +37,11 @@ enum TabAction {
 }
 
 impl TabAction {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 16] = [
         Self::NewTabNext,
+        Self::NewGroup,
+        Self::AddToGroup,
+        Self::RemoveFromGroup,
         Self::MoveToNewWindow,
         Self::Reload,
         Self::Duplicate,
@@ -52,6 +60,9 @@ impl TabAction {
     fn name(self) -> &'static str {
         match self {
             Self::NewTabNext => "new-tab-next",
+            Self::NewGroup => "add-to-new-group",
+            Self::AddToGroup => "add-to-group",
+            Self::RemoveFromGroup => "remove-from-group",
             Self::MoveToNewWindow => "move-to-new-window",
             Self::Reload => "reload",
             Self::Duplicate => "duplicate",
@@ -78,6 +89,9 @@ struct TabFacts {
     /// The tab shows a page with an address worth copying.
     has_link: bool,
     can_reopen: bool,
+    grouped: bool,
+    /// The window has a group the tab is not in.
+    other_groups: bool,
 }
 
 /// A line of the menu: its label, what it does, and whether it can be chosen.
@@ -107,8 +121,18 @@ fn sections(facts: TabFacts) -> [Vec<Item>; 3] {
     if facts.has_link {
         page.push(Item("Copy _Link", CopyLink, true));
     }
+    let mut tabs = vec![Item(new_tab, NewTabNext, true)];
+    tabs.push(if facts.other_groups {
+        Item("_Add Tab to Group", AddToGroup, true)
+    } else {
+        Item("_Add Tab to New Group", NewGroup, true)
+    });
+    if facts.grouped {
+        tabs.push(Item("Remove _From Group", RemoveFromGroup, true));
+    }
+    tabs.push(Item("Move Tab to New _Window", MoveToNewWindow, place.can_move_out()));
     [
-        vec![Item(new_tab, NewTabNext, true), Item("Move Tab to New _Window", MoveToNewWindow, place.can_move_out())],
+        tabs,
         page,
         vec![
             Item("_Close Tab", Close, true),
@@ -117,6 +141,12 @@ fn sections(facts: TabFacts) -> [Vec<Item>; 3] {
             Item("R_eopen Closed Tab", ReopenClosed, facts.can_reopen),
         ],
     ]
+}
+
+/// "Add Tab to Group"'s submenu: a new group, then the window's other groups by name.
+fn group_choices(others: &[TabGroup]) -> Vec<(String, Option<GroupId>)> {
+    let named = others.iter().map(|group| (group.name().replace('_', "__"), Some(group.id)));
+    std::iter::once(("_New Group".to_owned(), None)).chain(named).collect()
 }
 
 /// The menu `AdwTabView` shows, its actions, and the page it was last set up for.
@@ -130,13 +160,16 @@ pub(super) struct TabMenu {
 pub(super) fn install(window: &BrowserWindow) {
     let state = &window.imp().tab_menu;
     for action in TabAction::ALL {
-        let entry = gio::SimpleAction::new(action.name(), None);
+        let parameter = (action == TabAction::AddToGroup).then_some(glib::VariantTy::STRING);
+        let entry = gio::SimpleAction::new(action.name(), parameter);
         entry.connect_activate(glib::clone!(
             #[weak]
             window,
-            move |_, _| {
-                if let Some(page) = window.imp().tab_menu.page.upgrade() {
-                    window.tab_action(&page, action);
+            move |_, target| {
+                let Some(page) = window.imp().tab_menu.page.upgrade() else { return };
+                match groups::parse_target(target) {
+                    Some(group) => window.add_page_to_group(&page, group),
+                    None => window.tab_action(&page, action),
                 }
             }
         ));
@@ -160,12 +193,15 @@ impl BrowserWindow {
             return;
         };
         let view = &self.ui().tab_view;
+        let (own, others) = self.groups_for_menu(&tab);
         let facts = TabFacts {
             place: place_of(view, page),
             vertical: matches!(self.imp().layout.get(), Some(Layout::Sidebar(_))),
             muted: tab.web_view().is_muted(),
             has_link: tab.link().is_some(),
             can_reopen: self.browser().can_reopen_closed_tab(self.browsing()),
+            grouped: own.is_some(),
+            other_groups: !others.is_empty(),
         };
         let sections = sections(facts);
         state.menu.remove_all();
@@ -175,7 +211,11 @@ impl BrowserWindow {
                 if let Some(entry) = state.actions.lookup_action(action.name()).and_downcast::<gio::SimpleAction>() {
                     entry.set_enabled(enabled);
                 }
-                part.append(Some(label), Some(&format!("tab.{}", action.name())));
+                if action == TabAction::AddToGroup {
+                    part.append_submenu(Some(label), &group_submenu(&others));
+                } else {
+                    part.append(Some(label), Some(&format!("tab.{}", action.name())));
+                }
             }
             state.menu.append_section(None, &part);
         }
@@ -188,10 +228,15 @@ impl BrowserWindow {
         match action {
             TabAction::NewTabNext => {
                 let new = Tab::new(self.browser(), self.browsing());
+                self.adopt_into_group(&new, &tab);
                 let at = (place.index + 1).max(place.pinned);
                 view.set_selected_page(&view.insert(&new, to_i32(at)));
                 self.load_new_tab_page(&new);
             }
+            TabAction::NewGroup => self.group_tab(&tab),
+            // Its submenu's entries carry the group, which `add_page_to_group` takes.
+            TabAction::AddToGroup => {}
+            TabAction::RemoveFromGroup => self.remove_tab_from_group(&tab),
             TabAction::MoveToNewWindow => {
                 let target = BrowserWindow::with_browsing(self.browser(), self.browsing());
                 let target_view = &target.ui().tab_view;
@@ -205,6 +250,7 @@ impl BrowserWindow {
             }
             TabAction::Duplicate => {
                 let copy = Tab::new(self.browser(), self.browsing());
+                self.adopt_into_group(&copy, &tab);
                 let at = to_i32(place.index + 1);
                 let added = if place.is_pinned() { view.insert_pinned(&copy, at) } else { view.insert(&copy, at) };
                 view.set_selected_page(&added);
@@ -230,6 +276,12 @@ impl BrowserWindow {
         }
     }
 
+    fn add_page_to_group(&self, page: &adw::TabPage, group: GroupId) {
+        if let Ok(tab) = page.child().downcast::<Tab>() {
+            self.add_tab_to_group(&tab, group);
+        }
+    }
+
     /// Opens `tab`'s menu from its row in the tab list, as a right click does.
     #[cfg(feature = "self-test")]
     pub(crate) fn open_tab_menu(&self, tab: &Tab) -> Option<gtk::PopoverMenu> {
@@ -242,8 +294,11 @@ impl BrowserWindow {
         let state = &self.imp().tab_menu;
         let line = |part: &gio::MenuModel, i: i32| {
             let label = part.item_attribute_value(i, "label", None)?.get::<String>()?;
-            let action = part.item_attribute_value(i, "action", None)?.get::<String>()?;
-            Some((label, state.actions.is_action_enabled(action.strip_prefix("tab.")?)))
+            let enabled = match part.item_attribute_value(i, "action", None).and_then(|a| a.get::<String>()) {
+                Some(action) => state.actions.is_action_enabled(action.strip_prefix("tab.")?),
+                None => part.item_link(i, "submenu").is_some(),
+            };
+            Some((label, enabled))
         };
         let menu = state.menu.upcast_ref::<gio::MenuModel>();
         (0..menu.n_items())
@@ -251,6 +306,19 @@ impl BrowserWindow {
             .map(|part| (0..part.n_items()).filter_map(|i| line(&part, i)).collect())
             .collect()
     }
+}
+
+fn group_submenu(others: &[TabGroup]) -> gio::Menu {
+    let menu = gio::Menu::new();
+    for (label, group) in group_choices(others) {
+        let item = gio::MenuItem::new(Some(&label), None);
+        match group {
+            Some(group) => item.set_action_and_target_value(Some("tab.add-to-group"), Some(&groups::target(group))),
+            None => item.set_detailed_action("tab.add-to-new-group"),
+        }
+        menu.append_item(&item);
+    }
+    menu
 }
 
 fn place_of(view: &adw::TabView, page: &adw::TabPage) -> TabPlace {
@@ -280,6 +348,8 @@ mod tests {
             muted: false,
             has_link: true,
             can_reopen: true,
+            grouped: false,
+            other_groups: false,
         }
     }
 
@@ -297,7 +367,7 @@ mod tests {
         assert_eq!(
             labels,
             [
-                vec!["_New Tab to the Right", "Move Tab to New _Window"],
+                vec!["_New Tab to the Right", "_Add Tab to New Group", "Move Tab to New _Window"],
                 vec!["_Reload", "_Duplicate", "P_in Tab", "_Mute Tab", "Copy _Link"],
                 vec!["_Close Tab", "Close _Other Tabs", "Close Tabs to the Ri_ght", "R_eopen Closed Tab"],
             ]
@@ -335,6 +405,60 @@ mod tests {
         let all_pinned = facts(1, 2, 2);
         assert_eq!(enabled(all_pinned, TabAction::CloseOthers), Some(false));
         assert_eq!(enabled(facts(0, 2, 0), TabAction::CloseAfter), Some(true));
+    }
+
+    #[test]
+    fn a_tab_is_added_to_a_new_group_until_the_window_has_another() {
+        let labels = |facts: TabFacts| sections(facts)[0].iter().map(|i| i.0).collect::<Vec<_>>();
+        assert_eq!(labels(facts(0, 2, 0))[1], "_Add Tab to New Group");
+        let grouped = TabFacts { grouped: true, ..facts(0, 2, 0) };
+        assert_eq!(labels(grouped)[1..3], ["_Add Tab to New Group", "Remove _From Group"]);
+        let others = TabFacts { other_groups: true, ..facts(0, 2, 1) };
+        assert_eq!(labels(others), ["_New Tab to the Right", "_Add Tab to Group", "Move Tab to New _Window"], "a pinned tab too");
+        assert_eq!(enabled(others, TabAction::AddToGroup), Some(true));
+    }
+
+    #[test]
+    fn the_group_submenu_offers_a_new_group_then_names_the_others() {
+        use vsesvit_core::tab_groups::GroupColor;
+
+        let group = |title: &str, color| TabGroup { id: GroupId::new(), title: title.into(), color, collapsed: false };
+        let (work, untitled) = (group("Work_2", GroupColor::Blue), group("", GroupColor::Red));
+        let choices = group_choices(&[work.clone(), untitled.clone()]);
+        assert_eq!(
+            choices,
+            [("_New Group".to_owned(), None), ("Work__2".to_owned(), Some(work.id)), ("Red group".to_owned(), Some(untitled.id))]
+        );
+    }
+
+    #[gtk::test]
+    fn the_menu_groups_a_tab_and_adds_another_to_its_group() {
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        let (a, b, c) = (
+            window.open_tab(None, None, Focus::Foreground),
+            window.open_tab(None, None, Focus::Foreground),
+            window.open_tab(None, None, Focus::Foreground),
+        );
+        let page = |tab: &Tab| window.page_of(tab).expect("the tab's page");
+        window.tab_action(&page(&a), TabAction::NewGroup);
+        window.close_group_editor();
+        let group = window.group_of(&a).expect("the tab is in a new group");
+        window.setup_tab_menu(Some(&page(&c)));
+        let offered = window.groups_for_menu(&c).1;
+        window.add_page_to_group(&page(&c), group.id);
+        let joined = (window.tabs(), window.group_of(&c).map(|g| g.id));
+        let opened = {
+            window.tab_action(&page(&c), TabAction::NewTabNext);
+            window.selected_tab().and_then(|tab| window.group_of(&tab)).map(|g| g.id)
+        };
+        window.tab_action(&page(&a), TabAction::RemoveFromGroup);
+        let left = window.group_of(&a);
+        window.destroy();
+        assert_eq!(offered, std::slice::from_ref(&group));
+        assert_eq!(joined, (vec![a.clone(), c.clone(), b.clone()], Some(group.id)), "it joins the end of the group");
+        assert_eq!(opened, Some(group.id), "New Tab to the Right from a grouped tab joins the group");
+        assert_eq!(left, None);
     }
 
     #[gtk::test]

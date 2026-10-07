@@ -38,6 +38,7 @@ use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles::{self, Home, ProfileColor, ProfileId, Registry};
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::sync::Changed;
+use vsesvit_core::tab_groups::extension_group_id;
 use vsesvit_core::tab_search::{self, Listed, Row};
 use vsesvit_core::trackers::TrackingProtection;
 use vsesvit_core::{Profile, Url};
@@ -1489,6 +1490,7 @@ impl TabHost for Host {
                         title: tab.display_title(),
                         active: selected.as_ref() == Some(&tab),
                         browsing: tab.browsing(),
+                        group_id: extension_group_id(window.group_of(&tab).map(|group| group.id)),
                     })
                     .collect::<Vec<_>>()
             })

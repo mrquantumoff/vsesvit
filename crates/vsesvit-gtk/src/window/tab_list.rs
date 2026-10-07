@@ -6,18 +6,26 @@
 //! right click, a long press or the Menu key opens the tab view's menu for it. Search Tabs
 //! heads the list and New Tab ends it.
 //!
+//! A tab group's header is the list box header of its first row, so a row's index stays its
+//! page's. A collapsed group's rows stay in the list with their content shrunk away, taking no
+//! selection, focus or clicks; the first keeps its header, and the keyboard reaches the header
+//! through it.
+//!
 //! A `GtkListBox` rather than a `GtkListView`, because the list owns its rows: a new tab's
 //! row grows in, and a closed tab's row shrinks out after its page is gone. The tab view
 //! closes pages at once, so the tab count and the closed-tab stack never wait on the
 //! animation; only the leaving row outlives its page, and it takes no input.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
+use vsesvit_core::tab_groups::{GroupId, Row, TabGroup};
 
+use super::groups;
 use crate::motion;
 
 pub(crate) struct TabList {
@@ -37,6 +45,11 @@ struct Rows {
     live: RefCell<Vec<Slot>>,
     /// Rows of closed pages, until they have shrunk away.
     leaving: RefCell<Vec<Slot>>,
+    /// Each shown group's header, kept from one redraw to the next so an editor open on it
+    /// stays.
+    headers: RefCell<HashMap<GroupId, GroupHeader>>,
+    /// Set while a cursor move is sent on past hidden rows.
+    redirecting: Cell<bool>,
 }
 
 /// A page's row in the list box: the row, the revealer that grows and shrinks it, and
@@ -49,6 +62,10 @@ struct SlotInner {
     revealer: gtk::Revealer,
     tab: TabRow,
     fade: RefCell<Option<adw::TimedAnimation>>,
+    /// Its group's header, on a group's first row.
+    header: RefCell<Option<gtk::Widget>>,
+    /// In a collapsed group.
+    hidden: Cell<bool>,
 }
 
 impl TabList {
@@ -65,6 +82,22 @@ impl TabList {
             list: list.clone(),
             live: RefCell::new(Vec::new()),
             leaving: RefCell::new(Vec::new()),
+            headers: RefCell::default(),
+            redirecting: Cell::new(false),
+        });
+        let weak = Rc::downgrade(&rows);
+        list.set_header_func(move |row, _| {
+            let header = weak.upgrade().and_then(|rows| {
+                let live = rows.live.borrow();
+                live.iter().find(|slot| slot.0.row == *row).and_then(|slot| slot.0.header.borrow().clone())
+            });
+            row.set_header(header.as_ref());
+        });
+        let weak = Rc::downgrade(&rows);
+        list.connect_move_cursor(move |_, step, count, extend, modify| {
+            if let Some(rows) = weak.upgrade() {
+                rows.skip_hidden(step, count, extend, modify);
+            }
         });
         let weak = Rc::downgrade(&rows);
         rows.pages.connect_items_changed(move |_, position, removed, added| {
@@ -112,6 +145,34 @@ impl TabList {
         &self.search
     }
 
+    /// Shows the window's groups: core's rows, for the view's pages.
+    pub(crate) fn show_groups(&self, rows: &[Row<adw::TabPage>]) {
+        self.rows.show_groups(rows);
+    }
+
+    /// The header of `group`, while it has one.
+    pub(crate) fn group_header(&self, group: GroupId) -> Option<gtk::Widget> {
+        self.rows.headers.borrow().get(&group).map(|header| header.button.clone().upcast())
+    }
+
+    /// Whether the row showing `page` is hidden in a collapsed group.
+    #[cfg(any(test, feature = "self-test"))]
+    pub(crate) fn row_hidden(&self, page: &adw::TabPage) -> Option<bool> {
+        let live = self.rows.live.borrow();
+        let slot = live.iter().find(|slot| slot.page().as_ref() == Some(page))?;
+        Some(slot.0.hidden.get() && !slot.0.revealer.reveals_child() && !slot.0.row.can_target())
+    }
+
+    /// Puts the focus on the row showing `page` and moves it `count` rows, as the arrow keys do.
+    #[cfg(test)]
+    pub(crate) fn step_from(&self, page: &adw::TabPage, count: i32) {
+        let row = self.rows.live.borrow().iter().find(|slot| slot.page().as_ref() == Some(page)).map(|slot| slot.0.row.clone());
+        if let Some(row) = row {
+            row.grab_focus();
+            self.rows.list.emit_by_name::<()>("move-cursor", &[&gtk::MovementStep::DisplayLines, &count, &false, &false]);
+        }
+    }
+
     /// The rows the list shows now, `(live, leaving)`, and whether every live row has
     /// finished growing in and nothing is still shrinking out.
     #[cfg(any(test, feature = "self-test"))]
@@ -120,7 +181,7 @@ impl TabList {
         let leaving = self.rows.leaving.borrow().len();
         let settled = leaving == 0
             && live.iter().all(|slot| {
-                slot.0.revealer.is_child_revealed() && slot.0.revealer.opacity() >= 1.0
+                slot.0.hidden.get() || (slot.0.revealer.is_child_revealed() && slot.0.revealer.opacity() >= 1.0)
             });
         (live.len(), leaving, settled)
     }
@@ -163,6 +224,78 @@ impl TabList {
             .iter()
             .find(|slot| slot.page().as_ref() == Some(page))
             .map(|slot| slot.0.revealer.opacity())
+    }
+}
+
+/// A group's header: its chip and whether it is expanded. A click, Enter or Space collapses or
+/// expands the group; a right click, a long press or the Menu key opens its editor.
+struct GroupHeader {
+    button: gtk::Button,
+    chip: gtk::Label,
+    arrow: gtk::Image,
+}
+
+impl GroupHeader {
+    fn new(id: GroupId) -> Self {
+        let chip = gtk::Label::builder()
+            .css_classes(["tab-group-chip"])
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .valign(gtk::Align::Center)
+            .build();
+        let arrow = gtk::Image::builder().hexpand(true).halign(gtk::Align::End).css_classes(["dimmed"]).build();
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        content.append(&chip);
+        content.append(&arrow);
+        let target = groups::target(id);
+        let button = gtk::Button::builder()
+            .child(&content)
+            .action_name("tab-group.toggle")
+            .action_target(&target)
+            .css_classes(["flat", "tab-group-header"])
+            .build();
+        let edit = Rc::new(move |widget: &gtk::Widget| {
+            let _ = widget.activate_action("tab-group.edit", Some(&target));
+        });
+        let right_click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
+        right_click.connect_pressed(glib::clone!(
+            #[strong]
+            edit,
+            move |gesture, _, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                edit(&gesture.widget().expect("the gesture is on the header"));
+            }
+        ));
+        button.add_controller(right_click);
+        let long_press = gtk::GestureLongPress::builder().touch_only(true).build();
+        long_press.connect_pressed(glib::clone!(
+            #[strong]
+            edit,
+            move |gesture, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                edit(&gesture.widget().expect("the gesture is on the header"));
+            }
+        ));
+        button.add_controller(long_press);
+        let menu_key = gtk::Shortcut::new(
+            gtk::ShortcutTrigger::parse_string("<Shift>F10|Menu"),
+            Some(gtk::CallbackAction::new(move |widget, _| {
+                edit(widget);
+                glib::Propagation::Stop
+            })),
+        );
+        let keys = gtk::ShortcutController::new();
+        keys.add_shortcut(menu_key);
+        button.add_controller(keys);
+        GroupHeader { button, chip, arrow }
+    }
+
+    fn show(&self, group: &TabGroup) {
+        groups::paint_chip(&self.chip, group);
+        self.arrow.set_icon_name(Some(if group.collapsed { "pan-end-symbolic" } else { "pan-down-symbolic" }));
+        let name = group.name();
+        self.button.set_tooltip_text(Some(&name));
+        self.button.update_property(&[gtk::accessible::Property::Label(&name)]);
+        self.button.update_state(&[gtk::accessible::State::Expanded(Some(!group.collapsed))]);
     }
 }
 
@@ -232,7 +365,67 @@ impl Rows {
         for slot in gone {
             self.leave(slot);
         }
+        self.list.invalidate_headers();
         self.sync_selection();
+    }
+
+    /// Heads each group with its header and hides a collapsed group's rows. Each row's
+    /// group shows as the colour of its bar.
+    fn show_groups(&self, rows: &[Row<adw::TabPage>]) {
+        let live: Vec<Slot> = self.live.borrow().clone();
+        let mut old = self.headers.take();
+        let mut headers = HashMap::new();
+        let mut heading: Option<(gtk::Widget, &TabGroup)> = None;
+        let mut group: Option<&TabGroup> = None;
+        for row in rows {
+            match row {
+                Row::Header(shown) => {
+                    let header = old.remove(&shown.id).unwrap_or_else(|| GroupHeader::new(shown.id));
+                    header.show(shown);
+                    heading = Some((header.button.clone().upcast(), shown));
+                    headers.insert(shown.id, header);
+                }
+                Row::Tab { tab, group: of, hidden } => {
+                    let Some(slot) = live.iter().find(|slot| slot.page().as_ref() == Some(tab)) else { continue };
+                    let header = heading.take().map(|(header, shown)| {
+                        group = Some(shown);
+                        header
+                    });
+                    let heads = header.is_some();
+                    slot.0.header.replace(header);
+                    groups::set_color_class(&slot.0.tab, of.and(group.map(|g| g.color)));
+                    slot.set_hidden(*hidden, heads);
+                }
+            }
+        }
+        self.headers.replace(headers);
+        self.list.invalidate_headers();
+        self.sync_selection();
+    }
+
+    /// Arrow keys step over hidden rows, which take no focus, rather than onto them.
+    fn skip_hidden(&self, step: gtk::MovementStep, count: i32, extend: bool, modify: bool) {
+        if step != gtk::MovementStep::DisplayLines || count == 0 || self.redirecting.get() {
+            return;
+        }
+        let Some(from) = self.list.focus_child().and_downcast::<gtk::ListBoxRow>() else { return };
+        let (by, mut left, mut at, mut steps) = (count.signum(), count.abs(), from.index(), 0);
+        loop {
+            at += by;
+            steps += 1;
+            match self.list.row_at_index(at) {
+                Some(row) if !row.can_focus() => {}
+                Some(_) if left > 1 => left -= 1,
+                _ => break,
+            }
+        }
+        if steps == count.abs() {
+            return;
+        }
+        self.redirecting.set(true);
+        self.list.emit_by_name::<()>("move-cursor", &[&step, &(steps * by), &extend, &modify]);
+        self.redirecting.set(false);
+        self.list.stop_signal_emission_by_name("move-cursor");
     }
 
     fn leave(self: &Rc<Self>, slot: Slot) {
@@ -244,6 +437,7 @@ impl Rows {
         row.set_activatable(false);
         row.set_can_target(false);
         row.set_can_focus(false);
+        slot.0.header.take();
         self.leaving.borrow_mut().push(slot.clone());
         let weak: Weak<Self> = Rc::downgrade(self);
         let done = {
@@ -331,6 +525,8 @@ impl Slot {
             revealer,
             tab,
             fade: RefCell::new(None),
+            header: RefCell::new(None),
+            hidden: Cell::new(false),
         }))
     }
 
@@ -339,8 +535,35 @@ impl Slot {
     }
 
     fn enter(&self) {
+        if self.0.hidden.get() {
+            return;
+        }
         self.0.revealer.set_reveal_child(true);
         self.animate(1.0, || {});
+    }
+
+    /// Hides the row in a collapsed group, or shows it again. The first row of a group stays
+    /// sensitive, which lets the keyboard reach the header before it.
+    fn set_hidden(&self, hidden: bool, heads_group: bool) {
+        let inner = &self.0;
+        inner.hidden.set(hidden);
+        if hidden {
+            inner.revealer.set_reveal_child(false);
+            inner.row.add_css_class("tab-hidden");
+        } else {
+            inner.row.remove_css_class("tab-hidden");
+            if inner.revealer.opacity() < 1.0 {
+                self.enter();
+            } else {
+                inner.revealer.set_reveal_child(true);
+            }
+        }
+        let row = &inner.row;
+        row.set_selectable(!hidden);
+        row.set_activatable(!hidden);
+        row.set_can_focus(!hidden);
+        row.set_can_target(!hidden);
+        row.set_sensitive(!hidden || heads_group);
     }
 
     /// Fades the revealer, which stays mapped while its child is hidden, from wherever an

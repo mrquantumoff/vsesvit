@@ -11,6 +11,7 @@
 
 mod actions;
 mod ext_actions;
+mod groups;
 mod layout;
 mod menu;
 mod tab_list;
@@ -35,6 +36,8 @@ use vsesvit_core::permissions::{Answer, Permission};
 use vsesvit_core::prefs::TabsPosition;
 use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles::{self, ProfileColor};
+use vsesvit_core::tab_groups::{GroupId, TabGroups};
+use vsesvit_webext::TabId;
 use webkit::prelude::*;
 
 use crate::address_bar::{AddressBar, Anchor};
@@ -55,6 +58,7 @@ use ext_actions::ExtensionActions;
 use layout::Layout;
 #[cfg(feature = "self-test")]
 use layout::Rect;
+pub(crate) use groups::install_style as install_group_style;
 use tab_list::TabList;
 pub(crate) use tab_search::TabSearch;
 
@@ -100,6 +104,8 @@ struct Ui {
     profile_avatar: gtk::Label,
     tab_view: adw::TabView,
     tab_bar: adw::TabBar,
+    /// The tab groups' chips at the start of the tab bar, before the tabs.
+    group_chips: gtk::Box,
     /// Search Tabs at the end of the tab bar, after the tabs.
     tab_bar_search: gtk::Button,
     tab_list: TabList,
@@ -144,6 +150,13 @@ mod imp {
         pub(super) fullscreen_notice_timeout: RefCell<Option<glib::SourceId>>,
         pub(super) tab_menu: tab_menu::TabMenu,
         pub(super) tab_search: RefCell<Option<TabSearch>>,
+        pub(super) groups: RefCell<TabGroups<TabId>>,
+        /// Set while a group action moves tabs, which settles the groups once it is done.
+        pub(super) groups_held: Cell<bool>,
+        /// The tab bar's group chips, in their order.
+        pub(super) chips: RefCell<Vec<(GroupId, gtk::Button)>>,
+        /// The group editor last opened, which one opened after it replaces.
+        pub(super) group_editor: RefCell<Option<gtk::Popover>>,
     }
 
     #[glib::object_subclass]
@@ -200,6 +213,7 @@ impl BrowserWindow {
         assert!(imp.ui.set(ui).is_ok(), "new runs once per window");
         actions::install(&window);
         tab_menu::install(&window);
+        groups::install(&window);
         window.connect_signals();
         window.apply_prefs();
         window.refresh_bookmarks_bar();
@@ -297,6 +311,8 @@ impl BrowserWindow {
         let tab_bar_search = icon_button("system-search-symbolic", "win.search-tabs", "Search Tabs");
         tab_bar_search.add_css_class("flat");
         tab_bar.set_end_action_widget(Some(&tab_bar_search));
+        let group_chips = gtk::Box::builder().spacing(2).visible(false).build();
+        tab_bar.set_start_action_widget(Some(&group_chips));
 
         let address = AddressBar::new();
         let title = adw::Clamp::builder().hexpand(true).child(&address).build();
@@ -405,6 +421,7 @@ impl BrowserWindow {
             profile_avatar,
             tab_view,
             tab_bar,
+            group_chips,
             tab_bar_search,
             tab_list,
             split,
@@ -424,7 +441,15 @@ impl BrowserWindow {
         view.connect_selected_page_notify(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            move |_| window.selection_changed()
+            move |_| {
+                window.selection_changed();
+                window.settle_groups(None);
+            }
+        ));
+        view.connect_n_pinned_pages_notify(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_| window.settle_groups(None)
         ));
         view.connect_page_attached(glib::clone!(
             #[weak(rename_to = window)]
@@ -437,6 +462,7 @@ impl BrowserWindow {
                 window.sync_page(page);
                 if let Ok(tab) = page.child().downcast::<Tab>() {
                     window.browser().tab_attached(&tab);
+                    window.settle_groups(Some(&tab));
                 }
                 window.browser().schedule_session_save();
             }
@@ -447,6 +473,7 @@ impl BrowserWindow {
             move |_, page, _| {
                 if let Ok(tab) = page.child().downcast::<Tab>() {
                     window.browser().tab_moved(&tab);
+                    window.settle_groups(Some(&tab));
                 }
             }
         ));
@@ -472,6 +499,7 @@ impl BrowserWindow {
             #[weak(rename_to = window)]
             self,
             move |_, _, _| {
+                window.settle_groups(None);
                 window.browser().schedule_session_save();
                 window.close_if_empty();
             }
@@ -692,6 +720,7 @@ impl BrowserWindow {
                 ui.tab_bar.set_visible(true);
             }
         }
+        self.redraw_groups();
     }
 
     fn toggle_tab_sidebar(&self) {
@@ -1253,6 +1282,7 @@ impl BrowserWindow {
     fn insert_tab(&self, tab: &Tab, opener: Option<&Tab>, focus: Focus) {
         if let Some(opener) = opener {
             self.browser().runtime().tab_opened_by(tab.id(), opener.id());
+            self.adopt_into_group(tab, opener);
         }
         let view = &self.ui().tab_view;
         let parent = opener.and_then(|opener| self.page_of(opener));
@@ -1394,10 +1424,10 @@ impl BrowserWindow {
                     self.sync_permission_prompt();
                 }
             }
-            TabChange::Audio => sync_indicator(&page, tab),
+            TabChange::Audio => self.sync_indicator(&page, tab),
             TabChange::Sleep => page.set_icon(tab.icon().as_ref()),
             TabChange::Capture => {
-                sync_indicator(&page, tab);
+                self.sync_indicator(&page, tab);
                 if selected {
                     self.ui().address.set_in_use(permissions::indicator(tab.capturing()));
                 }
@@ -1456,7 +1486,23 @@ impl BrowserWindow {
         page.set_title(&tab.display_title());
         page.set_icon(tab.icon().as_ref());
         page.set_loading(tab.web_view().is_loading());
-        sync_indicator(page, &tab);
+        self.sync_indicator(page, &tab);
+    }
+
+    /// The tab's in-use icon while it captures, else its speaker while it is muted or plays
+    /// sound, which mutes or unmutes it when clicked, else on the tab bar its group's dot.
+    fn sync_indicator(&self, page: &adw::TabPage, tab: &Tab) {
+        let web_view = tab.web_view();
+        let themed = |icon: &str| Some(gio::ThemedIcon::new(icon).upcast::<gio::Icon>());
+        let (icon, tooltip, activatable) = match permissions::indicator(tab.capturing()) {
+            Some((icon, tooltip)) => (themed(icon), tooltip, false),
+            None if web_view.is_muted() => (themed("audio-volume-muted-symbolic"), "Unmute Tab".to_owned(), true),
+            None if web_view.is_playing_audio() => (themed("audio-volume-high-symbolic"), "Mute Tab".to_owned(), true),
+            None => self.group_dot(tab).map_or((None, String::new(), false), |(dot, name)| (Some(dot), name, false)),
+        };
+        page.set_indicator_icon(icon.as_ref());
+        page.set_indicator_tooltip(&tooltip);
+        page.set_indicator_activatable(activatable);
     }
 
     fn sync_location(&self, tab: &Tab) {
@@ -1503,21 +1549,6 @@ impl BrowserWindow {
             action.set_enabled(enabled);
         }
     }
-}
-
-/// The tab's in-use icon while it captures, else its speaker while it is muted or plays
-/// sound, which mutes or unmutes it when clicked.
-fn sync_indicator(page: &adw::TabPage, tab: &Tab) {
-    let web_view = tab.web_view();
-    let (icon, tooltip, activatable) = match permissions::indicator(tab.capturing()) {
-        Some((icon, tooltip)) => (Some(icon), tooltip, false),
-        None if web_view.is_muted() => (Some("audio-volume-muted-symbolic"), "Unmute Tab".to_owned(), true),
-        None if web_view.is_playing_audio() => (Some("audio-volume-high-symbolic"), "Mute Tab".to_owned(), true),
-        None => (None, String::new(), false),
-    };
-    page.set_indicator_icon(icon.map(gio::ThemedIcon::new).as_ref());
-    page.set_indicator_tooltip(&tooltip);
-    page.set_indicator_activatable(activatable);
 }
 
 /// `index` as a tab view position no further than `last`.

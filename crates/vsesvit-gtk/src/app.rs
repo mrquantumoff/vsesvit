@@ -64,6 +64,13 @@ entry.address-entry > progress > trough > progress {
 .tab-row { padding: 4px 6px 4px 10px; min-height: 30px; }
 .tab-row .tab-close { min-width: 22px; min-height: 22px; padding: 0; opacity: 0.6; }
 .tab-row .tab-close:hover { opacity: 1; }
+.tab-sidebar row.tab-hidden { margin-top: 0; margin-bottom: 0; }
+.tab-group-header { margin: 4px 6px 0; padding: 2px 6px 2px 10px; min-height: 24px; }
+.tab-group-chip { padding: 1px 8px; border-radius: 9px; font-size: 0.85em; font-weight: bold; }
+.tab-group-chip.untitled { min-width: 12px; min-height: 12px; padding: 0; border-radius: 6px; font-size: 1px; }
+.tab-group-button { padding: 2px 4px; min-height: 0; }
+.tab-group-swatch { min-width: 24px; min-height: 24px; padding: 0; }
+.tab-group-action { font-weight: normal; }
 window.private toolbarview.browser-toolbar > .top-bar {
   --headerbar-bg-color: #2e2e32;
   --headerbar-fg-color: #ffffff;
@@ -518,6 +525,7 @@ pub(crate) fn load_css() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    crate::window::install_group_style(&display);
 }
 
 #[cfg(test)]

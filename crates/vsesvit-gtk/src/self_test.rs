@@ -80,7 +80,7 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 60] = [
+const CHECKS: [&str; 61] = [
     "profile_open",
     "install_prompt",
     "install_crx",
@@ -104,6 +104,7 @@ const CHECKS: [&str; 60] = [
     "tab_layout",
     "tab_menu",
     "tab_search",
+    "tab_groups",
     "memory_saver",
     "popup",
     "extension_toolbar",
@@ -892,7 +893,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let lines = window.tab_menu_lines();
         let reopen = browser.can_reopen_closed_tab(Browsing::Normal);
         let wanted = [
-            vec![("_New Tab Below", true), ("Move Tab to New _Window", true)],
+            vec![("_New Tab Below", true), ("_Add Tab to New Group", true), ("Move Tab to New _Window", true)],
             vec![("_Reload", true), ("_Duplicate", true), ("P_in Tab", true), ("_Mute Tab", true), ("Copy _Link", true)],
             vec![("_Close Tab", true), ("Close _Other Tabs", true), ("Close Tabs _Below", true), ("R_eopen Closed Tab", reopen)],
         ];
@@ -1146,6 +1147,73 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             ));
         }
         details.push("the closed media.html was listed under Recently closed, Enter reopened it here on its page, and it left the closed tabs; win.search-tabs again closed the popover; with tabs on top it opens on the tab bar's Search Tabs".to_owned());
+        Ok(details.join("; "))
+    })
+    .await;
+
+    ctx.check("tab_groups", CHECK_TIMEOUT, |last| async move {
+        let first = window.selected_tab().filter(|_| window.tabs().len() == 1).ok_or_else(|| "this window has not one tab".to_owned())?;
+        let grouped = window.open_tab(Some(page2_url.as_str()), None, Focus::Foreground);
+        wait_for(&last, || match grouped.committed_uri() {
+            Some(uri) if uri == page2_url.as_str() => Ok(()),
+            uri => Err(format!("the second tab is at {uri:?}")),
+        })
+        .await;
+        let saved_group = || {
+            crate::session::snapshot(browser)
+                .windows
+                .iter()
+                .flat_map(|w| w.tabs.clone())
+                .find(|t| t.id == grouped.session_id())
+                .and_then(|t| t.group)
+                .map(|g| g.id)
+        };
+        let mut details = Vec::new();
+
+        window.open_tab_menu(&grouped).ok_or_else(|| "the row opened no menu".to_owned())?.popdown();
+        let offered = window.tab_menu_lines().first().is_some_and(|s| s.contains(&("_Add Tab to New Group".to_owned(), true)));
+        WidgetExt::activate_action(window, "tab.add-to-new-group", None).map_err(|e| format!("tab.add-to-new-group: {e}"))?;
+        let group = window.group_of(&grouped).ok_or_else(|| "Add Tab to New Group left the tab in no group".to_owned())?;
+        let editor = window.group_editor_open().ok_or_else(|| "creating the group opened no editor".to_owned())?;
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png_with_popovers(window.upcast_ref(), &[editor.clone().upcast()], &ctx.out_dir.join("tab-group-editor.png"))
+            .await
+            .map_err(|e| e.to_string())?;
+        editor.popdown();
+        let header = window
+            .group_header(group.id)
+            .and_then(|header| header.downcast::<gtk::Button>().ok())
+            .filter(WidgetExt::is_mapped)
+            .ok_or_else(|| "the group shows no header in the tab list".to_owned())?;
+        if !offered || window.tab_row_hidden(&grouped) != Some(false) {
+            return Err(format!("the menu offered Add Tab to New Group: {offered}; the tab's row hidden: {:?}", window.tab_row_hidden(&grouped)));
+        }
+        details.push("Add Tab to New Group put the tab in a new group, opened its editor (tab-group-editor.png) and headed it in the tab list".to_owned());
+
+        header.emit_clicked();
+        let collapsed = (window.group_of(&grouped).map(|g| g.collapsed), window.tab_row_hidden(&grouped), header.is_mapped());
+        let selected = window.selected_tab();
+        let shown_selected = selected.as_ref().is_some_and(|tab| *tab == first && window.tab_row_hidden(tab) == Some(false));
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("tab-group-collapsed.png")).await.map_err(|e| e.to_string())?;
+        header.emit_clicked();
+        let expanded = (window.group_of(&grouped).map(|g| g.collapsed), window.tab_row_hidden(&grouped));
+        if collapsed != (Some(true), Some(true), true) || !shown_selected || expanded != (Some(false), Some(false)) {
+            return Err(format!(
+                "after a click on the header (collapsed, row hidden, header shown) {collapsed:?}, the first tab selected and shown: {shown_selected}; after another (collapsed, row hidden) {expanded:?}"
+            ));
+        }
+        details.push("a click on the header hid the tab's row and selected the first tab, the header staying (tab-group-collapsed.png); another showed it again".to_owned());
+
+        let saved = saved_group();
+        WidgetExt::activate_action(window, "tab-group.ungroup", Some(&group.id.to_string().to_variant())).map_err(|e| format!("tab-group.ungroup: {e}"))?;
+        let ungrouped = (window.group_of(&grouped), window.group_header(group.id).is_some(), saved_group());
+        window.select_tab(&first);
+        window.close_tab(&grouped);
+        if saved != Some(group.id) || ungrouped != (None, false, None) {
+            return Err(format!("the session saved the tab in {saved:?}; after Ungroup (group, header, saved group) {ungrouped:?}"));
+        }
+        details.push("the session saved the tab in its group, and after Ungroup in none".to_owned());
         Ok(details.join("; "))
     })
     .await;

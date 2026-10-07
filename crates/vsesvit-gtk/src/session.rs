@@ -51,7 +51,7 @@ fn window_snapshot(window: &BrowserWindow) -> Option<WindowSnapshot> {
             title: tab.display_title(),
             pinned: window.is_pinned(&tab),
             last_active_ms: tab.last_active_ms(),
-            group: None,
+            group: window.group_of(&tab),
             restore_state: tab.session_state_bytes(),
         });
     }
@@ -102,12 +102,14 @@ pub(crate) fn restore(browser: &Browser, snapshot: SessionSnapshot) -> usize {
             window.maximize();
         }
         let mut selected = None;
+        let mut groups = Vec::with_capacity(saved.tabs.len());
         for (index, tab_state) in saved.tabs.into_iter().enumerate() {
             let tab = window.open_tab(None, None, Focus::Background);
             window.set_pinned(&tab, tab_state.pinned);
             tab.set_session_id(tab_state.id);
             tab.mark_active(tab_state.last_active_ms);
             tab.restore_saved(tab_state.restore_state.as_deref(), tab_state.url.as_str());
+            groups.push((tab.id(), tab_state.group));
             if index == saved.active_tab {
                 selected = Some(tab);
             }
@@ -115,6 +117,9 @@ pub(crate) fn restore(browser: &Browser, snapshot: SessionSnapshot) -> usize {
         if let Some(tab) = selected.or_else(|| window.tabs().into_iter().next()) {
             window.select_tab(&tab);
         }
+        // After the selection: the view selected the first tab meanwhile, and selecting a tab
+        // expands its group.
+        window.restore_groups(groups);
         window.present();
         opened += 1;
     }
@@ -217,6 +222,45 @@ mod tests {
         assert_eq!(shown, [true, false]);
         let pins: Vec<(String, bool)> = resaved.tabs.iter().map(|t| (t.url.path().to_owned(), t.pinned)).collect();
         assert_eq!(pins, [("/a".to_owned(), true), ("/b".to_owned(), false)]);
+    }
+
+    #[gtk::test]
+    fn grouped_tabs_are_restored_in_their_groups_and_saved_again() {
+        use vsesvit_core::tab_groups::{GroupColor, GroupId, TabGroup};
+
+        let server = Server::start("127.0.0.1", |_| Reply::Page("Grouped"));
+        let browser = browser();
+        let work = TabGroup { id: GroupId::new(), title: "Work".into(), color: GroupColor::Blue, collapsed: true };
+        let saved = |path: &str, group: Option<&TabGroup>| TabSnapshot {
+            id: vsesvit_core::session::TabId::new(),
+            url: Url::parse(&server.url(path)).unwrap(),
+            title: String::new(),
+            pinned: false,
+            last_active_ms: 0,
+            group: group.cloned(),
+            restore_state: None,
+        };
+        restore(
+            &browser,
+            SessionSnapshot {
+                device_name: String::new(),
+                windows: vec![WindowSnapshot {
+                    tabs: vec![saved("/a", Some(&work)), saved("/b", Some(&work)), saved("/c", None)],
+                    active_tab: 2,
+                    bounds: None,
+                    maximized: false,
+                }],
+                active_window: 0,
+            },
+        );
+        let window = browser.windows()[0].clone();
+        let shown: Vec<(Option<TabGroup>, Option<bool>)> =
+            window.tabs().iter().map(|tab| (window.group_of(tab), window.tab_row_hidden(tab))).collect();
+        let resaved = window_snapshot(&window).expect("the window is saved");
+        window.destroy();
+        assert_eq!(shown, [(Some(work.clone()), Some(true)), (Some(work.clone()), Some(true)), (None, Some(false))]);
+        let groups: Vec<Option<TabGroup>> = resaved.tabs.into_iter().map(|t| t.group).collect();
+        assert_eq!(groups, [Some(work.clone()), Some(work), None]);
     }
 
     #[gtk::test]
