@@ -1082,8 +1082,11 @@ impl Tab {
     }
 
     /// Puts the tab to sleep with WebView2's own sleeping tabs, unless its page holds form input
-    /// not yet submitted, which keeps it awake for another delay, or it came on screen meanwhile.
-    pub async fn sleep(self: Rc<Self>) {
+    /// not yet submitted, which keeps it awake for another delay. The page answers later, so
+    /// the sweep at `now` judges the tab again then: by then it may be closed, on screen, pinned
+    /// or on another page.
+    pub async fn sleep(self: Rc<Self>, now: Instant) {
+        let url = self.state().url;
         let unsaved = self
             .eval(memory_saver::UNSAVED_INPUT_SCRIPT)
             .await
@@ -1092,7 +1095,9 @@ impl Tab {
             self.idle.set(IdleClock::new(Instant::now()));
             return;
         }
-        if self.closed.get() || self.asleep.get() || self.shown() {
+        let Some(browser) = self.browser() else { return };
+        let sweep = browser.core(|p| Sweep::new(p, now));
+        if self.closed.get() || self.asleep.get() || self.state().url != url || !self.sleeps(&sweep) {
             return;
         }
         let Some(core) = self

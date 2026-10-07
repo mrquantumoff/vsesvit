@@ -1,7 +1,7 @@
 //! The `memory_saver` check: a background tab left alone past Memory Saver's delay sleeps in
 //! WebView2 and keeps its address, title and history, while a tab with unsaved form input, a
-//! pinned tab and the selected tab stay awake; selecting it wakes it, and with Memory Saver off
-//! nothing sleeps.
+//! pinned tab and the selected tab stay awake; selecting it wakes it, a tab pinned while its page
+//! answers the sweep stays awake, and with Memory Saver off nothing sleeps.
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -142,6 +142,19 @@ pub(super) async fn memory_saver(
     }
 
     select(window, first)?;
+    browser.sleep_idle_tabs(Instant::now() + LEFT_ALONE);
+    window.tab_action(idle.id, TabAction::Pin(true));
+    exec::sleep(SETTLED).await;
+    let pinned_meanwhile = asleep(&idle);
+    window.tab_action(idle.id, TabAction::Pin(false));
+    detail.push(format!(
+        "pinned while its page answered the sweep, tab {} (tab list, engine) {pinned_meanwhile:?}",
+        idle.id
+    ));
+    if pinned_meanwhile != (false, false) {
+        return Err(detail.join("; "));
+    }
+
     browser.write_pref(&keys::MEMORY_SAVER, &false);
     browser.sleep_idle_tabs(Instant::now() + LEFT_ALONE);
     exec::sleep(SETTLED).await;

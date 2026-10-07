@@ -723,29 +723,20 @@ impl Browser {
     pub(crate) fn sleep_idle_tabs(&self, now: Instant) {
         let sweep = Sweep::new(&mut self.core().borrow_mut(), now);
         for window in self.windows() {
-            let selected = window.selected_tab();
             for tab in window.tabs() {
-                let Some(url) = tab.committed_uri() else { continue };
-                let activity = TabActivity {
-                    url: &url,
-                    shown: selected.as_ref() == Some(&tab),
-                    pinned: window.is_pinned(&tab),
-                    audible: tab.web_view().is_playing_audio(),
-                    capturing: tab.capturing().any(),
-                    related: tab.is_related(),
-                };
-                if tab.sleeps(&sweep, &activity) {
-                    self.sleep_unless_unsaved(tab);
+                if sweeps(&sweep, &window, &tab) {
+                    self.sleep_unless_unsaved(tab, now);
                 }
             }
         }
     }
 
     /// Puts `tab` to sleep unless its page was edited or holds form input not yet submitted,
-    /// which keeps it awake for another delay, and unless it was selected or closed while the
-    /// page answered.
-    fn sleep_unless_unsaved(&self, tab: Tab) {
+    /// which keeps it awake for another delay. The page answers later, so the sweep at `now`
+    /// judges the tab again then: by then it may be closed, on screen, pinned or on another page.
+    fn sleep_unless_unsaved(&self, tab: Tab, now: Instant) {
         let weak = Rc::downgrade(&self.0);
+        let page = tab.committed_uri();
         glib::spawn_future_local(async move {
             let script = memory_saver::UNSAVED_INPUT_SCRIPT;
             let answer = tab.web_view().evaluate_javascript_future(script, None, None).await;
@@ -753,10 +744,12 @@ impl Browser {
                 tab.keep_awake(Instant::now());
                 return;
             }
-            let background = tab.window().is_some_and(|window| window.selected_tab().as_ref() != Some(&tab));
-            if background && let Some(inner) = weak.upgrade() {
+            let (Some(inner), Some(window)) = (weak.upgrade(), tab.window()) else { return };
+            let browser = Browser(inner);
+            let sweep = Sweep::new(&mut browser.core().borrow_mut(), now);
+            if tab.committed_uri() == page && sweeps(&sweep, &window, &tab) {
                 tab.sleep();
-                Browser(inner).schedule_session_save();
+                browser.schedule_session_save();
             }
         });
     }
@@ -1606,6 +1599,20 @@ impl TabHost for Host {
             answer(dialog.choose_future(Some(&window)).await == extension_prompts::ALLOW);
         });
     }
+}
+
+/// Whether `sweep` puts `tab`, in `window`, to sleep, by what it is doing now.
+fn sweeps(sweep: &Sweep, window: &BrowserWindow, tab: &Tab) -> bool {
+    let Some(url) = tab.committed_uri() else { return false };
+    let activity = TabActivity {
+        url: &url,
+        shown: window.selected_tab().as_ref() == Some(tab),
+        pinned: window.is_pinned(tab),
+        audible: tab.web_view().is_playing_audio(),
+        capturing: tab.capturing().any(),
+        related: tab.is_related(),
+    };
+    tab.sleeps(sweep, &activity)
 }
 
 #[cfg(test)]

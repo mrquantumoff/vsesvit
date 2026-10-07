@@ -958,7 +958,7 @@ impl Browser {
         let sweep = self.core(|p| Sweep::new(p, now));
         for tab in self.windows().iter().flat_map(|w| w.tabs_in_order()) {
             if tab.sleeps(&sweep) {
-                exec::spawn(tab.sleep());
+                exec::spawn(tab.sleep(now));
             }
         }
     }

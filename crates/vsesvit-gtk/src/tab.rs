@@ -1638,6 +1638,26 @@ mod tests {
     }
 
     #[gtk::test]
+    fn a_tab_pinned_while_its_page_answers_memory_saver_stays_awake() {
+        let server = Server::start("127.0.0.1", |path| match path {
+            "/page" => Reply::Page("Page"),
+            _ => Reply::NotFound,
+        });
+        let browser = browser();
+        let window = BrowserWindow::new(&browser);
+        window.open_tab(None, None, Focus::Foreground);
+        let tab = window.open_tab(Some(&server.url("/page")), None, Focus::Background);
+        wait_until("the page", || tab.web_view().title().as_deref() == Some("Page"));
+
+        browser.sleep_idle_tabs(Instant::now() + std::time::Duration::from_secs(7 * 60 * 60));
+        window.set_pinned(&tab, true);
+        crate::test_support::settle(std::time::Duration::from_secs(1));
+        let asleep = tab.is_asleep();
+        window.destroy();
+        assert!(!asleep, "the tab slept although it was pinned before its page answered");
+    }
+
+    #[gtk::test]
     fn a_tab_a_page_opened_lets_its_view_go_when_it_closes() {
         let server = Server::start("127.0.0.1", |path| match path {
             "/opener" => Reply::Page("Opener"),
