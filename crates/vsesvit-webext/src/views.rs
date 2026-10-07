@@ -106,8 +106,8 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
                 // every frame of the view (WebKit checks the page, not the frame), so a
                 // third-party frame would get the extension's host-permission fetches,
                 // which Chrome gives only to the extension's own frames.
-                if weak_ext.upgrade().is_some_and(|ext| !ext.cors_allowlist().is_empty()) {
-                    log::debug!("{ext_id}: refused subframe {uri} in an extension view with host permissions");
+                if weak_ext.upgrade().is_some_and(|ext| ext.cors_granted.get()) {
+                    log::debug!("{ext_id}: refused subframe {uri} in an extension view that may fetch across origins");
                     decision.ignore();
                     return true;
                 }
@@ -148,6 +148,9 @@ pub(crate) fn build(inner: &Rc<Inner>, ext: &Rc<Extension>, kind: ViewKind) -> w
 /// its web process for good, so one taken back stays reachable until that process ends.
 pub(crate) fn set_cors_allowlist(view: &webkit::WebView, ext: &Extension) {
     let allowlist = ext.cors_allowlist();
+    if !allowlist.is_empty() {
+        ext.cors_granted.set(true);
+    }
     view.set_cors_allowlist(&allowlist.iter().map(String::as_str).collect::<Vec<_>>());
 }
 

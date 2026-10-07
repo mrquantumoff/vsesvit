@@ -130,6 +130,10 @@ pub(crate) struct Extension {
     pub session_storage: RefCell<BTreeMap<String, Value>>,
     /// The user allowed it in private windows (`extensions::private` in core).
     pub in_private: Cell<bool>,
+    /// One of its views was let fetch across origins. WebKit keeps that until the view's web
+    /// process ends, so from then on its views refuse remote subframes even once it gives the
+    /// hosts back.
+    pub cors_granted: Cell<bool>,
 }
 
 impl Extension {
@@ -217,6 +221,7 @@ impl Extension {
             notifications: RefCell::new(Notifications::default()),
             session_storage: RefCell::new(BTreeMap::new()),
             in_private: Cell::new(false),
+            cors_granted: Cell::new(false),
         })
     }
 

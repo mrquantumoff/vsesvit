@@ -112,7 +112,8 @@
 //!     grant fires `onAdded`, shows the tab's URL, lets the popup fetch the site, lets
 //!     `cookies.get` read the site's cookies and `cookies.onChanged` report them, and runs a
 //!     content script registered for it before; the grant outlives a reload; `remove` refuses
-//!     a required permission, fires `onRemoved` and keeps `cookies.get` from the site;
+//!     a required permission, fires `onRemoved` and keeps `cookies.get` from the site, and the
+//!     popup, whose web process still reaches the site, keeps refusing a frame from it;
 //! 18. lifecycle: the first load fires `onInstalled(install)`, a re-enable fires nothing,
 //!     `runtime.reload()` from a page restarts the background and drops its alarms, and an
 //!     uninstall followed by a reinstall fires `onInstalled(install)` again.
@@ -148,7 +149,7 @@ mod linux {
     use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension};
     use vsesvit_core::shortcuts::Chord;
     use vsesvit_core::private::Browsing;
-    use vsesvit_core::testkit::FixtureServer;
+    use vsesvit_core::testkit::{FixtureResponse, FixtureServer};
     use vsesvit_core::{OpenOptions, Profile};
     use vsesvit_webext::menus::{Entry, ItemId, Target};
     use vsesvit_webext::notifications::{Activation, Priority, Shown};
@@ -2169,6 +2170,12 @@ mod linux {
                     && removal == event,
                 format!("remove = {removed:?}; after = {after:?}; events = {removal}"),
             );
+            self.server.route("/framed.html", |_| FixtureResponse::ok("text/html; charset=utf-8", r#"<!doctype html><img src="/framed-image.png">"#));
+            let frame = format!("const frame = document.createElement('iframe'); frame.src = {:?}; document.body.append(frame); 0", self.url("/framed.html"));
+            self.eval(&popup, &frame, None).await;
+            let shown = wait_until(|| self.server.hits().iter().any(|p| p == "/framed-image.png"), Duration::from_secs(3)).await;
+            let asked = self.server.hits().iter().any(|p| p == "/framed.html");
+            self.note("permissions_remove_frames", asked && !shown, format!("a frame from the removed site: asked for {asked}, shown {shown}"));
             let removed_cookie = self.eval_async(&popup, &cookie).await;
             let cookies = serde_json::json!([ungranted_cookie, granted_cookie, heard, removed_cookie]);
             let expected = serde_json::json!([
