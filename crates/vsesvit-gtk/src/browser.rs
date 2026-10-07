@@ -335,14 +335,16 @@ impl Browser {
         match browsing {
             Browsing::Normal => self.engine().session().clone(),
             Browsing::Private => {
-                let mut private = self.0.private.borrow_mut();
-                let engine = private.get_or_insert_with(|| {
-                    let session = Engine::ephemeral_session();
-                    let downloads = self.downloads().watch(&session, Browsing::Private);
-                    self.cookies().set_private_session(Some(&session));
-                    PrivateEngine { session, downloads }
-                });
-                engine.session.clone()
+                if let Some(engine) = self.0.private.borrow().as_ref() {
+                    return engine.session.clone();
+                }
+                let session = Engine::ephemeral_session();
+                let downloads = self.downloads().watch(&session, Browsing::Private);
+                self.cookies().set_private_session(Some(&session));
+                self.0.private.replace(Some(PrivateEngine { session: session.clone(), downloads }));
+                // Last: the runtime reads the store through `private_session`.
+                self.runtime().private_session_started(&session);
+                session
             }
         }
     }

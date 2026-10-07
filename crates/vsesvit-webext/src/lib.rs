@@ -79,7 +79,9 @@
 //!
 //! // `chrome.cookies` works on `session`'s cookie manager, and on `TabHost::private_session`'s
 //! // for an extension allowed in private windows; `TabHost::cookies_blocked` says which sites
-//! // the user blocked, for which extensions may set no cookie.
+//! // the user blocked, for which extensions may set no cookie. The shell says when the
+//! // private windows' session starts, so that those extensions hear of its changes.
+//! runtime.private_session_started(&private_session);
 //!
 //! // Toolbar actions. `activate_action` hands the popup WebView to put in a popover to its
 //! // callback, possibly later (the shell owns it; drop it to close, which closes its

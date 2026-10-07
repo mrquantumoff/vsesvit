@@ -15,6 +15,7 @@ use webkit::glib;
 use webkit::prelude::*;
 
 use crate::bridge::{self, Origin, PortContext, Reply};
+use crate::cookies::Store;
 use crate::dnr_rules::{Rules, Saved};
 use crate::dynamic_scripts::Scripts;
 use crate::extension::Extension;
@@ -71,7 +72,7 @@ pub(crate) struct Inner {
     pub(crate) ports: RefCell<Ports<PortContext, Reply>>,
     /// The frame script every tab gets (see [`watch_frames`]).
     frames_script: webkit::UserScript,
-    pub(crate) cookie_watch: RefCell<cookie_jar::Watch>,
+    pub(crate) cookie_watch: RefCell<cookie_jar::Watches>,
 }
 
 /// The frame script's world, which no extension can share: no extension id has a colon.
@@ -132,15 +133,14 @@ impl Runtime {
             cookie_watch: RefCell::default(),
         });
         scheme::register(&inner);
-        if let Some(manager) = session.cookie_manager() {
-            let weak = Rc::downgrade(&inner);
-            manager.connect_changed(move |_| {
-                if let Some(inner) = weak.upgrade() {
-                    cookie_jar::changed(&inner);
-                }
-            });
-        }
+        cookie_jar::watch(&inner, session, Store::Normal);
         Runtime(inner)
+    }
+
+    /// The private windows' network session started, which [`TabHost::private_session`]
+    /// hands out from now on: extensions allowed in private windows hear of its cookies.
+    pub fn private_session_started(&self, session: &webkit::NetworkSession) {
+        cookie_jar::watch(&self.0, session, Store::Private);
     }
 
     /// The context every tab WebView must use (it is `WebContext::default()`).
@@ -180,7 +180,8 @@ impl Runtime {
         self.0.restore_menus(&ext, &event);
         views::start_background(&self.0, &ext, event);
         if ext.has_permission("cookies") {
-            cookie_jar::changed(&self.0);
+            cookie_jar::changed(&self.0, Store::Normal);
+            cookie_jar::changed(&self.0, Store::Private);
         }
         self.0.notify_actions_changed();
         log::info!("{} {}: loaded from {}", ext.id.as_str(), ext.version, ext.dir.display());
@@ -237,6 +238,7 @@ impl Runtime {
                 }
             }
         }
+        cookie_jar::changed(&self.0, Store::Private);
     }
 
     /// The `UserContentManager` to build `tab`'s WebView with, a tab of a `browsing` window for

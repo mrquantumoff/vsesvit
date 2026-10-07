@@ -100,8 +100,9 @@
 //!     change, an overwrite as a removal and an addition, and only for hosts the extension
 //!     has permission for, a page's own cookies included; a private window's cookies stay in
 //!     its own store, which `getAll`, `onChanged` and `getAllCookieStores` keep from an
-//!     extension until the user allows it in private windows, and which it then reads and
-//!     sets as store "1"; an extension without the permission has no `chrome.cookies`;
+//!     extension until the user allows it in private windows, and which it then reads, sets
+//!     and hears of as store "1", until it is kept out again; an extension without the
+//!     permission has no `chrome.cookies`;
 //! 17. optional permissions (`tests/fixtures/extensions/permissions/`, optional `tabs`,
 //!     `alarms`, `cookies` and the fixture server's host): `getAll` and `contains` answer
 //!     what it holds; `request` grants what has no warning without asking, refuses with
@@ -1979,14 +1980,28 @@ mod linux {
             )
             .await;
             let sent = self.wait_for_js(&view, "document.cookie", None, |c| c.contains("r=6")).await.unwrap_or_default();
+            let mut heard = self.cookie_events(popup, 1).await;
+            self.eval(&view, "document.cookie = 'q=7; path=/'; 0", None).await;
+            heard.extend(self.cookie_events(popup, 2).await);
             let expected = serde_json::json!({
                 "set": ["r", "1"], "private": [["q", "1"], ["r", "1"]], "all": [], "normal": null,
                 "stores": [{ "id": "0", "tabIds": normal }, { "id": "1", "tabIds": private }],
             });
-            self.note("cookies_private_allowed", allowed == expected && sent.contains("q=5"), format!("{allowed}; the private page has {sent:?}"));
+            let host = "127.0.0.1";
+            let changes = serde_json::json!([
+                [false, "explicit", "r", "6", host, "1"], [true, "overwrite", "q", "5", host, "1"], [false, "explicit", "q", "7", host, "1"],
+            ]);
+            self.note(
+                "cookies_private_allowed",
+                allowed == expected && sent.contains("q=5") && serde_json::json!(heard) == changes,
+                format!("{allowed}; the private page has {sent:?}; onChanged heard {heard:?}"),
+            );
             if let Err(e) = allow(false) {
                 println!("[harness] cannot keep the cookies extension out of private windows: {e}");
             }
+            self.eval(&view, "document.cookie = 'q=8; path=/'; 0", None).await;
+            let heard = self.cookie_events(popup, 0).await;
+            self.note("cookies_private_kept_out_again", heard.is_empty(), format!("onChanged heard {heard:?}"));
             self.host.remove_window(window);
             self.cookie_events(popup, 0).await;
         }
@@ -2592,7 +2607,15 @@ mod linux {
             let id = self.next_id();
             let session = match browsing {
                 Browsing::Normal => self.session.clone(),
-                Browsing::Private => self.private.borrow_mut().get_or_insert_with(webkit::NetworkSession::new_ephemeral).clone(),
+                Browsing::Private => {
+                    let started = self.private.borrow().clone();
+                    started.unwrap_or_else(|| {
+                        let session = webkit::NetworkSession::new_ephemeral();
+                        self.private.replace(Some(session.clone()));
+                        runtime.private_session_started(&session);
+                        session
+                    })
+                }
             };
             let view = webkit::WebView::builder().network_session(&session).user_content_manager(&runtime.user_content_manager(id, browsing)).build();
             let gate = self.add(&runtime, id, &view, Gate::default(), window, tab.index);

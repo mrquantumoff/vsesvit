@@ -44,15 +44,29 @@ fn stores(inner: &Inner, ext: &Extension) -> Value {
     Value::Array(list.collect())
 }
 
-/// The cookie manager behind `store`. Private windows' store is there for an extension allowed
-/// in them while one is open, and an invalid store id otherwise, as in Chrome.
-fn manager(inner: &Inner, ext: &Extension, store: Store) -> Result<webkit::CookieManager, String> {
+/// The windows whose cookies `store` holds.
+fn browsing(store: Store) -> Browsing {
+    match store {
+        Store::Normal => Browsing::Normal,
+        Store::Private => Browsing::Private,
+    }
+}
+
+/// The cookie manager behind `store`: private windows' only while one is open.
+fn store_manager(inner: &Inner, store: Store) -> Option<webkit::CookieManager> {
     match store {
         Store::Normal => inner.session.cookie_manager(),
-        Store::Private if ext.runs_in(Browsing::Private) => inner.host.private_session().and_then(|s| s.cookie_manager()),
-        Store::Private => None,
+        Store::Private => inner.host.private_session().and_then(|s| s.cookie_manager()),
     }
-    .ok_or_else(|| cookies::invalid_store(store.id()))
+}
+
+/// The cookie manager behind `store` for `ext`. Private windows' store is there for an
+/// extension allowed in them while one is open, and an invalid store id otherwise, as in Chrome.
+fn manager(inner: &Inner, ext: &Extension, store: Store) -> Result<webkit::CookieManager, String> {
+    ext.runs_in(browsing(store))
+        .then(|| store_manager(inner, store))
+        .flatten()
+        .ok_or_else(|| cookies::invalid_store(store.id()))
 }
 
 /// The store's cookies, each with WebKit's own to delete it by.
@@ -150,9 +164,9 @@ async fn run(inner: &Inner, ext: &Extension, method: Method, details: &Value) ->
     }
 }
 
-/// What `cookies.onChanged` was last told from. WebKit says only that the store changed, so
-/// the runtime reads it again and fires the difference; changes while it reads are read
-/// together once it is done.
+/// What `cookies.onChanged` was last told from, for one store. WebKit says only that the
+/// store changed, so the runtime reads it again and fires the difference; changes while it
+/// reads are read together once it is done.
 #[derive(Default)]
 pub(crate) struct Watch {
     known: Option<Vec<Cookie>>,
@@ -160,14 +174,53 @@ pub(crate) struct Watch {
     again: bool,
 }
 
-/// The normal store changed, or an extension that may hear of it loaded or was granted
-/// permissions. With no such extension loaded nothing is read, and the last reading is
-/// forgotten: the first reading after one loads fires nothing.
-pub(crate) fn changed(inner: &Rc<Inner>) {
-    let listening = inner.loaded_extensions().iter().any(|e| e.has_permission("cookies"));
+/// Each store's [`Watch`].
+#[derive(Default)]
+pub(crate) struct Watches {
+    normal: Watch,
+    private: Watch,
+}
+
+impl Watches {
+    fn of(&mut self, store: Store) -> &mut Watch {
+        match store {
+            Store::Normal => &mut self.normal,
+            Store::Private => &mut self.private,
+        }
+    }
+}
+
+/// The loaded extensions that hear of `store`'s changes: those with the permission, and for
+/// private windows' store those allowed in them.
+fn listeners(inner: &Inner, store: Store) -> Vec<Rc<Extension>> {
+    let mut loaded = inner.loaded_extensions();
+    loaded.retain(|e| e.has_permission("cookies") && e.runs_in(browsing(store)));
+    loaded
+}
+
+/// Fires `cookies.onChanged` for `store`, held in `session`, from what it holds now on.
+pub(crate) fn watch(inner: &Rc<Inner>, session: &webkit::NetworkSession, store: Store) {
+    let Some(manager) = session.cookie_manager() else { return };
+    let weak = Rc::downgrade(inner);
+    manager.connect_changed(move |_| {
+        if let Some(inner) = weak.upgrade() {
+            changed(&inner, store);
+        }
+    });
+    inner.cookie_watch.borrow_mut().of(store).known = None;
+    changed(inner, store);
+}
+
+/// `store` changed, or an extension that may hear of it loaded, was granted permissions or
+/// was allowed in private windows. With no such extension, or no private window open for
+/// private windows' store, nothing is read, and the last reading is forgotten: the first
+/// reading after that fires nothing.
+pub(crate) fn changed(inner: &Rc<Inner>, store: Store) {
+    let manager = store_manager(inner, store).filter(|_| !listeners(inner, store).is_empty());
     {
-        let mut watch = inner.cookie_watch.borrow_mut();
-        if !listening {
+        let mut watches = inner.cookie_watch.borrow_mut();
+        let watch = watches.of(store);
+        if manager.is_none() {
             watch.known = None;
             return;
         }
@@ -177,13 +230,14 @@ pub(crate) fn changed(inner: &Rc<Inner>) {
         }
         watch.reading = true;
     }
-    let Some(manager) = inner.session.cookie_manager() else { return };
+    let Some(manager) = manager else { return };
     let weak = Rc::downgrade(inner);
     glib::spawn_future_local(async move {
         let jar = read(&manager).await;
         let Some(inner) = weak.upgrade() else { return };
         let (changes, again) = {
-            let mut watch = inner.cookie_watch.borrow_mut();
+            let mut watches = inner.cookie_watch.borrow_mut();
+            let watch = watches.of(store);
             watch.reading = false;
             let changes = match jar {
                 Ok(jar) => {
@@ -200,13 +254,13 @@ pub(crate) fn changed(inner: &Rc<Inner>) {
             (changes, std::mem::take(&mut watch.again))
         };
         for change in changes {
-            let (url, args) = (change.cookie.url(), [change.to_json(Store::Normal)]);
-            for ext in inner.loaded_extensions().iter().filter(|e| e.has_permission("cookies") && e.host_access(&url, None)) {
+            let (url, args) = (change.cookie.url(), [change.to_json(store)]);
+            for ext in listeners(&inner, store).iter().filter(|e| e.host_access(&url, None)) {
                 bridge::emit_to_pages(&inner, ext, "cookies.onChanged", &args);
             }
         }
         if again {
-            changed(&inner);
+            changed(&inner, store);
         }
     });
 }
