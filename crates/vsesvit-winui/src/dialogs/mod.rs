@@ -208,7 +208,7 @@ fn wire(
     match kind {
         Dialog::Bookmarks => bookmarks::wire(root, browser, host),
         Dialog::History => history::wire(root, browser, window),
-        Dialog::Downloads => downloads::wire(root, browser),
+        Dialog::Downloads => downloads::wire(root, browser, window.browsing()),
         Dialog::Extensions => extensions::wire(root, browser, window),
         Dialog::Settings => settings::wire(root, browser, window, host),
         Dialog::About => about::fill(root, browser),

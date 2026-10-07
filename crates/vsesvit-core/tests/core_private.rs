@@ -111,7 +111,7 @@ fn nothing_private_reaches_the_database() {
     }
     let mut p = open_at(&dir);
     assert_eq!(seen(&mut p, "meet.example.com"), [(None, 1.0, false), (None, 1.0, false)], "after a restart");
-    assert!(p.downloads().list(10).unwrap().is_empty());
+    assert!(p.downloads().list(10, Private).unwrap().is_empty());
 }
 
 #[test]
@@ -125,9 +125,9 @@ fn ending_the_private_session_forgets_what_it_kept() {
 
     p.end_private_session();
     assert_eq!(seen(&mut p, "meet.example.com"), [(None, 1.0, false), (None, 1.0, false)]);
-    assert!(p.downloads().list(10).unwrap().is_empty());
+    assert!(p.downloads().list(10, Private).unwrap().is_empty());
     p.end_private_session();
-    assert!(p.downloads().list(10).unwrap().is_empty(), "ending twice is ending once");
+    assert!(p.downloads().list(10, Private).unwrap().is_empty(), "ending twice is ending once");
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn private_windows_block_notifications_without_asking() {
 }
 
 #[test]
-fn private_downloads_are_listed_with_the_others_until_the_session_ends() {
+fn private_downloads_are_listed_in_private_windows_only_until_the_session_ends() {
     let (mut p, _dir) = open();
     let path = Path::new("/dl/f");
     let mut dl = p.downloads();
@@ -180,26 +180,29 @@ fn private_downloads_are_listed_with_the_others_until_the_session_ends() {
     assert!(private_a.id.0 < 0 && private_b.id.0 < 0 && stored_old.id.0 > 0);
     assert_ne!(private_a.id, private_b.id);
 
-    let ids = |p: &mut Profile, limit| p.downloads().list(limit).unwrap().into_iter().map(|d| d.id).collect::<Vec<_>>();
-    assert_eq!(ids(&mut p, 10), [stored_new.id, private_c.id, private_b.id, private_a.id, stored_old.id], "newest first");
-    assert_eq!(ids(&mut p, 2), [stored_new.id, private_c.id]);
+    let ids = |p: &mut Profile, limit, browsing| p.downloads().list(limit, browsing).unwrap().into_iter().map(|d| d.id).collect::<Vec<_>>();
+    assert_eq!(ids(&mut p, 10, Private), [stored_new.id, private_c.id, private_b.id, private_a.id, stored_old.id], "newest first");
+    assert_eq!(ids(&mut p, 2, Private), [stored_new.id, private_c.id]);
+    assert_eq!(ids(&mut p, 10, Normal), [stored_new.id, stored_old.id], "a normal window lists no private download");
 
     p.downloads().update(private_a.id, State::Completed, 7, Some(7)).unwrap();
-    let a = p.downloads().list(10).unwrap().into_iter().find(|d| d.id == private_a.id).unwrap();
+    let a = p.downloads().list(10, Private).unwrap().into_iter().find(|d| d.id == private_a.id).unwrap();
     assert_eq!((a.state, a.received, a.total), (State::Completed, 7, Some(7)));
     p.downloads().remove(private_c.id).unwrap();
-    assert_eq!(ids(&mut p, 10), [stored_new.id, private_b.id, private_a.id, stored_old.id]);
+    assert_eq!(ids(&mut p, 10, Private), [stored_new.id, private_b.id, private_a.id, stored_old.id]);
 
     assert_eq!(p.downloads().interrupt_stale().unwrap(), 2, "only stored rows are interrupted");
-    p.downloads().clear().unwrap();
-    assert_eq!(ids(&mut p, 10), [private_b.id], "clear keeps what is in progress, private or not");
+    p.downloads().clear(Normal).unwrap();
+    assert_eq!(ids(&mut p, 10, Private), [private_b.id, private_a.id], "a normal window clears only what it lists");
+    p.downloads().clear(Private).unwrap();
+    assert_eq!(ids(&mut p, 10, Private), [private_b.id], "clear keeps what is in progress");
 
     p.end_private_session();
-    assert!(p.downloads().list(10).unwrap().is_empty());
+    assert!(p.downloads().list(10, Private).unwrap().is_empty());
     p.downloads().update(private_b.id, State::Cancelled, 0, None).unwrap();
     let next = p.downloads().start("https://d.example/", path, None, T0 + 4, Private).unwrap();
     assert!(next.id.0 < private_c.id.0, "a later session never reuses an ended one's ids");
-    assert_eq!(p.downloads().list(10).unwrap()[0].state, State::InProgress);
+    assert_eq!(p.downloads().list(10, Private).unwrap()[0].state, State::InProgress);
 }
 
 #[test]
@@ -218,7 +221,7 @@ fn a_private_file_waiting_to_be_kept_is_kept_or_discarded_in_the_session_and_del
 
     assert_eq!(p.downloads().keep(kept).unwrap(), Some(kept_path.clone()));
     p.downloads().discard(discarded).unwrap();
-    let listed = p.downloads().list(10).unwrap();
+    let listed = p.downloads().list(10, Private).unwrap();
     let row = listed.iter().find(|d| d.id == kept).unwrap();
     assert_eq!((row.state, &row.path), (State::Completed, &kept_path));
     assert!(!listed.iter().any(|d| d.id == discarded));

@@ -1869,7 +1869,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         tab.load(ctx.server.url("/download.bin").as_str());
         let expected = dir.join("download.bin");
         let entry = wait_for(&last, || {
-            let entry = browser.downloads().list().into_iter().find(|d| d.path == expected);
+            let entry = browser.downloads().list(Browsing::Normal).into_iter().find(|d| d.path == expected);
             match entry {
                 Some(entry) if entry.state == State::Completed => Ok(entry),
                 Some(entry) => Err(format!("the list entry is {:?}", entry.state)),
@@ -1885,7 +1885,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             return Err("the header shows no downloads button".to_owned());
         }
         gio::prelude::ActionGroupExt::activate_action(window, "show-downloads", None);
-        let downloads = browser.windowed(Windowed::Downloads).ok_or_else(|| "win.show-downloads opened no window".to_owned())?;
+        let downloads = browser.windowed(Windowed::Downloads(Browsing::Normal)).ok_or_else(|| "win.show-downloads opened no window".to_owned())?;
         glib::timeout_future(Duration::from_millis(500)).await;
         let shot = crate::screenshot::save_png(&downloads, &ctx.out_dir.join("downloads.png")).await;
         downloads.close();
@@ -2031,13 +2031,27 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
 
         shown.load(ctx.server.url("/download.bin").as_str());
         let row = wait_for(&last, || {
-            let rows = browser.downloads().list();
+            let rows = browser.downloads().list(Browsing::Private);
             match rows.into_iter().find(|d| d.id.0 < 0) {
                 Some(row) if row.state == State::Completed => Ok(row),
                 row => Err(format!("the private download's row is {row:?}")),
             }
         })
         .await;
+        let file = crate::downloads::file_name(&row.path);
+        let shown_in = async |opener: &BrowserWindow, browsing: Browsing| -> Result<bool, String> {
+            gio::prelude::ActionGroupExt::activate_action(opener, "show-downloads", None);
+            let shown = browser.windowed(Windowed::Downloads(browsing)).ok_or_else(|| format!("win.show-downloads opened no {browsing:?} Downloads window"))?;
+            let listed = all::<adw::ActionRow>(shown.upcast_ref()).iter().any(|r| r.title() == file);
+            shown.close();
+            Ok(listed)
+        };
+        let (private_lists, normal_lists) = (shown_in(&private, Browsing::Private).await?, shown_in(window, Browsing::Normal).await?);
+        let normal_rows = browser.downloads().list(Browsing::Normal).iter().filter(|d| d.id.0 < 0).count();
+        if !private_lists || normal_lists || normal_rows > 0 {
+            return Err(format!("{file}: in the private window's Downloads window {private_lists}, in a normal one's {normal_lists}; {normal_rows} private rows listed for normal windows"));
+        }
+        details.push(format!("its download {file} is listed in its Downloads window, not in a normal window's"));
         let closed = private.open_tab(Some(index_url.as_str()), None, Focus::Foreground);
         wait_for(&last, || match closed.committed_uri() {
             Some(uri) if uri == index_url.as_str() => Ok(()),
@@ -2052,7 +2066,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         private.close();
         wait_for(&last, || if browser.windows_of(Browsing::Private).is_empty() { Ok(()) } else { Err("the private window is still open".to_owned()) }).await;
         let forgotten = zoom(Browsing::Private)?;
-        let rows_left = browser.downloads().list().into_iter().filter(|d| d.id.0 < 0).count();
+        let rows_left = browser.downloads().list(Browsing::Private).into_iter().filter(|d| d.id.0 < 0).count();
         if browser.private_session_lasts() || browser.can_reopen_closed_tab(Browsing::Private) || forgotten != 1.0 || rows_left > 0 || !row.path.is_file() {
             return Err(format!(
                 "after the window closed: engine session kept {}, closed tabs kept {}, zoom {forgotten}, {rows_left} private download rows, {} still there: {}",
@@ -2074,7 +2088,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let waiting = |seen: Option<DownloadId>| {
             let url = url.clone();
             move || {
-                let entry = browser.downloads().list().into_iter().find(|d| d.url == url.as_str() && Some(d.id) != seen);
+                let entry = browser.downloads().list(Browsing::Normal).into_iter().find(|d| d.url == url.as_str() && Some(d.id) != seen);
                 match entry {
                     Some(entry) if entry.state == State::Unconfirmed => Ok(entry),
                     Some(entry) => Err(format!("the list entry is {:?}", entry.state)),
@@ -2090,7 +2104,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let at_name = first.path.exists();
         let keep = button_labelled(wait_for(&last, warning).await.upcast_ref(), "_Keep").ok_or_else(|| "the warning has no Keep".to_owned())?;
         keep.emit_clicked();
-        wait_for(&last, || match browser.downloads().list().into_iter().find(|d| d.id == first.id) {
+        wait_for(&last, || match browser.downloads().list(Browsing::Normal).into_iter().find(|d| d.id == first.id) {
             Some(d) if d.state == State::Completed => Ok(()),
             other => Err(format!("the kept entry is {:?}", other.map(|d| d.state))),
         })
@@ -2101,7 +2115,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let second = wait_for(&last, waiting(Some(first.id))).await;
         let discard = button_labelled(wait_for(&last, warning).await.upcast_ref(), "_Discard").ok_or_else(|| "the warning has no Discard".to_owned())?;
         discard.emit_clicked();
-        wait_for(&last, || match browser.downloads().list().iter().any(|d| d.id == second.id) {
+        wait_for(&last, || match browser.downloads().list(Browsing::Normal).iter().any(|d| d.id == second.id) {
             true => Err("the discarded entry is still listed".to_owned()),
             false => Ok(()),
         })

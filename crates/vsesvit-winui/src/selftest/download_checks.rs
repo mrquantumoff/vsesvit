@@ -6,6 +6,7 @@ use std::path::Path;
 
 use vsesvit_core::Url;
 use vsesvit_core::downloads::{Download, DownloadId, State, unconfirmed_path, zone_identifier};
+use vsesvit_core::private::Browsing;
 use vsesvit_core::testkit::STALLED_SENT;
 use windows_core::Interface;
 
@@ -30,7 +31,7 @@ pub(super) async fn download_pause(
     tab.navigate(stalled.as_str());
     let id = until(p, |p| {
         let entry = browser
-            .download_list()
+            .download_list(Browsing::Normal)
             .into_iter()
             .find(|d| d.url == stalled.as_str())?;
         let live = browser.download_progress(entry.id);
@@ -41,10 +42,13 @@ pub(super) async fn download_pause(
     .await;
     browser.pause_download(id);
     reaches(browser, id, State::Paused, p).await;
-    let paused = (browser.downloads_indicator(), browser.download_progress(id));
+    let paused = (
+        browser.downloads_indicator(Browsing::Normal),
+        browser.download_progress(id),
+    );
     browser.resume_download(id);
     reaches(browser, id, State::InProgress, p).await;
-    let resumed = browser.downloads_indicator();
+    let resumed = browser.downloads_indicator(Browsing::Normal);
     browser.cancel_download(id);
     reaches(browser, id, State::Cancelled, p).await;
     let detail = format!(
@@ -102,7 +106,10 @@ pub(super) async fn download_safety(
         xaml::find::<Button>(&warning, "WarningDiscard").map_err(|e| format!("Discard: {e}"))?;
     invoke(&discard).map_err(|e| format!("Discard: {e}"))?;
     until(p, |p| {
-        let listed = browser.download_list().iter().any(|d| d.id == second.id);
+        let listed = browser
+            .download_list(Browsing::Normal)
+            .iter()
+            .any(|d| d.id == second.id);
         p.observe(format!("the discarded entry listed: {listed}"));
         (!listed).then_some(())
     })
@@ -139,7 +146,7 @@ async fn unconfirmed(
     p: &Probe,
 ) -> Download {
     until(p, |p| {
-        let list = browser.download_list();
+        let list = browser.download_list(Browsing::Normal);
         let entry = list
             .into_iter()
             .find(|d| d.url == url.as_str() && Some(d.id) != seen)?;
@@ -152,7 +159,7 @@ async fn unconfirmed(
 async fn reaches(browser: &Browser, id: DownloadId, state: State, p: &Probe) {
     until(p, |p| {
         let now = browser
-            .download_list()
+            .download_list(Browsing::Normal)
             .into_iter()
             .find(|d| d.id == id)
             .map(|d| d.state);

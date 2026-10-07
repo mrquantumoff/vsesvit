@@ -12,8 +12,9 @@
 //! LOCAL: files on this device's disk, so never synced.
 //!
 //! A download started in a private window has its row in the private session instead
-//! ([`crate::private`]): listed with the others until the session ends. Its file stays on disk,
-//! unless it still waits to be kept: nothing could keep it once the row is gone.
+//! ([`crate::private`]) until the session ends, listed in private windows only ([`listed_in`]).
+//! Its file stays on disk, unless it still waits to be kept: nothing could keep it once the row
+//! is gone.
 
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
@@ -213,8 +214,9 @@ impl Downloads<'_> {
         Ok(())
     }
 
-    /// Newest first, the private session's among the stored ones.
-    pub fn list(&mut self, limit: usize) -> Result<Vec<Download>, Error> {
+    /// Newest first, what windows of `browsing`'s kind list: in a private window the private
+    /// session's among the stored ones.
+    pub fn list(&mut self, limit: usize, browsing: Browsing) -> Result<Vec<Download>, Error> {
         let mut stmt = self.p.conn.prepare_cached(
             "SELECT id, url, path, started_ms, state, received, total FROM downloads
              ORDER BY started_ms DESC, id DESC LIMIT ?1",
@@ -222,7 +224,7 @@ impl Downloads<'_> {
         let rows = stmt.query_map([limit.min(i64::MAX as usize) as i64], row_download)?;
         let mut list: Vec<Download> = rows.collect::<Result<_, _>>()?;
         let private = &self.p.private.downloads.rows;
-        if !private.is_empty() {
+        if listed_in(Browsing::Private, browsing) && !private.is_empty() {
             list.extend(private.iter().cloned());
             // A private id counts down, so its magnitude grows with each download as a rowid does.
             list.sort_by_key(|d| Reverse((d.started_ms, d.id.0.unsigned_abs())));
@@ -283,10 +285,12 @@ impl Downloads<'_> {
         Ok(stmt.query_row(params![id.0, State::Unconfirmed.as_str()], row_download).optional()?)
     }
 
-    /// Removes every entry nothing is left to happen to ([`State::is_final`]), the private
-    /// session's too. Files stay on disk.
-    pub fn clear(&mut self) -> Result<(), Error> {
-        self.p.private.downloads.rows.retain(|d| !d.state.is_final());
+    /// Removes every entry nothing is left to happen to ([`State::is_final`]) of those windows
+    /// of `browsing`'s kind list. Files stay on disk.
+    pub fn clear(&mut self, browsing: Browsing) -> Result<(), Error> {
+        if listed_in(Browsing::Private, browsing) {
+            self.p.private.downloads.rows.retain(|d| !d.state.is_final());
+        }
         self.p.conn.execute(
             "DELETE FROM downloads WHERE state IN (?1, ?2, ?3)",
             [State::Completed, State::Failed, State::Cancelled].map(State::as_str),
@@ -303,6 +307,13 @@ impl Downloads<'_> {
             [State::InProgress, State::Paused, State::Interrupted, State::Failed].map(State::as_str),
         )?)
     }
+}
+
+/// Whether windows of `window`'s kind list a download started in one of `started`'s: a private
+/// window lists every download, as Chrome's incognito downloads page does, and a normal window
+/// never a private one.
+pub fn listed_in(started: Browsing, window: Browsing) -> bool {
+    started == Browsing::Normal || window == Browsing::Private
 }
 
 fn row_download(row: &rusqlite::Row<'_>) -> Result<Download, rusqlite::Error> {

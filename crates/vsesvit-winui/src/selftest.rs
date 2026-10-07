@@ -769,7 +769,7 @@ async fn checks(
     .await;
 
     check(report, "private_window", DEFAULT_TIMEOUT, async |p| {
-        private_checks::private_window(browser, &server, p).await
+        private_checks::private_window(browser, &server, &out_dir.join("downloads"), p).await
     })
     .await;
 
@@ -999,7 +999,7 @@ async fn checks(
         let url = server.url("/download.bin");
         tab.navigate(url.as_str());
         let entry = until(p, |p| {
-            let list = browser.download_list();
+            let list = browser.download_list(Browsing::Normal);
             p.observe(format!(
                 "list {:?}",
                 list.iter()

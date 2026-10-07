@@ -1,14 +1,17 @@
 //! The `private_window` check: a page in a private window leaves no history, session entry or
 //! zoom behind, runs in WebView2's InPrivate profile without the probe extension, stays out of a
-//! normal window's tab search, and by default gets no third-party cookies and no cookie rule in
-//! site info; closing the window ends its private session.
+//! normal window's tab search, by default gets no third-party cookies and no cookie rule in site
+//! info, and its download shows in private windows only; closing the window ends its private
+//! session.
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
 use vsesvit_core::Url;
 use vsesvit_core::cookies::ThirdPartyCookies;
+use vsesvit_core::downloads::State;
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
 use vsesvit_core::tab_search::Hit;
@@ -32,6 +35,7 @@ fn err(e: impl std::fmt::Display) -> String {
 pub(super) async fn private_window(
     browser: &Rc<Browser>,
     server: &FixtureServer,
+    downloads: &Path,
     p: &Probe,
 ) -> Result<String, String> {
     let mut detail = Vec::new();
@@ -135,6 +139,33 @@ pub(super) async fn private_window(
         "with {choice:?} its third-party frame read {frame:?}; a site-info cookie rule {site_rule}"
     ));
 
+    let normal_windows = browser.windows_of(Browsing::Normal);
+    let normal_button = || normal_windows.iter().any(|w| w.downloads_button_shown());
+    let button_before = normal_button();
+    let dir_before = browser.custom_download_dir();
+    browser.set_download_dir(Some(downloads));
+    tab.navigate(server.url("/download.bin").as_str());
+    let download = until(p, |p| {
+        let row = browser
+            .download_list(Browsing::Private)
+            .into_iter()
+            .find(|d| d.id.0 < 0);
+        p.observe(format!("the private download's row is {row:?}"));
+        row.filter(|d| d.state == State::Completed)
+    })
+    .await;
+    browser.set_download_dir(dir_before.as_deref());
+    let normal_lists = browser
+        .download_list(Browsing::Normal)
+        .iter()
+        .any(|d| d.id == download.id);
+    let (private_button, button_after) = (private.downloads_button_shown(), normal_button());
+    detail.push(format!(
+        "its download {} is listed for normal windows {normal_lists}; the downloads button \
+         shows in it {private_button}, in normal windows {button_after} (before: {button_before})",
+        download.path.display()
+    ));
+
     let closed_before = closed_in(browser, Browsing::Normal);
     private.close_tab(tab.id);
     until(p, |p| {
@@ -146,9 +177,15 @@ pub(super) async fn private_window(
     let private_closed = browser.can_reopen_closed_tab(Browsing::Private);
     let zoom_after = zoom_in(Browsing::Private, &url);
     let gained = closed_after.difference(&closed_before).count();
+    let download_rows = browser
+        .download_list(Browsing::Private)
+        .iter()
+        .filter(|d| d.id.0 < 0)
+        .count();
+    let file_kept = download.path.is_file();
     detail.push(format!(
         "closed: private closed tabs left {private_closed}, normal ones gained {gained}, \
-         its zoom now {zoom_after}"
+         its zoom now {zoom_after}, {download_rows} private download rows, its file kept {file_kept}"
     ));
 
     let ok = in_private
@@ -162,9 +199,14 @@ pub(super) async fn private_window(
         && choice == ThirdPartyCookies::BlockInPrivate
         && !frame.contains("third=1")
         && !site_rule
+        && !normal_lists
+        && private_button
+        && button_after == button_before
         && !private_closed
         && closed_after == closed_before
-        && zoom_after == stored_zoom;
+        && zoom_after == stored_zoom
+        && download_rows == 0
+        && file_kept;
     let detail = detail.join("; ");
     ok.then_some(detail.clone()).ok_or(detail)
 }

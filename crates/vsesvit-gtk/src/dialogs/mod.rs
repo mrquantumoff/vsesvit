@@ -18,6 +18,7 @@ pub(crate) mod welcome;
 
 use adw::prelude::*;
 use gtk::glib;
+use vsesvit_core::private::Browsing;
 
 use crate::window::BrowserWindow;
 
@@ -26,7 +27,8 @@ use crate::window::BrowserWindow;
 pub(crate) enum Windowed {
     Bookmarks,
     History,
-    Downloads,
+    /// One for normal windows and one for private ones, which alone list private downloads.
+    Downloads(Browsing),
 }
 
 /// Brings `kind`'s window forward, or shows the one `build` makes. The window belongs to

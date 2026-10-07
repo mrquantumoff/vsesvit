@@ -205,7 +205,7 @@ impl BrowserWindow {
         window.refresh_bookmarks_bar();
         window.refresh_extension_actions();
         window.sync_profile();
-        if browser.downloads().started_this_session() {
+        if browser.downloads().started_this_session(browsing) {
             window.show_downloads_button();
         }
         if let Some(updates) = browser.updates() {

@@ -8,6 +8,7 @@ use std::rc::{Rc, Weak};
 use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::downloads::{Download, DownloadId, State as DownloadState, status_line};
+use vsesvit_core::private::Browsing;
 
 use super::Windowed;
 use crate::downloads::{self, Change, Downloads};
@@ -18,6 +19,8 @@ use crate::window::BrowserWindow;
 /// profile open.
 struct State {
     window: glib::WeakRef<BrowserWindow>,
+    /// The window's kind, whose downloads the list shows.
+    browsing: Browsing,
     downloads: Weak<Downloads>,
     list: gtk::ListBox,
     stack: gtk::Stack,
@@ -32,7 +35,7 @@ struct Row {
 }
 
 pub(crate) fn present(window: &BrowserWindow) {
-    super::present_window(window, Windowed::Downloads, || build(window));
+    super::present_window(window, Windowed::Downloads(window.browsing()), || build(window));
 }
 
 fn build(window: &BrowserWindow) -> adw::Window {
@@ -76,6 +79,7 @@ fn build(window: &BrowserWindow) -> adw::Window {
     let downloads = window.browser().downloads();
     let state = Rc::new(State {
         window: window.downgrade(),
+        browsing: window.browsing(),
         downloads: Rc::downgrade(downloads),
         list,
         stack,
@@ -109,7 +113,7 @@ fn build(window: &BrowserWindow) -> adw::Window {
         state,
         move |_| {
             if let Some(downloads) = state.downloads.upgrade() {
-                downloads.clear();
+                downloads.clear(state.browsing);
             }
         }
     ));
@@ -121,7 +125,7 @@ impl State {
         let Some(downloads) = self.downloads.upgrade() else { return };
         self.list.remove_all();
         let rows: Vec<Row> = downloads
-            .list()
+            .list(self.browsing)
             .into_iter()
             .map(|download| self.row(&downloads, download))
             .collect();

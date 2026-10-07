@@ -126,6 +126,7 @@ mod tests {
     use super::*;
     use crate::test_support::{Reply, Server, browser, scratch_dir, settle, wait_until};
     use crate::window::{BrowserWindow, Focus};
+    use vsesvit_core::private::Browsing;
 
     /// A page that embeds and then goes to the source of `page`, a script expression.
     fn lure_to(page: &str) -> String {
@@ -180,12 +181,12 @@ mod tests {
         wait_until("the typed source", || shows(&tab, &page));
         let typed = fetched.load(Ordering::SeqCst);
 
-        let downloads = browser.downloads().list().len();
+        let downloads = browser.downloads().list(Browsing::Normal).len();
         let file = server.url("/file.bin");
         tab.load(&format!("view-source:{file}"));
         wait_until("the file's source", || shows(&tab, &file));
         settle(Duration::from_millis(500));
-        let downloaded = browser.downloads().list().len() - downloads;
+        let downloaded = browser.downloads().list(Browsing::Normal).len() - downloads;
 
         tab.load(&format!("view-source:{}", server.url("/drop")));
         wait_until("the error page", || tab.shows_error_page());

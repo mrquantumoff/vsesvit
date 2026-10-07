@@ -659,7 +659,7 @@ impl Browser {
         window.set_bookmarks_bar(&self.bookmarks_bar_items());
         window.set_extension_actions(&self.extension_actions(), &self.extension_toolbar());
         window.show_update(self.updates.banner().as_ref());
-        window.show_downloads(self.downloads_indicator());
+        window.show_downloads(self.downloads_indicator(browsing));
         window.open_planned(plan)?;
         Ok(window)
     }
@@ -939,7 +939,7 @@ impl Browser {
     /// InPrivate view, which closed with its tab.
     fn end_private_session(&self) {
         log::info!("the last private window closed: ending the private session");
-        self.cancel_downloads(Browsing::Private);
+        self.end_private_downloads();
         self.closed_tabs.borrow_mut().private.clear();
         self.core(Profile::end_private_session);
         self.engine.private_session_ended();

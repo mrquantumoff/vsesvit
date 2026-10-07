@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 use gtk::{gio, glib};
 use vsesvit_core::downloads::{
-    Download, DownloadId, State, is_dangerous, sanitize, status_line, unconfirmed_path, unique_destination,
+    Download, DownloadId, State, is_dangerous, listed_in, sanitize, status_line, unconfirmed_path, unique_destination,
 };
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
@@ -80,6 +80,8 @@ pub(crate) struct Downloads {
     subscribers: RefCell<Vec<(Subscription, Subscriber)>>,
     next_subscription: Cell<u64>,
     started_this_session: Cell<bool>,
+    /// Whether a download started in the private session, whose windows alone show it.
+    private_started: Cell<bool>,
     /// The URI [`Downloads::download_to`] asked for and where it goes, until it starts.
     chosen: RefCell<Option<(String, PathBuf)>>,
     /// Destinations handed out whose files are not made yet, so two downloads at once never
@@ -110,6 +112,7 @@ impl Downloads {
             subscribers: RefCell::new(Vec::new()),
             next_subscription: Cell::new(0),
             started_this_session: Cell::new(false),
+            private_started: Cell::new(false),
             chosen: RefCell::new(None),
             reserved: RefCell::new(HashSet::new()),
             private: RefCell::new(Vec::new()),
@@ -131,6 +134,7 @@ impl Downloads {
     /// The private session ended: its downloads still running are cancelled, as Chrome
     /// cancels them when the last incognito window closes. Their files stay.
     pub(crate) fn cancel_private(&self) {
+        self.private_started.set(false);
         // Taken first: a cancel ends the download at once, which forgets it.
         for download in self.private.take() {
             download.cancel();
@@ -150,14 +154,15 @@ impl Downloads {
         view.download_uri(uri);
     }
 
-    /// Whether a download has started since the browser did.
-    pub(crate) fn started_this_session(&self) -> bool {
-        self.started_this_session.get()
+    /// Whether a download that windows of `browsing`'s kind list has started since the browser
+    /// did.
+    pub(crate) fn started_this_session(&self, browsing: Browsing) -> bool {
+        self.started_this_session.get() || (self.private_started.get() && listed_in(Browsing::Private, browsing))
     }
 
-    /// Newest first.
-    pub(crate) fn list(&self) -> Vec<Download> {
-        let listed = self.core.borrow_mut().downloads().list(LIST_LIMIT);
+    /// Newest first, what windows of `browsing`'s kind list.
+    pub(crate) fn list(&self, browsing: Browsing) -> Vec<Download> {
+        let listed = self.core.borrow_mut().downloads().list(LIST_LIMIT, browsing);
         listed.unwrap_or_else(|e| {
             log::warn!("downloads: {e}");
             Vec::new()
@@ -205,9 +210,10 @@ impl Downloads {
         self.notify(Change::List);
     }
 
-    /// Takes every entry nothing is left to happen to off the list; the files stay.
-    pub(crate) fn clear(&self) {
-        let cleared = self.core.borrow_mut().downloads().clear();
+    /// Takes every entry nothing is left to happen to off the list of `browsing`'s windows; the
+    /// files stay.
+    pub(crate) fn clear(&self, browsing: Browsing) {
+        let cleared = self.core.borrow_mut().downloads().clear(browsing);
         if let Err(e) = cleared {
             log::warn!("downloads: {e}");
         }
@@ -257,10 +263,10 @@ impl Downloads {
                         download.set_allow_overwrite(true);
                         match written(download, &path, &held).to_str() {
                             Some(path) => download.set_destination(path),
-                            None => refuse(downloads.window_for(download), download, NOT_UTF8),
+                            None => refuse(downloads.window_for(download, browsing), download, NOT_UTF8),
                         }
                     }
-                    (Some(downloads), None) => downloads.decide_destination(download, suggested, &held),
+                    (Some(downloads), None) => downloads.decide_destination(download, suggested, &held, browsing),
                     (None, _) => download.cancel(),
                 }
                 true
@@ -310,7 +316,7 @@ impl Downloads {
                     let state = if cancelled { State::Cancelled } else { State::Failed };
                     downloads.ended(id, state, download);
                 }
-                if !cancelled && let Some(window) = downloads.window_for(download) {
+                if !cancelled && let Some(window) = downloads.window_for(download, browsing) {
                     window.toast(plain_toast(&format!("Download of “{}” failed", describe(download))));
                 }
             }
@@ -323,8 +329,8 @@ impl Downloads {
                 downloads.private.borrow_mut().retain(|d| d != download);
                 let Phase::Running(id) = phase.replace(Phase::Ended) else { return };
                 match downloads.ended(id, State::Completed, download) {
-                    State::Unconfirmed => downloads.warn(id, download),
-                    _ => downloads.completed_toast(download),
+                    State::Unconfirmed => downloads.warn(id, download, browsing),
+                    _ => downloads.completed_toast(download, browsing),
                 }
             }
         ));
@@ -332,10 +338,10 @@ impl Downloads {
 
     /// Straight into the download folder under a free name, or wherever the save dialog
     /// says. Cancelling the dialog cancels the download.
-    fn decide_destination(&self, download: &webkit::Download, suggested: &str, held: &Held) {
+    fn decide_destination(&self, download: &webkit::Download, suggested: &str, held: &Held, browsing: Browsing) {
         let dir = self.directory();
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            refuse(self.window_for(download), download, &format!("Cannot save to {}: {e}", dir.display()));
+            refuse(self.window_for(download, browsing), download, &format!("Cannot save to {}: {e}", dir.display()));
             return;
         }
         let ask = self.core.borrow_mut().prefs().get(&keys::DOWNLOADS_ASK);
@@ -347,7 +353,7 @@ impl Downloads {
                     download.set_destination(path);
                     self.reserved.borrow_mut().insert(destination.clone());
                 }
-                None => refuse(self.window_for(download), download, NOT_UTF8),
+                None => refuse(self.window_for(download, browsing), download, NOT_UTF8),
             }
             return;
         }
@@ -357,7 +363,7 @@ impl Downloads {
             .initial_name(sanitize(suggested))
             .modal(true)
             .build();
-        let window = self.window_for(download);
+        let window = self.window_for(download, browsing);
         let download = download.clone();
         let held = held.clone();
         glib::spawn_future_local(async move {
@@ -375,8 +381,8 @@ impl Downloads {
         });
     }
 
-    /// The download has its file: it goes on the list, and every window shows the
-    /// downloads button from now on. `held` is where a file that can run code goes once kept.
+    /// The download has its file: it goes on the list, and every window that lists it shows
+    /// the downloads button from now on. `held` is where a file that can run code goes once kept.
     fn started(
         &self,
         download: &webkit::Download,
@@ -401,11 +407,14 @@ impl Downloads {
             record.id,
             Live { handle: download.clone(), dangerous, received: 0, total, notified: Instant::now() },
         );
-        self.started_this_session.set(true);
-        for window in self.windows() {
+        match browsing {
+            Browsing::Normal => self.started_this_session.set(true),
+            Browsing::Private => self.private_started.set(true),
+        }
+        for window in self.windows().into_iter().filter(|w| listed_in(browsing, w.browsing())) {
             window.show_downloads_button();
         }
-        if let Some(window) = self.window_for(download) {
+        if let Some(window) = self.window_for(download, browsing) {
             let toast = adw::Toast::builder()
                 .title(format!("Downloading “{}”", file_name(destination)))
                 .use_markup(false)
@@ -448,17 +457,17 @@ impl Downloads {
     }
 
     /// Warns about an unconfirmed file in the window it came from.
-    fn warn(&self, id: DownloadId, download: &webkit::Download) {
-        let entry = self.list().into_iter().find(|d| d.id == id);
-        if let (Some(window), Some(entry)) = (self.window_for(download), entry) {
+    fn warn(&self, id: DownloadId, download: &webkit::Download, browsing: Browsing) {
+        let entry = self.list(browsing).into_iter().find(|d| d.id == id);
+        if let (Some(window), Some(entry)) = (self.window_for(download, browsing), entry) {
             window.warn_about_download(&entry);
         }
     }
 
-    fn completed_toast(&self, download: &webkit::Download) {
+    fn completed_toast(&self, download: &webkit::Download, browsing: Browsing) {
         let Some(destination) = download.destination() else { return };
         log::info!("downloaded {destination}");
-        let Some(window) = self.window_for(download) else { return };
+        let Some(window) = self.window_for(download, browsing) else { return };
         let path = PathBuf::from(destination.as_str());
         let toast = adw::Toast::builder()
             .title(format!("“{}” downloaded", file_name(&path)))
@@ -480,13 +489,14 @@ impl Downloads {
             .unwrap_or_default()
     }
 
-    /// The window of the tab that started the download, or else the most recently used one.
-    fn window_for(&self, download: &webkit::Download) -> Option<BrowserWindow> {
+    /// The window of the tab that started the download, one of `browsing`'s windows, or else
+    /// the most recently used window that lists it.
+    fn window_for(&self, download: &webkit::Download, browsing: Browsing) -> Option<BrowserWindow> {
         download
             .web_view()
             .and_then(|view| view.root())
             .and_downcast::<BrowserWindow>()
-            .or_else(|| self.windows().into_iter().next())
+            .or_else(|| self.windows().into_iter().find(|w| listed_in(browsing, w.browsing())))
     }
 }
 
@@ -659,20 +669,20 @@ mod tests {
 
         let in_folder = |d: &Download| d.path.parent() == Some(dir.as_path());
         wait_until("the download to receive its first bytes", || {
-            downloads.list().iter().filter(|d| in_folder(d)).any(|d| {
+            downloads.list(Browsing::Normal).iter().filter(|d| in_folder(d)).any(|d| {
                 downloads.progress(d.id).is_some_and(|(received, _)| received == STALLED_FILE_SENT)
             })
         });
-        let entry = downloads.list().into_iter().find(|d| in_folder(d)).expect("the entry");
+        let entry = downloads.list(Browsing::Normal).into_iter().find(|d| in_folder(d)).expect("the entry");
         assert_eq!(entry.state, State::InProgress);
         assert_eq!(entry.path, dir.join("big.bin"));
         assert_eq!(downloads.progress(entry.id), Some((STALLED_FILE_SENT, Some(STALLED_FILE_SIZE))));
         assert_eq!(status_line(&entry, downloads.progress(entry.id), false), "1.0 KB of 1.0 MB");
-        assert!(downloads.started_this_session());
+        assert!(downloads.started_this_session(Browsing::Normal));
 
         downloads.cancel(entry.id);
         wait_until("the entry to read as cancelled", || {
-            downloads.list().iter().any(|d| d.id == entry.id && d.state == State::Cancelled)
+            downloads.list(Browsing::Normal).iter().any(|d| d.id == entry.id && d.state == State::Cancelled)
         });
         assert_eq!(downloads.progress(entry.id), None, "no live counts once it ended");
         assert_eq!(changes.borrow().first(), Some(&Change::List), "the start is announced");
@@ -702,7 +712,7 @@ mod tests {
         tab.web_view().download_uri(&server.url("/big.bin"));
 
         let in_folder = || -> Vec<Download> {
-            downloads.list().into_iter().filter(|d| d.path.parent() == Some(dir.as_path())).collect()
+            downloads.list(Browsing::Normal).into_iter().filter(|d| d.path.parent() == Some(dir.as_path())).collect()
         };
         wait_until("both downloads to start", || {
             in_folder().iter().filter(|d| d.state == State::InProgress).count() == 2
@@ -741,7 +751,7 @@ mod tests {
         let tab = window.open_tab(None, None, Focus::Foreground);
         let waiting = |seen: Option<DownloadId>| {
             downloads
-                .list()
+                .list(Browsing::Normal)
                 .into_iter()
                 .find(|d| d.path.parent() == Some(dir.as_path()) && d.state == State::Unconfirmed && Some(d.id) != seen)
         };
@@ -755,7 +765,7 @@ mod tests {
         wait_until("the warning under the downloads button", || window.download_warning().is_some());
         let warning = window.download_warning().expect("the warning");
         button_labelled(warning.upcast_ref(), "_Keep").expect("Keep").emit_clicked();
-        let listed = downloads.list().into_iter().find(|d| d.id == first.id).map(|d| d.state);
+        let listed = downloads.list(Browsing::Normal).into_iter().find(|d| d.id == first.id).map(|d| d.state);
         assert_eq!(listed, Some(State::Completed));
         assert_eq!(std::fs::read(&first.path).expect("the kept file"), b"#!/bin/sh\n");
         assert!(!unconfirmed_path(&first.path).exists());
@@ -766,7 +776,7 @@ mod tests {
         assert_eq!(second.path, dir.join("run (1).sh"), "the kept file has the name");
         downloads.discard(second.id);
         assert!(!unconfirmed_path(&second.path).exists() && !second.path.exists(), "discarded");
-        assert!(downloads.list().iter().all(|d| d.id != second.id), "off the list");
+        assert!(downloads.list(Browsing::Normal).iter().all(|d| d.id != second.id), "off the list");
 
         window.destroy();
         let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);
@@ -795,7 +805,7 @@ mod tests {
 
         wait_until("a toast saying why", || shows_text(window.upcast_ref(), "Cannot save to"));
         let downloads = browser.downloads();
-        assert!(!downloads.list().iter().any(|d| d.path.starts_with(&file)), "nothing is listed");
+        assert!(!downloads.list(Browsing::Normal).iter().any(|d| d.path.starts_with(&file)), "nothing is listed");
 
         window.destroy();
         let reset = browser.core().borrow_mut().prefs().reset(&keys::DOWNLOADS_DIR);

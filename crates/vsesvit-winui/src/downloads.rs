@@ -4,8 +4,8 @@
 //! name no file or running download has, or where the user says when they asked to be asked;
 //! core records the start, each pause or interruption, and the outcome, a private window's in
 //! its private session. Byte counts stay in memory while a download runs. Views subscribe while
-//! they are open, and every window's toolbar shows the downloads button once a download started
-//! this session.
+//! they are open, and a window's toolbar shows the downloads button once a download it lists
+//! started this session: a private window's download is listed in private windows only.
 //!
 //! A file of a type that can run code is written under its unconfirmed name and waits for the
 //! user to keep or discard it; the window it came from shows Chrome's warning under the
@@ -20,7 +20,7 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use vsesvit_core::Profile;
-use vsesvit_core::downloads::{self as list, Download, DownloadId, State};
+use vsesvit_core::downloads::{self as list, Download, DownloadId, State, listed_in};
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
 use windows_core::Result;
@@ -82,6 +82,8 @@ pub(crate) struct Downloads {
     default_dir: PathBuf,
     live: RefCell<HashMap<DownloadId, Live>>,
     started: Cell<bool>,
+    /// Whether a download started in the private session, whose windows alone show it.
+    started_private: Cell<bool>,
     subscribers: RefCell<Vec<Weak<OnChange>>>,
 }
 
@@ -102,6 +104,7 @@ impl Downloads {
             default_dir,
             live: RefCell::new(HashMap::new()),
             started: Cell::new(false),
+            started_private: Cell::new(false),
             subscribers: RefCell::new(Vec::new()),
         }
     }
@@ -131,25 +134,28 @@ impl Browser {
         }
     }
 
-    pub fn downloads_indicator(&self) -> Indicator {
+    /// The downloads button of a window of `browsing`'s kind.
+    pub fn downloads_indicator(&self, browsing: Browsing) -> Indicator {
         let downloads = &self.downloads;
         if downloads
             .live
             .borrow()
             .values()
-            .any(|l| l.state == State::InProgress)
+            .any(|l| l.state == State::InProgress && listed_in(l.browsing, browsing))
         {
             Indicator::Busy
-        } else if downloads.started.get() {
+        } else if downloads.started.get()
+            || (downloads.started_private.get() && listed_in(Browsing::Private, browsing))
+        {
             Indicator::Idle
         } else {
             Indicator::Hidden
         }
     }
 
-    /// Newest first.
-    pub fn download_list(&self) -> Vec<Download> {
-        self.core(|p| p.downloads().list(LISTED))
+    /// Newest first, what windows of `browsing`'s kind list.
+    pub fn download_list(&self, browsing: Browsing) -> Vec<Download> {
+        self.core(|p| p.downloads().list(LISTED, browsing))
             .unwrap_or_else(|e| {
                 log::warn!("downloads list: {e}");
                 Vec::new()
@@ -216,14 +222,16 @@ impl Browser {
         self.downloads_changed(Change::List);
     }
 
-    /// Cancels the running downloads that started in windows of `browsing`'s kind.
-    pub fn cancel_downloads(&self, browsing: Browsing) {
+    /// The private session ended: its running downloads are cancelled, and the private windows
+    /// to come show no button for its downloads.
+    pub fn end_private_downloads(&self) {
+        self.downloads.started_private.set(false);
         let running: Vec<CoreWebView2DownloadOperation> = self
             .downloads
             .live
             .borrow()
             .values()
-            .filter(|l| l.browsing == browsing)
+            .filter(|l| l.browsing == Browsing::Private)
             .map(|l| l.operation.clone())
             .collect();
         for operation in running {
@@ -241,9 +249,9 @@ impl Browser {
         self.downloads_changed(Change::List);
     }
 
-    /// Takes every finished download off the list; the files stay.
-    pub fn clear_downloads(&self) {
-        if let Err(e) = self.core(|p| p.downloads().clear()) {
+    /// Takes every finished download off the list of `browsing`'s windows; the files stay.
+    pub fn clear_downloads(&self, browsing: Browsing) {
+        if let Err(e) = self.core(|p| p.downloads().clear(browsing)) {
             log::warn!("clear downloads: {e}");
         }
         self.downloads_changed(Change::List);
@@ -387,7 +395,10 @@ impl Browser {
                 window,
             },
         );
-        self.downloads.started.set(true);
+        match browsing {
+            Browsing::Normal => self.downloads.started.set(true),
+            Browsing::Private => self.downloads.started_private.set(true),
+        }
         self.downloads_changed(Change::List);
         Ok(())
     }
@@ -417,7 +428,7 @@ impl Browser {
             return;
         };
         let can_resume = operation.CanResume().unwrap_or(false);
-        let (state, path, window) = {
+        let (state, path, window, browsing) = {
             let mut live = self.downloads.live.borrow_mut();
             let Some(entry) = live.get_mut(&id) else {
                 return;
@@ -428,10 +439,11 @@ impl Browser {
             }
             entry.state = state;
             let (path, window) = (entry.path.clone(), entry.window.clone());
+            let browsing = entry.browsing;
             if !state.is_live() {
                 live.remove(&id);
             }
-            (state, path, window)
+            (state, path, window, browsing)
         };
         let (received, total) = counts(operation);
         log::info!("download {} is {state:?}: {received} bytes", id.0);
@@ -447,7 +459,10 @@ impl Browser {
         self.downloads_changed(Change::List);
         if state == State::Unconfirmed
             && let Some(window) = window.upgrade()
-            && let Some(download) = self.download_list().into_iter().find(|d| d.id == id)
+            && let Some(download) = self
+                .download_list(browsing)
+                .into_iter()
+                .find(|d| d.id == id)
         {
             window.warn_about_download(&download);
         }
@@ -455,9 +470,8 @@ impl Browser {
 
     fn downloads_changed(&self, change: Change) {
         if change == Change::List {
-            let indicator = self.downloads_indicator();
             for window in self.windows() {
-                window.show_downloads(indicator);
+                window.show_downloads(self.downloads_indicator(window.browsing()));
             }
         }
         for subscriber in live(&self.downloads.subscribers) {

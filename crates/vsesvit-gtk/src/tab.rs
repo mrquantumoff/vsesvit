@@ -1265,7 +1265,7 @@ mod tests {
         let tab = window.open_tab(None, None, Focus::Foreground);
         window.navigate_with(&server.url("/file.bin"), Transition::Typed);
         let downloads = browser.downloads().clone();
-        let ours = || downloads.list().into_iter().find(|d| d.path.parent() == Some(dir.as_path()));
+        let ours = || downloads.list(Browsing::Normal).into_iter().find(|d| d.path.parent() == Some(dir.as_path()));
         wait_until("the download", || ours().is_some());
         wait_until("the load to end", || !tab.web_view().is_loading());
         let left = tab.take_pending_transition();

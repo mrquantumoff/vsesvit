@@ -43,7 +43,7 @@ fn open() -> (Profile, TempDir) {
 }
 
 fn states(p: &mut Profile) -> Vec<(String, State)> {
-    p.downloads().list(usize::MAX).unwrap().into_iter().map(|d| (d.url, d.state)).collect()
+    p.downloads().list(usize::MAX, Browsing::Normal).unwrap().into_iter().map(|d| (d.url, d.state)).collect()
 }
 
 fn user_version(dir: &Path) -> u32 {
@@ -57,17 +57,17 @@ fn start_then_finish() {
     let path = Path::new("/dl/a.zip");
     let started = p.downloads().start("https://example.com/a.zip", path, Some(10), T0, Browsing::Normal).unwrap();
     assert_eq!((started.state, started.received, started.total, started.started_ms), (State::InProgress, 0, Some(10), T0));
-    assert_eq!(p.downloads().list(10).unwrap(), vec![started.clone()], "start returns the stored row");
+    assert_eq!(p.downloads().list(10, Browsing::Normal).unwrap(), vec![started.clone()], "start returns the stored row");
 
     p.downloads().update(started.id, State::Completed, 12, Some(12)).unwrap();
-    let done = p.downloads().list(10).unwrap().remove(0);
+    let done = p.downloads().list(10, Browsing::Normal).unwrap().remove(0);
     assert_eq!(done, Download { state: State::Completed, received: 12, total: Some(12), ..started.clone() });
     assert_eq!(done.path, path);
 
     p.downloads().remove(started.id).unwrap();
-    assert!(p.downloads().list(10).unwrap().is_empty());
+    assert!(p.downloads().list(10, Browsing::Normal).unwrap().is_empty());
     p.downloads().update(started.id, State::Failed, 0, None).unwrap();
-    assert!(p.downloads().list(10).unwrap().is_empty(), "finish after remove is a no-op");
+    assert!(p.downloads().list(10, Browsing::Normal).unwrap().is_empty(), "finish after remove is a no-op");
     p.downloads().remove(started.id).unwrap();
 }
 
@@ -81,8 +81,8 @@ fn list_is_newest_first_and_limited() {
     p.downloads().start("https://b2.example/", path, None, T0 + 1, Browsing::Normal).unwrap();
     let urls: Vec<String> = states(&mut p).into_iter().map(|(url, _)| url).collect();
     assert_eq!(urls, ["https://c.example/", "https://b2.example/", "https://b1.example/", "https://a.example/"], "same start time: later id first");
-    assert_eq!(p.downloads().list(2).unwrap().len(), 2);
-    assert!(p.downloads().list(0).unwrap().is_empty());
+    assert_eq!(p.downloads().list(2, Browsing::Normal).unwrap().len(), 2);
+    assert!(p.downloads().list(0, Browsing::Normal).unwrap().is_empty());
 }
 
 #[test]
@@ -99,8 +99,8 @@ fn clear_keeps_what_is_not_over() {
             kept.insert(0, d);
         }
     }
-    dl.clear().unwrap();
-    assert_eq!(dl.list(10).unwrap(), kept);
+    dl.clear(Browsing::Normal).unwrap();
+    assert_eq!(dl.list(10, Browsing::Normal).unwrap(), kept);
     assert_eq!(kept.iter().map(|d| d.state).collect::<Vec<_>>(), [State::Unconfirmed, State::Interrupted, State::Paused, State::InProgress]);
 }
 
@@ -121,7 +121,7 @@ fn downloads_the_engine_held_read_as_failed_after_a_restart() {
     let after: Vec<State> = states(&mut p).into_iter().rev().map(|(_, state)| state).collect();
     use State::*;
     assert_eq!(after, [Failed, Failed, Failed, Unconfirmed, Completed, Failed, Cancelled], "an unconfirmed file still waits");
-    assert!(p.downloads().list(10).unwrap().iter().all(|d| d.received == 7), "the last stored counts stay");
+    assert!(p.downloads().list(10, Browsing::Normal).unwrap().iter().all(|d| d.received == 7), "the last stored counts stay");
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn a_kept_file_takes_its_name_and_a_discarded_one_is_gone() {
     assert_eq!(dl.keep(setup.id).unwrap(), Some(folder.join("setup.exe")));
     assert_eq!(std::fs::read_to_string(folder.join("setup.exe")).unwrap(), "setup.exe");
     assert!(!unconfirmed_path(&setup.path).exists());
-    let listed = dl.list(10).unwrap();
+    let listed = dl.list(10, Browsing::Normal).unwrap();
     assert_eq!(listed, [Download { state: State::Completed, ..setup.clone() }]);
 
     assert_eq!(dl.keep(setup.id).unwrap(), None, "kept already");
@@ -152,18 +152,18 @@ fn a_kept_file_takes_its_name_and_a_discarded_one_is_gone() {
 
     let again = start(&mut dl, "setup.exe");
     assert_eq!(dl.keep(again.id).unwrap(), Some(folder.join("setup (1).exe")), "a file took the name meanwhile");
-    assert_eq!(dl.list(1).unwrap()[0].path, folder.join("setup (1).exe"));
+    assert_eq!(dl.list(1, Browsing::Normal).unwrap()[0].path, folder.join("setup (1).exe"));
     assert_eq!(std::fs::read_to_string(folder.join("setup.exe")).unwrap(), "setup.exe", "never overwritten");
 
     let script = start(&mut dl, "run.sh");
     dl.discard(script.id).unwrap();
     assert!(!unconfirmed_path(&script.path).exists() && !script.path.exists());
-    assert!(dl.list(10).unwrap().iter().all(|d| d.id != script.id), "off the list");
+    assert!(dl.list(10, Browsing::Normal).unwrap().iter().all(|d| d.id != script.id), "off the list");
 
     let gone = start(&mut dl, "gone.bat");
     std::fs::remove_file(unconfirmed_path(&gone.path)).unwrap();
     dl.discard(gone.id).unwrap();
-    assert!(dl.list(10).unwrap().iter().all(|d| d.id != gone.id), "discarding a file deleted meanwhile still clears the entry");
+    assert!(dl.list(10, Browsing::Normal).unwrap().iter().all(|d| d.id != gone.id), "discarding a file deleted meanwhile still clears the entry");
 
     let next = start(&mut dl, "next.bat");
     assert!(next.id.0 > gone.id.0, "the id of a removed entry is never given out again");
@@ -201,7 +201,7 @@ fn a_v1_profile_gains_the_table_and_keeps_its_data() {
 
     let mut p = open_at(&dir.0);
     assert_eq!(user_version(&dir.0), 11, "reopening migrates nothing");
-    assert_eq!(p.downloads().list(10).unwrap(), vec![d]);
+    assert_eq!(p.downloads().list(10, Browsing::Normal).unwrap(), vec![d]);
     assert!(p.bookmarks().is_bookmarked(&bookmark));
 }
 
@@ -228,7 +228,7 @@ fn a_v9_profile_takes_the_new_states_and_keeps_its_rows() {
     drop(conn);
 
     let mut p = open_at(&dir.0);
-    assert_eq!(p.downloads().list(10).unwrap(), vec![d.clone()]);
+    assert_eq!(p.downloads().list(10, Browsing::Normal).unwrap(), vec![d.clone()]);
     let paused = p.downloads().start("https://example.com/b.zip", Path::new("/dl/b.zip"), None, T0 + 1, Browsing::Normal).unwrap();
     p.downloads().update(paused.id, State::Paused, 1, None).unwrap();
     drop(p);

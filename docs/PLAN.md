@@ -123,7 +123,7 @@ Ctrl+Shift+N, Chrome's key, opens a private window; so do New private window in 
 - **Extensions.** Off in private windows, as Chrome's Allow in Incognito, which core keeps as a synced list. Linux shows a switch per extension in the Extensions dialog; an allowed extension's content scripts and rules run in private tabs and it sees them in `chrome.tabs` with `incognito: true`, while the others see none. WebView2 has no such switch, and adding an extension to the InPrivate profile may install it into the normal one, so Windows touches no extension there and hides extension buttons in private windows.
 - **The new tab page** is core's `PRIVATE_PAGE`: what private browsing does and does not keep, with no search box and no most-visited tiles.
 
-When the last private window closes, its running downloads are cancelled, its closed tabs and what core kept are forgotten, and the engine data goes. Downloads started in a private window are listed with the others until then.
+When the last private window closes, its running downloads are cancelled, its closed tabs and what core kept are forgotten, and the engine data goes. Until then, downloads started in a private window show in private windows only, in the downloads list and the downloads button: a private window lists them among the profile's, as Chrome's incognito downloads page does, and a normal window never sees them (core's `downloads::listed_in`).
 
 ## Memory Saver
 

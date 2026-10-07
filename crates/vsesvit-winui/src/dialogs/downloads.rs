@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::downloads::{Download, State, status_line};
+use vsesvit_core::private::Browsing;
 use windows_core::{Interface, Result};
 
 use super::{Wired, on_click};
@@ -80,14 +81,21 @@ struct Row {
 
 struct Page {
     browser: Weak<Browser>,
+    /// The kind of the window it shows in, whose downloads it lists.
+    browsing: Browsing,
     rows: Panel,
     empty: UIElement,
     running: RefCell<Vec<Row>>,
 }
 
-pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Wired> {
+pub(super) fn wire(
+    root: &FrameworkElement,
+    browser: &Rc<Browser>,
+    browsing: Browsing,
+) -> Result<Wired> {
     let page = Rc::new(Page {
         browser: Rc::downgrade(browser),
+        browsing,
         rows: xaml::find(root, "DownloadRows")?,
         empty: xaml::find(root, "DownloadsEmpty")?,
         running: RefCell::new(Vec::new()),
@@ -119,7 +127,7 @@ pub(super) fn wire(root: &FrameworkElement, browser: &Rc<Browser>) -> Result<Wir
     let b = Rc::downgrade(browser);
     on_click(&xaml::find::<Button>(root, "DownloadsClear")?, move || {
         if let Some(b) = b.upgrade() {
-            b.clear_downloads();
+            b.clear_downloads(browsing);
         }
     })?;
     Ok(Wired {
@@ -133,7 +141,7 @@ impl Page {
         let Some(browser) = self.browser.upgrade() else {
             return;
         };
-        let downloads = browser.download_list();
+        let downloads = browser.download_list(self.browsing);
         let Ok(children) = self.rows.Children() else {
             return;
         };
