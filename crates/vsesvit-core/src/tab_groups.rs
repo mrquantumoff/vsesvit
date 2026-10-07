@@ -367,9 +367,8 @@ impl<K: Clone + Eq + Hash> TabGroups<K> {
     /// moves to the group's start from before it or to its end from after it.
     pub fn rejoin(&mut self, tabs: &WindowTabs<K>, tab: &K, group: GroupId) -> Vec<Step<K>> {
         let at = tabs.order.iter().position(|t| t == tab).filter(|&at| at >= tabs.pinned);
-        let mut span = (tabs.order.iter().enumerate())
-            .filter(|&(_, t)| t != tab && self.members.get(t) == Some(&group))
-            .map(|(i, _)| i);
+        let others = |(i, t): (usize, &K)| (t != tab && self.members.get(t) == Some(&group)).then_some(i);
+        let mut span = tabs.order.iter().enumerate().filter_map(others);
         let (Some(at), Some(first)) = (at, span.next()) else { return Vec::new() };
         let last = span.last().unwrap_or(first);
         self.members.insert(tab.clone(), group);
