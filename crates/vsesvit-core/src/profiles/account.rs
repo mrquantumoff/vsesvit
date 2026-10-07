@@ -66,12 +66,10 @@ impl AccountPicture {
     /// Blocking: run it on a worker thread. Public addresses only, like favicons. `None` when the
     /// picture cannot be fetched or decoded.
     pub fn fetch(url: &Url) -> Option<AccountPicture> {
-        let fetched = fetch_agent().get(url.as_str()).call().and_then(|mut response| {
-            if !response.status().is_success() {
-                return Err(ureq::Error::StatusCode(response.status().as_u16()));
-            }
-            response.body_mut().with_config().limit(MAX_DOWNLOAD_BYTES).read_to_vec()
-        });
+        let fetched = fetch_agent()
+            .get(url.as_str())
+            .call()
+            .and_then(|mut response| response.body_mut().with_config().limit(MAX_DOWNLOAD_BYTES).read_to_vec());
         match fetched {
             Ok(bytes) => AccountPicture::decode(&bytes),
             Err(e) => {

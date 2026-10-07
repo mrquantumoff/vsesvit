@@ -512,7 +512,10 @@ pub(crate) fn take_account_details(browser: &Rc<Browser>, details: AccountDetail
         .take_account_details(&home.id, details.name.as_deref(), None)
     {
         Ok(registry) => registry,
-        Err(e) => return log::warn!("the profile list: {e}"),
+        Err(e) => {
+            log::warn!("the profile list: {e}");
+            return;
+        }
     };
     let by_hand = registry
         .get(&home.id)

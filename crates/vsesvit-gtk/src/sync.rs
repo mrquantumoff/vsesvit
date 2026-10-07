@@ -344,7 +344,10 @@ impl Syncer {
         let Some(home) = self.browser().and_then(|b| b.home().cloned()) else { return };
         let registry = match home.dir.take_account_details(&home.id, details.name.as_deref(), None) {
             Ok(registry) => registry,
-            Err(e) => return log::warn!("the profile list: {e}"),
+            Err(e) => {
+                log::warn!("the profile list: {e}");
+                return;
+            }
         };
         let by_hand = registry.get(&home.id).is_none_or(ProfileEntry::set_by_hand);
         if let Some(browser) = self.browser() {

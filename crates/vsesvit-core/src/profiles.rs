@@ -176,8 +176,8 @@ impl ProfileEntry {
         ProfileEntry { id, name, color, picture: None, set_by_hand: Some(set_by_hand) }
     }
 
-    /// For a profile listed before profiles took details from sync: when its name is not one
-    /// Chrome gives unnamed profiles, the user gave it.
+    /// Whether the user set the profile's name or colour. A profile listed before profiles took
+    /// details from sync was named by hand unless its name is one Chrome gives unnamed profiles.
     pub fn set_by_hand(&self) -> bool {
         self.set_by_hand.unwrap_or_else(|| !is_unnamed(&self.name))
     }
@@ -468,8 +468,7 @@ impl ProfilesDir {
                 entry.name = name;
                 changed = true;
             }
-            if let Some(picture) = picture.filter(|p| entry.picture.as_deref() != Some(p.file_name().as_str())) {
-                let file = picture.file_name();
+            if let Some((picture, file)) = picture.map(|p| (p, p.file_name())).filter(|(_, file)| entry.picture.as_ref() != Some(file)) {
                 write_atomically(&self.root(id).join(&file), picture.png())?;
                 if let Some(old) = entry.picture.replace(file) {
                     self.delete_picture(id, &old);
