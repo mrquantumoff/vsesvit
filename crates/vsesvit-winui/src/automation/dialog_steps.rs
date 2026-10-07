@@ -762,7 +762,8 @@ pub(super) async fn bookmarks(
     Ok(())
 }
 
-/// Extensions: switch the probe off and on (the engine and the toolbar follow), remove it, and
+/// Extensions: Update is there (not clicked: it would ask the stores, and the probe is from no
+/// store); switch the probe off and on (the engine and the toolbar follow), remove it, and
 /// install it again from its file through the install box, adding it in the install prompt.
 pub(super) async fn extensions(
     browser: &Rc<Browser>,
@@ -772,6 +773,10 @@ pub(super) async fn extensions(
     steps: &mut Vec<Value>,
 ) -> Result<()> {
     let preview = open(window, Dialog::Extensions).await?;
+    let update = preview
+        .find::<Button>("UpdateExtensions")
+        .map(|b| label(&b))
+        .ok();
     // The list holds only the probe, so its row's parts are the only ones with these names.
     let list: ItemsControl = preview.find("ExtensionsList")?;
     // The probe's row as the list holds it now: the dialog rebuilds its rows after each change.
@@ -818,7 +823,13 @@ pub(super) async fn extensions(
         out_dir,
         "15-extensions-dialog",
         steps,
-        |_| json!({ "switched_off": format!("{off:?}"), "ok": off == Some(Some(false)) }),
+        |_| {
+            json!({
+                "switched_off": format!("{off:?}"),
+                "update_button": update,
+                "ok": off == Some(Some(false)) && update.as_deref() == Some("Update"),
+            })
+        },
     )
     .await;
 

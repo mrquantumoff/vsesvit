@@ -7,6 +7,7 @@
 //! a timeout reports the last value the check saw.
 
 mod cookie_checks;
+mod extension_update_checks;
 mod memory_saver_checks;
 mod omnibox_checks;
 mod page_checks;
@@ -981,6 +982,16 @@ async fn checks(
         }
     })
     .await;
+
+    let open = tab_ids(&window);
+    check(report, "extension_update", 3 * ENGINE_LOAD_TIMEOUT, async |p| {
+        extension_update_checks::extension_update(browser, &window, &server, &index, p).await
+    })
+    .await;
+    extension_update_checks::restore(browser).await;
+    for id in tab_ids(&window).into_iter().filter(|id| !open.contains(id)) {
+        window.close_tab(id);
+    }
 
     check(report, "download", DEFAULT_TIMEOUT, async |p| {
         let dir = out_dir.join("downloads");

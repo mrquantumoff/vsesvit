@@ -45,7 +45,7 @@ use crate::cookies::ExitClearing;
 use crate::dialogs::{Dialog, DialogWindow, SyncPrompt, sync_prompt};
 use crate::downloads::Downloads;
 use crate::engine::{self, Engine};
-use crate::extensions::ExtensionHost;
+use crate::extensions::{self, ExtensionHost};
 use crate::popup::ExtensionAction;
 use crate::session::{self, TabPlan, WindowPlan};
 use crate::shortcuts::Bindings;
@@ -316,6 +316,10 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
     }
     sync_prompt::follow(&browser);
     exec::spawn(browser.clone().start_extensions());
+    // Like the browser's own updates, a scripted run's extension updates happen only when it asks.
+    if browser.config.mode.is_interactive() {
+        exec::spawn(extensions::schedule_updates(Rc::downgrade(&browser)));
+    }
     if !browser.core(|p| p.prefs().get(&PASSWORDS_PURGED)) {
         exec::spawn(browser.clone().purge_saved_passwords());
     }

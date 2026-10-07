@@ -1,7 +1,9 @@
 //! Extensions: install from a Chrome Web Store, Edge Add-ons or addons.mozilla.org link or id, a `.crx` /
 //! `.xpi` file or an unpacked folder, with progress and, before a store or package install goes
-//! in, Chrome's install prompt in the page (a dialog cannot open over this one); and the
-//! installed list with each extension's version, provenance, an on/off switch and a remove button.
+//! in, Chrome's install prompt in the page (a dialog cannot open over this one); Update, which
+//! checks every store extension for a newer version now; and the installed list with each
+//! extension's version, provenance, an on/off switch and a remove button, and Approve for an
+//! update that asks for new permissions.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -46,7 +48,11 @@ pub(super) const MARKUP: &str = r#"
       </StackPanel>
     </StackPanel>
     <TextBlock x:Name="InstallStatus" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-    <TextBlock Text="Installed" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+    <Grid>
+      <TextBlock Text="Installed" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center"/>
+      <Button x:Name="UpdateExtensions" Content="Update" HorizontalAlignment="Right"
+              ToolTipService.ToolTip="Update every extension from its store now"/>
+    </Grid>
     <ListView x:Name="ExtensionsList" MaxHeight="340" SelectionMode="None"/>
     <TextBlock x:Name="ExtensionsEmpty" Text="No extensions installed"
                Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
@@ -64,6 +70,7 @@ struct Manager {
     prompt_text: TextBlock,
     /// The verified install the prompt asks about, committed on Add, dropped on Cancel.
     pending: RefCell<Option<StagedInstall>>,
+    update: Control,
     list: ListView,
     empty: UIElement,
     busy: Cell<bool>,
@@ -89,6 +96,7 @@ pub(super) fn wire(
         prompt_heading: xaml::find(root, "PromptHeading")?,
         prompt_text: xaml::find(root, "PromptText")?,
         pending: RefCell::new(None),
+        update: xaml::find(root, "UpdateExtensions")?,
         list: xaml::find(root, "ExtensionsList")?,
         empty: xaml::find(root, "ExtensionsEmpty")?,
         busy: Cell::new(false),
@@ -116,6 +124,12 @@ pub(super) fn wire(
     on_click(&manager.install_buttons[2], move || {
         if let Some(m) = m.upgrade() {
             m.pick(true);
+        }
+    })?;
+    let m = Rc::downgrade(&manager);
+    on_click(&manager.update, move || {
+        if let Some(m) = m.upgrade() {
+            m.update();
         }
     })?;
 
@@ -220,6 +234,25 @@ impl Manager {
         self.render();
     }
 
+    /// Checks every store extension for a newer version, then says what changed.
+    fn update(self: &Rc<Self>) {
+        let Some(browser) = self.browser.upgrade() else {
+            return;
+        };
+        let _ = self.update.SetIsEnabled(false);
+        let _ = self.status.SetText("Checking for updates\u{2026}");
+        let me = self.clone();
+        exec::spawn(async move {
+            let text = match browser.update_extensions().await {
+                Ok(report) => report.summary(),
+                Err(e) => format!("Could not check for updates: {e}"),
+            };
+            let _ = me.status.SetText(&text);
+            let _ = me.update.SetIsEnabled(true);
+            me.render();
+        });
+    }
+
     fn pick(self: &Rc<Self>, folder: bool) {
         let Some(window) = self.window.upgrade() else {
             return;
@@ -316,11 +349,12 @@ impl Manager {
         );
         let error =
             engine_error.map_or(String::new(), |e| format!("WebView2 did not load it: {e}"));
+        let notice = ext.approval_notice().unwrap_or_default();
         let root: FrameworkElement = xaml::load(&format!(
             r#"<Grid {{ns}} ColumnSpacing="12" Padding="0,6">
                  <Grid.ColumnDefinitions>
                    <ColumnDefinition Width="32"/><ColumnDefinition Width="*"/>
-                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+                   <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
                  </Grid.ColumnDefinitions>
                  <Grid VerticalAlignment="Center">{icon}</Grid>
                  <StackPanel Grid.Column="1" VerticalAlignment="Center">
@@ -329,10 +363,14 @@ impl Manager {
                               Foreground="{{ThemeResource TextFillColorSecondaryBrush}}" TextTrimming="CharacterEllipsis"/>
                    <TextBlock Text="{error}" Style="{{StaticResource CaptionTextBlockStyle}}" TextWrapping="Wrap"
                               Foreground="{{ThemeResource SystemFillColorCriticalBrush}}" Visibility="{error_visibility}"/>
+                   <TextBlock Text="{notice}" Style="{{StaticResource CaptionTextBlockStyle}}" TextWrapping="Wrap"
+                              Foreground="{{ThemeResource SystemFillColorCautionBrush}}" Visibility="{notice_visibility}"/>
                  </StackPanel>
-                 <ToggleSwitch x:Name="Enabled" Grid.Column="2" OnContent="On" OffContent="Off" MinWidth="0"
+                 <Button x:Name="Approve" Grid.Column="2" Content="Approve" VerticalAlignment="Center"
+                         Visibility="{notice_visibility}"/>
+                 <ToggleSwitch x:Name="Enabled" Grid.Column="3" OnContent="On" OffContent="Off" MinWidth="0"
                                AutomationProperties.Name="Enabled"/>
-                 <Button x:Name="Remove" Grid.Column="3" Content="Remove"/>
+                 <Button x:Name="Remove" Grid.Column="4" Content="Remove"/>
                </Grid>"#,
             icon = icon_markup(icon.as_deref(), 32),
             name = xaml::escape(&ext.manifest.name),
@@ -343,9 +381,17 @@ impl Manager {
             } else {
                 "Visible"
             },
+            notice = xaml::escape(&notice),
+            notice_visibility = if notice.is_empty() {
+                "Collapsed"
+            } else {
+                "Visible"
+            },
         ))?;
         let toggle: ToggleSwitch = xaml::find(&root, "Enabled")?;
         toggle.SetIsOn(ext.enabled)?;
+        // An update's new permissions keep it off whatever the switch says, until approved.
+        toggle.cast::<Control>()?.SetIsEnabled(notice.is_empty())?;
         let id = ext.id.clone();
         let me = Rc::downgrade(self);
         let source = toggle.clone();
@@ -369,6 +415,25 @@ impl Manager {
                 });
             })?
             .forget();
+        let approve: Button = xaml::find(&root, "Approve")?;
+        let id = ext.id.clone();
+        let name = ext.manifest.name.clone();
+        let me = Rc::downgrade(self);
+        on_click(&approve, move || {
+            let Some(me) = me.upgrade() else { return };
+            let Some(browser) = me.browser.upgrade() else {
+                return;
+            };
+            let (id, name) = (id.clone(), name.clone());
+            exec::spawn(async move {
+                let text = match browser.approve_extension_permissions(&id).await {
+                    Ok(()) => format!("Approved the new permissions of {name}."),
+                    Err(e) => format!("Could not approve the new permissions of {name}: {e}"),
+                };
+                let _ = me.status.SetText(&text);
+                me.render();
+            });
+        })?;
         let remove: Button = xaml::find(&root, "Remove")?;
         let id = ext.id.clone();
         let name = ext.manifest.name.clone();

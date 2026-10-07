@@ -43,6 +43,7 @@ pub(crate) const CHECKS: [&str; 44] = [
     "context_menus",
     "extension_commands",
     "extension_notifications",
+    "extension_update",
     "download",
     "download_pause",
     "download_safety",

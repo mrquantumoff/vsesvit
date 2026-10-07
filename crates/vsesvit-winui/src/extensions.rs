@@ -1,7 +1,9 @@
 //! Extensions on Windows. vsesvit-core owns which extensions are installed (and where their
 //! immutable folders are); WebView2 runs them and persists its own list. This module installs
 //! through core's pipeline (the download and verification run on a worker thread, the commit on
-//! the UI thread) and brings WebView2's list in line with core's (`sync_extensions`).
+//! the UI thread) and brings WebView2's list in line with core's (`sync_extensions`). Updates
+//! take the same path: core checks the stores on a worker thread and commits, and the sync loads
+//! each new version over the old one.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -14,6 +16,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use vsesvit_core::extensions::{
     ExtensionId, InstallJob, InstallPhase, InstallSource, InstalledExtension, StagedInstall,
+    UPDATE_INTERVAL, UpdateReport,
 };
 
 use crate::bindings::CoreWebView2Profile;
@@ -44,6 +47,7 @@ pub(crate) struct ExtensionHost {
     reconcile_running: Cell<bool>,
     /// Asked for during a reconcile, which then runs once more.
     reconcile_again: Cell<bool>,
+    update_running: Cell<bool>,
 }
 
 impl ExtensionHost {
@@ -238,6 +242,41 @@ impl Browser {
             .map_err(|e| e.to_string())
     }
 
+    /// Checks every store extension for a newer version now (the Extensions dialog's Update,
+    /// and the schedule) and loads what was updated into the engine. One check runs at a time.
+    pub(crate) async fn update_extensions(self: &Rc<Self>) -> Result<UpdateReport, String> {
+        if self.extensions.update_running.replace(true) {
+            return Err("an update check is already running".into());
+        }
+        let _running = Running(&self.extensions.update_running);
+        let check = self
+            .core(|p| p.extensions().prepare_update_check())
+            .map_err(|e| e.to_string())?;
+        if check.is_empty() {
+            return Ok(UpdateReport::default());
+        }
+        let updates = exec::background(move || check.run())
+            .await
+            .map_err(|e| e.to_string())?;
+        let report = self.core(|p| p.extensions().commit_updates(updates));
+        if !report.updated.is_empty()
+            && let Err(e) = self.sync_extensions().await
+        {
+            log::warn!("extension sync after update: {e}");
+        }
+        Ok(report)
+    }
+
+    /// The user approved what an update asks for; the extension runs again if it is on.
+    pub(crate) async fn approve_extension_permissions(
+        self: &Rc<Self>,
+        id: &ExtensionId,
+    ) -> Result<(), String> {
+        self.core(|p| p.extensions().approve_permissions(id))
+            .map_err(|e| e.to_string())?;
+        self.sync_extensions().await
+    }
+
     pub(crate) async fn set_extension_enabled(
         self: &Rc<Self>,
         id: &ExtensionId,
@@ -348,6 +387,40 @@ impl Browser {
         }
         *self.extensions.actions.borrow_mut() = actions;
         self.show_extension_actions();
+    }
+}
+
+/// Clears a flag when dropped, so a check that ends early, or is dropped, does not keep it set.
+struct Running<'a>(&'a Cell<bool>);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+/// Checks the store extensions for updates whenever core says a check is due, for as long as
+/// the browser lives. Nothing is shown: the Extensions dialog and the toolbar follow the sync.
+pub(crate) async fn schedule_updates(browser: Weak<Browser>) {
+    loop {
+        let Some(due) = browser
+            .upgrade()
+            .map(|b| b.core(|p| p.extensions().next_update_check()))
+        else {
+            return;
+        };
+        let wait = due.unwrap_or_else(|e| {
+            log::warn!("extension update schedule: {e}");
+            UPDATE_INTERVAL
+        });
+        exec::sleep(wait).await;
+        let Some(b) = browser.upgrade() else {
+            return;
+        };
+        match b.update_extensions().await {
+            Ok(report) => log::info!("extension update check: {}", report.summary()),
+            Err(e) => log::warn!("extension update check: {e}"),
+        }
     }
 }
 
@@ -926,5 +999,43 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn an_update_that_asks_for_more_replaces_the_old_version_and_stays_off() {
+        let root = temp_dir("withheld");
+        let dirs = ["1.0", "2.0"].map(|version| {
+            let dir = root.join(format!("{version}_ab"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let manifest =
+                format!(r#"{{"manifest_version": 3, "name": "X", "version": "{version}"}}"#);
+            std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+            dir.to_string_lossy().into_owned()
+        });
+        let engine = FakeEngine::default();
+        let core = RefCell::new(vec![installed("x@vsesvit.test", &dirs[0], None, true)]);
+        sync(&engine, &core);
+        let engine_id = core.borrow()[0].engine_id.clone().unwrap();
+        let mut update = installed("x@vsesvit.test", &dirs[1], None, false);
+        update.withheld.api.insert("tabs".into());
+        *core.borrow_mut() = vec![update];
+        sync(&engine, &core);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            core.borrow()[0].engine_id.as_deref(),
+            Some(engine_id.as_str())
+        );
+        assert_eq!(
+            engine.0.borrow().loaded,
+            [(engine_id.clone(), "Added".to_owned(), false)]
+        );
+        assert_eq!(
+            engine.calls(),
+            [
+                format!("add {}", dirs[0]),
+                format!("add {}", dirs[1]),
+                format!("enable {engine_id} false"),
+            ]
+        );
     }
 }
