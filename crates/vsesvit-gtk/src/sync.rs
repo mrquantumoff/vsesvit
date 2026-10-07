@@ -3,6 +3,7 @@
 //! soon after a local change, when asked, and once more as the browser quits. What touches the
 //! profile runs on the UI thread; the network steps run on worker threads. Settings watches the
 //! [`State`], and what it asks of the sync passphrase is prompted for over the browser window.
+//! Signing in names and pictures the profile after the account, as Chrome does.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -16,8 +17,9 @@ use vsesvit_core::Profile;
 use vsesvit_core::crdt::Seq;
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
+use vsesvit_core::profiles::{AccountDetails, AccountPicture, ProfileEntry};
 use vsesvit_sync::status::{self, Action, Prompt, State};
-use vsesvit_sync::{Account, Encryption, Error, Http, MAX_ROUNDS, Passphrase, PassphraseJob, Round, SignIn};
+use vsesvit_sync::{Account, Encryption, Error, Http, MAX_ROUNDS, Passphrase, PassphraseJob, Round, SignIn, SignedIn};
 
 use crate::browser::{self, Browser};
 use crate::dialogs::passphrase;
@@ -314,15 +316,16 @@ impl Syncer {
             }
             syncer.0.canceller.take();
             let Some(browser) = syncer.browser() else { return };
-            let saved = result.and_then(|account| {
-                account.save_signed_in(&mut browser.core().borrow_mut().sync())?;
-                Ok(account)
+            let saved = result.and_then(|signed_in| {
+                signed_in.account.save_signed_in(&mut browser.core().borrow_mut().sync())?;
+                Ok(signed_in)
             });
             match saved {
-                Ok(account) => {
+                Ok(SignedIn { account, details }) => {
                     syncer.set_state(signed_in(&account, syncer.0.running.get(), None, false));
                     syncer.sync_now();
                     syncer.schedule(TICK_SECS);
+                    syncer.take_account_details(details);
                 }
                 Err(e) => {
                     log::warn!("sync sign-in: {e}");
@@ -334,8 +337,37 @@ impl Syncer {
         });
     }
 
+    /// Names and pictures the profile after the account just signed in, unless the user set its
+    /// details by hand. The picture comes from a worker, so it holds up neither the sign-in nor a
+    /// sync.
+    pub(crate) fn take_account_details(&self, details: AccountDetails) {
+        let Some(home) = self.browser().and_then(|b| b.home().cloned()) else { return };
+        let registry = match home.dir.take_account_details(&home.id, details.name.as_deref(), None) {
+            Ok(registry) => registry,
+            Err(e) => return log::warn!("the profile list: {e}"),
+        };
+        let by_hand = registry.get(&home.id).is_none_or(ProfileEntry::set_by_hand);
+        if let Some(browser) = self.browser() {
+            browser.set_profiles(registry);
+        }
+        let Some(url) = details.picture.filter(|_| !by_hand) else { return };
+        let syncer = self.clone();
+        glib::spawn_future_local(async move {
+            let taken = on_worker(move || {
+                let picture = AccountPicture::fetch(&url)?;
+                Some(home.dir.take_account_details(&home.id, None, Some(&picture)))
+            })
+            .await;
+            match (taken, syncer.browser()) {
+                (Some(Ok(registry)), Some(browser)) => browser.set_profiles(registry),
+                (Some(Err(e)), _) => log::warn!("the profile list: {e}"),
+                _ => {}
+            }
+        });
+    }
+
     /// Opens the sync server's sign-in page in a new tab and waits for the user to come back from it.
-    async fn authorize(&self, attempt: u64, server: String) -> Result<Account, Error> {
+    async fn authorize(&self, attempt: u64, server: String) -> Result<SignedIn, Error> {
         let http = self.0.http.clone();
         let pending = on_worker(move || SignIn::start(&http, &server)).await?;
         let Some(browser) = self.browser().filter(|_| self.0.attempt.get() == attempt) else {

@@ -11,8 +11,9 @@
 //! // Sign in (worker, then UI, then worker).
 //! let pending = SignIn::start(&http, &server_url)?;          // worker
 //! open_tab(pending.authorize_url());                         // UI: the server's sign-in page
-//! let account = pending.finish(&http)?;                      // worker: waits for the redirect
+//! let SignedIn { account, details } = pending.finish(&http)?; // worker: waits for the redirect
 //! account.save_signed_in(&mut profile.sync())?;              // UI
+//! profiles_dir.take_account_details(&id, details.name.as_deref(), None)?; // UI; the picture later
 //!
 //! // One sync, a few rounds.
 //! let mut account = Account::load(&mut profile.sync())?.unwrap();
@@ -46,7 +47,7 @@ use std::time::Duration;
 
 pub use crypto::{MIN_PASSPHRASE_CHARS, Passphrase};
 pub use engine::{Account, Encryption, Exchanged, Finished, MAX_ROUNDS, NewKeys, PassphraseJob, Round, Synced};
-pub use auth::SignIn;
+pub use auth::{SignIn, SignedIn};
 
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()

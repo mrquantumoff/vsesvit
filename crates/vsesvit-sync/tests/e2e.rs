@@ -19,16 +19,18 @@ use sha2::{Digest, Sha256};
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{Theme, keys};
+use vsesvit_core::profiles::{AccountDetails, AccountPicture, ProfileId, ProfilesDir};
 use vsesvit_core::crdt::Seq;
 use vsesvit_core::sync::{DataType, Kind};
 use vsesvit_core::vault::KeyStore;
 use vsesvit_core::{OpenOptions, Profile, Url};
-use vsesvit_sync::{Account, Encryption, Error, Http, Passphrase, PassphraseJob, Round, SignIn};
+use vsesvit_sync::{Account, Encryption, Error, Http, Passphrase, PassphraseJob, Round, SignIn, SignedIn};
 use vsesvit_sync_proto::{Page, RECORDS_PATH, Record, Upload};
 
 const CLIENT_ID: &str = "vsesvit-test";
 const CLIENT_SECRET: &str = "e2e-secret";
 const PASSPHRASE: &str = "correct horse battery staple";
+const PICTURE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/site/allowed.png"));
 
 struct TempDir(PathBuf);
 
@@ -57,7 +59,8 @@ struct ProviderState {
 }
 
 /// Discovery, an authorize endpoint that signs `user` straight in, a token endpoint that checks the
-/// server's secret and PKCE, and userinfo.
+/// server's secret and PKCE, and userinfo: with a name and a picture for `carol`, nothing but the
+/// subject for `dave`, a name for anyone else.
 struct MockProvider {
     issuer: String,
     state: Arc<Mutex<ProviderState>>,
@@ -105,6 +108,7 @@ fn serve(mut stream: TcpStream, issuer: &str, state: &Mutex<ProviderState>) {
     let form: HashMap<String, String> = url::form_urlencoded::parse(&body).into_owned().collect();
     let mut s = state.lock().unwrap();
     let (status, extra, body) = match (method, url.path()) {
+        ("GET", "/carol.png") => ("200 OK", "Content-Type: image/png\r\n".to_owned(), PICTURE.to_vec()),
         ("GET", "/.well-known/openid-configuration") => (
             "200 OK",
             String::new(),
@@ -114,7 +118,8 @@ fn serve(mut stream: TcpStream, issuer: &str, state: &Mutex<ProviderState>) {
                 "token_endpoint": format!("{issuer}/token"),
                 "userinfo_endpoint": format!("{issuer}/userinfo"),
             })
-            .to_string(),
+            .to_string()
+            .into_bytes(),
         ),
         ("GET", "/authorize") => {
             assert_eq!(query["client_id"], CLIENT_ID);
@@ -129,7 +134,7 @@ fn serve(mut stream: TcpStream, issuer: &str, state: &Mutex<ProviderState>) {
                 s.codes.insert(code.clone(), (user, query["code_challenge"].clone(), query["redirect_uri"].clone()));
                 format!("{}?code={code}&state={}", query["redirect_uri"], query["state"])
             };
-            ("302 Found", format!("Location: {location}\r\n"), String::new())
+            ("302 Found", format!("Location: {location}\r\n"), Vec::new())
         }
         ("POST", "/token") => {
             assert_eq!(form["client_id"], CLIENT_ID);
@@ -140,7 +145,7 @@ fn serve(mut stream: TcpStream, issuer: &str, state: &Mutex<ProviderState>) {
             assert_eq!(form["redirect_uri"], redirect);
             let claims = serde_json::json!({ "user": user });
             let access = format!("e30.{}.sig", URL_SAFE_NO_PAD.encode(claims.to_string()));
-            ("200 OK", String::new(), serde_json::json!({ "access_token": access, "token_type": "Bearer", "expires_in": 60 }).to_string())
+            ("200 OK", String::new(), serde_json::json!({ "access_token": access, "token_type": "Bearer", "expires_in": 60 }).to_string().into_bytes())
         }
         ("GET", "/userinfo") => {
             let token = headers.get("authorization").and_then(|a| a.strip_prefix("Bearer ")).unwrap_or_default();
@@ -149,19 +154,26 @@ fn serve(mut stream: TcpStream, issuer: &str, state: &Mutex<ProviderState>) {
                 .nth(1)
                 .and_then(|p| URL_SAFE_NO_PAD.decode(p).ok())
                 .and_then(|p| serde_json::from_slice(&p).ok());
-            match claims.as_ref().and_then(|c| c["user"].as_str()) {
-                Some(user) => ("200 OK", String::new(), serde_json::json!({ "sub": user, "name": user }).to_string()),
-                None => ("401 Unauthorized", String::new(), String::new()),
+            let info = match claims.as_ref().and_then(|c| c["user"].as_str()) {
+                Some("carol") => serde_json::json!({
+                    "sub": "carol", "name": "Carol King", "given_name": "Carol", "email": "carol@example.com",
+                    "picture": format!("{issuer}/carol.png"),
+                }),
+                Some("dave") => serde_json::json!({ "sub": "dave" }),
+                Some(user) => serde_json::json!({ "sub": user, "name": user }),
+                None => serde_json::Value::Null,
+            };
+            match info {
+                serde_json::Value::Null => ("401 Unauthorized", String::new(), Vec::new()),
+                info => ("200 OK", String::new(), info.to_string().into_bytes()),
             }
         }
-        _ => ("404 Not Found", String::new(), String::new()),
+        _ => ("404 Not Found", String::new(), Vec::new()),
     };
     drop(s);
-    let _ = write!(
-        stream,
-        "HTTP/1.1 {status}\r\n{extra}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
+    let content_type = if extra.contains("Content-Type") { "" } else { "Content-Type: application/json\r\n" };
+    let _ = write!(stream, "HTTP/1.1 {status}\r\n{extra}{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+    let _ = stream.write_all(&body);
 }
 
 struct Server {
@@ -268,7 +280,7 @@ fn open(dir: &TempDir) -> Profile {
 
 /// Opens the server's sign-in page as the browser tab would, following its redirects through the
 /// provider and back to the loopback port, and returns what signing in came to.
-fn try_sign_in(http: &Http, server: &str) -> Result<Account, Error> {
+fn try_sign_in(http: &Http, server: &str) -> Result<SignedIn, Error> {
     let pending = SignIn::start(http, server).unwrap();
     let authorize = pending.authorize_url().to_owned();
     assert!(authorize.starts_with(server), "the browser opens the sync server, never the provider");
@@ -283,7 +295,7 @@ fn try_sign_in(http: &Http, server: &str) -> Result<Account, Error> {
 /// Signs in and syncs: unencrypted while the account has no passphrase, else nothing until it is
 /// entered.
 fn sign_in(profile: &mut Profile, http: &Http, server: &str) -> Account {
-    let account = try_sign_in(http, server).unwrap();
+    let account = try_sign_in(http, server).unwrap().account;
     account.save_signed_in(&mut profile.sync()).unwrap();
     sync(profile, http);
     Account::load(&mut profile.sync()).unwrap().unwrap()
@@ -472,8 +484,41 @@ fn a_refusal_at_the_provider_fails_the_sign_in_with_its_reason() {
     provider.sign_in_as("deny");
     match try_sign_in(&Http::new(), &server.url) {
         Err(Error::Refused(reason)) => assert_eq!(reason, "refused by the test"),
-        other => panic!("{:?}", other.map(|a| a.server().to_owned())),
+        other => panic!("{:?}", other.map(|s| s.account.server().to_owned())),
     }
+}
+
+#[test]
+fn a_sign_in_names_and_pictures_the_profile_after_the_person_and_a_provider_that_says_nothing_changes_nothing() {
+    let Ok(bin) = std::env::var("VSESVIT_SYNC_SERVER_BIN") else {
+        eprintln!("skipped: VSESVIT_SYNC_SERVER_BIN is not set");
+        return;
+    };
+    vsesvit_core::favicons::allow_local_hosts();
+    let provider = MockProvider::start();
+    let server = start_server(&bin, &provider.issuer);
+    let profiles = TempDir::new("profile-details");
+    let dir = ProfilesDir::at(profiles.0.clone());
+    let id = ProfileId::default_profile();
+    std::fs::create_dir_all(dir.root(&id)).unwrap();
+    dir.opened(&id).unwrap();
+
+    provider.sign_in_as("carol");
+    let SignedIn { account, details } = try_sign_in(&Http::new(), &server.url).unwrap();
+    assert_eq!(account.name(), Some("Carol King"), "Settings names the account as before");
+    assert_eq!(details.name.as_deref(), Some("Carol"), "the given name, as Chrome names a profile");
+    let url = details.picture.expect("the picture claim reaches the browser");
+    assert_eq!(url.as_str(), format!("{}/carol.png", provider.issuer));
+    let picture = AccountPicture::fetch(&url).expect("the picture fetches and decodes");
+    let registry = dir.take_account_details(&id, details.name.as_deref(), Some(&picture)).unwrap();
+    let entry = registry.get(&id).unwrap();
+    assert_eq!(entry.name, "Carol");
+    assert!(dir.picture(entry).is_some_and(|file| file.exists()));
+
+    provider.sign_in_as("dave");
+    let SignedIn { details, .. } = try_sign_in(&Http::new(), &server.url).unwrap();
+    assert_eq!(details, AccountDetails::default());
+    assert_eq!(dir.take_account_details(&id, details.name.as_deref(), None).unwrap(), registry, "Carol's details stay");
 }
 
 #[test]

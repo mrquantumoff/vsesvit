@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
+use vsesvit_core::profiles::AccountDetails;
 use vsesvit_sync_proto::{AUTHORIZE_PATH, Limits, OAuthError, SESSION_PATH, TOKEN_PATH, TokenResponse};
 
 use crate::engine::Account;
@@ -28,6 +29,13 @@ const REDIRECT_PATH: &str = "/callback";
 /// The most a request line may take, so a stray local client cannot hold up the redirect, or Cancel.
 const MAX_REQUEST_LINE: usize = 8 << 10;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A finished sign-in: the account, and what the provider said about the person, for the profile.
+#[derive(Debug)]
+pub struct SignedIn {
+    pub account: Account,
+    pub details: AccountDetails,
+}
 
 /// A sign-in waiting for the server to send the browser back. Blocking; `Send`.
 pub struct SignIn {
@@ -85,7 +93,7 @@ impl SignIn {
 
     /// Waits for the redirect, then trades the code for a session. The account it returns has
     /// synced nothing yet.
-    pub fn finish(self, http: &Http) -> Result<Account, Error> {
+    pub fn finish(self, http: &Http) -> Result<SignedIn, Error> {
         let code = self.wait_for_code()?;
         let url = format!("{}{TOKEN_PATH}", self.server);
         let form = [
@@ -100,7 +108,8 @@ impl SignIn {
             return Err(Error::Refused(reason));
         }
         let session: TokenResponse = read(response, &url)?;
-        Ok(Account::new(self.server, session.name, session.access_token, self.limits))
+        let details = AccountDetails::from_claims(&session.claims);
+        Ok(SignedIn { account: Account::new(self.server, session.name, session.access_token, self.limits), details })
     }
 
     fn wait_for_code(&self) -> Result<String, Error> {
