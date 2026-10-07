@@ -3428,7 +3428,8 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let private_tab = private.open_tab(None, None, Focus::Foreground);
         let private_shown = (private.title().unwrap_or_default().to_string(), private.profile_menu().is_some());
         let private_expected = (format!("{} - Person 1 (Private)", private_tab.display_title()), false);
-        private.close();
+        // Never shown, so `close` would do nothing.
+        private.destroy();
         wait_for(&last, || if browser.windows_of(Browsing::Private).is_empty() { Ok(()) } else { Err("the private window is still open".to_owned()) }).await;
         browser.edit_profile(&home.id, "Tester", ProfileColor::Teal).map_err(|e| e.to_string())?;
         let renamed = title();
