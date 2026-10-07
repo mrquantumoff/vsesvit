@@ -44,7 +44,8 @@ use crate::dialogs::settings::{
     TRACKING_PROTECTION_ROW,
 };
 use crate::dialogs::site_data::SEE_ALL_ROW;
-use crate::dialogs::{Windowed, shortcut_settings};
+use crate::dialogs::{Windowed, extension_prompts, shortcut_settings};
+use crate::extensions::InstallFailure;
 use crate::{engine, keymap, page_menu};
 use crate::tab::Tab;
 use crate::window::{BrowserWindow, Focus, TabSearch, classify_layout};
@@ -78,8 +79,9 @@ const NEW_TAB_PAGE_PROBE: &str = "document.querySelector('form input') ? [...doc
 const SELECT_HEADING: &str = "getSelection().selectAllChildren(document.querySelector('h1')); String(getSelection())";
 
 /// Every check the self-test runs, in order; a run that misses one fails.
-const CHECKS: [&str; 58] = [
+const CHECKS: [&str; 59] = [
     "profile_open",
+    "install_prompt",
     "install_crx",
     "engine_loaded_extension",
     "favicon_preload",
@@ -342,6 +344,28 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
     let page2_url = ctx.server.url("/page2.html");
     // Every check's future captures references, so the checks share these values.
     let (window, index_url, page2_url, probe_id) = (&window, &index_url, &page2_url, &probe_id);
+
+    ctx.check("install_prompt", CHECK_TIMEOUT, |last| async move {
+        let source = InstallSource::from_path(&ctx.crx_path).map_err(|e| e.to_string())?;
+        let install = glib::spawn_future_local(glib::clone!(
+            #[strong]
+            browser,
+            #[strong]
+            window,
+            async move { browser.install_asking(&window, source, |_| {}).await }
+        ));
+        let dialog = wait_for(&last, || window.visible_dialog().and_downcast::<adw::AlertDialog>().ok_or_else(|| "the install shows no prompt".to_owned())).await;
+        let lines = extension_prompts::shown_lines(&dialog);
+        glib::timeout_future(POPOVER_SETTLE).await;
+        crate::screenshot::save_png(window, &ctx.out_dir.join("install-prompt.png")).await.map_err(|e| e.to_string())?;
+        dialog.close();
+        let outcome = install.await.map_err(|e| e.to_string())?;
+        let committed = browser.installed_extensions().iter().any(|e| e.id == *probe_id);
+        let expected = ["Add “Vsesvit Probe”?", "It can:", "• Read and change all your data on all websites", "• Display notifications"];
+        let detail = format!("the prompt shows {lines:?} (install-prompt.png); cancelled, the install gave {outcome:?} and committed={committed}");
+        if lines == expected && matches!(outcome, Err(InstallFailure::Cancelled)) && !committed { Ok(detail) } else { Err(detail) }
+    })
+    .await;
 
     ctx.check("install_crx", CHECK_TIMEOUT, |_| async move {
         let source = InstallSource::from_path(&ctx.crx_path).map_err(|e| e.to_string())?;

@@ -3,7 +3,8 @@
 //! An install is core's three-step pipeline: `prepare_install` on the UI thread,
 //! `InstallJob::run` on a worker thread (`gio::spawn_blocking`) with its progress relayed
 //! back over a channel, and `commit` on the UI thread again, after which the runtime
-//! loads the extension.
+//! loads the extension. A user's install the extensions dialog starts waits between the last
+//! two for Chrome's install prompt, which lists what the extension can do.
 //!
 //! Every change to the enabled extensions applies the keymap again, which binds their commands.
 
@@ -13,13 +14,16 @@ use futures_channel::mpsc;
 use futures_util::StreamExt;
 use gtk::{gio, glib};
 use vsesvit_core::extensions::manifest::Manifest;
+use adw::prelude::*;
 use vsesvit_core::extensions::{
-    ExtensionId, InstallError, InstallJob, InstallPhase, InstallSource, InstalledExtension,
+    ExtensionId, InstallError, InstallJob, InstallPhase, InstallSource, InstalledExtension, StagedInstall,
 };
 use vsesvit_core::private::Browsing;
 use vsesvit_webext::{LoadError, Unsupported};
 
 use crate::browser::Browser;
+use crate::dialogs::extension_prompts;
+use crate::window::BrowserWindow;
 
 #[derive(Debug)]
 pub(crate) enum InstallFailure {
@@ -30,6 +34,8 @@ pub(crate) enum InstallFailure {
     /// is missing or unreadable).
     Load(Box<InstalledExtension>, LoadError),
     WorkerPanicked,
+    /// The user cancelled the install prompt.
+    Cancelled,
 }
 
 impl fmt::Display for InstallFailure {
@@ -41,6 +47,7 @@ impl fmt::Display for InstallFailure {
                 write!(f, "{} {} is installed but cannot run: {e}", ext.manifest.name, ext.version)
             }
             InstallFailure::WorkerPanicked => write!(f, "the install thread panicked"),
+            InstallFailure::Cancelled => write!(f, "the install was cancelled"),
         }
     }
 }
@@ -85,6 +92,25 @@ impl Browser {
         self.run_install_job(job, progress).await
     }
 
+    /// [`Browser::install`] that asks the user over `window` first, with Chrome's install
+    /// prompt, where core says Chrome would.
+    pub(crate) async fn install_asking(
+        &self,
+        window: &BrowserWindow,
+        source: InstallSource,
+        progress: impl Fn(InstallPhase) + 'static,
+    ) -> Result<Option<InstalledExtension>, InstallFailure> {
+        let prepared = self.core().borrow_mut().extensions().prepare_install(source);
+        let staged = self.stage(prepared.map_err(InstallFailure::Prepare)?, progress).await?;
+        if staged.needs_approval() {
+            let dialog = extension_prompts::install_dialog(staged.manifest());
+            if dialog.choose_future(Some(window)).await != extension_prompts::ADD {
+                return Err(InstallFailure::Cancelled);
+            }
+        }
+        self.commit_install(staged)
+    }
+
     /// Runs a prepared job off the UI thread, commits it, and hands the result to the
     /// runtime.
     pub(crate) async fn run_install_job(
@@ -92,6 +118,11 @@ impl Browser {
         job: InstallJob,
         progress: impl Fn(InstallPhase) + 'static,
     ) -> Result<Option<InstalledExtension>, InstallFailure> {
+        let staged = self.stage(job, progress).await?;
+        self.commit_install(staged)
+    }
+
+    async fn stage(&self, job: InstallJob, progress: impl Fn(InstallPhase) + 'static) -> Result<StagedInstall, InstallFailure> {
         let (tx, mut rx) = mpsc::unbounded::<InstallPhase>();
         let handle = gio::spawn_blocking(move || {
             job.run(&mut |phase| {
@@ -106,7 +137,10 @@ impl Browser {
         });
         let staged = handle.await.map_err(|_| InstallFailure::WorkerPanicked)?;
         let _ = pump.await;
-        let staged = staged.map_err(InstallFailure::Run)?;
+        staged.map_err(InstallFailure::Run)
+    }
+
+    fn commit_install(&self, staged: StagedInstall) -> Result<Option<InstalledExtension>, InstallFailure> {
         let committed = self.core().borrow_mut().extensions().commit(staged);
         let committed = committed.map_err(InstallFailure::Commit)?;
         self.apply_keymap();

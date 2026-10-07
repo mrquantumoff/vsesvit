@@ -1012,6 +1012,18 @@ mod store_tests {
     }
 
     #[test]
+    fn only_a_users_install_of_a_package_asks_first() {
+        let mut t = TempProfile::new();
+        assert!(staged_from_store(&mut t, Intent::User).needs_approval());
+        assert!(!staged_from_store(&mut t, Intent::Reconcile).needs_approval(), "another device's install");
+        let dir = t.dir.join("unpacked");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("manifest.json"), r#"{"manifest_version":3,"name":"u","version":"1"}"#).unwrap();
+        let job = t.p().extensions().prepare_install(InstallSource::from_path(&dir).unwrap()).unwrap();
+        assert!(!job.run(&mut |_| {}).unwrap().needs_approval(), "a developer's folder");
+    }
+
+    #[test]
     fn a_store_reinstall_after_uninstall_comes_back_enabled() {
         let mut t = TempProfile::new();
         let staged = staged_from_store(&mut t, Intent::User);

@@ -721,6 +721,16 @@ impl StagedInstall {
     pub fn verification(&self) -> &Verification {
         &self.verification
     }
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    /// Whether the user approves it in Chrome's install prompt before `commit`: a user's
+    /// install from a store or a package. A developer's unpacked folder, like Chrome's "Load
+    /// unpacked", and an install another device asked for go in without one.
+    pub fn needs_approval(&self) -> bool {
+        self.intent == Intent::User && !matches!(self.source, InstallSource::Unpacked { .. })
+    }
 }
 
 /// Extraction rules (the checks that keep a hostile archive inside `dest`):

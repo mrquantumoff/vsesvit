@@ -1,5 +1,6 @@
 //! The Extensions dialog: install from a store link or id, a `.crx`/`.xpi` file or an
-//! unpacked folder, with the job's progress shown; the installed list with icon, name,
+//! unpacked folder, with the job's progress shown and Chrome's install prompt before a store
+//! or package install goes in; the installed list with icon, name,
 //! version, provenance, an enabled switch and removal; and, per extension, what its
 //! manifest asks for that the Linux runtime does not provide, whether its notifications
 //! may show and whether it runs in private windows.
@@ -134,7 +135,7 @@ impl State {
                 return;
             }
         };
-        let Some(browser) = self.browser() else { return };
+        let Some(window) = self.window.upgrade() else { return };
         self.install_started();
         let state = self.clone();
         glib::spawn_future_local(async move {
@@ -142,9 +143,10 @@ impl State {
                 let row = state.progress.clone();
                 progress_to(move |text| row.set_subtitle(&text))
             };
-            let result = browser.install(source, progress).await;
+            let result = window.browser().clone().install_asking(&window, source, progress).await;
             state.install_finished();
             match result {
+                Err(InstallFailure::Cancelled) => {}
                 Ok(Some(ext)) => state.toast(&format!("Installed {} {}", ext.manifest.name, ext.version)),
                 Ok(None) => state.toast("The extension was removed elsewhere while it downloaded"),
                 Err(InstallFailure::Load(ext, e)) => state.toast(&format!(
