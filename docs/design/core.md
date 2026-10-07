@@ -340,8 +340,10 @@ no row references.
 `downloads` is LOCAL (schema v3, its state CHECK widened in v10): each row names a file on this device's disk, so
 there is nothing to sync. A row is `{url, path, started_ms, state, received, total}`, and `State` (`InProgress`,
 `Paused`, `Interrupted`, `Unconfirmed`, `Completed`, `Failed`, `Cancelled`, stored as text) is the only lifecycle
-field. The shell owns the engine download and its live byte counts. Core stores the start, each pause, resume or
-interruption, and the outcome (`update`), never per-tick progress. No engine download outlives its process, so the
+field. The shell owns the engine download and feeds its live byte counts to a `Transfer`, which keeps samples of
+them over the last 10 seconds and reads the speed at an `Instant` the caller passes (`Transfer::at` gives a
+`Progress`), so tests drive it with their own clock. Core stores the start, each pause, resume or interruption, and
+the outcome (`update`), never per-tick progress. No engine download outlives its process, so the
 shells call `interrupt_stale` once at startup, which turns every leftover row the engine held (`State::is_live`) into
 `Failed`. Running it twice changes nothing. File naming (`sanitize`, `unique_destination`) and the row's status text
 (`status_line`, `describe_size`) are pure functions here, so both shells show the same names and the same words.
