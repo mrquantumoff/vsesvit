@@ -362,6 +362,26 @@ impl<K: Clone + Eq + Hash> TabGroups<K> {
         }
     }
 
+    /// Reopen Closed Tab: `tab`, just reopened, goes back into the group it closed in if the
+    /// window still has it, as in Chrome. It stays where it is if that is within the group, else
+    /// moves to the group's start from before it or to its end from after it.
+    pub fn rejoin(&mut self, tabs: &WindowTabs<K>, tab: &K, group: GroupId) -> Vec<Step<K>> {
+        let at = tabs.order.iter().position(|t| t == tab).filter(|&at| at >= tabs.pinned);
+        let mut span = (tabs.order.iter().enumerate())
+            .filter(|&(_, t)| t != tab && self.members.get(t) == Some(&group))
+            .map(|(i, _)| i);
+        let (Some(at), Some(first)) = (at, span.next()) else { return Vec::new() };
+        let last = span.last().unwrap_or(first);
+        self.members.insert(tab.clone(), group);
+        if at + 1 < first {
+            vec![Step::Move(tab.clone(), first - 1)]
+        } else if at > last + 1 {
+            vec![Step::Move(tab.clone(), last + 1)]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Makes the groups follow the window's tabs after any change. `moved` is the tab that just
     /// moved or opened, if the shell knows it: it joins the group it landed inside, and leaves its
     /// group when it landed away from the group's other tabs. Otherwise a group split in parts
@@ -676,6 +696,25 @@ mod tests {
         assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('c')), &'c', None), Some('b'));
         assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('b')), &'b', None), Some('c'));
         assert_eq!(groups.after_closing(&tabs("abcd", 0, Some('a')), &'a', None), Some('b'));
+    }
+
+    #[test]
+    fn a_reopened_tab_goes_back_into_its_group_at_the_nearer_end_unless_within_it() {
+        let reopen = |order: &str, pinned: usize, closed_in: u128| {
+            let mut groups = TabGroups::default();
+            group_with(&mut groups, "bc");
+            let window = tabs(order, pinned, Some('x'));
+            let steps = groups.rejoin(&window, &'x', GroupId(Uuid::from_u128(closed_in)));
+            let after = apply(&window, &steps);
+            groups.settle(&after, None);
+            (after.order.iter().collect::<String>(), grouping(&groups, &after))
+        };
+        assert_eq!(reopen("abxcd", 0, 1), ("abxcd".into(), vec!["bxc".to_owned()]));
+        assert_eq!(reopen("axbcd", 0, 1), ("axbcd".into(), vec!["xbc".to_owned()]));
+        assert_eq!(reopen("xabcd", 0, 1), ("axbcd".into(), vec!["xbc".to_owned()]));
+        assert_eq!(reopen("abcdx", 0, 1), ("abcxd".into(), vec!["bcx".to_owned()]));
+        assert_eq!(reopen("abcdx", 0, 9), ("abcdx".into(), vec!["bc".to_owned()]), "its group is gone");
+        assert_eq!(reopen("xabcd", 1, 1), ("xabcd".into(), vec!["bc".to_owned()]), "a pinned tab stays out");
     }
 
     #[test]
