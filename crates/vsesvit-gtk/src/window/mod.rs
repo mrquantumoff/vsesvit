@@ -94,7 +94,8 @@ struct Ui {
     zoom_level: gtk::Button,
     /// Hidden until a download starts.
     downloads_button: gtk::Button,
-    /// The profile's avatar, opening the profile menu; hidden for a profile outside the list.
+    /// The profile's avatar, opening the profile menu; hidden for a profile outside the list
+    /// and, as Chrome hides it in incognito windows, in a private window.
     profile_button: gtk::MenuButton,
     profile_avatar: gtk::Label,
     tab_view: adw::TabView,
@@ -1330,7 +1331,7 @@ impl BrowserWindow {
     fn sync_profile(&self) {
         let ui = self.ui();
         let browser = self.browser();
-        let Some(home) = browser.home() else {
+        let Some(home) = browser.home().filter(|_| self.browsing() == Browsing::Normal) else {
             ui.profile_button.set_visible(false);
             return;
         };

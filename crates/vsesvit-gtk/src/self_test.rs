@@ -3424,6 +3424,12 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         let (work, registry) = home.dir.add("Work", ProfileColor::Green).map_err(|e| e.to_string())?;
         browser.set_profiles(registry);
         let together = (menu_names()?, title());
+        let private = BrowserWindow::with_browsing(browser, Browsing::Private);
+        let private_tab = private.open_tab(None, None, Focus::Foreground);
+        let private_shown = (private.title().unwrap_or_default().to_string(), private.profile_menu().is_some());
+        let private_expected = (format!("{} - Person 1 (Private)", private_tab.display_title()), false);
+        private.close();
+        wait_for(&last, || if browser.windows_of(Browsing::Private).is_empty() { Ok(()) } else { Err("the private window is still open".to_owned()) }).await;
         browser.edit_profile(&home.id, "Tester", ProfileColor::Teal).map_err(|e| e.to_string())?;
         let renamed = title();
         gio::prelude::ActionGroupExt::activate_action(window, "manage-profiles", None);
@@ -3450,11 +3456,12 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         })
         .await;
         let detail = format!(
-            "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}; renamed: {renamed:?}; Manage Profiles lists {manage_rows:?} (profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored on={picker_stored}; Work removed: menu {:?}, title {:?} (profiles.png)",
+            "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile menu {private_shown:?}; renamed: {renamed:?}; Manage Profiles lists {manage_rows:?} (profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored on={picker_stored}; Work removed: menu {:?}, title {:?} (profiles.png)",
             alone.0, alone.1, together.0, together.1, removed.0, removed.1
         );
         let ok = alone == (vec!["Person 1".to_owned()], page_title.clone())
             && together == (vec!["Person 1".to_owned(), "Work".to_owned()], format!("{page_title} - Person 1"))
+            && private_shown == private_expected
             && renamed == format!("{page_title} - Tester")
             && manage_rows == ["Tester", "Work"]
             && picker_shown

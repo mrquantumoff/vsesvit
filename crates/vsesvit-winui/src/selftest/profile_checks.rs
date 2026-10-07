@@ -1,11 +1,13 @@
-//! The `profiles` check: the profile menu, window titles with the profile's name, Manage profiles
-//! and the picker switch in Settings, on a profile list in the output directory. No process is
-//! started: adding goes through core, as the Add profile flyout's answer does.
+//! The `profiles` check: the profile menu, window titles with the profile's name, a private
+//! window's too, Manage profiles and the picker switch in Settings, on a profile list in the
+//! output directory. No process is started: adding goes through core, as the Add profile flyout's
+//! answer does.
 
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
+use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles::ProfileColor;
 
 use super::{Probe, until};
@@ -15,6 +17,7 @@ use crate::bindings::{FlyoutBase, TextBlock, ToggleSwitch};
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog};
 use crate::exec;
+use crate::session::{TabPlan, WindowPlan};
 use crate::window::BrowserWindow;
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -30,6 +33,39 @@ async fn shoot(window: &BrowserWindow, out_dir: &Path, name: &str) -> Result<(),
         .map_err(|e| format!("capture: {e}"))?;
     let path = out_dir.join(name);
     std::fs::write(&path, &shot.png).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The title of a private window on the normal window's page, and whether it shows the profile
+/// button, which it hides as Chrome's incognito windows do.
+async fn private_title(
+    browser: &Rc<Browser>,
+    window: &Rc<BrowserWindow>,
+    p: &Probe,
+) -> Result<(String, bool), String> {
+    let page = window.active_tab().map(|t| t.state()).unwrap_or_default();
+    let plan = WindowPlan::with_tabs(vec![TabPlan::url(page.url.clone())]);
+    let private = browser
+        .open_window(Browsing::Private, &plan, browser.show_mode())
+        .map_err(err)?;
+    let tab = until(p, |p| {
+        p.observe("the private window has no tab yet");
+        private.active_tab()
+    })
+    .await;
+    until(p, |p| {
+        let s = tab.state();
+        p.observe(format!("private tab at {:?} titled {:?}", s.url, s.title));
+        (s.url == page.url && s.title == page.title && !s.loading()).then_some(())
+    })
+    .await;
+    let shown = (private.title(), private.shows_profile_button());
+    private.close_tab(tab.id);
+    until(p, |p| {
+        p.observe("the private window is still open");
+        browser.windows_of(Browsing::Private).is_empty().then_some(())
+    })
+    .await;
+    Ok(shown)
 }
 
 pub(super) async fn profiles(
@@ -52,6 +88,7 @@ pub(super) async fn profiles(
     let (work, registry) = home.dir.add("Work", ProfileColor::Green).map_err(err)?;
     browser.set_profiles(registry);
     let together = (menu()?, window.title());
+    let private = private_title(browser, window, p).await?;
     browser.edit_profile(&home.id, "Tester", ProfileColor::Teal)?;
     let renamed = window.title();
     let shown = window.show_profile_menu().map_err(err)?;
@@ -92,7 +129,7 @@ pub(super) async fn profiles(
     let after = (removed, menu()?, window.title());
 
     let detail = format!(
-        "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}; renamed: {renamed:?}; \
+        "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile button {private:?}; renamed: {renamed:?}; \
          Manage profiles lists {rows:?} (profile-menu.png, profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored \
          on={picker_stored}; Work removed: menu {:?}, title {:?}",
         alone.0, alone.1, together.0, together.1, after.1, after.2
@@ -110,6 +147,7 @@ pub(super) async fn profiles(
                 checked(&["Person 1", "Work"], 0),
                 format!("{page} - Person 1 - Vsesvit"),
             )
+        && private == (format!("{page} - Person 1 - Vsesvit (Private)"), false)
         && renamed == format!("{page} - Tester - Vsesvit")
         && rows == ["Tester", "Work"]
         && picker_shown

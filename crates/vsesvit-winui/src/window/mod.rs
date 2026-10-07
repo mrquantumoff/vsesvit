@@ -796,7 +796,9 @@ impl BrowserWindow {
 
     pub(super) fn sync_profile(&self) {
         let Some(browser) = self.browser() else { return };
-        let Some(home) = browser.home() else { return };
+        let Some(home) = browser.home().filter(|_| self.browsing == Browsing::Normal) else {
+            return;
+        };
         let registry = browser.profiles();
         let (name, color) = registry
             .get(&home.id)
@@ -840,6 +842,11 @@ impl BrowserWindow {
             }
         }
         Ok(lines)
+    }
+
+    #[cfg(feature = "self-test")]
+    pub fn shows_profile_button(&self) -> bool {
+        xaml::is_visible(&self.ui.profile)
     }
 
     /// Opens the profile menu, as a click on the profile button does.

@@ -250,7 +250,7 @@ const WINDOW_XAML: &str = r#"
       </StackPanel>
     </Border>
     <!-- The profile's avatar and its menu, filled as it opens; hidden for a profile outside the
-         profile list. -->
+         profile list and, as Chrome hides it in incognito windows, in a private window. -->
     <Button x:Name="Profile" Grid.Column="7" Style="{StaticResource ToolbarButton}" Visibility="Collapsed"
             AutomationProperties.Name="Profile">
       <Grid x:Name="ProfileAvatar"/>
