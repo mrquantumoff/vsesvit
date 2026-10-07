@@ -6,7 +6,8 @@
 //! shortcut script's isolated world forwards the event through its binding together with the
 //! origin it runs on, which the page cannot fake. Only a store's HTTPS origin counts, so a
 //! plain-HTTP page that a network attacker serves under a store's name cannot speak for the
-//! store. The shell asks the user, installs or removes through core, and answers the page. The
+//! store. The shell installs through core, asking the user with Chrome's install prompt once the
+//! package is verified, or removes, and answers the page. The
 //! tab's committed page must be on that store's origin when the request arrives, and again when
 //! the answer, which describes installed extensions, is handed to the page: asking the user can
 //! take a while, and the tab may have gone elsewhere meanwhile, so an answer for a tab that left
@@ -15,9 +16,10 @@
 use std::rc::Rc;
 
 use serde_json::{Value, json};
+use vsesvit_core::extensions::permissions;
 use vsesvit_core::extensions::{ExtensionId, InstallSource, InstalledExtension};
 
-use crate::dialogs;
+use crate::dialogs::{self, prompt_text};
 use crate::tab::TabId;
 use crate::window::BrowserWindow;
 
@@ -66,7 +68,7 @@ pub(crate) struct StoreRequest {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum StoreOp {
     List,
-    Install { id: ExtensionId, name: String },
+    Install { id: ExtensionId },
     Uninstall { id: ExtensionId },
 }
 
@@ -81,10 +83,7 @@ pub(crate) fn parse_request(origin: &str, detail: &str) -> Option<StoreRequest> 
     };
     let op = match value.get("op")?.as_str()? {
         "list" => StoreOp::List,
-        "install" => StoreOp::Install {
-            id: id()?,
-            name: value.get("name")?.as_str()?.to_owned(),
-        },
+        "install" => StoreOp::Install { id: id()? },
         "uninstall" => StoreOp::Uninstall { id: id()? },
         _ => return None,
     };
@@ -141,30 +140,28 @@ async fn carry_out(window: &Rc<BrowserWindow>, request: &StoreRequest) -> Result
                 .map_err(|e| e.to_string())?;
             Ok(json!({ "extensions": list.iter().map(describe).collect::<Vec<_>>() }))
         }
-        StoreOp::Install { id, name } => {
+        StoreOp::Install { id } => {
             if let Some(ext) = installed(id)? {
                 return Ok(json!({ "ok": true, "installed": describe(&ext) }));
             }
-            let name = if name.trim().is_empty() {
-                id.as_str()
-            } else {
-                name.trim()
-            };
-            let question = format!(
-                "Vsesvit will download it from {} and it can then run on the sites its \
-                 permissions allow.",
-                request.store.name()
-            );
-            let yes =
-                dialogs::confirm_for_page(window, &format!("Add “{name}”?"), &question, "Add")
-                    .await
-                    .map_err(|e| e.message())?;
+            // Downloaded and verified first, so the prompt describes the package itself rather
+            // than what the page says it is.
+            let staged = browser
+                .stage_extension(request.store.source(id.clone()), &|_| {})
+                .await?;
+            let manifest = staged.manifest();
+            let yes = dialogs::confirm_for_page(
+                window,
+                &permissions::install_heading(&manifest.name),
+                &prompt_text(manifest),
+                "Add extension",
+            )
+            .await
+            .map_err(|e| e.message())?;
             if !yes {
                 return Ok(json!({ "ok": false, "cancelled": true, "error": "User cancelled install" }));
             }
-            let ext = browser
-                .install_extension(request.store.source(id.clone()), &|_| {})
-                .await?;
+            let ext = browser.commit_extension(staged).await?;
             if let Some(e) = browser.extensions.engine_error(&ext.id) {
                 return Err(format!("WebView2 did not load it: {e}"));
             }
@@ -216,8 +213,7 @@ mod tests {
                 store: Store::Edge,
                 seq: 3,
                 op: StoreOp::Install {
-                    id: ExtensionId::parse(ID).unwrap(),
-                    name: "P".into()
+                    id: ExtensionId::parse(ID).unwrap()
                 }
             }),
             "the store is the sender's origin, not what the page claims"

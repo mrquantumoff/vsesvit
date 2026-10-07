@@ -13,7 +13,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use vsesvit_core::extensions::{
-    ExtensionId, InstallJob, InstallPhase, InstallSource, InstalledExtension,
+    ExtensionId, InstallJob, InstallPhase, InstallSource, InstalledExtension, StagedInstall,
 };
 
 use crate::bindings::CoreWebView2Profile;
@@ -144,14 +144,24 @@ impl Browser {
         }
     }
 
-    /// Installs from `source` (the Extensions dialog, `--load-extension`) and loads the result
-    /// into the engine. The engine's verdict is `engine_error`.
+    /// Installs from `source` without asking (`--load-extension`, the welcome's picks, scripted
+    /// runs) and loads the result into the engine. The engine's verdict is `engine_error`.
     pub(crate) async fn install_extension(
         self: &Rc<Self>,
         source: InstallSource,
         progress: &dyn Fn(Progress),
     ) -> Result<InstalledExtension, String> {
-        let ext = self.install_package(source, progress).await?;
+        let staged = self.stage_extension(source, progress).await?;
+        self.commit_extension(staged).await
+    }
+
+    /// Commits what `stage_extension` verified, which the user approved where it
+    /// `needs_approval`, and loads it into the engine.
+    pub(crate) async fn commit_extension(
+        self: &Rc<Self>,
+        staged: StagedInstall,
+    ) -> Result<InstalledExtension, String> {
+        let ext = self.commit_package(staged)?;
         if let Err(e) = self.sync_extensions().await {
             log::warn!("extension sync after install: {e}");
         }
@@ -167,15 +177,29 @@ impl Browser {
         source: InstallSource,
         progress: &dyn Fn(Progress),
     ) -> Result<InstalledExtension, String> {
-        let job = self
-            .core(|p| p.extensions().prepare_install(source))
-            .map_err(|e| e.to_string())?;
+        let staged = self.stage_extension(source, progress).await?;
+        self.commit_package(staged)
+    }
+
+    fn commit_package(&self, staged: StagedInstall) -> Result<InstalledExtension, String> {
         let ext = self
-            .run_install_job(job, progress)
-            .await?
+            .core(|p| p.extensions().commit(staged))
+            .map_err(|e| e.to_string())?
             .ok_or("the extension is no longer wanted")?;
         self.extensions.notify();
         Ok(ext)
+    }
+
+    /// Fetches, verifies and unpacks `source` on a worker thread, with nothing committed yet.
+    pub(crate) async fn stage_extension(
+        &self,
+        source: InstallSource,
+        progress: &dyn Fn(Progress),
+    ) -> Result<StagedInstall, String> {
+        let job = self
+            .core(|p| p.extensions().prepare_install(source))
+            .map_err(|e| e.to_string())?;
+        self.run_job(job, progress).await
     }
 
     /// `job.run` on a worker thread, `commit` here on the UI thread.
@@ -184,6 +208,12 @@ impl Browser {
         job: InstallJob,
         progress: &dyn Fn(Progress),
     ) -> Result<Option<InstalledExtension>, String> {
+        let staged = self.run_job(job, progress).await?;
+        self.core(|p| p.extensions().commit(staged))
+            .map_err(|e| e.to_string())
+    }
+
+    async fn run_job(&self, job: InstallJob, progress: &dyn Fn(Progress)) -> Result<StagedInstall, String> {
         let latest = Arc::new(Mutex::new(None::<InstallPhase>));
         let reported = latest.clone();
         let mut work = exec::background(move || {
@@ -203,10 +233,8 @@ impl Browser {
                 });
             }
         };
-        let staged = staged
+        staged
             .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
-        self.core(|p| p.extensions().commit(staged))
             .map_err(|e| e.to_string())
     }
 

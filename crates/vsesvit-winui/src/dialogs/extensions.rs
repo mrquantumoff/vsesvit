@@ -1,11 +1,14 @@
 //! Extensions: install from a Chrome Web Store, Edge Add-ons or addons.mozilla.org link or id, a `.crx` /
-//! `.xpi` file or an unpacked folder, with progress; and the installed list with each
-//! extension's version, provenance, an on/off switch and a remove button.
+//! `.xpi` file or an unpacked folder, with progress and, before a store or package install goes
+//! in, Chrome's install prompt in the page (a dialog cannot open over this one); and the
+//! installed list with each extension's version, provenance, an on/off switch and a remove button.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use vsesvit_core::extensions::{InstallSource, InstalledExtension};
+use vsesvit_core::extensions::manifest::Manifest;
+use vsesvit_core::extensions::permissions::{self, INSTALL_LEAD};
+use vsesvit_core::extensions::{InstallSource, InstalledExtension, StagedInstall};
 use windows_core::{Interface, Result};
 
 use super::{Wired, on_click};
@@ -32,6 +35,16 @@ pub(super) const MARKUP: &str = r#"
               ToolTipService.ToolTip="Load an unpacked extension folder"/>
     </Grid>
     <ProgressBar x:Name="InstallProgress" Visibility="Collapsed"/>
+    <StackPanel x:Name="InstallPrompt" Visibility="Collapsed" Spacing="8" Padding="16" CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+      <TextBlock x:Name="PromptHeading" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap"/>
+      <TextBlock x:Name="PromptText" TextWrapping="Wrap"/>
+      <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+        <Button x:Name="PromptCancel" Content="Cancel"/>
+        <Button x:Name="PromptAdd" Content="Add extension" Style="{StaticResource AccentButtonStyle}"/>
+      </StackPanel>
+    </StackPanel>
     <TextBlock x:Name="InstallStatus" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
     <TextBlock Text="Installed" Style="{StaticResource BodyStrongTextBlockStyle}"/>
     <ListView x:Name="ExtensionsList" MaxHeight="340" SelectionMode="None"/>
@@ -46,6 +59,11 @@ struct Manager {
     install_buttons: Vec<Control>,
     progress: ProgressBar,
     status: TextBlock,
+    prompt: UIElement,
+    prompt_heading: TextBlock,
+    prompt_text: TextBlock,
+    /// The verified install the prompt asks about, committed on Add, dropped on Cancel.
+    pending: RefCell<Option<StagedInstall>>,
     list: ListView,
     empty: UIElement,
     busy: Cell<bool>,
@@ -67,6 +85,10 @@ pub(super) fn wire(
         ],
         progress: xaml::find(root, "InstallProgress")?,
         status: xaml::find(root, "InstallStatus")?,
+        prompt: xaml::find(root, "InstallPrompt")?,
+        prompt_heading: xaml::find(root, "PromptHeading")?,
+        prompt_text: xaml::find(root, "PromptText")?,
+        pending: RefCell::new(None),
         list: xaml::find(root, "ExtensionsList")?,
         empty: xaml::find(root, "ExtensionsEmpty")?,
         busy: Cell::new(false),
@@ -98,6 +120,19 @@ pub(super) fn wire(
     })?;
 
     let m = Rc::downgrade(&manager);
+    on_click(&xaml::find::<Button>(root, "PromptAdd")?, move || {
+        if let Some(m) = m.upgrade() {
+            m.decide(true);
+        }
+    })?;
+    let m = Rc::downgrade(&manager);
+    on_click(&xaml::find::<Button>(root, "PromptCancel")?, move || {
+        if let Some(m) = m.upgrade() {
+            m.decide(false);
+        }
+    })?;
+
+    let m = Rc::downgrade(&manager);
     let refresh: Rc<dyn Fn()> = Rc::new(move || {
         if let Some(m) = m.upgrade() {
             m.render();
@@ -111,8 +146,9 @@ pub(super) fn wire(
 }
 
 impl Manager {
-    /// Installs `source`: download and verification on a worker thread, then commit and engine
-    /// load on the UI thread, with progress shown meanwhile.
+    /// Installs `source`: download and verification on a worker thread, then, once the user
+    /// adds it where Chrome would ask, commit and engine load on the UI thread, with progress
+    /// shown meanwhile.
     fn install(self: &Rc<Self>, source: InstallSource) {
         let Some(browser) = self.browser.upgrade() else {
             return;
@@ -126,22 +162,62 @@ impl Manager {
         exec::spawn(async move {
             let shown = me.clone();
             let progress = move |p: Progress| shown.show_progress(&p);
-            let result = browser.install_extension(source, &progress).await;
-            let text = match result {
-                Ok(ext) => match browser.extensions.engine_error(&ext.id) {
-                    Some(e) => format!(
-                        "Installed {} {}, but WebView2 did not load it: {e}",
-                        ext.manifest.name, ext.version
-                    ),
-                    None => format!("Installed {} {}.", ext.manifest.name, ext.version),
-                },
-                Err(e) => format!("Not installed: {e}"),
-            };
-            me.set_installing(false);
-            let _ = me.status.SetText(&text);
-            me.busy.set(false);
-            me.render();
+            match browser.stage_extension(source, &progress).await {
+                Ok(staged) if staged.needs_approval() => me.ask(staged),
+                Ok(staged) => me.commit(staged).await,
+                Err(e) => me.finish(&format!("Not installed: {e}")),
+            }
         });
+    }
+
+    /// Shows Chrome's install prompt for `staged` in the page.
+    fn ask(&self, staged: StagedInstall) {
+        let manifest = staged.manifest();
+        let _ = self.prompt_heading.SetText(&permissions::install_heading(&manifest.name));
+        let text = prompt_text(manifest);
+        let _ = self.prompt_text.SetText(&text);
+        let _ = xaml::set_visible(&self.prompt_text, !text.is_empty());
+        let _ = self.status.SetText("");
+        let _ = xaml::set_visible(&self.progress, false);
+        let _ = xaml::set_visible(&self.prompt, true);
+        self.pending.replace(Some(staged));
+    }
+
+    /// The prompt's Add or Cancel.
+    fn decide(self: &Rc<Self>, add: bool) {
+        let Some(staged) = self.pending.take() else { return };
+        let _ = xaml::set_visible(&self.prompt, false);
+        if !add {
+            self.finish("");
+            return;
+        }
+        let _ = xaml::set_visible(&self.progress, true);
+        let me = self.clone();
+        exec::spawn(async move { me.commit(staged).await });
+    }
+
+    async fn commit(self: &Rc<Self>, staged: StagedInstall) {
+        let Some(browser) = self.browser.upgrade() else {
+            return;
+        };
+        let text = match browser.commit_extension(staged).await {
+            Ok(ext) => match browser.extensions.engine_error(&ext.id) {
+                Some(e) => format!(
+                    "Installed {} {}, but WebView2 did not load it: {e}",
+                    ext.manifest.name, ext.version
+                ),
+                None => format!("Installed {} {}.", ext.manifest.name, ext.version),
+            },
+            Err(e) => format!("Not installed: {e}"),
+        };
+        self.finish(&text);
+    }
+
+    fn finish(self: &Rc<Self>, text: &str) {
+        self.set_installing(false);
+        let _ = self.status.SetText(text);
+        self.busy.set(false);
+        self.render();
     }
 
     fn pick(self: &Rc<Self>, folder: bool) {
@@ -313,5 +389,41 @@ impl Manager {
             });
         })?;
         root.cast()
+    }
+}
+
+/// What Chrome's install prompt says under its heading: "It can:" and the warnings, the sites
+/// behind "a number of websites" indented below theirs. Empty when there is nothing to warn of.
+pub(crate) fn prompt_text(manifest: &Manifest) -> String {
+    let warnings = permissions::install_warnings(manifest);
+    if warnings.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![INSTALL_LEAD.to_owned()];
+    for warning in &warnings {
+        lines.push(format!("\u{2022} {}", warning.text));
+        lines.extend(warning.details.iter().map(|d| format!("    \u{25E6} {d}")));
+    }
+    lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_prompt_text_lists_chromes_warnings() {
+        let manifest = Manifest::parse(
+            r#"{ "manifest_version": 3, "name": "x", "version": "1", "permissions": ["bookmarks"],
+                 "host_permissions": ["https://a.example/*", "https://b.example/*", "https://c.example/*", "https://d.example/*"] }"#,
+            &|_| None,
+        )
+        .unwrap();
+        assert_eq!(
+            prompt_text(&manifest),
+            "It can:\n\u{2022} Read and change your data on a number of websites\n    \u{25E6} a.example\n    \u{25E6} b.example\n    \u{25E6} c.example\n    \u{25E6} d.example\n\u{2022} Read and change your bookmarks"
+        );
+        let plain = Manifest::parse(r#"{ "manifest_version": 3, "name": "x", "version": "1", "permissions": ["storage"] }"#, &|_| None).unwrap();
+        assert_eq!(prompt_text(&plain), "");
     }
 }

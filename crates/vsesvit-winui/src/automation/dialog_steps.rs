@@ -763,7 +763,7 @@ pub(super) async fn bookmarks(
 }
 
 /// Extensions: switch the probe off and on (the engine and the toolbar follow), remove it, and
-/// install it again from its file through the install box.
+/// install it again from its file through the install box, adding it in the install prompt.
 pub(super) async fn extensions(
     browser: &Rc<Browser>,
     window: &Rc<BrowserWindow>,
@@ -842,6 +842,28 @@ pub(super) async fn extensions(
     let source: TextBox = preview.find("InstallSource")?;
     source.SetText(&crx.to_string_lossy())?;
     click(&preview, "InstallButton")?;
+    let prompt: UIElement = preview.find("InstallPrompt")?;
+    let asked = until(|| xaml::is_visible(&prompt).then_some(())).await;
+    let text = |name: &str| -> String {
+        preview
+            .find::<TextBlock>(name)
+            .and_then(|t| t.Text())
+            .map(|t| t.to_string())
+            .unwrap_or_default()
+    };
+    let (heading, warnings) = (text("PromptHeading"), text("PromptText"));
+    exec::sleep(Duration::from_millis(300)).await;
+    shoot(window, out_dir, "15c-extensions-install-prompt", steps, |_| {
+        json!({
+            "heading": heading,
+            "text": warnings,
+            "ok": asked.is_some()
+                && heading == "Add \u{201C}Vsesvit Probe\u{201D}?"
+                && warnings == "It can:\n\u{2022} Read and change all your data on all websites\n\u{2022} Display notifications",
+        })
+    })
+    .await;
+    click(&preview, "PromptAdd")?;
     let reinstalled = until(|| has_action().then_some(())).await;
     let status = preview
         .find::<TextBlock>("InstallStatus")?

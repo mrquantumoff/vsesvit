@@ -39,6 +39,7 @@ use crate::window::{Backdrop, BrowserWindow};
 use crate::xaml;
 
 pub(crate) use settings::CATEGORIES as SETTINGS_CATEGORIES;
+pub(crate) use extensions::prompt_text;
 pub(crate) use sync_prompt::SyncPrompt;
 pub(crate) use windowed::DialogWindow;
 #[cfg(feature = "self-test")]
