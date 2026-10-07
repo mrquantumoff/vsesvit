@@ -2675,6 +2675,29 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
         if from_tab != 0 || from_hidden != 1 {
             return Err(format!("the server sent the page {from_tab} time(s) for the open tab's source and {from_hidden} for the hidden view's"));
         }
+
+        let lured = ctx.server.url("/lured-source.html");
+        let lure = ctx.out_dir.join("view-source-lure.html");
+        std::fs::write(
+            &lure,
+            format!(
+                "<!doctype html><script>const frame = document.createElement('iframe'); frame.src = 'view-source:{lured}'; \
+                 document.documentElement.append(frame); setTimeout(() => location.href = 'view-source:{lured}', 300);</script>"
+            ),
+        )
+        .map_err(|e| e.to_string())?;
+        let lure = gio::File::for_path(&lure).uri().to_string();
+        tab.load(&lure);
+        wait_for(&last, || {
+            let uri = tab.committed_uri().unwrap_or_default();
+            if uri == lure { Ok(()) } else { Err(format!("the local page is not on screen: {uri:?}")) }
+        })
+        .await;
+        glib::timeout_future(Duration::from_millis(1500)).await;
+        let (shown, fetched) = (tab.committed_uri().unwrap_or_default(), ctx.server.hits().iter().any(|path| path == "/lured-source.html"));
+        if shown != lure || fetched {
+            return Err(format!("a local page opened a source: the tab shows {shown:?}, the server was asked for the page: {fetched}"));
+        }
         tab.load(index_url.as_str());
         wait_for(&last, || {
             let uri = tab.committed_uri().unwrap_or_default();
@@ -2754,7 +2777,7 @@ async fn run_checks(ctx: &Rc<Context>, browser: &Browser) {
             return Err(format!("{} has {} bytes starting {:?}", pdf.display(), bytes.len(), String::from_utf8_lossy(&bytes[..bytes.len().min(8)])));
         }
         Ok(format!(
-            "Ctrl+P, Ctrl+U, Ctrl+Shift+I and F12, Ctrl+Shift+J on their actions; win.view-source opened {source_url} next to the page from the open tab ({from_tab} fetches), and a fresh tab showed it through a hidden view ({from_hidden} fetch); the context menu lists {listed:?}; win.developer-tools opened the inspector ({inspector_placed}) and closed it; printing to file wrote {} ({} bytes)",
+            "Ctrl+P, Ctrl+U, Ctrl+Shift+I and F12, Ctrl+Shift+J on their actions; win.view-source opened {source_url} next to the page from the open tab ({from_tab} fetches), and a fresh tab showed it through a hidden view ({from_hidden} fetch); a local page neither embedded nor went to a source; the context menu lists {listed:?}; win.developer-tools opened the inspector ({inspector_placed}) and closed it; printing to file wrote {} ({} bytes)",
             pdf.display(),
             bytes.len()
         ))

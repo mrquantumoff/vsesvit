@@ -3,8 +3,9 @@
 //! from a tab showing exactly that page, else loaded by a hidden view with scripts off, shown
 //! with numbered lines by core's `source_page`.
 //!
-//! The scheme is local, so web pages can neither open nor embed it; the browser's own loads
-//! (the address bar, Ctrl+U) still can.
+//! The scheme is local, so web pages can neither open nor embed it, and the tab's gate keeps
+//! local pages out too (`vsesvit_webext::Gate`); the browser's own loads (the address bar,
+//! Ctrl+U) still can.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -123,15 +124,20 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::test_support::{Reply, Server, browser, settle, wait_until};
+    use crate::test_support::{Reply, Server, browser, scratch_dir, settle, wait_until};
     use crate::window::{BrowserWindow, Focus};
 
-    const LURE: &str = "<!doctype html><title>Lure</title><script>\
-        const frame = document.createElement('iframe');\
-        frame.src = 'view-source:' + location.origin + '/page';\
-        document.documentElement.append(frame);\
-        setTimeout(() => location.href = 'view-source:' + location.origin + '/page', 300);\
-        </script>";
+    /// A page that embeds and then goes to the source of `page`, a script expression.
+    fn lure_to(page: &str) -> String {
+        format!(
+            "<!doctype html><title>Lure</title><script>\
+             const frame = document.createElement('iframe');\
+             frame.src = 'view-source:' + {page};\
+             document.documentElement.append(frame);\
+             setTimeout(() => location.href = 'view-source:' + {page}, 300);\
+             </script>"
+        )
+    }
 
     #[gtk::test]
     fn the_browser_shows_sources_that_pages_cannot_reach() {
@@ -143,7 +149,7 @@ mod tests {
                     fetched.fetch_add(1, Ordering::SeqCst);
                     Reply::Page("Page")
                 }
-                "/lure" => Reply::Body("text/html", LURE.into()),
+                "/lure" => Reply::Body("text/html", lure_to("location.origin + '/page'").into()),
                 "/file.bin" => Reply::Body("application/octet-stream", b"<raw>".to_vec()),
                 "/drop" => Reply::Drop,
                 _ => Reply::NotFound,
@@ -161,6 +167,15 @@ mod tests {
         let lured = (tab.committed_uri(), fetched.load(Ordering::SeqCst));
 
         let page = server.url("/page");
+        // A local page may load the local scheme, but only the browser opens a source.
+        let local = scratch_dir("view-source").join("lure.html");
+        std::fs::write(&local, lure_to(&format!("'{page}'"))).expect("the local lure written");
+        let local = gio::File::for_path(&local).uri().to_string();
+        tab.load(&local);
+        wait_until("the local lure", || tab.committed_uri().as_deref() == Some(local.as_str()));
+        settle(Duration::from_millis(1500));
+        let lured_locally = (tab.committed_uri(), fetched.load(Ordering::SeqCst));
+
         tab.load(&format!("view-source:{page}"));
         wait_until("the typed source", || shows(&tab, &page));
         let typed = fetched.load(Ordering::SeqCst);
@@ -177,6 +192,7 @@ mod tests {
 
         window.destroy();
         assert_eq!(lured, (Some(lure), 0), "the page neither went to nor embedded its source");
+        assert_eq!(lured_locally, (Some(local), 0), "nor did a local page");
         assert_eq!(typed, 1, "the address bar's view-source loaded the page once");
         assert_eq!(downloaded, 0, "a file's source is shown, not downloaded");
     }

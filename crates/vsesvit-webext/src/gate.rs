@@ -1,6 +1,8 @@
 //! The navigation policy a shell keeps for each tab view: which navigations WebKit may make in
 //! it. As in Chrome, a web page reaches an extension's pages only where
 //! `web_accessible_resources` lets it; the extension itself and the browser reach them all.
+//! Only the browser opens a `view-source:` page, which no page reaches, not even a local one
+//! that the scheme's own rules would let in.
 //!
 //! WebKitGTK does not say who started a navigation, so the gate judges one by the page that may
 //! have: the document on screen, whose script still runs while the next one loads, or for a
@@ -82,6 +84,9 @@ impl Gate {
             self.pending = Some((target.to_owned(), target.to_owned()));
             return true;
         }
+        if is_view_source(target) {
+            return false;
+        }
         let mut source = self.source();
         if redirect && source.starts_with("chrome-extension:") {
             source.clear();
@@ -113,6 +118,10 @@ impl Gate {
     pub fn source(&self) -> String {
         self.page.clone().or_else(|| self.opener.clone()).unwrap_or_default()
     }
+}
+
+fn is_view_source(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|url| url.scheme() == "view-source")
 }
 
 /// The same URL, however each is spelled (`chrome-extension://id` and `chrome-extension://id/`).
@@ -200,6 +209,20 @@ mod tests {
         assert!(gate.decide(&Ext, EVIL, false, false));
         gate.committed(&Ext, EVIL);
         assert!(!gate.decide(&Ext, OPTIONS, false, false));
+    }
+
+    #[test]
+    fn only_the_browser_opens_a_source() {
+        let source = "view-source:file:///home/me/page.html";
+        let mut gate = showing("file:///home/me/page.html");
+        assert!(!gate.decide(&Ext, source, false, false));
+        assert!(!gate.decide(&Ext, "VIEW-SOURCE:https://evil.test/", false, false), "however it is spelled");
+        assert!(!gate.decide(&Ext, source, false, true), "nor in a new window");
+        gate.browser_load(source);
+        assert!(!gate.decide(&Ext, source, true, false), "nor through a redirect");
+        assert!(gate.decide(&Ext, source, false, false));
+        gate.committed(&Ext, source);
+        assert!(!gate.decide(&Ext, "view-source:https://evil.test/", false, false), "a source page opens no other");
     }
 
     #[test]
