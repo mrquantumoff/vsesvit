@@ -17,7 +17,7 @@ use sea_orm::{
 use sha2::{Digest, Sha256};
 use vsesvit_sync_proto::{Page, Record};
 
-use crate::auth::{PendingLogin, random_token};
+use crate::auth::{PendingLogin, Person, random_token};
 use crate::entities::{accounts, logins, records, sessions};
 
 /// Rows per INSERT and per `IN` list, under SQLite's and Postgres's bind parameter limits.
@@ -283,7 +283,7 @@ pub fn token_hash(token: &str) -> Vec<u8> {
 /// The provider vouched for the person: the sign-in is stored, waiting for the browser to trade
 /// the one-time code whose hash this stores. Sign-ins whose code has expired are cleared first: one
 /// that started before `LOGIN_LIFETIME + CODE_LIFETIME` was authorized before `CODE_LIFETIME`.
-pub async fn authorize_login(db: &DatabaseConnection, pending: PendingLogin, account: AccountId, name: Option<String>, code_hash: Vec<u8>) -> Result<(), DbErr> {
+pub async fn authorize_login(db: &DatabaseConnection, pending: PendingLogin, account: AccountId, person: &Person, code_hash: Vec<u8>) -> Result<(), DbErr> {
     let now = Utc::now();
     logins::Entity::delete_many().filter(logins::Column::CreatedAt.lt(now - LOGIN_LIFETIME - CODE_LIFETIME)).exec(db).await?;
     let row = logins::ActiveModel {
@@ -294,7 +294,8 @@ pub async fn authorize_login(db: &DatabaseConnection, pending: PendingLogin, acc
         upstream_verifier: Set(pending.upstream_verifier),
         code_hash: Set(Some(code_hash)),
         account_id: Set(Some(account)),
-        name: Set(name),
+        name: Set(person.name.clone()),
+        claims: Set(Some(serde_json::to_string(&person.claims).expect("the claims serialize"))),
         created_at: Set(pending.started),
         authorized_at: Set(Some(now)),
     };

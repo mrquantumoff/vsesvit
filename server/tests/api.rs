@@ -24,7 +24,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
-use vsesvit_sync_proto::{ApiError, OAuthError, Page, Record, ServerInfo, TokenResponse, Upload, Uploaded};
+use vsesvit_sync_proto::{ApiError, Claims, OAuthError, Page, Record, ServerInfo, TokenResponse, Upload, Uploaded};
 use vsesvit_sync_server::api::{self, AppState};
 use vsesvit_sync_server::config::{Config, DatabaseConfig};
 use vsesvit_sync_server::entities::{accounts, logins, sessions};
@@ -107,10 +107,16 @@ async fn provider_token(State(mock): State<Shared>, Form(f): Form<HashMap<String
 
 async fn provider_userinfo(headers: HeaderMap) -> Response {
     let token = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or_default();
-    match token.strip_prefix("Bearer at-") {
-        Some(user) => Json(json!({ "sub": format!("{user}-id"), "name": user })).into_response(),
-        None => StatusCode::UNAUTHORIZED.into_response(),
-    }
+    let info = match token.strip_prefix("Bearer at-") {
+        Some("ann") => json!({
+            "sub": "ann-id", "name": "Ann Lee", "given_name": "Ann", "email": "ann@example.com",
+            "picture": "https://pictures.example/ann.png", "locale": "en",
+        }),
+        Some("odd") => json!({ "sub": "odd-id", "name": 7, "given_name": null, "preferred_username": "odd", "picture": { "url": "x" } }),
+        Some(user) => json!({ "sub": format!("{user}-id"), "name": user }),
+        None => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+    Json(info).into_response()
 }
 
 struct TestApp {
@@ -221,13 +227,18 @@ async fn exchange(app: &TestApp, code: &str, verifier: &str) -> (StatusCode, Vec
     (status, body)
 }
 
-/// A session for `user`, as the browser gets one.
-async fn sign_in(app: &TestApp, user: &str) -> String {
+/// What the browser gets when `user` signs in.
+async fn token_response(app: &TestApp, user: &str) -> TokenResponse {
     let verifier = format!("{user}-verifier-0123456789-0123456789-0123456789");
     let back = authorize(app, user, &verifier).await;
     let (status, body) = exchange(app, &param(&back, "code").unwrap(), &verifier).await;
     assert_eq!(status, StatusCode::OK);
-    let session: TokenResponse = serde_json::from_slice(&body).unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// A session for `user`, as the browser gets one.
+async fn sign_in(app: &TestApp, user: &str) -> String {
+    let session = token_response(app, user).await;
     assert_eq!((session.token_type.as_str(), session.name.as_deref()), ("Bearer", Some(user)));
     session.access_token
 }
@@ -281,6 +292,26 @@ async fn a_sign_in_through_the_provider_gives_the_browser_a_session_for_its_reco
         assert_eq!(upload(&app, &session.access_token, vec![record(1, "a", "x")]).await, StatusCode::OK);
         assert_eq!(bodies(&download(&app, &session.access_token, 0).await), [(1, "a", "x")]);
         assert!(app.mock.lock().unwrap().codes.is_empty(), "the server traded the provider's code");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_session_carries_the_claims_that_name_and_picture_the_person() {
+    each_database(async |app| {
+        let ann = token_response(&app, "ann").await;
+        let claims = Claims {
+            name: Some("Ann Lee".to_owned()),
+            given_name: Some("Ann".to_owned()),
+            preferred_username: None,
+            email: Some("ann@example.com".to_owned()),
+            picture: Some("https://pictures.example/ann.png".to_owned()),
+        };
+        assert_eq!((ann.name.as_deref(), ann.claims), (Some("Ann Lee"), claims));
+
+        let odd = token_response(&app, "odd").await;
+        let claims = Claims { preferred_username: Some("odd".to_owned()), ..Claims::default() };
+        assert_eq!((odd.name.as_deref(), odd.claims), (Some("odd"), claims), "claims that are not strings are left out");
     })
     .await;
 }

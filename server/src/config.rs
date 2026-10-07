@@ -11,7 +11,7 @@
 //! | `OIDC_ISSUER`             | required                                  |
 //! | `OIDC_CLIENT_ID`          | required                                  |
 //! | `OIDC_CLIENT_SECRET`      | none: a public client                     |
-//! | `OIDC_SCOPES`             | `openid profile`                          |
+//! | `OIDC_SCOPES`             | `openid profile email`                    |
 //! | `SESSION_IDLE_DAYS`       | `180`                                     |
 //! | `MAX_BATCH`               | `500`                                     |
 //! | `MAX_RECORD_BYTES`        | `1048576`                                 |
@@ -111,7 +111,7 @@ impl Config {
         if !is_secure_url(&issuer) {
             return Err(invalid("OIDC_ISSUER", &issuer));
         }
-        let scopes = var("OIDC_SCOPES").map_or_else(|| vec!["openid".to_owned(), "profile".to_owned()], |v| list(&v));
+        let scopes = var("OIDC_SCOPES").map_or_else(|| ["openid", "profile", "email"].map(str::to_owned).to_vec(), |v| list(&v));
         if !scopes.iter().any(|s| s == "openid") {
             return Err(invalid("OIDC_SCOPES", &scopes.join(" ")));
         }
@@ -232,7 +232,7 @@ mod tests {
         }
         let c = config(&REQUIRED).unwrap();
         assert_eq!(c.oidc.issuer, "https://idp.example.com");
-        assert_eq!(c.oidc.scopes, ["openid", "profile"]);
+        assert_eq!(c.oidc.scopes, ["openid", "profile", "email"]);
         assert_eq!(c.oidc.client_secret, None);
         assert_eq!(c.callback(), "https://sync.example.com/v1/auth/callback");
         assert_eq!(c.session_idle, chrono::Duration::days(180));

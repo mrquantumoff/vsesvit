@@ -16,6 +16,8 @@ pub struct Model {
     pub code_hash: Option<Vec<u8>>,
     pub account_id: Option<i64>,
     pub name: Option<String>,
+    /// The provider's `vsesvit_sync_proto::Claims`, as JSON.
+    pub claims: Option<String>,
     /// When the sign-in started at `/v1/auth/authorize`.
     pub created_at: DateTimeUtc,
     pub authorized_at: Option<DateTimeUtc>,

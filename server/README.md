@@ -50,7 +50,7 @@ Settings come from environment variables, or from a `.env` file in the working d
 | `OIDC_ISSUER` | required | The provider's issuer URL, exactly as its `/.well-known/openid-configuration` states it. HTTPS, or HTTP on `localhost` or a loopback IP. |
 | `OIDC_CLIENT_ID` | required | The client the server signs people in as. |
 | `OIDC_CLIENT_SECRET` | none | The client's secret, for a confidential client. Without it the server is a public client; it uses PKCE either way. |
-| `OIDC_SCOPES` | `openid profile` | Must include `openid`. |
+| `OIDC_SCOPES` | `openid profile email` | Must include `openid`. Without `profile` and `email`, browsers cannot name their profiles after the person. |
 | `SESSION_IDLE_DAYS` | `180` | A browser's session ends after this many days unused, 1 to 3650. |
 | `MAX_BATCH` | `500` | Records per upload and per download page, 1 to 10000. |
 | `MAX_RECORD_BYTES` | `1048576` | One record's body. At most half of `MAX_REQUEST_BYTES`. |
@@ -81,7 +81,7 @@ Vsesvit signs in to this server, not to the provider. It uses the authorization 
 
 1. The browser opens `/v1/auth/authorize` in a tab, with a loopback `redirect_uri` on whatever port it could open.
 2. The server sends the tab on to the provider. The sign-in travels in the `state` it sends there, signed with a key the server makes at startup, so the server stores nothing for a sign-in until the provider vouches for the person, and one under way when the server restarts has to start again.
-3. When the provider sends the person back to `/v1/auth/callback`, the server trades the provider's code for an access token, and asks userinfo who it belongs to. The account is the userinfo `sub` at this issuer; an access token's own `sub` need not be the user, and some providers put the granted scopes there.
+3. When the provider sends the person back to `/v1/auth/callback`, the server trades the provider's code for an access token, and asks userinfo who it belongs to. The account is the userinfo `sub` at this issuer; an access token's own `sub` need not be the user, and some providers put the granted scopes there. The claims that name and picture the person (`name`, `given_name`, `preferred_username`, `email`, `picture`) are kept with the sign-in until the browser trades its code, and go to it with the session, so it can name its profile after them as Chrome does with a Google account. The server keeps none of them after that.
 4. The server sends the tab to the browser's loopback address with a one-time code. Only the browser that started the sign-in listens there, so someone who sends a person their own sign-in link gets nothing.
 5. The browser trades the code, with its PKCE verifier, at `/v1/auth/token` for a session: an opaque token the server keeps only as a SHA-256 hash.
 

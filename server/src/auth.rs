@@ -16,9 +16,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{OnceCell, Semaphore};
+use vsesvit_sync_proto::Claims;
 
 use crate::config::{Oidc, is_secure_url};
 
@@ -43,6 +44,8 @@ pub enum AuthError {
 pub struct Person {
     pub subject: String,
     pub name: Option<String>,
+    /// For the browser, which names and pictures its profile after them.
+    pub claims: Claims,
 }
 
 pub struct Provider {
@@ -82,9 +85,25 @@ struct TokenError {
 #[derive(Deserialize)]
 struct UserInfo {
     sub: String,
+    #[serde(default, deserialize_with = "string_claim")]
     name: Option<String>,
+    #[serde(default, deserialize_with = "string_claim")]
+    given_name: Option<String>,
+    #[serde(default, deserialize_with = "string_claim")]
     preferred_username: Option<String>,
+    #[serde(default, deserialize_with = "string_claim")]
     email: Option<String>,
+    #[serde(default, deserialize_with = "string_claim")]
+    picture: Option<String>,
+}
+
+/// A claim the provider sent as a string. Anything else, such as `null` or an object, is left out
+/// rather than failing the sign-in.
+fn string_claim<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    })
 }
 
 impl Provider {
@@ -154,8 +173,15 @@ impl Provider {
         if info.sub.is_empty() {
             return Err(AuthError::Provider("userinfo has an empty sub".to_owned()));
         }
-        let name = info.name.or(info.preferred_username).or(info.email).filter(|n| !n.trim().is_empty());
-        Ok(Person { subject: info.sub, name })
+        let claims = Claims {
+            name: info.name,
+            given_name: info.given_name,
+            preferred_username: info.preferred_username,
+            email: info.email,
+            picture: info.picture,
+        };
+        let name = [&claims.name, &claims.preferred_username, &claims.email].into_iter().flatten().find(|n| !n.trim().is_empty()).cloned();
+        Ok(Person { subject: info.sub, name, claims })
     }
 
     async fn endpoints(&self) -> Result<&Endpoints, AuthError> {

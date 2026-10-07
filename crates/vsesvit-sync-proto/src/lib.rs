@@ -72,6 +72,27 @@ pub struct TokenResponse {
     /// What to call the person, from the provider: a name, a username or an email address.
     #[serde(default)]
     pub name: Option<String>,
+    /// What the provider said about the person, for the browser profile's name and picture.
+    /// Older servers leave it out.
+    #[serde(default)]
+    pub claims: Claims,
+}
+
+/// The OpenID Connect standard claims (OpenID Connect Core §5.1) of the provider's userinfo that
+/// name and picture a person, as the provider sent them. Any may be missing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Claims {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub given_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// A URL of the person's picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
 }
 
 /// An OAuth error body (RFC 6749 §5.2), from `/v1/auth/token`.
@@ -152,6 +173,15 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         assert_eq!(json, r#"{"kind":1,"id":"a","body":"eyJ4IjoxfQ=="}"#);
         assert_eq!(serde_json::from_str::<Record>(&json).unwrap(), record);
+    }
+
+    #[test]
+    fn a_token_response_from_an_older_server_has_no_claims() {
+        let old: TokenResponse = serde_json::from_str(r#"{"access_token":"t","token_type":"Bearer","name":"alice"}"#).unwrap();
+        assert_eq!(old.claims, Claims::default());
+        let claims = Claims { given_name: Some("Alice".to_owned()), ..Claims::default() };
+        let json = serde_json::to_string(&TokenResponse { claims, ..old }).unwrap();
+        assert_eq!(json, r#"{"access_token":"t","token_type":"Bearer","name":"alice","claims":{"given_name":"Alice"}}"#);
     }
 
     #[test]

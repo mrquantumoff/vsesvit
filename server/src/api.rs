@@ -182,7 +182,7 @@ async fn callback(State(state): State<AppState>, Query(q): Query<CallbackQuery>)
         let Some(account) = store::account(&state.db, state.provider.issuer(), &person.subject, state.admission.max_accounts).await? else {
             return Ok(false);
         };
-        store::authorize_login(&state.db, pending, account, person.name, token_hash(&one_time)).await.map(|()| true)
+        store::authorize_login(&state.db, pending, account, &person, token_hash(&one_time)).await.map(|()| true)
     };
     match authorized.await {
         Ok(true) => redirect_to_browser(&login, &[("code", &one_time)]),
@@ -235,7 +235,8 @@ async fn token(State(state): State<AppState>, Form(form): Form<TokenForm>) -> Re
     if let Err(e) = store::start_session(&state.db, account, token_hash(&session), state.session_idle).await {
         return Error::Db(e).into_response();
     }
-    let body = TokenResponse { access_token: session, token_type: "Bearer".to_owned(), name: login.name };
+    let claims = login.claims.and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default();
+    let body = TokenResponse { access_token: session, token_type: "Bearer".to_owned(), name: login.name, claims };
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }
 
