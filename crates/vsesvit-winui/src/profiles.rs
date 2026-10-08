@@ -93,6 +93,13 @@ pub(crate) fn notify(root: &Path) {
     }
 }
 
+/// The element named `name` in a flyout's content. `FindName` from the content finds nothing:
+/// the names belong to the flyout, the markup's root.
+fn part<T: Interface>(content: &DependencyObject, name: &str) -> Result<T> {
+    xaml::find_named(content, name)
+        .ok_or_else(|| windows_core::Error::new(E_FAIL, format!("no {name} in the flyout")))
+}
+
 /// Asks for a profile's name and colour in a flyout under `anchor`; `done` gets them when the
 /// user accepts.
 pub(crate) fn ask(
@@ -133,9 +140,9 @@ pub(crate) fn ask(
         first = swatches[..5].concat(),
         rest = swatches[5..].concat(),
     ))?;
-    let content: FrameworkElement = flyout.Content()?.cast()?;
-    let entry: TextBox = xaml::find(&content, "ProfileName")?;
-    let accept: Button = xaml::find(&content, "ProfileAccept")?;
+    let content: DependencyObject = flyout.Content()?.cast()?;
+    let entry: TextBox = part(&content, "ProfileName")?;
+    let accept: Button = part(&content, "ProfileAccept")?;
     accept
         .cast::<Control>()?
         .SetIsEnabled(!name.trim().is_empty())?;
@@ -153,7 +160,7 @@ pub(crate) fn ask(
     let chosen = Rc::new(Cell::new(color));
     let toggles: Rc<Vec<IToggleButton>> = Rc::new(
         (0..ProfileColor::ALL.len())
-            .map(|i| xaml::find::<IToggleButton>(&content, &format!("ProfileColor{i}")))
+            .map(|i| part::<IToggleButton>(&content, &format!("ProfileColor{i}")))
             .collect::<Result<_>>()?,
     );
     for (i, choice) in ProfileColor::ALL.into_iter().enumerate() {
@@ -193,15 +200,12 @@ pub(crate) fn ask_remove(
 </Flyout>"#,
         name = xaml::escape(name),
     ))?;
-    let content: FrameworkElement = flyout.Content()?.cast()?;
+    let content: DependencyObject = flyout.Content()?.cast()?;
     let shown = flyout.clone();
-    on_click(
-        &xaml::find::<Button>(&content, "ProfileRemove")?,
-        move || {
-            let _ = shown.cast::<FlyoutBase>().and_then(|f| f.Hide());
-            done();
-        },
-    )?;
+    on_click(&part::<Button>(&content, "ProfileRemove")?, move || {
+        let _ = shown.cast::<FlyoutBase>().and_then(|f| f.Hide());
+        done();
+    })?;
     flyout.cast::<FlyoutBase>()?.ShowAt(anchor)?;
     Ok(flyout)
 }
