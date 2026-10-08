@@ -1,8 +1,9 @@
 //! The `profiles` check: the profile menu, window titles with the profile's name, a private
 //! window's too, the name and picture a sync sign-in gives the profile, Manage profiles and the
-//! picker switch in Settings, on a profile list in the output directory. No process is started:
-//! adding goes through core, as the Add profile flyout's answer does. The account picture is the
-//! one a sign-in would fetch, decoded here: the self-test reaches no network.
+//! picker switch in Settings, the flyouts a Manage profiles row's Edit and Remove open, on a
+//! profile list in the output directory. No process is started: adding goes through core, as the
+//! Add profile flyout's answer does. The account picture is the one a sign-in would fetch, decoded
+//! here: the self-test reaches no network.
 
 use std::path::Path;
 use std::rc::Rc;
@@ -14,13 +15,13 @@ use vsesvit_core::profiles::{AccountDetails, AccountPicture, ProfileColor};
 use super::{Probe, until};
 use windows_core::Interface;
 
-use crate::bindings::{FlyoutBase, TextBlock, ToggleSwitch};
+use crate::bindings::{FlyoutBase, FrameworkElement, TextBlock, ToggleSwitch};
 use crate::browser::Browser;
-use crate::dialogs::{self, Dialog};
-use crate::exec;
+use crate::dialogs::{self, Dialog, Preview};
 use crate::session::{TabPlan, WindowPlan};
 use crate::sync::take_account_details;
 use crate::window::BrowserWindow;
+use crate::{exec, profiles};
 
 const PICTURE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -73,6 +74,36 @@ async fn private_title(
     })
     .await;
     Ok(shown)
+}
+
+/// Waits for `flyout` to open, then closes it.
+async fn opens(flyout: FlyoutBase, what: &str, p: &Probe) -> Result<(), String> {
+    until(p, |p| {
+        p.observe(format!("the {what} flyout is not open"));
+        flyout.IsOpen().unwrap_or(false).then_some(())
+    })
+    .await;
+    flyout.Hide().map_err(err)
+}
+
+/// Opens the first row's Edit and Remove flyouts, as those buttons do.
+async fn row_flyouts(manage: &Preview, p: &Probe) -> Result<(), String> {
+    let anchor = |name| manage.find::<FrameworkElement>(name).map_err(err);
+    let edit = profiles::ask(
+        &anchor("ProfileEdit")?,
+        "Edit profile",
+        "Save",
+        "Tester",
+        ProfileColor::Teal,
+        |_, _| {},
+    )
+    .and_then(|f| f.cast::<FlyoutBase>())
+    .map_err(|e| format!("the edit profile flyout: {e}"))?;
+    opens(edit, "edit profile", p).await?;
+    let remove = profiles::ask_remove(&anchor("ProfileRemove")?, "Tester", || {})
+        .and_then(|f| f.cast::<FlyoutBase>())
+        .map_err(|e| format!("the remove profile flyout: {e}"))?;
+    opens(remove, "remove profile", p).await
 }
 
 pub(super) async fn profiles(
@@ -129,6 +160,7 @@ pub(super) async fn profiles(
     })
     .await;
     shoot(window, out_dir, "profiles-manage.png").await?;
+    row_flyouts(&manage, p).await?;
     drop(manage);
 
     let settings = dialogs::preview(window, Dialog::Settings).map_err(err)?;
@@ -154,7 +186,7 @@ pub(super) async fn profiles(
         "alone: menu {:?}, title {:?}; with Work: menu {:?}, title {:?}, a private window's title and profile button {private:?}; \
          signed in to sync as Alex: menu and account picture {from_account:?} (profile-account.png); renamed and recoloured by hand: {renamed:?}, \
          then a sync sign-in as Sam left menu and picture {by_hand:?}; \
-         Manage profiles lists {rows:?} (profile-menu.png, profiles-manage.png); Settings' picker switch was on={picker_shown}, off stored \
+         Manage profiles lists {rows:?} (profile-menu.png, profiles-manage.png) and opens a row's Edit and Remove flyouts; Settings' picker switch was on={picker_shown}, off stored \
          on={picker_stored}; Work removed: menu {:?}, title {:?}",
         alone.0, alone.1, together.0, together.1, after.1, after.2
     );

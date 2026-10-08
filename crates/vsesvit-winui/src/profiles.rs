@@ -177,7 +177,11 @@ pub(crate) fn ask(
 }
 
 /// Asks to remove a profile, in a flyout under `anchor`.
-fn ask_remove(anchor: &FrameworkElement, name: &str, done: impl Fn() + 'static) -> Result<()> {
+pub(crate) fn ask_remove(
+    anchor: &FrameworkElement,
+    name: &str,
+    done: impl Fn() + 'static,
+) -> Result<Flyout> {
     let flyout: Flyout = xaml::load(&format!(
         r#"<Flyout {{ns}} Placement="Bottom">
   <StackPanel Spacing="12" Width="320">
@@ -198,7 +202,8 @@ fn ask_remove(anchor: &FrameworkElement, name: &str, done: impl Fn() + 'static) 
             done();
         },
     )?;
-    flyout.cast::<FlyoutBase>()?.ShowAt(anchor)
+    flyout.cast::<FlyoutBase>()?.ShowAt(anchor)?;
+    Ok(flyout)
 }
 
 /// Manage profiles, the dialog's content: every profile, to open, rename and recolour, or
