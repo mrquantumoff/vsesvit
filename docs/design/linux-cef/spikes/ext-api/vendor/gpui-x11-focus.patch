@@ -1,0 +1,137 @@
+--- /tmp/vsesvit-scratch/spike/vendor/client.rs.orig	2026-10-16 19:27:59.780642952 +0300
++++ vendor/gpui-pre-linux/src/linux/x11/client.rs	2026-10-16 19:33:07.166923411 +0300
+@@ -208,6 +208,9 @@
+     pub(crate) resource_database: Database,
+     pub(crate) atoms: XcbAtoms,
+     pub(crate) windows: HashMap<xproto::Window, WindowRef>,
++    /// Vsesvit patch: InputOnly "keyboard focus proxy" child -> its toplevel. With X focus
++    /// on a proxy, keys never leak to an embedded child window under the pointer.
++    pub(crate) focus_proxies: HashMap<xproto::Window, xproto::Window>,
+     pub(crate) mouse_focused_window: Option<xproto::Window>,
+     pub(crate) keyboard_focused_window: Option<xproto::Window>,
+     pub(crate) xkb: xkbc::State,
+@@ -529,6 +532,7 @@
+                 resource_database,
+                 atoms,
+                 windows: HashMap::default(),
++                focus_proxies: HashMap::default(),
+                 mouse_focused_window: None,
+                 keyboard_focused_window: None,
+                 xkb: xkb_state,
+@@ -745,6 +749,7 @@
+             }
+ 
+             for event in events.into_iter() {
++                let event = self.map_focus_proxy(event);
+                 let mut state = self.0.borrow_mut();
+                 if !state.has_xim() {
+                     drop(state);
+@@ -1059,7 +1064,12 @@
+             }
+             Event::FocusIn(event) => {
+                 let window = self.get_window(event.event)?;
+-                window.set_active(true);
++                // Vsesvit patch: focus coming back from a child window we embed (detail
++                // Inferior) does not change the toplevel's activation; only report real
++                // activation changes.
++                if event.detail != xproto::NotifyDetail::INFERIOR {
++                    window.set_active(true);
++                }
+                 let mut state = self.0.borrow_mut();
+                 state.keyboard_focused_window = Some(event.event);
+                 if let Some(handler) = state.xim_handler.as_mut() {
+@@ -1070,6 +1080,20 @@
+             }
+             Event::FocusOut(event) => {
+                 let window = self.get_window(event.event)?;
++                // Vsesvit patch: X focus moving *into* a child window (an embedded CEF
++                // browser, or a focus proxy) keeps the toplevel active and keyboard-focused
++                // from the window manager's point of view. Only reset composition state.
++                if event.detail == xproto::NotifyDetail::INFERIOR {
++                    let mut state = self.0.borrow_mut();
++                    if let Some(compose_state) = state.compose_state.as_mut() {
++                        compose_state.reset();
++                    }
++                    state.pre_edit_text.take();
++                    drop(state);
++                    self.reset_ime();
++                    window.handle_ime_delete();
++                    return Some(());
++                }
+                 window.set_active(false);
+                 let mut state = self.0.borrow_mut();
+                 // Set last scroll values to `None` so that a large delta isn't created if scrolling is done outside the window (the valuator is global)
+@@ -1682,6 +1706,29 @@
+         gpui::scap_screen_capture::scap_screen_sources(&foreground_executor)
+     }
+ 
++    /// Vsesvit patch: key events delivered to a focus proxy are handled as the toplevel's.
++    fn map_focus_proxy(&self, event: Event) -> Event {
++        let state = self.0.borrow();
++        if state.focus_proxies.is_empty() {
++            return event;
++        }
++        match event {
++            Event::KeyPress(mut e) => {
++                if let Some(top) = state.focus_proxies.get(&e.event) {
++                    e.event = *top;
++                }
++                Event::KeyPress(e)
++            }
++            Event::KeyRelease(mut e) => {
++                if let Some(top) = state.focus_proxies.get(&e.event) {
++                    e.event = *top;
++                }
++                Event::KeyRelease(e)
++            }
++            other => other,
++        }
++    }
++
+     pub(crate) fn open_window(
+         &self,
+         handle: AnyWindowHandle,
+@@ -1727,6 +1774,43 @@
+             supports_xinput_gestures,
+             is_bgr,
+         )?;
++        // Vsesvit patch: a 1x1 InputOnly keyboard-focus proxy outside the visible area,
++        // named "gpui-focus-proxy" so embedders can find it with QueryTree and give it
++        // X focus when GPUI (not an embedded child) should own the keyboard.
++        if let Ok(proxy) = state.xcb_connection.generate_id() {
++            let aux = xproto::CreateWindowAux::new()
++                .event_mask(xproto::EventMask::KEY_PRESS | xproto::EventMask::KEY_RELEASE);
++            let created = check_reply(
++                || "X11: create focus proxy",
++                state.xcb_connection.create_window(
++                    0,
++                    proxy,
++                    x_window,
++                    -1,
++                    -1,
++                    1,
++                    1,
++                    0,
++                    xproto::WindowClass::INPUT_ONLY,
++                    0,
++                    &aux,
++                ),
++            );
++            if created.is_ok() {
++                state
++                    .xcb_connection
++                    .change_property8(
++                        xproto::PropMode::REPLACE,
++                        proxy,
++                        xproto::AtomEnum::WM_NAME,
++                        xproto::AtomEnum::STRING,
++                        b"gpui-focus-proxy",
++                    )
++                    .log_err();
++                state.xcb_connection.map_window(proxy).log_err();
++                state.focus_proxies.insert(proxy, x_window);
++            }
++        }
+         check_reply(
+             || "Failed to set XdndAware property",
+             state.xcb_connection.change_property32(

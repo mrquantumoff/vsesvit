@@ -1,0 +1,15 @@
+[package]
+name = "cef-api-scratch"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+# `dox` makes cef-dll-sys's build script a no-op (no CEF download, no link):
+# enough for `cargo check` of the API surface, which is pre-generated.
+default = ["dox"]
+dox = ["cef/dox"]
+real = ["cef/sandbox"]
+
+[dependencies]
+cef = { version = "=154.5.0", default-features = false, features = ["resources"] }

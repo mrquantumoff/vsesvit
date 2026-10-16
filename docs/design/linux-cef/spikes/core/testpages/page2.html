@@ -1,0 +1,5 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Page Two</title></head>
+<body style="font:20px sans-serif;background:#e0f2fe;padding:20px"><h1>Page Two</h1>
+<p>opener: <span id="o"></span></p><a href="page1.html">back to page one</a>
+<script>document.getElementById('o').textContent = window.opener ? 'present ('+(()=>{try{return window.opener.location.href}catch(e){return 'cross-origin'}})()+')' : 'null';
+console.log('page2: opener='+(window.opener?'present':'null'))</script></body></html>

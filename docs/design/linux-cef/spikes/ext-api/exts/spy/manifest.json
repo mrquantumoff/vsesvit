@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Spy",
+  "version": "1.0.0",
+  "description": "spike-ext-api probe for extension APIs under GPUI + Chrome-style CEF children.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlOFlCR0cHc6HBDea2ryR4BU9FHfXv4LVxtX+Ln28E2N718gtrO+Vttixhb3lrO5LwrOCXFk1aS17PXdFX29gToG38anVacrG3QDMOkYDhA+OQDJsY07V4xDRGHbEE+MG26x1kJ+7YRGI3nJHg71BZHGmD9msSvxtX2Qeo/LB6p4UKBh+jmQebNZLNYmXZ+prjZ/TSrZl8IlTJO1vvXWSv3JGwl9SvU3rrfTWHviHCL4jw4mEJlqwlUNkGePLT2ErvFl3/VSrcFl0u6YYYLASP3HwGaqEvGskgip1z5H+Ngj+D9eaV5qBhcbtvtIJMLm8o/CovqLVxDh5yeGI+ukFxQIDAQAB",
+  "permissions": ["tabs", "activeTab", "scripting", "storage", "alarms", "offscreen", "sidePanel", "downloads", "identity", "contextMenus", "notifications"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["http://127.0.0.1/*"], "js": ["content.js"], "run_at": "document_end", "all_frames": true }],
+  "action": { "default_title": "Spy", "default_popup": "popup.html" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "commands": {
+    "_execute_action": { "suggested_key": { "default": "Alt+Shift+U" } },
+    "spy-cmd": { "suggested_key": { "default": "Alt+Shift+Y" }, "description": "Spy command" }
+  }
+}

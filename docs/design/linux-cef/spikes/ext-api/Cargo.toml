@@ -1,0 +1,29 @@
+[package]
+name = "vsesvit-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", default-features = false, features = ["x11"] }
+gpui-component = { version = "=0.7.3", default-features = false }
+cef = { version = "=154.5.0", default-features = false, features = ["resources"] }
+x11rb = { version = "0.13", features = ["shape", "xtest", "resource_manager", "allow-unsafe-code"] }
+raw-window-handle = "0.6"
+futures = "0.3"
+png = "0.17"
+anyhow = "1"
+libc = "0.2"
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+# Vendored GPUI X11 backend with the focus patch (vendor/gpui-x11-focus-inferior.patch):
+# focus moving into an embedded child window must not make the toplevel "inactive".
+[patch.crates-io]
+gpui-pre-linux = { path = "vendor/gpui-pre-linux" }

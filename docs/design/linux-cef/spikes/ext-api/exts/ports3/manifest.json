@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Vsesvit Ports (MV3 port for spike-ext-api)",
+  "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5cVWLlt5ZKShcdhJ8kRHWqb2tDGvDwktsb62cz5djI99LgynKLQeya+jMzdh1834hyR3gpUZUFrzCkblBcA6ULdIjVSTE2CS+5lTL7kPMd8W+MfaMME9l+SCWXcOn/lun/uDj8Ngj2yRT2AUSwoDhqYO7w4zRZOzVXRY3s4DhoBbrj3bmZIGou+1cMAaA8fdgxjavA+I3haThDXEuOQ8jw1+OZRvNdsGAqIe1tKY3s4pXBbBLkDZ3z/QxEOWzcZW66OcsIPDqFzu+qnU6JAR0yWKrSaJTtLEdb7Ih9X3X9BL6A8eBPFYdkV4x9psWxnGktbGF+i7gmMnS5ZZCXiaWwIDAQAB",
+  "permissions": ["tabs"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["http://127.0.0.1/index.html"], "js": ["content.js"], "run_at": "document_end" }],
+  "action": { "default_title": "Vsesvit Ports", "default_popup": "popup.html" },
+  "externally_connectable": { "ids": ["aljokfodddeopicgpdhdifhdflnokjmf"] }
+}
