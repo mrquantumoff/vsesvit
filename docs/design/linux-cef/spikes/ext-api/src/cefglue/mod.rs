@@ -94,6 +94,8 @@ pub enum CefEvent {
     /// `ContextMenuHandler::run_context_menu` in shell mode: the model was dumped to the log;
     /// the shell answers later with `callback.cont(command_id)` (ctl `menupick`).
     ContextMenu { id: i32, callback: RunContextMenuCallback, items: Vec<(i32, String)> },
+    /// `DisplayHandler::on_auto_resize` (the popup host enables auto-resize): preferred size in DIP.
+    AutoResize { id: i32, w: i32, h: i32 },
 }
 
 /// State shared between CEF handlers (any thread) and the GPUI shell.

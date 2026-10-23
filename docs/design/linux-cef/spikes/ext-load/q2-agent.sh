@@ -1,7 +1,7 @@
 #!/bin/bash
 # Q2c: a Vsesvit-owned helper extension with "management" enabling/disabling/uninstalling others.
-source /tmp/vsesvit-scratch/spike-ext-load/drive.sh
-X=$E/exts; A=fkahekhmpoaldhodgancfgmmjbghngpp; B=fbnpklkbdgiepoopnmaihkhjikacmjci; G=gnnilbihpkjoolbjmkaifmcmbblajkdp
+source "$(dirname "$0")/drive.sh"
+
 A1=$X/$A/1.0; BD=$X/$B/1.0; GD=$X/$G/1.0
 R=$E/root-agent
 OUT=$E/shots; mkdir -p $OUT
@@ -20,7 +20,7 @@ ctl js "agent.run('setEnabled', '$A', false)"
 echo "--- uninstall B without a user gesture (execute_java_script), then with one (CDP userGesture)"
 ctl js "agent.run('uninstall', '$B', {showConfirmDialog: false})"
 ctl extpageeval $G "agent.run('uninstall', '$B', {showConfirmDialog: false})"
-sleep 1.5; import -display :92 -window root $OUT/agent-uninstall-other.png
+sleep 1.5; shot $OUT/agent-uninstall-other.png
 ctl js "agent.run('getAll')"
 show
 grep -E "after-disable" $L | sed 's/^.*console id=[0-9]* /  page: /'

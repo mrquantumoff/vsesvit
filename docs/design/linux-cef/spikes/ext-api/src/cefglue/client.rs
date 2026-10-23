@@ -180,6 +180,12 @@ wrap_display_handler! {
         fn on_fullscreen_mode_change(&self, browser: Option<&mut Browser>, fullscreen: i32) {
             self.shared.send(CefEvent::Fullscreen { id: bid(&browser), on: fullscreen != 0 });
         }
+        fn on_auto_resize(&self, browser: Option<&mut Browser>, new_size: Option<&Size>) -> i32 {
+            let (w, h) = new_size.map(|s| (s.width, s.height)).unwrap_or((0, 0));
+            self.shared.log(format!("cef: on_auto_resize id={} {w}x{h}", bid(&browser)));
+            self.shared.send(CefEvent::AutoResize { id: bid(&browser), w, h });
+            1
+        }
         fn on_console_message(&self, browser: Option<&mut Browser>, level: LogSeverity, message: Option<&CefString>,
                               source: Option<&CefString>, line: i32) -> i32 {
             let src = cef_str(source);
@@ -405,7 +411,7 @@ wrap_download_handler! {
             self.shared.log(format!("cef: on_before_download id={id} name={name} url={url} mode={:?}", self.shared.dialog_mode));
             if self.shared.dialog_mode == DialogMode::Default { return 0; }
             if let Some(cb) = callback {
-                let path = format!("/tmp/vsesvit-scratch/core-env/downloads/{name}");
+                let path = crate::env_dir().join("downloads").join(&name).to_string_lossy().into_owned();
                 cb.cont(Some(&CefString::from(path.as_str())), 0);
             }
             self.shared.send(CefEvent::Download { id, name, url });

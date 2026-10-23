@@ -358,7 +358,7 @@ wrap_download_handler! {
             self.shared.log(format!("cef: on_before_download id={id} name={name} url={url} mode={:?}", self.shared.dialog_mode));
             if self.shared.dialog_mode == DialogMode::Default { return 0; }
             if let Some(cb) = callback {
-                let path = format!("/tmp/vsesvit-scratch/core-env/downloads/{name}");
+                let path = crate::env_dir().join("downloads").join(&name).to_string_lossy().into_owned();
                 cb.cont(Some(&CefString::from(path.as_str())), 0);
             }
             self.shared.send(CefEvent::Download { id, name, url });

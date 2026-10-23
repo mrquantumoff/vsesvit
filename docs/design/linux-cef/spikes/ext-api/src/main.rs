@@ -57,7 +57,7 @@ fn main() -> ExitCode {
     let exe = std::env::current_exe().expect("current_exe");
     let dir = exe.parent().unwrap().to_path_buf();
     let helper = dir.join("vsesvit-spike-helper");
-    let root = std::env::var("SPIKE_ROOT").unwrap_or_else(|_| format!("/tmp/vsesvit-scratch/extapi-env/cef-root-{}", std::process::id()));
+    let root = std::env::var("SPIKE_ROOT").unwrap_or_else(|_| vsesvit_spike::env_dir().join(format!("cef-root-{}", std::process::id())).to_string_lossy().into_owned());
     std::fs::create_dir_all(&root).ok();
     let settings = cef::Settings {
         no_sandbox: std::env::var("SPIKE_NO_SANDBOX").is_ok() as i32,

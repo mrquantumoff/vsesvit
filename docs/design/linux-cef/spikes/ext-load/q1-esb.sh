@@ -1,7 +1,7 @@
 #!/bin/bash
 # Q1: does Enhanced Safe Browsing (or developer mode) gate --load-extension?
-source /tmp/vsesvit-scratch/spike-ext-load/drive.sh
-X=$E/exts; A1=$X/fkahekhmpoaldhodgancfgmmjbghngpp/1.0; B=$X/fbnpklkbdgiepoopnmaihkhjikacmjci/1.0
+source "$(dirname "$0")/drive.sh"
+A1=$X/$A/1.0; B=$X/$B/1.0
 R=$E/root-esb
 start SPIKE_ROOT=$R SPIKE_LOAD_EXT=$A1,$B SPIKE_URLS=$SITE/index.html; sleep 3
 ctl pref extensions.ui.developer_mode; ctl pref safebrowsing.enhanced; ctl pref safebrowsing.enabled

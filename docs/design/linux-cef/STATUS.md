@@ -22,34 +22,17 @@ Last updated: 2026-10-23. Only design work is on this branch; no shell code has 
   - the GPUI X11 focus patch, `spikes/core/vendor/gpui-x11-focus.patch`;
   - a message pump that polls (at most 33 ms while active, 250 ms when idle) and also watches the GLib fds.
 
-## Stopped part-way (no report written)
+## Extension spikes (finished 2026-10-23)
 
-### `spikes/ext-load`: loading and managing extensions
-
-Findings so far:
-- Chromium records `--load-extension` installs as location 8 (command line).
-- Their `chrome.storage` data survives runs where the extension is left out, including runs past the 30 s garbage-collection delay.
-- External Extensions JSON installs happen without a prompt.
-- `management.uninstall` always shows Chrome's own "Remove …?" dialog inside the child browser, even with `showConfirmDialog: false`.
-- Toggling incognito access on a command-line extension left it disabled with `DISABLE_UNSUPPORTED_DEVELOPER_EXTENSION` (`1 << 24`), and it was still disabled after a restart. This was under investigation when the spike stopped.
-- Still open: CDP `Extensions.*` over `--remote-debugging-pipe` (the client exists in the spike), storage access via CDP, and updates.
-
-### `spikes/ext-api`: what extensions see
-
-Findings so far:
-- `--noerrdialogs` keeps a failed `--load-extension` from showing a modal.
-- Chrome-created native windows (from `tabs.create` / `windows.create`) can be hidden by reparenting them synchronously into an unmapped holder. They can then be embedded as GPUI tabs with Chrome's UI cropped off (85 px at scale 1), and they stay interactive.
-- At startup, the first browser stays Chrome's active window until a real focus change.
-- An Alloy-style action popup works as an overlay, and `window.close()` closes it, but activeTab is not granted.
-- The Chrome-style popup test was in progress when the spike stopped.
-
-Throwaway extension signing keys were left out of the copies. Regenerate them, or drop the manifest `key`s, before rerunning ext-api.
+- `spike-ext-load.md`, code in `spikes/ext-load`: install user extensions through External Extensions JSON with `external_crx`. Uninstall with `uninstallSelf` over the CDP pipe. Leave updates to Chromium.
+- `spike-ext-api.md`, code in `spikes/ext-api`: the shell hosts action popups itself as Alloy child browsers. No `activeTab` from action clicks without a CEF patch.
+- Both ran in WSL under Xvfb; each spike's `env.sh` sets the scratch paths.
 
 ## Next
 
 1. Spikes, run in parallel (2026-10-23):
    - `spikes/win-core` and `spike-win.md`: the Windows version of every spike-core item (embedding in GPUI's DirectComposition window, message loop, focus, overlays, screenshots, shutdown) and the platform-seam sketch.
-   - Finish `spikes/ext-load` and `spikes/ext-api` in WSL under a headless weston + Xwayland, with reports `spike-ext-load.md` and `spike-ext-api.md`.
+   - Finish `spikes/ext-load` and `spikes/ext-api` in WSL (done).
 2. Write `design.md` for both platforms, then review it with a Sonnet/Opus subagent and with GPT (`codex`).
 3. Implement in waves. Linux and Windows build in every wave; each wave ends with its checks green on both.
    - foundation: crate, platform seam with both backends, engine core, boot, window and tabs;

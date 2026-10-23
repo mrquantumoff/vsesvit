@@ -124,6 +124,8 @@ pub struct BrowserWindow {
     /// Extension-popup experiment: an extra 24-bit host stacked over the page, and its browser.
     popup_host: u32,
     popup_browser: Option<cef::Browser>,
+    /// The popup browser's own X window (child of `popup_host`).
+    popup_xid: u32,
     popup_style: cef::RuntimeStyle,
 }
 
@@ -262,6 +264,7 @@ impl BrowserWindow {
             pending_menu: None,
             popup_host: 0,
             popup_browser: None,
+            popup_xid: 0,
             popup_style: cef::RuntimeStyle::CHROME,
         }
     }
@@ -466,6 +469,11 @@ impl BrowserWindow {
                 let parent = self.x.conn_parent(xid as u32);
                 if kind == "popuphost" {
                     crate::log(&format!("gpui: popup-host browser id={id} style={style} xid=0x{xid:x} x_parent=0x{parent:x}"));
+                    // Extension popups size themselves to their content (Chrome: 25x25 to 800x600).
+                    if let Some(h) = browser.host() {
+                        h.set_auto_resize_enabled(1, Some(&cef::Size { width: 25, height: 25 }), Some(&cef::Size { width: 800, height: 600 }));
+                    }
+                    self.popup_xid = xid as u32;
                     self.popup_browser = Some(browser);
                     return;
                 }
@@ -510,6 +518,19 @@ impl BrowserWindow {
                     self.activate(idx, window, cx);
                 } else {
                     cx.notify();
+                }
+            }
+            CefEvent::AutoResize { id, w, h } => {
+                if self.popup_browser.as_ref().is_some_and(|b| b.identifier() == id) && self.popup_host != 0 && w > 0 && h > 0 {
+                    // Keep the popup's top-right corner where the action button would be.
+                    let s = self.layout.borrow().scale;
+                    let (pw, ph) = ((w as f32 * s) as u32, (h as f32 * s) as u32);
+                    if let Some(g) = self.x.geometry(self.popup_host) {
+                        let r = XRect { x: g.x + g.w as i32 - pw as i32, y: g.y, w: pw, h: ph };
+                        self.x.configure(self.popup_host, r);
+                        if self.popup_xid != 0 { self.x.configure(self.popup_xid, XRect { x: 0, y: 0, w: pw, h: ph }); }
+                        crate::log(&format!("gpui: popup host resized to {r:?} (content {w}x{h} DIP)"));
+                    }
                 }
             }
             CefEvent::BeforeClose { id } => {
@@ -732,7 +753,8 @@ impl BrowserWindow {
             }
             "fullscreen" => window.toggle_fullscreen(),
             "shot" | "shotraw" => {
-                let path = if arg.is_empty() { "/tmp/vsesvit-scratch/core-env/shot.png" } else { arg };
+                let default = crate::env_dir().join("shot.png").to_string_lossy().into_owned();
+                let path = if arg.is_empty() { default.as_str() } else { arg };
                 let t = std::time::Instant::now();
                 match self.x.capture_mode(self.gpui_xid, cmd == "shot") {
                     Ok((w, h, px)) => {

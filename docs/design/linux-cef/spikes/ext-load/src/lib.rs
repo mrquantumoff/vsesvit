@@ -17,6 +17,11 @@ pub fn log(msg: &str) {
     eprintln!("[{t:9.3}] {msg}");
 }
 
+/// Scratch directory for this run (`SPIKE_ENV`, set by run.sh); the current directory otherwise.
+pub fn env_dir() -> std::path::PathBuf {
+    std::env::var_os("SPIKE_ENV").map(Into::into).unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+}
+
 pub fn init_log_clock() {
     let _ = START.get_or_init(Instant::now);
 }

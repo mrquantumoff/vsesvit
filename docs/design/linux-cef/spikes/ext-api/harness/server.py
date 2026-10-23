@@ -1,9 +1,10 @@
 """Fixture server for spike-ext-api: serves tests/fixtures/site, logs every request path
-(hits.log), and collects JSON POSTed to /report (reports.log). Missing *.png -> a 1x1 PNG
+(hits.log), and collects JSON POSTed to /report (reports.log). Needs VSESVIT_REPO and SPIKE_ENV
+(source ../env.sh). Missing *.png -> a 1x1 PNG
 (dnr.html asks for /dnr/<run>/<kind>.png). Run with python3 -I."""
 import http.server, json, os, sys, time, threading
-SITE = "/home/dy/git/vsesvit-cef/tests/fixtures/site"
-OUT = "/tmp/vsesvit-scratch/extapi-env"
+SITE = os.path.join(os.environ["VSESVIT_REPO"], "tests/fixtures/site")
+OUT = os.environ["SPIKE_ENV"]
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8793
 PNG = open(os.path.join(SITE, "allowed.png"), "rb").read()
 lock = threading.Lock()

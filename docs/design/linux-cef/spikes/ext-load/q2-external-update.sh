@@ -1,7 +1,7 @@
 #!/bin/bash
 # Q2d: when does an external-CRX update (external_version bump) actually apply?
-source /tmp/vsesvit-scratch/spike-ext-load/drive.sh
-C=ohhbacgnpjplioghnknahphiamnhjpnj
+source "$(dirname "$0")/drive.sh"
+
 R=$E/root-ext2; mkdir -p "$R/External Extensions"
 show() { grep -E "report: \{\"ext\":\"C\"" $L | grep -E '"event":"(onInstalled|sw-start)' | sed -E 's/^\[ *([0-9.]+)\] report: /\1 /; s/"t":[0-9]+,?//; s/"commands".*$//' | cut -c1-300; }
 prefs() { echo "  prefs: $(jq -c '.extensions.settings["'$C'"] | {loc:.location, path, ver:.manifest.version, delayed:(.delayed_install_info|if . then {path, ver:.manifest.version, reason:.delay_install_reason} else null end)}' $R/Default/Preferences)"; }

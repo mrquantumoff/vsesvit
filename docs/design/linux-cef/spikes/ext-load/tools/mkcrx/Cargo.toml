@@ -5,6 +5,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-vsesvit-core = { path = "/home/dy/git/vsesvit-cef/crates/vsesvit-core", features = ["testkit"] }
+vsesvit-core = { path = "../../../../../../../crates/vsesvit-core", features = ["testkit"] }
 
 [workspace]

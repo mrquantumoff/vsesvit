@@ -1,7 +1,7 @@
 #!/bin/bash
 # Q2a storage over CDP sessions; Q2b CefBrowserHost::execute_dev_tools_method (page session).
-source /tmp/vsesvit-scratch/spike-ext-load/drive.sh
-X=$E/exts; A=fkahekhmpoaldhodgancfgmmjbghngpp; B=fbnpklkbdgiepoopnmaihkhjikacmjci; C=ohhbacgnpjplioghnknahphiamnhjpnj
+source "$(dirname "$0")/drive.sh"
+
 A1=$X/$A/1.0; BD=$X/$B/1.0; CD=$X/$C/1.0
 R=$E/root-cdp2
 CTL_WAIT=1.2

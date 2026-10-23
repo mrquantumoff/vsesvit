@@ -5,14 +5,16 @@ Chromium id is derived from the key, not from the path.
 
   mkext.py reporter NAME VERSION KEYNAME [JSON-manifest-overrides]
   mkext.py agent VERSION
-  mkext.py fixture NAME            (tests/fixtures/extensions/NAME, key keys/NAME.pem)
+  mkext.py fixture NAME            ($VSESVIT_REPO/tests/fixtures/extensions/NAME, key keys/NAME.pem)
   mkext.py id KEYNAME
 Prints "<id> <dir>".
 """
 import base64, hashlib, json, os, shutil, subprocess, sys
 
-E = "/tmp/vsesvit-scratch/extload-env"
+HERE = os.path.dirname(os.path.abspath(__file__))
+E = os.path.join(os.environ.get("VSESVIT_SCRATCH") or os.path.expanduser("~/vsesvit-scratch"), "extload-env")
 EXTS = os.environ.get("EXTS", E + "/exts")
+FIXTURES = os.path.join(os.environ["VSESVIT_REPO"], "tests/fixtures/extensions") if os.environ.get("VSESVIT_REPO") else None
 
 def der(keyname):
     return subprocess.run(["openssl", "pkey", "-in", f"{E}/keys/{keyname}.pem", "-pubout", "-outform", "DER"],
@@ -47,16 +49,16 @@ if cmd == "reporter":
     }
     if len(sys.argv) > 5:
         m.update(json.loads(sys.argv[5]))
-    write(f"{E}/exts-src/reporter", m, keyname)
+    write(f"{HERE}/exts-src/reporter", m, keyname)
 elif cmd == "agent":
     m = {"manifest_version": 3, "name": "Vsesvit Agent", "version": sys.argv[2],
          "description": "Vsesvit's own helper: chrome.management on behalf of the shell.",
          "permissions": ["management", "storage"], "host_permissions": ["http://127.0.0.1/*"],
          "background": {"service_worker": "background.js"}}
-    write(f"{E}/exts-src/agent", m, "agent")
+    write(f"{HERE}/exts-src/agent", m, "agent")
 elif cmd == "fixture":
     name = sys.argv[2]
-    src = f"{E}/fixtures-ext/{name}"
+    src = f"{FIXTURES}/{name}"
     m = json.load(open(f"{src}/manifest.json"))
     m.pop("browser_specific_settings", None)
     write(src, m, name)

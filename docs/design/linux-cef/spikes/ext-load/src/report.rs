@@ -1,5 +1,6 @@
 //! Tiny HTTP server on 127.0.0.1 for the extension spike:
-//! - `GET /<path>` serves files from `SPIKE_SITE` (the fixture site, copied to scratch);
+//! - `GET /<path>` serves files from `SPIKE_SITE` (the fixture site, copied to scratch); requests
+//!   under `/updates/` (extension update manifests and CRX files) are logged as `report: GET <target>`;
 //! - `POST /report` (any body) is logged as `report: <body>` and appended to `SPIKE_REPORTS`
 //!   (JSON lines). Test extensions call it with `fetch()` from service workers, content
 //!   scripts and extension pages, so every context can report what it saw.
@@ -11,8 +12,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub fn spawn(port: u16) {
-    let site = PathBuf::from(std::env::var("SPIKE_SITE").unwrap_or_else(|_| "/tmp/vsesvit-scratch/extload-env/site".into()));
-    let reports_path = std::env::var("SPIKE_REPORTS").unwrap_or_else(|_| "/tmp/vsesvit-scratch/extload-env/reports.jsonl".into());
+    let site = PathBuf::from(std::env::var("SPIKE_SITE").unwrap_or_else(|_| crate::env_dir().join("site").to_string_lossy().into_owned()));
+    let reports_path = std::env::var("SPIKE_REPORTS").unwrap_or_else(|_| crate::env_dir().join("reports.jsonl").to_string_lossy().into_owned());
     let out = Arc::new(Mutex::new(
         std::fs::OpenOptions::new().create(true).append(true).open(&reports_path).expect("reports file"),
     ));
@@ -83,6 +84,9 @@ fn handle(conn: TcpStream, site: &PathBuf, out: &Mutex<std::fs::File>) -> std::i
             let file = site.join(rel);
             let ok = !rel.contains("..") && file.is_file();
             if ok {
+                if rel.starts_with("updates/") {
+                    crate::log(&format!("report: GET {target}"));
+                }
                 let data = std::fs::read(&file)?;
                 let ctype = match file.extension().and_then(|e| e.to_str()) {
                     Some("html") => "text/html; charset=utf-8",
@@ -90,6 +94,8 @@ fn handle(conn: TcpStream, site: &PathBuf, out: &Mutex<std::fs::File>) -> std::i
                     Some("js") => "text/javascript",
                     Some("css") => "text/css",
                     Some("json") => "application/json",
+                    Some("xml") => "text/xml",
+                    Some("crx") => "application/x-chrome-extension",
                     _ => "application/octet-stream",
                 };
                 write!(w, "HTTP/1.1 200 OK\r\n{cors}Content-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len())?;

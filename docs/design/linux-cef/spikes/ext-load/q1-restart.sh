@@ -1,15 +1,14 @@
 #!/bin/bash
 # Q1: --load-extension across restarts: storage, onInstalled, version bump, drop/re-add.
-source /tmp/vsesvit-scratch/spike-ext-load/drive.sh
-X=$E/exts
-A1=$X/fkahekhmpoaldhodgancfgmmjbghngpp/1.0; A2=$X/fkahekhmpoaldhodgancfgmmjbghngpp/2.0
-B=$X/fbnpklkbdgiepoopnmaihkhjikacmjci/1.0; P=$X/eonajgebgeenbhiiobbhmkafolkeghdb/1.0.0
+source "$(dirname "$0")/drive.sh"
+A1=$X/$A/1.0; A2=$X/$A/2.0
+B=$X/$B/1.0; P=$X/$P/1.0.0
 ROOT=${ROOT:-$E/root1}
 phase() { # phase NAME DIRS
   echo "=== phase $1: --load-extension=${2//$X\//}"
   start SPIKE_ROOT=$ROOT SPIKE_LOAD_EXT=$2 SPIKE_URLS=$SITE/index.html; sleep 4
   ctl "js console.log(\"probe=\" + document.documentElement.dataset.vsesvitProbe + \" visits=\" + document.documentElement.dataset.vsesvitVisits)"; sleep 0.5
-  reports | grep -E '"event":"(onInstalled|sw-start|onStartup)"' | jq -c -R 'split(" ")[1:]|join(" ")|fromjson|{ext,version,event,reason,previousVersion,localBefore,syncBefore,sessionBefore}' 2>/dev/null
+  reports | grep -E '"event":"(onInstalled|sw-start|onStartup)"' | sed -E 's/^[0-9.]+ //; s/  \(origin.*$//' | jq -c '{ext,version,event,reason,previousVersion,localBefore,syncBefore,sessionBefore}'
   grep -E 'console id=1 probe=' $L | sed 's/^.*console id=1 /  page: /'
   quit; cp $L $E/q1-$1.log
   echo "  Local Extension Settings: $(ls $ROOT/Default/Local\ Extension\ Settings | tr '\n' ' ')"

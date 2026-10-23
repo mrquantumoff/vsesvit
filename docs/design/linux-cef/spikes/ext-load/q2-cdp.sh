@@ -1,7 +1,7 @@
 #!/bin/bash
 # Q2a: CDP over --remote-debugging-pipe (fds 3/4, in process): Extensions.* and targets.
-source /tmp/vsesvit-scratch/spike-ext-load/drive.sh
-X=$E/exts; A=fkahekhmpoaldhodgancfgmmjbghngpp; B=fbnpklkbdgiepoopnmaihkhjikacmjci; C=ohhbacgnpjplioghnknahphiamnhjpnj
+source "$(dirname "$0")/drive.sh"
+
 A1=$X/$A/1.0; A2=$X/$A/2.0; BD=$X/$B/1.0; CD=$X/$C/1.0
 R=$E/root-cdp
 show() { grep -E "cdp> |cdp event|report: \{|console id=[0-9]+ vsesvit|main: remote" $L | sed -E 's/"t":[0-9]+,?//' | cut -c1-900; }
@@ -39,7 +39,7 @@ ctl cdp Extensions.getExtensions
 show
 quit; cp $L $E/q2-cdp-run1.log
 echo "  LES after run1: $(ls "$R/Default/Local Extension Settings" | tr '\n' ' ')"
-echo "  prefs after run1: $(jq -c '[.extensions.settings | to_entries[] | select(.value.location!=5) | {id:.key[0:6], loc:.value.location, path:(.value.path|sub(".*/exts/";"")), flags:.value.creation_flags, incog:.value.incognito}]' $R/Default/Preferences)"
+echo "  prefs after run1: $(jq -c '[.extensions.settings | to_entries[] | select(.value.location!=5) | {id:.key[0:6], loc:.value.location, path:(.value.path // "" | sub(".*/exts/";"")), flags:.value.creation_flags, incog:.value.incognito}]' $R/Default/Preferences)"
 echo "######## run 2: restart, same flags (A1 on the command line), CDP pipe"
 start SPIKE_ROOT=$R SPIKE_CDP_PIPE=1 SPIKE_LOAD_EXT=$A1 SPIKE_URLS=$SITE/index.html; sleep 2
 ctl cdp Extensions.getExtensions
@@ -48,4 +48,4 @@ ctl cdp Extensions.loadUnpacked "{\"path\":\"$CD\"}"
 sleep 1.5
 show
 quit; cp $L $E/q2-cdp-run2.log
-echo "  prefs after run2: $(jq -c '[.extensions.settings | to_entries[] | select(.value.location!=5) | {id:.key[0:6], loc:.value.location, path:(.value.path|sub(".*/exts/";"")), flags:.value.creation_flags, incog:.value.incognito}]' $R/Default/Preferences)"
+echo "  prefs after run2: $(jq -c '[.extensions.settings | to_entries[] | select(.value.location!=5) | {id:.key[0:6], loc:.value.location, path:(.value.path // "" | sub(".*/exts/";"")), flags:.value.creation_flags, incog:.value.incognito}]' $R/Default/Preferences)"

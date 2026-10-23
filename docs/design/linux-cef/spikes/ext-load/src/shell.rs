@@ -668,7 +668,8 @@ impl BrowserWindow {
             }
             "fullscreen" => window.toggle_fullscreen(),
             "shot" | "shotraw" => {
-                let path = if arg.is_empty() { "/tmp/vsesvit-scratch/core-env/shot.png" } else { arg };
+                let default = crate::env_dir().join("shot.png").to_string_lossy().into_owned();
+                let path = if arg.is_empty() { default.as_str() } else { arg };
                 let t = std::time::Instant::now();
                 match self.x.capture_mode(self.gpui_xid, cmd == "shot") {
                     Ok((w, h, px)) => {
@@ -770,7 +771,7 @@ impl BrowserWindow {
                 match cmd {
                     "pref" => {
                         let v = cefglue::client::pref_json(&ctx, name).unwrap_or_else(|| "<none>".into());
-                        let dump = std::env::var("SPIKE_PREF_DUMP").unwrap_or_else(|_| "/tmp/vsesvit-scratch/extload-env/pref.json".into());
+                        let dump = std::env::var("SPIKE_PREF_DUMP").unwrap_or_else(|_| crate::env_dir().join("pref.json").to_string_lossy().into_owned());
                         let _ = std::fs::write(&dump, &v);
                         crate::log(&format!("pref {name} ({}) = {}", ctxname.as_deref().unwrap_or("global"), crate::cdp::trunc(&v, 3000)));
                     }

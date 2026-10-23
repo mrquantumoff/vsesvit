@@ -3,7 +3,7 @@
 //   node cdp.mjs daemon                 hold one browser-target session on SPIKE_CDP_PORT (9293),
 //                                       auto-attach to every target (flatten), log target events,
 //                                       extension-worker console messages and action-state bindings
-//                                       to extapi-env/cdp.log; serve commands on 127.0.0.1:9294.
+//                                       to $SPIKE_ENV/cdp.log; serve commands on 127.0.0.1:9294.
 //   node cdp.mjs eval SEL EXPR [gesture] evaluate EXPR (awaited, by value) in the target SEL:
 //                                         sw:<ext id|name>   the extension's service worker
 //                                         page:<substring>   a page target whose URL contains it
@@ -19,8 +19,9 @@ import http from "node:http";
 
 const PORT = Number(process.env.SPIKE_CDP_PORT || 9293);
 const DPORT = 9294;
-const LOG = "/tmp/vsesvit-scratch/extapi-env/cdp.log";
-const ids = JSON.parse(fs.readFileSync("/tmp/vsesvit-scratch/spike-ext-api/keys/ids.json", "utf8"));
+const ENV = process.env.SPIKE_ENV; // set by ../env.sh
+const LOG = `${ENV}/cdp.log`;
+const ids = JSON.parse(fs.readFileSync(`${ENV}/ids.json`, "utf8")); // written by ../run.sh (ids.py)
 const extId = (s) => (ids[s] ? ids[s].id : s);
 const nameOf = (url) => {
   const m = /^chrome-extension:\/\/([a-p]{32})/.exec(url || "");
