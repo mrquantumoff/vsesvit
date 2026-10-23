@@ -1,0 +1,82 @@
+[package]
+name = "vsesvit-win-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Not a member of the repo workspace.
+[workspace]
+
+# rlib for the binaries; cdylib = winspike.dll for bootstrap.exe (sandbox).
+[lib]
+name = "winspike"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", default-features = false }
+gpui-component = { version = "=0.7.3", default-features = false }
+cef = { version = "=154.5.0", default-features = false, features = ["resources"] }
+raw-window-handle = "0.6"
+futures = "0.3"
+png = "0.17"
+anyhow = "1"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_System_Threading",
+    "Win32_System_SystemServices",
+    "Win32_Storage_Xps",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Console",
+    "Win32_Security",
+] }
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+] }
+
+[[bin]]
+name = "vsesvit-win-spike"
+path = "src/main.rs"
+
+[[bin]]
+name = "vsesvit-win-spike-helper"
+path = "src/bin/helper.rs"
+
+[[bin]]
+name = "deskrun"
+path = "src/bin/deskrun.rs"
+
+[[bin]]
+name = "serve"
+path = "src/bin/serve.rs"
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+[profile.dev.package."*"]
+opt-level = 2
+debug = "line-tables-only"
+
+# Vendored GPUI Windows backend with one patch (vendor/gpui-windows-keys.patch): the
+# message loop must not swallow WM_KEYDOWN for non-GPUI windows on its thread.
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

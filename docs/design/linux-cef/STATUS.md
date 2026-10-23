@@ -28,10 +28,16 @@ Last updated: 2026-10-23. Only design work is on this branch; no shell code has 
 - `spike-ext-api.md`, code in `spikes/ext-api`: the shell hosts action popups itself as Alloy child browsers. No `activeTab` from action clicks without a CEF patch.
 - Both ran in WSL under Xvfb; each spike's `env.sh` sets the scratch paths.
 
+## Windows spike (finished 2026-10-23)
+
+- `spike-win.md`, code in `spikes/win-core`: all 11 items settled; self-test 29 passed, 0 failed. Runs on a private desktop through `deskrun.exe`, so nothing reaches the user's screen.
+- Windows needs a small GPUI key patch (`spikes/win-core/vendor/gpui-windows-keys.patch`), a transparent content area, and `SetWindowRgn` holes for overlays that take clicks. §14 lists everything the real crate must carry.
+- Open: other display scales, the Chrome download bubble, and real mouse/IME input.
+
 ## Next
 
 1. Spikes, run in parallel (2026-10-23):
-   - `spikes/win-core` and `spike-win.md`: the Windows version of every spike-core item (embedding in GPUI's DirectComposition window, message loop, focus, overlays, screenshots, shutdown) and the platform-seam sketch.
+   - `spikes/win-core` and `spike-win.md` (done).
    - Finish `spikes/ext-load` and `spikes/ext-api` in WSL (done).
 2. Write `design.md` for both platforms, then review it with a Sonnet/Opus subagent and with GPT (`codex`).
 3. Implement in waves. Linux and Windows build in every wave; each wave ends with its checks green on both.

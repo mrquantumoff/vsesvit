@@ -1,0 +1,31 @@
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -503,6 +503,12 @@
+     if msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN {
+         return None;
+     }
++    // vsesvit patch: only GPUI windows answer WM_GPUI_KEYDOWN. A foreign window on this
++    // thread (an embedded CEF/Chromium child) returns 0 from DefWindowProc, which read as
++    // "handled" and dropped the key before TranslateMessage/DispatchMessage.
++    if !is_gpui_window(msg.hwnd) {
++        return None;
++    }
+ 
+     let result = unsafe {
+         SendMessageW(
+@@ -1975,3 +1981,15 @@
+         );
+     }
+ }
++
++/// vsesvit patch: whether `hwnd` is a GPUI window (class `Zed::Window`).
++/// `GPUI_SPIKE_UNPATCHED=1` restores the upstream behaviour for comparison.
++fn is_gpui_window(hwnd: HWND) -> bool {
++    static UNPATCHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    if *UNPATCHED.get_or_init(|| std::env::var("GPUI_SPIKE_UNPATCHED").is_ok_and(|v| v == "1")) {
++        return true;
++    }
++    let mut buf = [0u16; 32];
++    let n = unsafe { GetClassNameW(hwnd, &mut buf) };
++    n > 0 && String::from_utf16_lossy(&buf[..n as usize]) == "Zed::Window"
++}

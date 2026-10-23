@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Page One</title>
+<link rel="icon" href="icon.png">
+<style>
+ body{font:16px sans-serif;margin:0;padding:12px;background:#fafafa;color:#111}
+ button,a,input{font-size:16px;margin:4px}
+ #log{white-space:pre;font:13px monospace;background:#eee;padding:6px;height:220px;overflow:auto}
+ .grid{display:grid;grid-template-columns:repeat(4,max-content);gap:4px}
+</style></head>
+<body>
+<h2 id="h">Page One</h2>
+<div class="grid">
+ <button id="open" onclick="w=window.open('page2.html','_blank');log('window.open -> '+(w?'window':'null'))">window.open</button>
+ <a id="blank" href="page2.html" target="_blank">target=_blank link</a>
+ <a id="nav" href="page2.html">same-tab link</a>
+ <button id="alert" onclick="alert('hello from alert');log('alert returned')">alert</button>
+ <button id="confirm" onclick="log('confirm -> '+confirm('confirm?'))">confirm</button>
+ <button id="prompt" onclick="log('prompt -> '+prompt('prompt?','default'))">prompt</button>
+ <input id="file" type="file" onchange="log('file -> '+[...this.files].map(f=>f.name))">
+ <button id="geo" onclick="navigator.geolocation.getCurrentPosition(p=>log('geo ok'),e=>log('geo err '+e.code+' '+e.message))">geolocation</button>
+ <a id="dl" href="data:text/plain;charset=utf-8,hello%20download" download="spike-download.txt">download</a>
+ <button id="notif" onclick="Notification.requestPermission().then(r=>log('notification -> '+r))">notification perm</button>
+ <button id="fs" onclick="document.documentElement.requestFullscreen().then(()=>log('fullscreen ok'),e=>log('fs err '+e))">fullscreen</button>
+ <select id="sel"><option>one</option><option>two</option><option>three</option></select>
+</div>
+<p><input id="text" placeholder="type here" size="40"></p>
+<div id="log"></div>
+<script>
+ function log(s){const l=document.getElementById('log');l.textContent+=s+'\n';l.scrollTop=1e9;console.log('page: '+s)}
+ addEventListener('keydown',e=>log('keydown key='+e.key+' code='+e.code+' ctrl='+e.ctrlKey+' shift='+e.shiftKey+' alt='+e.altKey));
+ addEventListener('focus',()=>log('window focus'));
+ addEventListener('blur',()=>log('window blur'));
+ document.addEventListener('visibilitychange',()=>log('visibility '+document.visibilityState));
+ log('loaded; hasFocus='+document.hasFocus()+' devicePixelRatio='+devicePixelRatio+' inner='+innerWidth+'x'+innerHeight);
+</script>
+</body></html>
