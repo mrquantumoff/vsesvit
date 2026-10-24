@@ -1,8 +1,8 @@
 //! Owned by W1.4.
 //! Boot step 1 (design section 3.1): one `log` backend on both OSes, as WinUI has. Lines go to stderr
 //! and to a log file, `<profile>/vsesvit.log` (`OUT_DIR/vsesvit.log` for the self-test), which is the
-//! only place they survive in a Windows release build. `VSESVIT_LOG=warn|debug|trace` changes the
-//! level from info.
+//! only place they survive in a Windows release build. `VSESVIT_LOG=warn|debug|trace` changes our
+//! crates' level from info; other crates log warnings only, and everything at `trace`.
 //!
 //! Lines are held in memory until the process knows whether it owns the profile: the owner starts a
 //! new file, while a launch that forwards to the running owner appends to that owner's file instead
@@ -25,6 +25,7 @@ enum Sink {
 struct Logger {
     start: Instant,
     level: LevelFilter,
+    others: LevelFilter,
     sink: Mutex<Sink>,
 }
 
@@ -47,7 +48,8 @@ pub fn init() {
         Ok("warn") => LevelFilter::Warn,
         _ => LevelFilter::Info,
     };
-    let logger = LOGGER.get_or_init(|| Logger { start: Instant::now(), level, sink: Mutex::new(Sink::Pending(Vec::new())) });
+    let others = if level == LevelFilter::Trace { LevelFilter::Trace } else { LevelFilter::Warn };
+    let logger = LOGGER.get_or_init(|| Logger { start: Instant::now(), level, others, sink: Mutex::new(Sink::Pending(Vec::new())) });
     if log::set_logger(logger).is_ok() {
         log::set_max_level(level);
     }
@@ -75,7 +77,8 @@ pub fn open_file(path: &Path, mode: FileMode) {
 
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.level() <= self.level
+        let ours = metadata.target().starts_with("vsesvit");
+        metadata.level() <= if ours { self.level } else { self.others }
     }
 
     fn log(&self, record: &Record<'_>) {
