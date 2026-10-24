@@ -1,8 +1,9 @@
 //! Owned by W0.5.
 //! Linux: Xvfb on a free display `:N` (never `:0`), `-nolisten tcp`, with a fresh MIT cookie in a
-//! private auth file and the run's token on its root window; a private D-Bus session; and the program
-//! started with a cleared environment that names only those (design section 7.3). Everything started
-//! here is killed when the run ends: the program's whole process group, the bus and the server.
+//! private auth file and the run's token on its root window; openbox as its window manager; a private
+//! D-Bus session; and the program started with a cleared environment that names only those (design
+//! section 7.3). Everything started here is killed when the run ends: the program's whole process
+//! group, the bus, the window manager and the server.
 
 use std::io::{BufRead as _, BufReader, Read, Write as _};
 use std::os::unix::net::UnixStream;
@@ -89,7 +90,40 @@ pub(super) fn launch(run: &Run, dir: &Path, token: Token) -> Result<i32> {
             Err(_) => std::thread::sleep(Duration::from_millis(50)),
         }
     };
-    mark_root(&mut x, n, &cookie, &token)?;
+    let screen = mark_root(&mut x, n, &cookie, &token)?;
+
+    // Xvfb alone never activates a window or gives one the X focus, so W1.1's focus and activation
+    // checks need a window manager (log.tsv 2026-10-24). openbox keeps XTEST in this server.
+    let wm_home = dir.join("wm-home");
+    std::fs::create_dir_all(&wm_home).map_err(|e| format!("{}: {e}", wm_home.display()))?;
+    let wm_log = std::fs::File::create(dir.join("openbox.log")).map_err(|e| format!("openbox.log: {e}"))?;
+    let mut wm = Command::new("openbox");
+    wm.arg("--sm-disable")
+        .env_clear()
+        .envs(passed())
+        .env("DISPLAY", &display)
+        .env("XAUTHORITY", &auth)
+        .env("HOME", &wm_home)
+        .stdin(Stdio::null())
+        .stdout(wm_log.try_clone().map_err(|e| e.to_string())?)
+        .stderr(wm_log)
+        .process_group(0);
+    let mut wm = Killed(wm.spawn().map_err(|e| format!("openbox: {e} (is it on PATH?)"))?);
+    // Ready means managing: openbox drops map requests that arrive while it starts, even after it
+    // has announced itself on the root, so a test window has to come back framed.
+    let test_window = screen.id_base;
+    create_window(&mut x, test_window, screen.root).map_err(|e| format!("a window on :{n}: {e}"))?;
+    let deadline = Instant::now() + START_TIMEOUT;
+    while !framed(&mut x, test_window, screen.root).map_err(|e| format!("asking :{n} for its window manager: {e}"))? {
+        if let Some(status) = wm.0.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!("openbox exited with {status}; see {}", dir.join("openbox.log").display()));
+        }
+        if Instant::now() > deadline {
+            return Err(format!("openbox not ready within {START_TIMEOUT:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Closing the connection destroys the test window.
     drop(x);
 
     let bus_path = dir.join("bus");
@@ -146,7 +180,11 @@ pub(super) fn launch(run: &Run, dir: &Path, token: Token) -> Result<i32> {
         std::thread::sleep(Duration::from_millis(50));
     };
     drop(program);
+    if let Some(died) = wm.0.try_wait().map_err(|e| e.to_string())? {
+        return Err(format!("openbox exited with {died} during the run; see {}", dir.join("openbox.log").display()));
+    }
     drop(bus);
+    drop(wm);
     drop(xvfb);
     use std::os::unix::process::ExitStatusExt as _;
     status.code().ok_or(format!("the program was killed by signal {:?}", status.signal()))
@@ -210,7 +248,7 @@ fn pad4(n: usize) -> usize {
 
 /// Sets the root window's `_VSESVIT_TESTENV` to the token, over the X11 protocol itself (xtask has
 /// no X library). `-noreset` keeps the property after this client disconnects.
-fn mark_root(x: &mut UnixStream, n: u32, cookie: &[u8; 16], token: &Token) -> Result {
+fn mark_root(x: &mut UnixStream, n: u32, cookie: &[u8; 16], token: &Token) -> Result<Screen> {
     let failed = |e: std::io::Error| format!("marking :{n}: {e}");
     let mut setup = vec![b'l', 0];
     setup.extend(11u16.to_le_bytes());
@@ -232,6 +270,7 @@ fn mark_root(x: &mut UnixStream, n: u32, cookie: &[u8; 16], token: &Token) -> Re
         return Err(format!(":{n} refused the connection: {reason}"));
     }
     let root = root_window(&body).ok_or(format!(":{n} sent a setup reply without a screen"))?;
+    let id_base = u32::from_le_bytes(body[4..8].try_into().expect("4 bytes"));
 
     let name = ROOT_PROPERTY.as_bytes();
     let mut intern = vec![16, 0];
@@ -265,9 +304,46 @@ fn mark_root(x: &mut UnixStream, n: u32, cookie: &[u8; 16], token: &Token) -> Re
     if reply[0] != 1 {
         return Err(format!(":{n}: ChangeProperty failed with X error {}", reply[1]));
     }
-    Ok(())
+    Ok(Screen { root, id_base })
 }
 
+/// The two facts of a setup reply the launcher uses.
+struct Screen {
+    root: u32,
+    /// The first resource id this connection may use.
+    id_base: u32,
+}
+
+/// An unmapped 1x1 window at 0,0 that selects no events.
+fn create_window(x: &mut UnixStream, id: u32, parent: u32) -> std::io::Result<()> {
+    let mut create = vec![1, 0];
+    create.extend(8u16.to_le_bytes());
+    create.extend(id.to_le_bytes());
+    create.extend(parent.to_le_bytes());
+    for half in [0u16, 0, 1, 1, 0, 1] {
+        create.extend(half.to_le_bytes());
+    }
+    create.extend([0u32, 0].iter().flat_map(|w| w.to_le_bytes()));
+    x.write_all(&create)
+}
+
+/// Maps `id` (a window manager turns that into a request it answers by framing the window), then
+/// reports whether it already sits in a frame rather than on the root.
+fn framed(x: &mut UnixStream, id: u32, root: u32) -> std::io::Result<bool> {
+    let mut requests = vec![8, 0];
+    requests.extend(2u16.to_le_bytes());
+    requests.extend(id.to_le_bytes());
+    requests.extend([15, 0]);
+    requests.extend(2u16.to_le_bytes());
+    requests.extend(id.to_le_bytes());
+    x.write_all(&requests)?;
+    let reply = read_reply(x)?;
+    if reply[0] != 1 {
+        return Err(std::io::Error::other(format!("X error {} from MapWindow or QueryTree", reply[1])));
+    }
+    let parent = u32::from_le_bytes(reply[12..16].try_into().expect("4 bytes"));
+    Ok(parent != root)
+}
 /// The private server listens on the abstract socket (WSL has no writable `/tmp/.X11-unix`), and
 /// also on the path elsewhere.
 fn connect(n: u32) -> Result<UnixStream> {
