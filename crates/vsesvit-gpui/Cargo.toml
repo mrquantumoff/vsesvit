@@ -1,0 +1,63 @@
+[package]
+name = "vsesvit-gpui"
+description = "Vsesvit's GPUI browser shell, on Linux (X11) and Windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# `vsesvit --self-test` needs core's testkit and the test-environment guard. A default feature, as in the
+# GTK shell, so the self-test runs against the binary a reviewer ships.
+default = ["self-test"]
+self-test = ["vsesvit-core/testkit", "dep:vsesvit-testenv"]
+# FakeSurface and FakeDesktop for other crates' tests. Adds types only; changes no alias and no default
+# (design section 1.4).
+test-support = []
+
+# Never cef or vsesvit-cef (design section 1.1; `cargo xtask check-deps`).
+[dependencies]
+vsesvit-engine = { workspace = true }
+vsesvit-core = { workspace = true }
+vsesvit-sync = { workspace = true }
+vsesvit-update = { workspace = true }
+vsesvit-testenv = { workspace = true, optional = true }
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+gpui-kit-assets = { workspace = true }
+raw-window-handle = { workspace = true }
+futures = { workspace = true }
+image = { workspace = true }
+url = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# X11 only: the Wayland backend is compiled out (design section 2.1).
+gpui_platform = { workspace = true, features = ["x11"] }
+x11rb = { workspace = true }
+# File dialogs with filters, through the portal (design section 1.3, `platform/files.rs`).
+ashpd = { workspace = true, features = ["file_chooser"] }
+
+[target.'cfg(windows)'.dependencies]
+gpui_platform = { workspace = true }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Pipes",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+    "Win32_Security",
+] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+vsesvit-testenv = { workspace = true }

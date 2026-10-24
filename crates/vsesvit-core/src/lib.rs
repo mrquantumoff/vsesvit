@@ -48,6 +48,11 @@
 //! | [`sync`]         | what the sync engine (`vsesvit-sync`) calls: `changes_since`, `apply` |
 //! | [`vault`]        | the profile's OS-protected key that seals secrets (LOCAL)             |
 //! | [`view_source`]  | `view-source:` addresses, and the source page for engines without one |
+//! | [`cli`]          | the command line every shell parses (moving in, W0.3)                 |
+//! | [`closed_tabs`]  | the closed-tab stacks, normal and private (moving in, W0.3)           |
+//! | [`omnibox_edit`] | the address field's edit model (moving in, C.1)                       |
+//! | [`os`]           | download origin marks, the Downloads folder, default browser (C.3)    |
+//! | [`privacy`]      | the privacy snapshot IO threads and hooks read (moving in, C.2)       |
 //! | `db`             | schema, migrations, `Tx` (stamp + seq + clock persistence)            |
 
 use std::marker::PhantomData;
@@ -57,6 +62,8 @@ pub mod address;
 pub mod bookmarks;
 pub mod certificate;
 pub mod clean_url;
+pub mod cli;
+pub mod closed_tabs;
 pub mod cookies;
 pub mod crdt;
 mod db;
@@ -71,9 +78,12 @@ pub mod https_only;
 pub mod import;
 pub mod memory_saver;
 pub mod new_tab;
+pub mod omnibox_edit;
 pub mod onboarding;
+pub mod os;
 pub mod permissions;
 pub mod prefs;
+pub mod privacy;
 pub mod private;
 pub mod profiles;
 pub mod search;

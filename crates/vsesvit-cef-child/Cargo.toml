@@ -1,0 +1,12 @@
+[package]
+name = "vsesvit-cef-child"
+description = "What every CEF process of Vsesvit shares: the child-process app, the custom-scheme table, the render-process handler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# cef only (design section 1.1): this crate is linked into every renderer.
+[dependencies]
+cef = { workspace = true }

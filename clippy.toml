@@ -1,0 +1,13 @@
+# Input boundary (docs/design/linux-cef/design.md section 7.3): no code sends OS input or takes the
+# foreground. Tests send input only through vsesvit-testenv's PrivateInput, which only a passed guard
+# builds; that crate allows the XTEST call at its one call site. `allow-invalid` because each path resolves
+# only on its own OS, or once the crate that defines it is in the build.
+disallowed-methods = [
+    { path = "windows_sys::Win32::UI::Input::KeyboardAndMouse::SendInput", reason = "OS input reaches the user's desktop; post to our own HWNDs through vsesvit-testenv's PrivateInput", allow-invalid = true },
+    { path = "windows_sys::Win32::UI::Input::KeyboardAndMouse::keybd_event", reason = "OS input reaches the user's desktop; post to our own HWNDs through vsesvit-testenv's PrivateInput", allow-invalid = true },
+    { path = "windows_sys::Win32::UI::Input::KeyboardAndMouse::mouse_event", reason = "OS input reaches the user's desktop; post to our own HWNDs through vsesvit-testenv's PrivateInput", allow-invalid = true },
+    { path = "windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow", reason = "takes the user's foreground; only the forwarded-launch raise in platform/windows may call it, with an allow there", allow-invalid = true },
+    { path = "x11rb::protocol::xtest::ConnectionExt::xtest_fake_input", reason = "XTEST input belongs to vsesvit-testenv's PrivateInput, inside the private Xvfb only", allow-invalid = true },
+    { path = "x11rb::protocol::xtest::fake_input", reason = "XTEST input belongs to vsesvit-testenv's PrivateInput, inside the private Xvfb only", allow-invalid = true },
+    { path = "gpui::Window::activate_window", reason = "calls SendInput and SetForegroundWindow on Windows", allow-invalid = true },
+]

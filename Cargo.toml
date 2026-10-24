@@ -1,11 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
+# The Linux spikes have no [workspace] of their own and would attach to this one.
+exclude = ["docs/design/linux-cef/spikes"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license = "MIT"
 
 [workspace.dependencies]
@@ -15,12 +17,20 @@ vsesvit-gtk = { path = "crates/vsesvit-gtk" }
 vsesvit-winui = { path = "crates/vsesvit-winui" }
 vsesvit-update = { path = "crates/vsesvit-update" }
 vsesvit-sync = { path = "crates/vsesvit-sync" }
+vsesvit-engine = { path = "crates/vsesvit-engine" }
+vsesvit-cef = { path = "crates/vsesvit-cef" }
+vsesvit-cef-child = { path = "crates/vsesvit-cef-child" }
+vsesvit-gpui = { path = "crates/vsesvit-gpui" }
+vsesvit-testenv = { path = "crates/vsesvit-testenv" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 url = { version = "2.5", features = ["serde"] }
 log = "0.4"
+futures = "0.3"
+futures-channel = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 gtk = { package = "gtk4", version = "0.11", features = ["v4_22"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
@@ -32,6 +42,32 @@ windows-future = "0.100"
 windows-collections = "0.100"
 windows-link = "0.100"
 windows-reference = "0.100"
+
+# The GPUI + CEF shell (docs/design/linux-cef/design.md section 2.1). The exact pins are the versions the
+# spikes built and ran with; a bump is one line here plus a re-run of the design's section 7 checks.
+cef = { version = "=154.5.0", default-features = false, features = ["resources"] }
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", default-features = false }
+gpui-component = { version = "=0.7.3", default-features = false }
+gpui-kit-assets = "=0.7.3"
+x11rb = { version = "0.13", features = ["shape", "xinput", "resource_manager", "allow-unsafe-code"] }
+windows-sys = "0.61"
+raw-window-handle = "0.6"
+# async-io, as GPUI's Linux backend uses it: ashpd refuses tokio and async-io in one build.
+ashpd = { version = "0.13", default-features = false, features = ["async-io"] }
+rusty-leveldb = "4"
+
+# GPUI's two backends, one patch each (third_party/README.md). `[patch]` is workspace-wide; each backend
+# still compiles only on its own OS, because only gpui-pre-platform depends on them, per target.
+[patch.crates-io]
+gpui-pre-linux = { path = "third_party/gpui-pre-linux" }
+gpui-pre-windows = { path = "third_party/gpui-pre-windows" }
+
+# GPUI and the CEF bindings are slow at opt-level 0, and dependency debug info made a spike's debug
+# binary 968 MB. Workspace crates stay fully debuggable.
+[profile.dev.package."*"]
+opt-level = 2
+debug = "line-tables-only"
 
 # Tauri-format signing keys are scrypt-encrypted; unoptimized scrypt makes key tests take seconds.
 [profile.dev.package.scrypt]

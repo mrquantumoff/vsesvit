@@ -1,0 +1,19 @@
+[package]
+name = "vsesvit-sandbox"
+description = "Vsesvit's sandboxed Windows entry point: the DLL CEF's bootstrap.exe loads, exporting RunWinMain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# `vsesvit_app`, not `vsesvit`, so its PDB does not collide with the vsesvit bin's (cargo #6313).
+[lib]
+name = "vsesvit_app"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# No features: `xtask package nsisgpui` builds this crate as it is (design section 6.2).
+[target.'cfg(windows)'.dependencies]
+vsesvit-cef = { workspace = true }
+vsesvit-gpui = { workspace = true }

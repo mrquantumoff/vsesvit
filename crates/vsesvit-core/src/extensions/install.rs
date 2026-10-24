@@ -1048,10 +1048,12 @@ mod tests {
             "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=150.0.7000.1&acceptformat=crx2,crx3&x=id%3Dddkjiahejlhfcafbddmgiahcphecmpfh%26uc"
         );
         let id = ExtensionId::parse("gcllgfdnfnllodcaambdaknbipemelie").unwrap();
-        assert_eq!(
-            edge_update_request(&[(&id, "0.0.0.0")], "150.0.7000.1").to_string(),
-            r#"{"request":{"acceptformat":"crx3","app":[{"appid":"gcllgfdnfnllodcaambdaknbipemelie","installsource":"ondemand","updatecheck":{},"version":"0.0.0.0"}],"prodversion":"150.0.7000.1","protocol":"3.1"}}"#
-        );
+        // Compared as values: key order depends on serde_json's preserve_order, which GPUI turns on.
+        let expected: serde_json::Value = serde_json::from_str(
+            r#"{"request":{"acceptformat":"crx3","app":[{"appid":"gcllgfdnfnllodcaambdaknbipemelie","installsource":"ondemand","updatecheck":{},"version":"0.0.0.0"}],"prodversion":"150.0.7000.1","protocol":"3.1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(edge_update_request(&[(&id, "0.0.0.0")], "150.0.7000.1"), expected);
         assert_eq!(stores.amo_api_url("ublock-origin").as_str(), "https://addons.mozilla.org/api/v5/addons/addon/ublock-origin/");
         assert_eq!(
             stores.amo_api_url("{d10d0bf8-f5b5-c8b4-a8b2-2b9879e08c5d}").as_str(),

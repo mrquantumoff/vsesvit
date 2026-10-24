@@ -1,0 +1,14 @@
+[package]
+name = "vsesvit-engine"
+description = "The engine contract between Vsesvit's GPUI shell and its browser engine: types, the Engine trait, events, prompts, hooks, FakeEngine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+vsesvit-core = { workspace = true }
+url = { workspace = true }
+futures-channel = { workspace = true }
+serde_json = { workspace = true }

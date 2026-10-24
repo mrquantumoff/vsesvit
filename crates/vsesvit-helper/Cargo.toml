@@ -1,0 +1,16 @@
+[package]
+name = "vsesvit-helper"
+description = "The Linux CEF sub-process image of Vsesvit: keeps GPUI, X11 and Vulkan code out of renderers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "vsesvit-helper"
+path = "src/main.rs"
+
+# Windows needs no helper: CEF's sub-processes run the browser's own image there (design section 1.1).
+[target.'cfg(target_os = "linux")'.dependencies]
+vsesvit-cef-child = { workspace = true }

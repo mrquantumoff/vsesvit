@@ -10,11 +10,26 @@ license.workspace = true
 name = "vsesvit"
 path = "src/main.rs"
 
+# The shell is chosen at build time (docs/design/linux-cef/design.md section 6.1). The defaults are
+# today's shells; `gpui` builds the GPUI + CEF shell on either OS and wins when it is on. Packaging
+# uses `--no-default-features --features gpui`.
+[features]
+default = ["gtk", "winui"]
+# The Linux shell until the switch-over; nothing on Windows.
+gtk = ["dep:vsesvit-gtk"]
+# The Windows shell; nothing on Linux.
+winui = ["dep:vsesvit-winui"]
+gpui = ["dep:vsesvit-gpui", "dep:vsesvit-cef"]
+
+[dependencies]
+vsesvit-gpui = { workspace = true, optional = true }
+vsesvit-cef = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
-vsesvit-gtk = { workspace = true }
+vsesvit-gtk = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
-vsesvit-winui = { workspace = true }
+vsesvit-winui = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1.31"

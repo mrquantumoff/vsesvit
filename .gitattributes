@@ -3,3 +3,6 @@
 # Linux packages are built from these files, from a Windows checkout too (scripts/wsl.sh):
 # CRLF breaks AppRun's shebang and fails desktop-file-validate.
 packaging/linux/** text eol=lf
+# Vendored crates and their patches stay byte for byte as crates.io serves them, so a Windows
+# checkout's CRLF conversion cannot fail `cargo xtask vendor-gpui --check`.
+third_party/** -text

@@ -1,13 +1,28 @@
 //! `cargo xtask`: builds Vsesvit's packages, signs them and writes the update manifest.
-//! The formats, file names and signing contract are in docs/design/packaging.md.
+//! The formats, file names and signing contract are in docs/design/packaging.md. The GPUI + CEF
+//! commands are in docs/design/linux-cef/design.md section 6.2.
 
+mod check_deps;
 mod ctx;
+mod hand_test;
+mod helper_check;
 mod icons;
 mod linux;
 mod manifest;
+mod pack_helper;
+mod probe;
+mod selftest;
 mod sign;
+mod testenv;
+mod vendor_gpui;
 mod windows;
+// Declared here rather than in windows/mod.rs, which belongs to the Windows installer's unit.
+#[path = "windows/bundle_sandbox.rs"]
+mod bundle_sandbox;
+#[path = "windows/stamp_exe.rs"]
+mod stamp_exe;
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ctx::{Ctx, Format};
@@ -18,16 +33,39 @@ Usage: cargo xtask package <nsis|deb|rpm|pacman|appimage|flatpak>... [--sign]
        cargo xtask sign FILE...
        cargo xtask signer generate -w PRIVATE_KEY_FILE [-p PASSWORD] [--force]
        cargo xtask icons OUT_DIR
+       cargo xtask vendor-gpui (--check | --bump CRATE VERSION)
+       cargo xtask check-deps
+       cargo xtask selftest [--flavour gpui|winui] [--network]
+       cargo xtask probe EXAMPLE [ARGS]...
+       cargo xtask hand-test
+       cargo xtask helper-check
+       cargo xtask pack-helper
+       cargo xtask stamp-exe EXE --icon ICO --version VERSION
+       cargo xtask bundle-sandbox
 
 Artifacts go to target/dist/. Signing reads TAURI_SIGNING_PRIVATE_KEY (the key or a
-path to it) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, like the Tauri CLI.";
+path to it) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, like the Tauri CLI.
+A command whose unit has not landed exits 4, \"not available yet\".";
 
 type Result<T = ()> = std::result::Result<T, String>;
+
+/// How a command that did not fail ended.
+pub enum Status {
+    Done,
+    /// The command's unit has not landed (design section 8.2). Exit 4; no gate accepts it.
+    NotAvailable,
+}
+
+const NOT_AVAILABLE: u8 = 4;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(Status::Done) => ExitCode::SUCCESS,
+        Ok(Status::NotAvailable) => {
+            eprintln!("xtask: {}: not available yet", args[0]);
+            ExitCode::from(NOT_AVAILABLE)
+        }
         Err(e) => {
             eprintln!("xtask: {e}");
             ExitCode::FAILURE
@@ -35,11 +73,31 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: &[String]) -> Result {
+/// The repository root, which holds the workspace manifest.
+pub fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask is inside the workspace").to_path_buf()
+}
+
+fn run(args: &[String]) -> Result<Status> {
     let Some((command, rest)) = args.split_first() else {
         return Err(USAGE.to_owned());
     };
     match command.as_str() {
+        "vendor-gpui" => vendor_gpui::run(rest).map(|()| Status::Done),
+        "check-deps" => check_deps::run(rest).map(|()| Status::Done),
+        "selftest" => selftest::run(rest),
+        "probe" => probe::run(rest),
+        "hand-test" => hand_test::run(rest),
+        "helper-check" => helper_check::run(rest),
+        "pack-helper" => pack_helper::run(rest),
+        "stamp-exe" => stamp_exe::run(rest),
+        "bundle-sandbox" => bundle_sandbox::run(rest),
+        _ => run_packaging(command, rest).map(|()| Status::Done),
+    }
+}
+
+fn run_packaging(command: &str, rest: &[String]) -> Result {
+    match command {
         "package" => {
             let ctx = Ctx::new()?;
             let sign = rest.iter().any(|a| a == "--sign");
@@ -90,5 +148,6 @@ mod tests {
     fn usage_lists_every_subcommand_usage() {
         assert!(super::USAGE.contains(super::manifest::USAGE));
         assert!(super::USAGE.contains(super::sign::GENERATE_USAGE));
+        assert!(super::USAGE.contains(super::vendor_gpui::USAGE));
     }
 }

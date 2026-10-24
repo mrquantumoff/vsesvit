@@ -35,6 +35,7 @@ pub mod commands;
 pub mod crx;
 mod install;
 pub mod manifest;
+pub mod migrate;
 pub mod notifications;
 pub mod permissions;
 pub mod private;

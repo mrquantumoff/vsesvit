@@ -30,6 +30,8 @@ use crate::private::Browsing;
 use crate::sync::{ChangedRows, Kind, SyncTable, changed_rows};
 use crate::{Error, Profile, Url};
 
+pub mod queue;
+
 /// Migration v6. [`SCHEMA_CLEAR_ON_EXIT`] holds the table's current definition.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE site_permissions (          -- Kind::SitePermissions

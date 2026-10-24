@@ -42,6 +42,10 @@ use crate::search::text_rank;
 use crate::sync::{Kind, SyncTable, changed_rows};
 use crate::{Error, Profile, Url};
 
+pub mod bar;
+pub mod editor;
+pub mod menu;
+
 /// How many folders deep the shells' bookmark views and folder pickers go below a root; a
 /// folder deeper still shows as empty. Sync can nest folders without end ([`materialize`]
 /// keeps any depth, since moving deep folders would change the merge rule every device must

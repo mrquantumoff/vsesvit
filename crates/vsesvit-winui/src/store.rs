@@ -276,7 +276,9 @@ mod tests {
 
     #[test]
     fn the_reply_is_a_json_string_in_the_event() {
-        let script = reply_script(&json!({ "seq": 2, "error": "a \"b\" </script>" }));
+        // Keys in sorted order, so the text is the same whether or not serde_json's preserve_order
+        // is on (a workspace build with GPUI turns it on).
+        let script = reply_script(&json!({ "error": "a \"b\" </script>", "seq": 2 }));
         assert_eq!(
             script,
             r#"dispatchEvent(new CustomEvent("vsesvit-store-reply", { detail: "{\"error\":\"a \\\"b\\\" </script>\",\"seq\":2}" }));"#

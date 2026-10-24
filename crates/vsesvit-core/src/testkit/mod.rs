@@ -5,6 +5,7 @@
 //! Everything is embedded at compile time (`include_bytes!`), so the helpers work from
 //! any working directory, including an installed self-test binary.
 
+pub mod checks;
 mod crx_writer;
 mod fixture_server;
 pub mod report;

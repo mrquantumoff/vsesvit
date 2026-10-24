@@ -259,9 +259,10 @@ impl<T: Lattice> Lattice for Record<T> {
 pub struct JsonText(String);
 
 impl JsonText {
-    /// `serde_json::Value` objects are `BTreeMap`s, so the text has sorted keys.
+    /// Sorts object keys itself: serde_json's `preserve_order` feature, which any crate in the
+    /// build can turn on (GPUI does), makes a `Value`'s objects keep insertion order instead.
     pub fn from_value(v: &serde_json::Value) -> Self {
-        JsonText(serde_json::to_string(v).expect("a Value always serializes"))
+        JsonText(serde_json::to_string(&sorted(v)).expect("a Value always serializes"))
     }
 
     pub fn to_value(&self) -> serde_json::Value {
@@ -276,6 +277,20 @@ impl JsonText {
     /// break the `Ord`-by-bytes contract.
     pub(crate) fn parse(text: &str) -> Option<Self> {
         serde_json::from_str::<serde_json::Value>(text).ok().map(|v| JsonText::from_value(&v))
+    }
+}
+
+/// `v` with every object's keys inserted in sorted order, which both of serde_json's maps
+/// then iterate in.
+fn sorted(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+            serde_json::Value::Object(entries.into_iter().map(|(k, v)| (k.clone(), sorted(v))).collect())
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(items.iter().map(sorted).collect()),
+        other => other.clone(),
     }
 }
 
@@ -443,6 +458,8 @@ mod tests {
     fn json_text_is_canonical() {
         let v: serde_json::Value = serde_json::from_str(r#"{"b":1,"a":[1, 2]}"#).unwrap();
         assert_eq!(JsonText::from_value(&v).as_str(), r#"{"a":[1,2],"b":1}"#);
+        let nested: serde_json::Value = serde_json::from_str(r#"{"b":{"d":1,"c":2},"a":[{"y":1,"x":2}]}"#).unwrap();
+        assert_eq!(JsonText::from_value(&nested).as_str(), r#"{"a":[{"x":2,"y":1}],"b":{"c":2,"d":1}}"#);
         assert_eq!(JsonText::parse(" {\"z\" : null } ").unwrap().as_str(), r#"{"z":null}"#);
     }
 }

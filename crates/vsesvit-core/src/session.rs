@@ -24,6 +24,8 @@ use crate::sync::{Kind, SyncTable, changed_rows};
 use crate::tab_groups::TabGroup;
 use crate::{Error, Profile, Url};
 
+pub mod plan;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TabId(pub Uuid);
 

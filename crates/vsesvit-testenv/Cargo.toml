@@ -1,0 +1,21 @@
+[package]
+name = "vsesvit-testenv"
+description = "The private display or desktop every Vsesvit self-test, example and window-opening test runs in, and the guard that checks it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# No gpui and no cef: the guard runs before either starts.
+[target.'cfg(target_os = "linux")'.dependencies]
+# XTEST only here, behind PrivateInput (design section 7.3).
+x11rb = { workspace = true, features = ["xtest"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }

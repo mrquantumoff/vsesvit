@@ -36,10 +36,12 @@
 //! | `server`   | the sync server's routes                                                |
 //! | `engine`   | the account a profile is signed in with, and the round                  |
 //! | [`status`] | what Settings says about each state, for both shells                    |
+//! | [`schedule`] | when the next sync is due, for every shell (moving in, C.5)           |
 
 mod auth;
 mod crypto;
 mod engine;
+pub mod schedule;
 mod server;
 pub mod status;
 

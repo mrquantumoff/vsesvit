@@ -1,0 +1,12 @@
+# Written by `cargo xtask vendor-gpui --bump`; checked by `cargo xtask vendor-gpui --check`.
+# crate_sha256 comes from the crates.io index at bump time; patch_sha256 is that of <crate>.patch.
+
+[gpui-pre-linux]
+version = "0.3.9"
+crate_sha256 = "e28213c3fde6f13e91ba0b74b90cbaadec9373e36a031eda98561d31059870f3"
+patch_sha256 = "e0546e17775798fa7c64839d0943aa705a930dd9758dff9a27564058b518921f"
+
+[gpui-pre-windows]
+version = "0.3.9"
+crate_sha256 = "513d4f0fc7d596d3bdef2a73a524ffb83dabc95bf484f2855a698e7f431290a9"
+patch_sha256 = "3e0f6f1c95d678742c2580fb4bbee2a12d2514b3f8ad244a4d27c14d12eb7ccb"

@@ -1,9 +1,13 @@
 //! Embeds the app icon and version info in `vsesvit.exe`, so Explorer, the taskbar and shortcuts
 //! show it. The `.ico` is rendered from the SVG by `cargo xtask icons` and committed.
+//! On Linux the binary finds `libcef.so` beside itself (`-Wl,-rpath,$ORIGIN`).
 
 fn main() {
     const ICON: &str = "../../packaging/icons/dev.mrquantumoff.vsesvit.ico";
     println!("cargo::rerun-if-changed={ICON}");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo::rustc-link-arg-bins=-Wl,-rpath,$ORIGIN");
+    }
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();

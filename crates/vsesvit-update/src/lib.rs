@@ -31,11 +31,13 @@
 //! | `updater`       | the network: `check` and `download`                                   |
 //! | `install`       | applying a verified artifact, per format                              |
 //! | [`cli`]         | `--check-for-updates` and `--update`, the JSON both shells print      |
+//! | [`lifecycle`]   | the update banner, status and install-on-exit, for every shell (moving in, C.6) |
 
 pub mod cli;
 pub mod config;
 pub mod installation;
 mod install;
+pub mod lifecycle;
 mod release;
 mod updater;
 
