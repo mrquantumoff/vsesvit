@@ -1,11 +1,12 @@
 //! In-app screenshots that never activate or focus a window.
 //!
 //! - Web content: `CoreWebView2.CapturePreviewAsync`, rendered by the engine.
-//! - The whole window: Windows.Graphics.Capture on our own HWND. It reads the window's DWM
-//!   composition, so it includes the WebView2 visuals that `PrintWindow` misses, and works while
-//!   the window is behind others. Menus that may extend past the window are windows of their
-//!   own; each open one is captured the same way and drawn over the window where it is on
-//!   screen.
+//! - The whole window: Windows.Graphics.Capture on our own HWND, which reads the window's DWM
+//!   composition and works while the window is behind others. It refuses windows on a desktop
+//!   that is not the input desktop, such as the private one the self-test runs on, so there
+//!   `PrintWindow(PW_RENDERFULLCONTENT)` asks DWM for the same composition instead. Menus that
+//!   may extend past the window are windows of their own; each open one is captured the same way
+//!   and drawn over the window where it is on screen.
 
 use std::time::Duration;
 
@@ -60,7 +61,7 @@ pub(crate) async fn window_png(hwnd: HWND) -> Result<WindowShot> {
     let flat = is_flat(&main.pixels);
     let mut layers = vec![main];
     for popup in popups_of(hwnd) {
-        match capture_window(popup).await {
+        match capture_popup(popup).await {
             Ok(layer) => layers.push(layer),
             Err(e) => log::debug!("popup capture: {e}"),
         }
@@ -85,6 +86,182 @@ struct Layer {
 }
 
 async fn capture_window(hwnd: HWND) -> Result<Layer> {
+    if on_input_desktop() {
+        graphics_capture(hwnd).await
+    } else {
+        print_window(hwnd)
+    }
+}
+
+/// A menu or other popup. `PrintWindow` draws the transparent margin around its body, where
+/// Windows.Graphics.Capture gives its shadow, opaque black; that margin is made transparent.
+async fn capture_popup(hwnd: HWND) -> Result<Layer> {
+    if on_input_desktop() {
+        graphics_capture(hwnd).await
+    } else {
+        let mut layer = print_window(hwnd)?;
+        clear_margin(&mut layer);
+        Ok(layer)
+    }
+}
+
+/// Makes transparent the black pixels that reach the layer's edge through other black pixels:
+/// a popup's margin, but not black drawn inside its body, such as in a favicon.
+fn clear_margin(layer: &mut Layer) {
+    let (width, height) = (layer.width as usize, layer.height as usize);
+    let black = |pixels: &[u8], at: usize| pixels[at * 4..at * 4 + 3] == [0, 0, 0];
+    let mut seen = vec![false; width * height];
+    let mut todo: Vec<usize> = (0..width)
+        .flat_map(|x| [x, height.saturating_sub(1) * width + x])
+        .chain((0..height).flat_map(|y| [y * width, y * width + width.saturating_sub(1)]))
+        .filter(|&at| at < width * height)
+        .collect();
+    while let Some(at) = todo.pop() {
+        if seen[at] || !black(&layer.pixels, at) {
+            continue;
+        }
+        seen[at] = true;
+        layer.pixels[at * 4 + 3] = 0;
+        let (x, y) = (at % width, at / width);
+        if x > 0 {
+            todo.push(at - 1);
+        }
+        if x + 1 < width {
+            todo.push(at + 1);
+        }
+        if y > 0 {
+            todo.push(at - width);
+        }
+        if y + 1 < height {
+            todo.push(at + width);
+        }
+    }
+}
+
+/// Whether this thread's desktop is the one that gets input. Windows.Graphics.Capture's
+/// `CreateForWindow` fails with E_INVALIDARG for a window on any other. A locked session's input
+/// desktop cannot be opened, and counts as another.
+fn on_input_desktop() -> bool {
+    let input = unsafe { OpenInputDesktop(0, false.into(), DESKTOP_READOBJECTS as u32) };
+    if input.is_null() {
+        return false;
+    }
+    let ours = desktop_name(unsafe { GetThreadDesktop(GetCurrentThreadId()) });
+    let same = ours.is_some() && ours == desktop_name(input);
+    let _ = unsafe { CloseDesktop(input) };
+    same
+}
+
+fn desktop_name(desktop: HDESK) -> Option<String> {
+    let mut name = [0u16; 256];
+    let mut needed = 0;
+    let read = unsafe {
+        GetUserObjectInformationW(
+            desktop,
+            UOI_NAME,
+            name.as_mut_ptr().cast(),
+            size_of_val(&name) as u32,
+            &mut needed,
+        )
+    };
+    read.as_bool().then(|| {
+        let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+        String::from_utf16_lossy(&name[..len])
+    })
+}
+
+/// The window as DWM composes it, XAML's and WebView2's visuals included, drawn into a bitmap of
+/// our own. Works on any desktop.
+fn print_window(hwnd: HWND) -> Result<Layer> {
+    let mut window = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut window) }.ok()?;
+    let (width, height) = (window.right - window.left, window.bottom - window.top);
+    if width <= 0 || height <= 0 {
+        return Err(windows_core::Error::new(E_FAIL, "the window has no area"));
+    }
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            // Negative: rows top to bottom, as Windows.Graphics.Capture gives them.
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB as u32,
+            ..BITMAPINFOHEADER::default()
+        },
+        ..BITMAPINFO::default()
+    };
+    let pixels = unsafe {
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        let mut bits = std::ptr::null_mut();
+        let bitmap = CreateDIBSection(
+            dc,
+            &info,
+            DIB_RGB_COLORS as u32,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        let printed = if bitmap.is_null() {
+            Err(windows_core::Error::from_thread())
+        } else {
+            let previous = SelectObject(dc, bitmap);
+            let printed = PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT as u32)
+                .ok()
+                .map(|()| {
+                    std::slice::from_raw_parts(bits.cast::<u8>(), (width * height * 4) as usize)
+                        .to_vec()
+                });
+            SelectObject(dc, previous);
+            let _ = DeleteObject(bitmap);
+            printed
+        };
+        let _ = DeleteDC(dc);
+        printed?
+    };
+    let layer = Layer {
+        pixels,
+        left: window.left,
+        top: window.top,
+        width: width as u32,
+        height: height as u32,
+    };
+    Ok(crop(layer, frame_bounds(hwnd)))
+}
+
+/// The part of `layer` inside `bounds`, both on screen: a window's rectangle includes the
+/// invisible resize borders that Windows.Graphics.Capture leaves out.
+fn crop(layer: Layer, bounds: RECT) -> Layer {
+    let (right, bottom) = (
+        layer.left + layer.width as i32,
+        layer.top + layer.height as i32,
+    );
+    let left = bounds.left.clamp(layer.left, right);
+    let top = bounds.top.clamp(layer.top, bottom);
+    let (width, height) = (
+        (bounds.right.clamp(left, right) - left) as usize,
+        (bounds.bottom.clamp(top, bottom) - top) as usize,
+    );
+    if width == 0 || height == 0 {
+        return layer;
+    }
+    let (x, y) = ((left - layer.left) as usize, (top - layer.top) as usize);
+    let row = layer.width as usize * 4;
+    let pixels = (y..y + height)
+        .flat_map(|r| &layer.pixels[r * row + x * 4..r * row + (x + width) * 4])
+        .copied()
+        .collect();
+    Layer {
+        pixels,
+        left,
+        top,
+        width: width as u32,
+        height: height as u32,
+    }
+}
+
+async fn graphics_capture(hwnd: HWND) -> Result<Layer> {
     let interop = windows_core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
     let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(hwnd)? };
     let size = item.Size()?;
@@ -338,7 +515,72 @@ pub(crate) fn is_flat(bgra: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_flat;
+    use super::{Layer, RECT, clear_margin, crop, is_flat};
+
+    const K: [u8; 4] = [0, 0, 0, 255];
+    const G: [u8; 4] = [45, 45, 45, 255];
+    const CLEAR: [u8; 4] = [0, 0, 0, 0];
+
+    fn layer(rows: &[&[[u8; 4]]], left: i32, top: i32) -> Layer {
+        Layer {
+            pixels: rows.iter().flat_map(|r| r.iter().flatten().copied()).collect(),
+            left,
+            top,
+            width: rows[0].len() as u32,
+            height: rows.len() as u32,
+        }
+    }
+
+    #[test]
+    fn a_popups_black_margin_turns_clear_and_black_inside_its_body_stays() {
+        let mut popup = layer(
+            &[
+                &[K, K, K, K, K],
+                &[K, G, G, G, K],
+                &[K, G, K, G, K],
+                &[K, G, G, G, K],
+                &[K, K, K, K, K],
+            ],
+            0,
+            0,
+        );
+        clear_margin(&mut popup);
+        let expected = layer(
+            &[
+                &[CLEAR, CLEAR, CLEAR, CLEAR, CLEAR],
+                &[CLEAR, G, G, G, CLEAR],
+                &[CLEAR, G, K, G, CLEAR],
+                &[CLEAR, G, G, G, CLEAR],
+                &[CLEAR, CLEAR, CLEAR, CLEAR, CLEAR],
+            ],
+            0,
+            0,
+        );
+        assert_eq!(popup.pixels, expected.pixels);
+    }
+
+    #[test]
+    fn a_window_is_cut_to_its_frame_bounds() {
+        let window = layer(&[&[K, K, K, K], &[K, G, G, K], &[K, G, G, K], &[K, K, K, K]], 10, 20);
+        let frame = crop(
+            window,
+            RECT {
+                left: 11,
+                top: 21,
+                right: 13,
+                bottom: 23,
+            },
+        );
+        assert_eq!((frame.left, frame.top, frame.width, frame.height), (11, 21, 2, 2));
+        assert_eq!(frame.pixels, [G, G, G, G].concat());
+    }
+
+    #[test]
+    fn bounds_outside_the_window_leave_it_whole() {
+        let window = layer(&[&[G, K], &[K, G]], 0, 0);
+        let whole = crop(window, RECT::default());
+        assert_eq!((whole.width, whole.height), (2, 2));
+    }
 
     #[test]
     fn flat_and_varied_buffers() {
