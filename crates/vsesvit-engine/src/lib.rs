@@ -18,6 +18,9 @@ mod ids;
 mod prompt;
 mod types;
 
+#[cfg(any(test, feature = "fake"))]
+mod fake;
+
 pub use command::Engine;
 #[cfg(feature = "self-test")]
 pub use command::TestShutdown;
@@ -31,3 +34,6 @@ pub use prompt::{
     PromptError, PromptKind, PromptLedger, PromptRequest, PromptScope, Refused, ScopeState,
 };
 pub use types::*;
+
+#[cfg(any(test, feature = "fake"))]
+pub use fake::{FakeCommand, FakeEngine, FakeEngineFactory, FakePhase, FakeTab, PromptOutcome, Queued};
