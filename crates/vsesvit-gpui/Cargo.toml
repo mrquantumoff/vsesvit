@@ -11,7 +11,7 @@ publish = false
 # `vsesvit --self-test` needs core's testkit and the test-environment guard. A default feature, as in the
 # GTK shell, so the self-test runs against the binary a reviewer ships.
 default = ["self-test"]
-self-test = ["vsesvit-core/testkit", "dep:vsesvit-testenv"]
+self-test = ["vsesvit-core/testkit", "vsesvit-engine/self-test", "dep:vsesvit-testenv"]
 # FakeSurface and FakeDesktop for other crates' tests. Adds types only; changes no alias and no default
 # (design section 1.4).
 test-support = []
@@ -33,6 +33,8 @@ url = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The version the headless update commands report (boot step 3).
+semver = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # X11 only: the Wayland backend is compiled out (design section 2.1).
@@ -56,6 +58,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Storage_FileSystem",
     "Win32_UI_Shell",
     "Win32_Security",
+    "Win32_Globalization",
 ] }
 
 [dev-dependencies]

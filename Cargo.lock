@@ -8636,6 +8636,7 @@ dependencies = [
  "image",
  "log",
  "raw-window-handle",
+ "semver",
  "serde",
  "serde_json",
  "url",
