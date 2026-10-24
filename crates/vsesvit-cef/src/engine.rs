@@ -307,6 +307,7 @@ pub(crate) mod tests {
 
     struct Hooks {
         popup_tab: Cell<Option<TabId>>,
+        popups_asked: Cell<u32>,
         neutralize: Cell<bool>,
     }
 
@@ -315,6 +316,7 @@ pub(crate) mod tests {
             if request.url.path() == "/blocked" { NavigationDecision::Cancel } else { NavigationDecision::Allow }
         }
         fn popup_policy(&self, _request: &PopupRequest) -> PopupDecision {
+            self.popups_asked.set(self.popups_asked.get() + 1);
             match self.popup_tab.get() {
                 Some(tab) => PopupDecision::AllowAsTab {
                     tab,
@@ -331,7 +333,7 @@ pub(crate) mod tests {
     }
 
     fn hooks(engine: &CefEngine) -> Rc<Hooks> {
-        let hooks = Rc::new(Hooks { popup_tab: Cell::new(None), neutralize: Cell::new(true) });
+        let hooks = Rc::new(Hooks { popup_tab: Cell::new(None), popups_asked: Cell::new(0), neutralize: Cell::new(true) });
         engine.set_hooks(hooks.clone());
         hooks
     }
@@ -513,7 +515,9 @@ pub(crate) mod tests {
             }
         );
         engine.begin_shutdown();
+        let asked = hooks.popups_asked.get();
         assert!(life_span::before_popup(page.id, 4, url, vsesvit_engine::OpenDisposition::NewPopup, true).is_none(), "blocked after Running");
+        assert_eq!(hooks.popups_asked.get(), asked, "the shell is not asked once shutdown began");
     }
 
     #[test]
