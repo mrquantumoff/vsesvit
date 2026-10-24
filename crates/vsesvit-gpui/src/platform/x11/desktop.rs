@@ -13,8 +13,8 @@ use x11rb::protocol::xinput::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{self, ConnectionExt as _};
 use x11rb::wrapper::ConnectionExt as _;
 
-use super::{XConn, focus};
-use crate::platform::{Desktop, NativeHandle, PhysPoint, PhysRect, PlatformError};
+use super::{XConn, failed, focus};
+use crate::platform::{Desktop, NativeHandle, PhysPoint, PlatformError};
 
 /// How deep under a root child (a WM frame) our toplevel may sit: openbox frames it directly,
 /// KWin through a wrapper.
@@ -31,8 +31,7 @@ pub struct XDesktop {
 impl Desktop for XDesktop {
     fn init() -> Result<XDesktop, PlatformError> {
         let x = super::conn()?;
-        // Unmapped for its whole life, so nothing parented to it is ever viewable.
-        let hidden = x.create_host(x.root, PhysRect { x: 0, y: 0, width: 1, height: 1 }, false)?;
+        let hidden = create_hidden_host(&x)?;
         log::debug!("x11: hidden host 0x{hidden:x}");
         Ok(XDesktop { x, hidden, presses: Arc::default() })
     }
@@ -122,6 +121,22 @@ impl Drop for XDesktop {
     fn drop(&mut self) {
         self.x.destroy(self.hidden);
     }
+}
+
+/// The holder WX.0 ran its hidden browsers in on Linux (spike-ext-win 5.1): a 24-bit toplevel,
+/// override-redirect so no WM ever manages it, off screen and never mapped, so nothing in it is
+/// viewable or takes focus. Unlike Windows (ext-win decision 3) it belongs to no browser window, so
+/// it lives from `init` to drop whatever windows open and close. Screen-sized, for the hidden pages.
+fn create_hidden_host(x: &XConn) -> Result<xproto::Window, PlatformError> {
+    let s = x.screen();
+    let wid = x.conn.generate_id().map_err(|e| failed("generate_id", e))?;
+    let aux = xproto::CreateWindowAux::new().border_pixel(0).colormap(s.default_colormap).override_redirect(1);
+    x.conn
+        .create_window(s.root_depth, wid, x.root, -20000, -20000, 1920, 1080, 0, xproto::WindowClass::INPUT_OUTPUT, s.root_visual, &aux)
+        .map_err(|e| failed("CreateWindow", e))?
+        .check()
+        .map_err(|e| failed("CreateWindow (hidden host)", e))?;
+    Ok(wid)
 }
 
 fn contains_point(x: &XConn, xid: xproto::Window, at: PhysPoint) -> bool {
