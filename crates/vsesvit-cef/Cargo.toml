@@ -38,3 +38,13 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_Wind
 [dev-dependencies]
 vsesvit-gpui = { workspace = true, features = ["test-support"] }
 vsesvit-testenv = { workspace = true }
+# The smoke example opens the GPUI window the platform surface attaches to.
+gpui = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_platform = { workspace = true, features = ["x11"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+gpui_platform = { workspace = true }
+# The smoke example counts the CEF sub-processes left after shutdown.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }

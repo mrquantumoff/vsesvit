@@ -39,6 +39,9 @@ const LEGACY_CRATES: &[&str] = &["vsesvit-gtk", "vsesvit-webext"];
 const DEV_ALLOWED: &[(&str, &str, bool)] = &[
     ("vsesvit-cef", "vsesvit-gpui", true),
     ("vsesvit-cef", "vsesvit-testenv", false),
+    // The smoke example opens the GPUI window that `platform::Surface` attaches to.
+    ("vsesvit-cef", "gpui-pre", false),
+    ("vsesvit-cef", "gpui-pre-platform", false),
     ("vsesvit-gpui", "vsesvit-testenv", false),
 ];
 

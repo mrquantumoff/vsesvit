@@ -8559,6 +8559,8 @@ dependencies = [
  "base64 0.22.1",
  "cef",
  "futures",
+ "gpui-pre",
+ "gpui-pre-platform",
  "libc",
  "log",
  "rusty-leveldb",
