@@ -35,13 +35,13 @@ use vsesvit_core::sync::Changed;
 use vsesvit_core::tab_groups::GroupId;
 use vsesvit_core::tab_search::{self, Hit, Listed, Row};
 use vsesvit_core::trackers::TrackerList;
+use vsesvit_core::cli::{self, Config, Mode, Shell};
 use vsesvit_core::{Profile, Url, onboarding};
 use windows_core::Interface;
 
 use crate::bindings::{CoreWebView2BrowsingDataKinds, ICoreWebView2Profile2, ImageSource};
 use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
 use crate::bookmarks_bar::{self, BarItem};
-use crate::config::{Config, Mode};
 use crate::cookies::ExitClearing;
 use crate::dialogs::{Dialog, DialogWindow, SyncPrompt, sync_prompt};
 use crate::downloads::Downloads;
@@ -54,7 +54,7 @@ use crate::sync::{PrefEffect, SyncController};
 use crate::tab::{Tab, TabId};
 use crate::updates::{self, Action, Trigger, Updates};
 use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
-use crate::{app, cli, cookies, exec, instance, omnibox, platform, profiles, shortcuts, sync};
+use crate::{app, cookies, exec, instance, omnibox, platform, profiles, shortcuts, sync};
 
 /// Recently closed tabs kept for Ctrl+Shift+T.
 const CLOSED_TABS_KEPT: usize = 25;
@@ -340,7 +340,9 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
             ));
         }
         #[cfg(feature = "self-test")]
-        Mode::SelfTest { out_dir, network } => {
+        Mode::SelfTest {
+            out_dir, network, ..
+        } => {
             exec::spawn(crate::selftest::run(
                 browser.clone(),
                 out_dir.clone(),
@@ -404,7 +406,7 @@ fn open_forwarded(args: Vec<String>) {
     if browser.close_if_removed() {
         return;
     }
-    let urls = match cli::parse(args.into_iter().map(Into::into)) {
+    let urls = match cli::parse(Shell::WinUi, args.into_iter().map(Into::into)) {
         Ok(cli::Parsed::Run(args)) => args.urls,
         Ok(cli::Parsed::Help | cli::Parsed::Version | cli::Parsed::Update(_)) => Vec::new(),
         Err(e) => {

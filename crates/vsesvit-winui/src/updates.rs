@@ -15,13 +15,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use semver::Version;
+use vsesvit_core::cli::UpdateCommand;
 use vsesvit_core::prefs::UpdateChannel;
 use vsesvit_update::{
     Available, Config, Downloaded, Installation, Update, Updater, cli, remove_stale_downloads,
 };
 
 use crate::browser::{self, Browser};
-use crate::cli::UpdateCommand;
 use crate::sync::live;
 use crate::{app, exec};
 

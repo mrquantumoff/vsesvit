@@ -3,7 +3,6 @@
 //!
 //! | module            | owns                                                                |
 //! |-------------------|---------------------------------------------------------------------|
-//! | `cli`, `config`   | command line and the resolved run configuration                     |
 //! | `platform`        | COM, DPI awareness, Windows App Runtime dependency, message boxes   |
 //! | `instance`        | one process per profile: forwarding a launch to the running one     |
 //! | `app`             | the XAML `Application` subclass and the exit code                   |
@@ -60,8 +59,6 @@ mod bookmarks_bar;
 mod browser;
 mod capture;
 mod capturing;
-mod cli;
-mod config;
 mod connection;
 mod cookies;
 mod dialogs;
@@ -102,15 +99,15 @@ mod zoom;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use config::{Config, Mode, Start};
+use vsesvit_core::cli::{self, Config, Mode, Shell, Start};
 use vsesvit_core::{OpenError, OpenOptions, Profile};
 
 pub fn run() -> ExitCode {
-    let args = match cli::parse(std::env::args_os().skip(1)) {
+    let args = match cli::parse(Shell::WinUi, std::env::args_os().skip(1)) {
         Ok(cli::Parsed::Run(args)) => args,
         Ok(cli::Parsed::Help) => {
             platform::attach_parent_console();
-            println!("{}", cli::USAGE);
+            println!("{}", cli::usage(Shell::WinUi));
             return ExitCode::SUCCESS;
         }
         Ok(cli::Parsed::Version) => {
@@ -124,8 +121,8 @@ pub fn run() -> ExitCode {
         }
         Err(e) => {
             platform::attach_parent_console();
-            eprintln!("vsesvit: {e}\n\n{}", cli::USAGE);
-            return ExitCode::from(2);
+            eprintln!("vsesvit: {e}\n\n{}", cli::usage(Shell::WinUi));
+            return ExitCode::from(cli::EXIT_USAGE);
         }
     };
     let config = match Config::resolve(args) {
@@ -275,7 +272,9 @@ fn open_profile(config: Config) -> Result<browser::Launch, ExitCode> {
                     );
                 }
                 #[cfg(feature = "self-test")]
-                Mode::SelfTest { out_dir, network } => {
+                Mode::SelfTest {
+                    out_dir, network, ..
+                } => {
                     selftest::report_failed_start(
                         out_dir,
                         *network,
