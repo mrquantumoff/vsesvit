@@ -18,6 +18,7 @@
 //!
 //! The shell feeds a running download's byte counts to a [`Transfer`], which measures its speed
 //! as Chrome does, and [`status_line`] words the speed and time left as Chrome's downloads page.
+//! The [`Tracker`] holds those transfers with the engine's handles while the downloads run.
 
 use std::cmp::Reverse;
 use std::collections::VecDeque;
@@ -29,6 +30,12 @@ use rusqlite::{OptionalExtension, params};
 use crate::db::bad_column;
 use crate::private::Browsing;
 use crate::{Error, Profile, Url};
+
+mod tracker;
+
+pub use tracker::{
+    Indicator, LIST_LIMIT, PROGRESS_INTERVAL, Placement, Reported, Settled, Started, Tracker, state_for,
+};
 
 /// Migration v3. [`SCHEMA_STATES`] holds the table's current definition.
 pub(crate) const SCHEMA: &str = "
@@ -476,12 +483,16 @@ fn dangerous_on(system: System, name: &str, mime: Option<&str>) -> bool {
 /// `Zone.Identifier` stream on Windows: the Internet zone, and the source without credentials
 /// when it is a web address. SmartScreen and Office read it when the file is opened.
 pub fn zone_identifier(url: &str) -> String {
-    let source = Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https")).map(|mut u| {
+    format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={}\r\n", web_source(url).as_deref().unwrap_or("about:internet"))
+}
+
+/// `url` as a download's recorded source: a web address without credentials, else nothing.
+pub(crate) fn web_source(url: &str) -> Option<String> {
+    Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https")).map(|mut u| {
         let _ = u.set_username("");
         let _ = u.set_password(None);
         u.to_string()
-    });
-    format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={}\r\n", source.as_deref().unwrap_or("about:internet"))
+    })
 }
 
 /// A server-suggested name reduced to a plain file name: no directories, no control
