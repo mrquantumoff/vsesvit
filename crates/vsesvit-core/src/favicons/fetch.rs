@@ -33,6 +33,9 @@ const MAX_ICON_BYTES: u64 = 512 * 1024;
 const MAX_ATTEMPTS: usize = 3;
 /// The edge of the stored icon: what a 16px icon needs at 200% scale.
 const SIZE: u32 = 32;
+/// An icon more pixels a side than this, or needing more memory to decode, is refused.
+const MAX_EDGE: u32 = 2048;
+const MAX_ALLOC: u64 = 64 * 1024 * 1024;
 /// Some servers refuse clients that do not look like a browser.
 pub(crate) const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
@@ -411,7 +414,20 @@ fn normalize(bytes: &[u8]) -> Option<Vec<u8>> {
         ImageFormat::Ico => Cow::Owned(best_ico_entry(bytes)?),
         _ => Cow::Borrowed(bytes),
     };
-    let mut image = decode_image(&bytes, format, 2048, 64 * 1024 * 1024)?;
+    fit(decode_image(&bytes, format, MAX_EDGE, MAX_ALLOC)?)
+}
+
+/// The PNG a shell got from its engine for a page's icon, as a PNG that fits in 32x32 (aspect
+/// kept, never scaled up) and in [`MAX_BYTES`], so that [`super::Favicons::record`] keeps it.
+/// `None` when `png` is not a PNG, or too large or damaged to decode.
+pub fn fit_png(png: &[u8]) -> Option<Vec<u8>> {
+    if image::guess_format(png).ok()? != ImageFormat::Png {
+        return None;
+    }
+    fit(decode_image(png, ImageFormat::Png, MAX_EDGE, MAX_ALLOC)?)
+}
+
+fn fit(mut image: DynamicImage) -> Option<Vec<u8>> {
     if image.width() > SIZE || image.height() > SIZE {
         image = image.resize(SIZE, SIZE, image::imageops::FilterType::Lanczos3);
     }
@@ -577,5 +593,20 @@ mod tests {
         assert_eq!(normalize(b"<svg xmlns='http://www.w3.org/2000/svg'/>"), None);
         assert_eq!(normalize(b"<!doctype html><title>Not found</title>"), None);
         assert_eq!(normalize(&png(64, 64, [0; 4])[..40]), None, "truncated");
+    }
+
+    #[test]
+    fn a_pages_png_is_fitted_to_what_a_bookmark_shows() {
+        let fitted = |png: &[u8]| fit_png(png).map(|png| decoded(&png).dimensions());
+        assert_eq!(fitted(&png(512, 512, [9, 9, 9, 255])), Some((32, 32)));
+        assert_eq!(fitted(&png(64, 16, [0; 4])), Some((32, 8)));
+        assert_eq!(fitted(&png(16, 16, [0; 4])), Some((16, 16)), "never scaled up");
+        assert_eq!(fitted(&png(3000, 3000, [0; 4])), None, "too large to decode");
+        assert_eq!(fitted(&png(64, 64, [0; 4])[..40]), None, "truncated");
+        let mut jpeg = Vec::new();
+        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])))
+            .write_to(&mut Cursor::new(&mut jpeg), ImageFormat::Jpeg)
+            .unwrap();
+        assert_eq!(fit_png(&jpeg), None, "only a PNG is taken");
     }
 }
