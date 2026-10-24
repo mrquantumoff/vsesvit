@@ -32,7 +32,9 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::address::{readable_url, simplified_url};
-use vsesvit_core::bookmarks::BookmarkId;
+use vsesvit_core::bookmarks::editor::Target;
+use vsesvit_core::bookmarks::menu::{BarCommand, Disposition};
+use vsesvit_core::bookmarks::{BookmarkId, bar::BarItem};
 use vsesvit_core::downloads::Indicator;
 use vsesvit_core::extensions::toolbar::Layout;
 use vsesvit_core::history::Transition;
@@ -46,8 +48,8 @@ use vsesvit_core::view_source;
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
-use crate::bookmark_editor::{Editor, Target};
-use crate::bookmarks_bar::{Bar, BarCommand, BarItem, Disposition};
+use crate::bookmark_editor::Editor;
+use crate::bookmarks_bar::Bar;
 use crate::browser::{Browser, ClosedTab};
 use crate::connection::Headline;
 use crate::dialogs::{self, Dialog};
@@ -1476,18 +1478,14 @@ impl BrowserWindow {
             self.show_star(false);
             return;
         }
-        let target = match browser.bookmark_of(&state.url) {
-            Some(id) => Target::Existing(id),
-            None => {
-                let Some(id) = browser.bookmark_page(&state.url, &state.title) else {
-                    return;
-                };
-                if let Some(png) = tab.favicon_png() {
-                    browser.record_favicon(self.browsing, &state.url, &png);
-                }
-                Target::Added(id)
-            }
+        let Some(target) = browser.star(&state.url, &state.title) else {
+            return;
         };
+        if matches!(target, Target::Added(_))
+            && let Some(png) = tab.favicon_png()
+        {
+            browser.record_favicon(self.browsing, &state.url, &png);
+        }
         self.refresh_chrome();
         if let Ok(star) = self.ui.star.cast::<FrameworkElement>() {
             self.open_editor(&star, target);

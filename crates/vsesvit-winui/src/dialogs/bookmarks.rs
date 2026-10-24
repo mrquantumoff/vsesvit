@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use vsesvit_core::Url;
-use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, NodeKind};
+use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt, MAX_DEPTH, NodeKind, editor};
 use vsesvit_core::export;
 use vsesvit_core::import::{self, Found, Source};
 use vsesvit_core::sync::Changed;
@@ -17,9 +17,8 @@ use windows_core::{Interface, Result};
 
 use super::{Wired, on_click};
 use crate::bindings::*;
-use crate::bookmarks_bar::MAX_DEPTH;
 use crate::browser::Browser;
-use crate::{bookmark_editor, exec, pickers, xaml};
+use crate::{exec, pickers, xaml};
 
 pub(super) const MARKUP: &str = r#"
   <Grid ColumnSpacing="20">
@@ -236,7 +235,7 @@ impl Editor {
                 let children = |id| bookmarks.children(id);
                 let nodes: Vec<BookmarkNode> =
                     ROOTS.iter().filter_map(|&id| bookmarks.get(id)).collect();
-                let folders = bookmark_editor::folder_choices(&nodes, &children, None);
+                let folders = editor::folder_choices(&nodes, &children, None);
                 let roots: Vec<Branch> = nodes
                     .into_iter()
                     .map(|node| Branch::of(node, 0, &children))
@@ -424,7 +423,7 @@ impl Editor {
         let url = match node.kind {
             NodeKind::Url => {
                 let text = self.url.Text().unwrap_or_default();
-                let Some(url) = bookmark_editor::parse_url(&text) else {
+                let Some(url) = editor::parse_url(&text) else {
                     let _ = self.status.SetText("That is not a web address.");
                     return;
                 };

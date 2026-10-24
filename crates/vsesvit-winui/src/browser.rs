@@ -17,12 +17,14 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use vsesvit_core::bookmarks::bar::{self, BarItem};
+use vsesvit_core::bookmarks::editor::{self, Edit, FolderChoice, Target};
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
 use vsesvit_core::cli::{self, Config, Mode, Shell};
 use vsesvit_core::closed_tabs::{self, ClosedTabs};
 use vsesvit_core::extensions::commands::extension_commands;
 use vsesvit_core::extensions::toolbar::{self, Layout};
-use vsesvit_core::favicons::FaviconFetch;
+use vsesvit_core::favicons::{FaviconFetch, fit_png};
 use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::Reach;
 use vsesvit_core::memory_saver::{SWEEP_EVERY, Sweep};
@@ -45,8 +47,6 @@ use vsesvit_core::{Profile, Url, onboarding};
 use windows_core::Interface;
 
 use crate::bindings::{CoreWebView2BrowsingDataKinds, ICoreWebView2Profile2, ImageSource};
-use crate::bookmark_editor::{self, Edit, FolderChoice, Target};
-use crate::bookmarks_bar::{self, BarItem};
 use crate::cookies::ExitClearing;
 use crate::dialogs::{Dialog, DialogWindow, SyncPrompt, sync_prompt};
 use crate::downloads::Downloads;
@@ -1086,68 +1086,32 @@ impl Browser {
         Url::parse(url).is_ok_and(|url| self.core(|p| p.bookmarks().is_bookmarked(&url)))
     }
 
-    /// The star button on a page that is not bookmarked: a bookmark of it at the end of the
-    /// bookmarks bar.
-    pub fn bookmark_page(&self, url: &str, title: &str) -> Option<BookmarkId> {
-        let url = Url::parse(url).ok()?;
-        let added = self.core(|p| {
-            p.bookmarks()
-                .add_url(BookmarkId::TOOLBAR, InsertAt::End, title, &url)
-        });
-        self.bookmarks_changed();
-        added
+    /// The star button and Ctrl+D on the page at `url`: what the editor opens on, the page's
+    /// first bookmark or else a new one at the end of the bookmarks bar.
+    pub fn star(&self, url: &str, title: &str) -> Option<Target> {
+        let target = self
+            .core(|p| editor::star(&mut p.bookmarks(), url, title))
             .inspect_err(|e| log::warn!("bookmark {url}: {e}"))
             .ok()
-    }
-
-    /// The first bookmark of `url`, which the star edits.
-    pub fn bookmark_of(&self, url: &str) -> Option<BookmarkId> {
-        let url = Url::parse(url).ok()?;
-        self.core(|p| p.bookmarks().find_by_url(&url).first().map(|n| n.id))
+            .flatten();
+        if matches!(target, Some(Target::Added(_))) {
+            self.bookmarks_changed();
+        }
+        target
     }
 
     pub fn bookmark(&self, id: BookmarkId) -> Option<BookmarkNode> {
         self.core(|p| p.bookmarks().get(id))
     }
 
-    /// The folders a bookmark can go to (the bookmarks bar, Other bookmarks, and Mobile
-    /// bookmarks when it has any), indented by depth, without `exclude` and its subfolders.
+    /// The folders a bookmark can go to, indented by depth, without `exclude` and its subfolders.
     pub fn bookmark_folders(&self, exclude: Option<BookmarkId>) -> Vec<FolderChoice> {
-        self.core(|p| {
-            let bookmarks = p.bookmarks();
-            let children = |id| bookmarks.children(id);
-            let roots: Vec<BookmarkNode> =
-                [BookmarkId::TOOLBAR, BookmarkId::OTHER, BookmarkId::MOBILE]
-                    .into_iter()
-                    .filter(|&id| id != BookmarkId::MOBILE || !children(id).is_empty())
-                    .filter_map(|id| bookmarks.get(id))
-                    .collect();
-            bookmark_editor::folder_choices(&roots, &children, exclude)
-        })
+        self.core(|p| editor::folders(&p.bookmarks(), exclude))
     }
 
     /// Saves what the bookmark editor holds. Returns the bookmark it saved.
     pub fn save_bookmark(&self, edit: &Edit) -> Result<BookmarkId, vsesvit_core::Error> {
-        let result = self.core(|p| {
-            let mut bookmarks = p.bookmarks();
-            match &edit.target {
-                Target::Added(id) | Target::Existing(id) => {
-                    bookmarks.rename(*id, &edit.name)?;
-                    if let Some(url) = &edit.url {
-                        bookmarks.set_url(*id, url)?;
-                    }
-                    if bookmarks.get(*id).is_some_and(|n| n.parent != edit.folder) {
-                        bookmarks.move_to(*id, edit.folder, InsertAt::End)?;
-                    }
-                    Ok(*id)
-                }
-                Target::NewPage { .. } => match &edit.url {
-                    Some(url) => bookmarks.add_url(edit.folder, InsertAt::End, &edit.name, url),
-                    None => bookmarks.add_folder(edit.folder, InsertAt::End, &edit.name),
-                },
-                Target::NewFolder => bookmarks.add_folder(edit.folder, InsertAt::End, &edit.name),
-            }
-        });
+        let result = self.core(|p| editor::save(&mut p.bookmarks(), edit));
         self.bookmarks_changed();
         result
     }
@@ -1175,18 +1139,7 @@ impl Browser {
 
     /// The bookmarks bar's contents, in display order, with each link's saved favicon.
     pub fn bookmarks_bar_items(&self) -> Vec<BarItem> {
-        self.core(|p| {
-            let mut items = {
-                let bookmarks = p.bookmarks();
-                bookmarks_bar::items_from(BookmarkId::TOOLBAR, &|folder| bookmarks.children(folder))
-            };
-            bookmarks_bar::fill_icons(&mut items, &mut |url| {
-                Url::parse(url)
-                    .ok()
-                    .and_then(|url| p.favicons().get(&url).ok().flatten())
-            });
-            items
-        })
+        self.core(bar::snapshot)
     }
 
     /// Keeps a page's favicon when the page or its site is bookmarked, and shows it; never one
@@ -1196,7 +1149,16 @@ impl Browser {
             return;
         }
         let Ok(url) = Url::parse(url) else { return };
-        match self.core(|p| p.favicons().record(&url, png)) {
+        let recorded = self.core(|p| {
+            if !p.favicons().wanted(&url) {
+                return Ok(false);
+            }
+            match fit_png(png) {
+                Some(png) => p.favicons().record(&url, &png),
+                None => Ok(false),
+            }
+        });
+        match recorded {
             Ok(true) => self.bookmarks_changed(),
             Ok(false) => {}
             Err(e) => log::warn!("favicon of {url}: {e}"),

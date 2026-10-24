@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use vsesvit_core::Url;
+use vsesvit_core::bookmarks::bar::BarItem;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt};
 use vsesvit_core::extensions::{ExtensionId, InstallSource};
 use vsesvit_core::prefs::{TabsPosition, Theme, keys};
@@ -40,7 +41,6 @@ mod welcome_steps;
 pub(crate) use dialog_steps::{confirm_flyout, invoke, label, settings_on};
 
 use crate::bindings::*;
-use crate::bookmarks_bar::BarItem;
 use crate::browser::Browser;
 use crate::layout;
 use crate::popup::Activation;
@@ -118,7 +118,7 @@ async fn bar_steps(
     steps: &mut Vec<Value>,
 ) -> Result<(), String> {
     let page = second.state().url;
-    browser.bookmark_page(&page, "Second tab");
+    browser.star(&page, "Second tab");
     if let Some(png) = second.favicon_png() {
         browser.record_favicon(Browsing::Normal, &page, &png);
     }

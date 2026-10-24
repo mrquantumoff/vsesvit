@@ -8,207 +8,24 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, NodeKind};
+use vsesvit_core::bookmarks::BookmarkId;
+use vsesvit_core::bookmarks::bar::{BarItem, fitting, same_but_icons};
+use vsesvit_core::bookmarks::menu::{
+    BarCommand, Disposition, MenuEntry, context_entries, link_name, menu_label, tip_lines, untitled,
+};
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::bindings::*;
 use crate::{exec, xaml};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BarItem {
-    Link {
-        id: BookmarkId,
-        title: String,
-        url: String,
-        /// The saved favicon (PNG).
-        icon: Option<Vec<u8>>,
-    },
-    Folder {
-        id: BookmarkId,
-        title: String,
-        children: Vec<BarItem>,
-        /// Every item directly in the folder, separators too: what deleting it deletes.
-        contents: usize,
-    },
-}
-
-impl BarItem {
-    pub fn id(&self) -> BookmarkId {
-        match self {
-            BarItem::Link { id, .. } | BarItem::Folder { id, .. } => *id,
-        }
-    }
-}
-
-pub(crate) use vsesvit_core::bookmarks::MAX_DEPTH;
-
-/// The bar's items for the bookmark folder `folder`, in display order. Separators are dropped.
-pub(crate) fn items_from(
-    folder: BookmarkId,
-    children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>,
-) -> Vec<BarItem> {
-    bar_items(children(folder), 0, children)
-}
-
-/// The bar's items for the bookmark nodes `nodes`, `depth` folders below the bar;
-/// `children` lists a folder's nodes.
-fn bar_items(
-    nodes: Vec<BookmarkNode>,
-    depth: usize,
-    children: &dyn Fn(BookmarkId) -> Vec<BookmarkNode>,
-) -> Vec<BarItem> {
-    nodes
-        .into_iter()
-        .filter_map(|node| match node.kind {
-            NodeKind::Url => node.url.map(|url| BarItem::Link {
-                id: node.id,
-                title: node.title,
-                url: url.to_string(),
-                icon: None,
-            }),
-            NodeKind::Folder => {
-                let inner = children(node.id);
-                Some(BarItem::Folder {
-                    id: node.id,
-                    contents: inner.len(),
-                    children: if depth + 1 < MAX_DEPTH {
-                        bar_items(inner, depth + 1, children)
-                    } else {
-                        Vec::new()
-                    },
-                    title: node.title,
-                })
-            }
-            NodeKind::Separator => None,
-        })
-        .collect()
-}
-
-/// Gives every link, in folders too, the favicon `favicon` has for its URL.
-pub(crate) fn fill_icons(items: &mut [BarItem], favicon: &mut dyn FnMut(&str) -> Option<Vec<u8>>) {
-    for item in items {
-        match item {
-            BarItem::Link { url, icon, .. } => *icon = favicon(url),
-            BarItem::Folder { children, .. } => fill_icons(children, favicon),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Disposition {
-    CurrentTab,
-    BackgroundTab,
-    NewWindow,
-}
-
-/// What the bar asks its window to do.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BarCommand {
-    Open(String, Disposition),
-    /// The links directly in a folder, each in a background tab.
-    OpenAll(Vec<String>),
-    /// The bookmark editor for a bookmark or folder.
-    Edit(BookmarkId),
-    CopyLink(String),
-    /// Deletes a bookmark; a folder with `contents` items in it only once the user confirms.
-    Delete {
-        id: BookmarkId,
-        title: String,
-        contents: usize,
-    },
-    AddPage,
-    AddFolder,
-    ToggleBar,
-    Manager,
-}
-
 /// Runs the bar's commands; the window provides it.
 pub(crate) type BarHost = Rc<dyn Fn(BarCommand)>;
-
-/// An entry of a bookmark context menu.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum MenuEntry {
-    Command(String, BarCommand),
-    /// A command with a check mark, checked or not.
-    Toggle(String, bool, BarCommand),
-    Separator,
-}
-
-/// The context menu of a bar item, or of the bar's empty space (`None`), as Chrome has them.
-pub(crate) fn context_entries(item: Option<&BarItem>) -> Vec<MenuEntry> {
-    use MenuEntry::{Command, Separator, Toggle};
-    let command = |label: &str, command| Command(label.to_owned(), command);
-    match item {
-        Some(BarItem::Link { id, title, url, .. }) => vec![
-            command(
-                "Open in new tab",
-                BarCommand::Open(url.clone(), Disposition::BackgroundTab),
-            ),
-            command(
-                "Open in new window",
-                BarCommand::Open(url.clone(), Disposition::NewWindow),
-            ),
-            Separator,
-            command("Edit\u{2026}", BarCommand::Edit(*id)),
-            command("Copy link", BarCommand::CopyLink(url.clone())),
-            Separator,
-            command(
-                "Delete",
-                BarCommand::Delete {
-                    id: *id,
-                    title: title.clone(),
-                    contents: 0,
-                },
-            ),
-        ],
-        Some(BarItem::Folder {
-            id,
-            title,
-            children,
-            contents,
-        }) => {
-            let links: Vec<String> = children
-                .iter()
-                .filter_map(|child| match child {
-                    BarItem::Link { url, .. } => Some(url.clone()),
-                    BarItem::Folder { .. } => None,
-                })
-                .collect();
-            vec![
-                Command(
-                    format!("Open all ({}) in new tabs", links.len()),
-                    BarCommand::OpenAll(links),
-                ),
-                Separator,
-                command("Rename\u{2026}", BarCommand::Edit(*id)),
-                Separator,
-                command(
-                    "Delete",
-                    BarCommand::Delete {
-                        id: *id,
-                        title: title.clone(),
-                        contents: *contents,
-                    },
-                ),
-            ]
-        }
-        None => vec![
-            command("Add page\u{2026}", BarCommand::AddPage),
-            command("Add folder\u{2026}", BarCommand::AddFolder),
-            Separator,
-            Toggle("Show bookmarks bar".to_owned(), true, BarCommand::ToggleBar),
-            command("Bookmark manager", BarCommand::Manager),
-        ],
-    }
-}
 
 const VK_CONTROL: i32 = 0x11;
 /// The bar's left and right padding in the window markup.
 const BAR_PADDING: f64 = 16.0;
 /// The chevron's width with its margin, kept free at the bar's end once items overflow.
 const CHEVRON_WIDTH: f64 = 30.0;
-/// Menu labels longer than this are cut, as Chrome caps its menu width.
-const MENU_LABEL_CHARS: usize = 50;
 
 /// One entry of the bar and the bookmark it shows.
 struct Row {
@@ -643,12 +460,7 @@ impl Bar {
                     let entry = MenuFlyoutItem::new()?;
                     entry.SetText(&menu_label(link_name(title, url)))?;
                     entry.SetIcon(&link_icon(icon.clone())?)?;
-                    let tip = if untitled(title) {
-                        url.clone()
-                    } else {
-                        format!("{title}\n{url}")
-                    };
-                    xaml::set_tip(&entry, &tip)?;
+                    xaml::set_tip(&entry, &tip_lines(child).join("\n"))?;
                     let (url, host) = (url.clone(), self.host.clone());
                     entry
                         .Click(move |_, _| host(BarCommand::Open(url.clone(), disposition())))?
@@ -681,102 +493,12 @@ impl Bar {
     }
 }
 
-/// How many of the items, `widths` wide, fit whole in `available`. When not all of them do,
-/// `chevron` is kept free for the button that lists the rest.
-pub(crate) fn fitting(widths: &[f64], available: f64, chevron: f64) -> usize {
-    if widths.iter().sum::<f64>() <= available {
-        return widths.len();
-    }
-    let room = available - chevron;
-    widths
-        .iter()
-        .scan(0.0, |used, width| {
-            *used += width;
-            Some(*used)
-        })
-        .take_while(|used| *used <= room)
-        .count()
-}
-
-/// Whether `new` is `old` with favicons gained or changed and nothing else: no icon lost.
-fn same_but_icons(old: &BarItem, new: &BarItem) -> bool {
-    match (old, new) {
-        (
-            BarItem::Link {
-                id,
-                title,
-                url,
-                icon,
-            },
-            BarItem::Link {
-                id: new_id,
-                title: new_title,
-                url: new_url,
-                icon: new_icon,
-            },
-        ) => {
-            id == new_id
-                && title == new_title
-                && url == new_url
-                && (new_icon.is_some() || icon.is_none())
-        }
-        (
-            BarItem::Folder {
-                id,
-                title,
-                children,
-                contents,
-            },
-            BarItem::Folder {
-                id: new_id,
-                title: new_title,
-                children: new_children,
-                contents: new_contents,
-            },
-        ) => {
-            id == new_id
-                && title == new_title
-                && contents == new_contents
-                && children.len() == new_children.len()
-                && children
-                    .iter()
-                    .zip(new_children)
-                    .all(|(old, new)| same_but_icons(old, new))
-        }
-        _ => false,
-    }
-}
-
 /// The tooltip of a bar entry, as escaped attribute text: a link's title over its URL, or just
 /// the URL if untitled. The line break is a character reference, as XML reads a literal one in
 /// an attribute as a space.
 fn tip_markup(item: &BarItem) -> String {
-    match item {
-        BarItem::Link { title, url, .. } if untitled(title) => xaml::escape(url),
-        BarItem::Link { title, url, .. } => {
-            format!("{}&#10;{}", xaml::escape(title), xaml::escape(url))
-        }
-        BarItem::Folder { title, .. } => xaml::escape(title),
-    }
-}
-
-/// Whether a link has no title. On the bar it then shows only its favicon, as in Chrome.
-fn untitled(title: &str) -> bool {
-    title.trim().is_empty()
-}
-
-/// What a link goes by in a menu and for a screen reader: its title, or its URL if untitled.
-fn link_name<'a>(title: &'a str, url: &'a str) -> &'a str {
-    if untitled(title) { url } else { title }
-}
-
-/// A title as a menu shows it: cut to `MENU_LABEL_CHARS` with an ellipsis.
-pub(crate) fn menu_label(title: &str) -> String {
-    if title.chars().count() <= MENU_LABEL_CHARS {
-        return title.to_owned();
-    }
-    let cut: String = title.chars().take(MENU_LABEL_CHARS - 1).collect();
-    format!("{}\u{2026}", cut.trim_end())
+    let lines: Vec<String> = tip_lines(item).into_iter().map(xaml::escape).collect();
+    lines.join("&#10;")
 }
 
 /// The one element that moved between `before` and `after` (same elements), and the element
@@ -837,297 +559,9 @@ fn link_icon(png: Option<Vec<u8>>) -> Result<IconElement> {
 
 #[cfg(test)]
 mod tests {
-    use vsesvit_core::Url;
+    use vsesvit_core::bookmarks::BookmarkId;
 
     use super::*;
-
-    fn node(id: BookmarkId, kind: NodeKind, title: &str, url: Option<&str>) -> BookmarkNode {
-        BookmarkNode {
-            id,
-            kind,
-            parent: BookmarkId::TOOLBAR,
-            index: 0,
-            title: title.into(),
-            url: url.map(|u| Url::parse(u).unwrap()),
-            added_ms: 0,
-        }
-    }
-
-    #[test]
-    fn folders_nest_and_separators_drop() {
-        // Root ids stand in for arbitrary node ids here.
-        let children = |folder: BookmarkId| match folder {
-            f if f == BookmarkId::TOOLBAR => vec![
-                node(
-                    BookmarkId::MOBILE,
-                    NodeKind::Url,
-                    "",
-                    Some("https://a.test/"),
-                ),
-                node(BookmarkId::ROOT, NodeKind::Separator, "", None),
-                node(BookmarkId::OTHER, NodeKind::Folder, "F", None),
-            ],
-            f if f == BookmarkId::OTHER => {
-                vec![node(
-                    BookmarkId::MOBILE,
-                    NodeKind::Url,
-                    "B",
-                    Some("https://b.test/"),
-                )]
-            }
-            _ => vec![],
-        };
-        assert_eq!(
-            items_from(BookmarkId::TOOLBAR, &children),
-            [
-                BarItem::Link {
-                    id: BookmarkId::MOBILE,
-                    title: "".into(),
-                    url: "https://a.test/".into(),
-                    icon: None,
-                },
-                BarItem::Folder {
-                    id: BookmarkId::OTHER,
-                    title: "F".into(),
-                    children: vec![BarItem::Link {
-                        id: BookmarkId::MOBILE,
-                        title: "B".into(),
-                        url: "https://b.test/".into(),
-                        icon: None,
-                    }],
-                    contents: 1,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn folders_nested_without_end_stop_at_the_maximum_depth() {
-        // Every folder holds another, as a synced chain thousands deep would.
-        let children = |_| vec![node(BookmarkId::OTHER, NodeKind::Folder, "F", None)];
-        let items = items_from(BookmarkId::TOOLBAR, &children);
-        let mut level = items.as_slice();
-        let mut depth = 0;
-        while let [BarItem::Folder { children, .. }] = level {
-            depth += 1;
-            level = children;
-        }
-        assert!(level.is_empty());
-        assert_eq!(depth, MAX_DEPTH);
-    }
-
-    #[test]
-    fn separators_count_toward_a_folders_delete() {
-        // A folder holding only a separator: its menu is empty, but deleting it still asks.
-        let children = |folder: BookmarkId| match folder {
-            f if f == BookmarkId::TOOLBAR => {
-                vec![node(BookmarkId::OTHER, NodeKind::Folder, "F", None)]
-            }
-            f if f == BookmarkId::OTHER => {
-                vec![node(BookmarkId::MOBILE, NodeKind::Separator, "", None)]
-            }
-            _ => vec![],
-        };
-        let items = items_from(BookmarkId::TOOLBAR, &children);
-        let BarItem::Folder { children, .. } = &items[0] else {
-            panic!("a folder")
-        };
-        assert!(children.is_empty());
-        assert!(
-            context_entries(Some(&items[0])).contains(&MenuEntry::Command(
-                "Delete".into(),
-                BarCommand::Delete {
-                    id: BookmarkId::OTHER,
-                    title: "F".into(),
-                    contents: 1
-                }
-            ))
-        );
-    }
-
-    #[test]
-    fn only_whole_items_fit_and_the_chevron_keeps_its_room() {
-        assert_eq!(
-            fitting(&[100.0, 100.0, 100.0], 300.0, 30.0),
-            3,
-            "all fit, no chevron"
-        );
-        assert_eq!(fitting(&[100.0, 100.0, 100.0], 299.0, 30.0), 2);
-        assert_eq!(
-            fitting(&[100.0, 100.0, 100.0], 229.0, 30.0),
-            1,
-            "room for the chevron"
-        );
-        assert_eq!(fitting(&[100.0, 100.0], 120.0, 30.0), 0);
-        assert_eq!(fitting(&[], 10.0, 30.0), 0);
-    }
-
-    #[test]
-    fn long_menu_labels_are_cut_with_an_ellipsis() {
-        assert_eq!(menu_label("Short"), "Short");
-        let long = "word ".repeat(20);
-        let label = menu_label(&long);
-        assert!(label.chars().count() <= MENU_LABEL_CHARS, "{label}");
-        assert!(label.ends_with("word\u{2026}"), "{label}");
-    }
-
-    #[test]
-    fn icons_reach_links_inside_folders() {
-        let link = |url: &str| BarItem::Link {
-            id: BookmarkId::MOBILE,
-            title: url.into(),
-            url: url.into(),
-            icon: None,
-        };
-        let mut items = vec![
-            link("https://a.test/"),
-            BarItem::Folder {
-                id: BookmarkId::OTHER,
-                title: "F".into(),
-                children: vec![link("https://b.test/")],
-                contents: 1,
-            },
-        ];
-        fill_icons(&mut items, &mut |url| {
-            url.contains("b.test").then(|| vec![1])
-        });
-        assert!(matches!(&items[0], BarItem::Link { icon: None, .. }));
-        let BarItem::Folder { children, .. } = &items[1] else {
-            panic!("a folder")
-        };
-        assert!(matches!(&children[0], BarItem::Link { icon: Some(_), .. }));
-    }
-
-    #[test]
-    fn only_new_icons_keep_the_entries() {
-        let link = |title: &str, icon: Option<u8>| BarItem::Link {
-            id: BookmarkId::MOBILE,
-            title: title.into(),
-            url: "https://a.test/".into(),
-            icon: icon.map(|b| vec![b]),
-        };
-        let folder = |child| BarItem::Folder {
-            id: BookmarkId::OTHER,
-            title: "F".into(),
-            children: vec![child],
-            contents: 1,
-        };
-        assert!(same_but_icons(&link("A", None), &link("A", Some(1))));
-        assert!(same_but_icons(&link("A", Some(1)), &link("A", Some(2))));
-        assert!(same_but_icons(
-            &folder(link("A", None)),
-            &folder(link("A", Some(1)))
-        ));
-        assert!(!same_but_icons(&link("A", Some(1)), &link("A", None)));
-        assert!(!same_but_icons(&link("A", None), &link("B", None)));
-        assert!(!same_but_icons(
-            &folder(link("A", None)),
-            &folder(link("B", Some(1)))
-        ));
-        assert!(!same_but_icons(&link("A", None), &folder(link("A", None))));
-    }
-
-    #[test]
-    fn context_menus_match_chromes() {
-        let link = BarItem::Link {
-            id: BookmarkId::MOBILE,
-            title: "A".into(),
-            url: "https://a.test/".into(),
-            icon: None,
-        };
-        let labels = |item: Option<&BarItem>| -> Vec<String> {
-            context_entries(item)
-                .into_iter()
-                .map(|e| match e {
-                    MenuEntry::Command(label, _) | MenuEntry::Toggle(label, _, _) => label,
-                    MenuEntry::Separator => "-".into(),
-                })
-                .collect()
-        };
-        assert_eq!(
-            labels(Some(&link)),
-            [
-                "Open in new tab",
-                "Open in new window",
-                "-",
-                "Edit\u{2026}",
-                "Copy link",
-                "-",
-                "Delete"
-            ]
-        );
-        let folder = BarItem::Folder {
-            id: BookmarkId::OTHER,
-            title: "F".into(),
-            children: vec![link.clone(), link.clone()],
-            contents: 2,
-        };
-        assert_eq!(
-            labels(Some(&folder)),
-            [
-                "Open all (2) in new tabs",
-                "-",
-                "Rename\u{2026}",
-                "-",
-                "Delete"
-            ]
-        );
-        assert!(context_entries(Some(&folder)).contains(&MenuEntry::Command(
-            "Delete".into(),
-            BarCommand::Delete {
-                id: BookmarkId::OTHER,
-                title: "F".into(),
-                contents: 2
-            }
-        )));
-        assert_eq!(
-            labels(None),
-            [
-                "Add page\u{2026}",
-                "Add folder\u{2026}",
-                "-",
-                "Show bookmarks bar",
-                "Bookmark manager"
-            ]
-        );
-    }
-
-    #[test]
-    fn untitled_links_show_no_title_on_the_bar_and_their_url_in_menus() {
-        // As in Chrome, an untitled link on the bar shows only its favicon.
-        let children = |folder: BookmarkId| match folder {
-            f if f == BookmarkId::TOOLBAR => vec![
-                node(
-                    BookmarkId::MOBILE,
-                    NodeKind::Url,
-                    "",
-                    Some("https://a.test/"),
-                ),
-                node(BookmarkId::OTHER, NodeKind::Folder, "F", None),
-            ],
-            f if f == BookmarkId::OTHER => vec![node(
-                BookmarkId::MOBILE,
-                NodeKind::Url,
-                " ",
-                Some("https://b.test/"),
-            )],
-            _ => vec![],
-        };
-        let items = items_from(BookmarkId::TOOLBAR, &children);
-        let BarItem::Link { title, url, .. } = &items[0] else {
-            panic!("a link")
-        };
-        assert_eq!(title, "");
-        assert_eq!(link_name(title, url), "https://a.test/");
-        assert_eq!(tip_markup(&items[0]), "https://a.test/");
-        let BarItem::Folder { children, .. } = &items[1] else {
-            panic!("a folder")
-        };
-        let BarItem::Link { title, url, .. } = &children[0] else {
-            panic!("a link")
-        };
-        assert_eq!(menu_label(link_name(title, url)), "https://b.test/");
-    }
 
     #[test]
     fn link_tooltip_keeps_line_break_between_title_and_url() {
@@ -1145,6 +579,7 @@ mod tests {
             tip_markup(&link("a<b")),
             "a&lt;b&#10;https://blog.rust-lang.org/"
         );
+        assert_eq!(tip_markup(&link("")), "https://blog.rust-lang.org/");
     }
 
     #[test]

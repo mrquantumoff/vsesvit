@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use vsesvit_core::Url;
+use vsesvit_core::bookmarks::bar::BarItem;
 use vsesvit_core::bookmarks::{BookmarkId, InsertAt, NodeKind};
 use windows_core::{HSTRING, Interface};
 use windows_reference::IReference;
@@ -16,7 +17,6 @@ use super::dialog_steps::invoke;
 use super::{shoot, wait_loaded};
 use crate::bindings::*;
 use crate::bookmark_editor::Editor;
-use crate::bookmarks_bar::BarItem;
 use crate::browser::Browser;
 use crate::exec;
 use crate::window::BrowserWindow;

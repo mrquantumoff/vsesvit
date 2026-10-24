@@ -446,8 +446,8 @@ async fn checks(
         let seen = until(p, |p| {
             let bookmarked = browser.is_bookmarked(index.as_str());
             let in_bar = window.bookmarks_bar_items().iter().any(|item| match item {
-                crate::bookmarks_bar::BarItem::Link { url, .. } => url == index.as_str(),
-                crate::bookmarks_bar::BarItem::Folder { .. } => false,
+                vsesvit_core::bookmarks::bar::BarItem::Link { url, .. } => url == index.as_str(),
+                vsesvit_core::bookmarks::bar::BarItem::Folder { .. } => false,
             });
             let buttons = window.bookmarks_bar_buttons();
             let starred = tab.state().starred;
@@ -474,7 +474,7 @@ async fn checks(
                 .bookmarks_bar_items()
                 .iter()
                 .find_map(|item| match item {
-                    crate::bookmarks_bar::BarItem::Link { url, icon, .. }
+                    vsesvit_core::bookmarks::bar::BarItem::Link { url, icon, .. }
                         if url == index.as_str() =>
                     {
                         icon.clone()

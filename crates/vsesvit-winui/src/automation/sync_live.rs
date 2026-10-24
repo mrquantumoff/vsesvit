@@ -316,7 +316,7 @@ async fn bookmark_and_upload(
     steps: &mut Vec<Value>,
 ) -> std::result::Result<i64, String> {
     let since = Instant::now();
-    browser.bookmark_page(url, url);
+    browser.star(url, url);
     let at = live.mark(marker);
     let uploaded = synced_since(browser, follow, since, Duration::from_secs(40)).await;
     let after_ms = now_ms() - at;
@@ -406,7 +406,7 @@ async fn role_a(
     live.marked("b-bookmarks-on").await?;
     // Quits with no await in between, so no scheduled sync can take it first: only the final
     // sync on the way out uploads it.
-    browser.bookmark_page("https://live-three.example/", "live three");
+    browser.star("https://live-three.example/", "live three");
     live.mark("a-bookmark3");
     steps.push(json!({ "name": "live-a-quits-right-after-a-change", "ok": true }));
     Ok(())
