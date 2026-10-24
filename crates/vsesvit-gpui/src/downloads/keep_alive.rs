@@ -16,3 +16,7 @@ pub enum ParkDecision {
 pub fn park_decision(_tab: TabId, _cx: &gpui::App) -> ParkDecision {
     ParkDecision::Close
 }
+
+/// Asked by the private-session end (W1.5) before the last private browser closes: cancels every
+/// private download through its kept callback (design section 4.2). Until W3.3 lands, there are none.
+pub fn end_private_downloads(_cx: &mut gpui::App) {}

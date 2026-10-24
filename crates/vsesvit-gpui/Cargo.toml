@@ -60,4 +60,5 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+vsesvit-engine = { workspace = true, features = ["fake"] }
 vsesvit-testenv = { workspace = true }
