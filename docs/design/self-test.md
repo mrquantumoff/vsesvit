@@ -8,6 +8,8 @@ vsesvit --self-test <out_dir> [--network]
 
 The run uses a fresh profile at `<out_dir>/profile` and never touches the user's real profile. It turns search suggestions off in that profile, so nothing typed into the address bar reaches a real search engine; `search_suggestions` uses an engine on the fixture server. It writes `<out_dir>/report.json` and `<out_dir>/window.png`, then exits with 0 only if every check passed. Every check has a timeout (default 15 s). A timeout is a failure with the last observed value in `detail`.
 
+On Windows the self-test runs only through `cargo xtask selftest --flavour winui [--network]` (`docs/design/linux-cef/design.md` section 7.3). It builds the browser, starts `--self-test target/selftest/winui` on a private desktop of its own, where the browser can activate and focus windows without reaching the user's screen or input, and passes only if `report.json` lists every check in `crates/vsesvit-winui/src/report.rs`, each passed, from a run that exited 0. Started any other way, `--self-test` exits 3 before it opens a window. Window captures there come from `PrintWindow(PW_RENDERFULLCONTENT)`, because Windows.Graphics.Capture refuses windows off the input desktop.
+
 Both shells also accept `--profile-dir <path>` in normal runs, so development never touches the default profile.
 
 ## Inputs, all from `vsesvit_core::testkit` (feature `testkit`)

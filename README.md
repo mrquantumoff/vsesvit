@@ -63,7 +63,7 @@ cargo run -p vsesvit
 cargo test --workspace
 ```
 
-`vsesvit --self-test <dir>` runs the end-to-end check in [docs/design/self-test.md](docs/design/self-test.md). It writes `report.json` and a screenshot to `<dir>` and exits non-zero on failure. Add `--network` to install uBlock Origin Lite from the Chrome Web Store.
+`vsesvit --self-test <dir>` runs the end-to-end check in [docs/design/self-test.md](docs/design/self-test.md). It writes `report.json` and a screenshot to `<dir>` and exits non-zero on failure. Add `--network` to install uBlock Origin Lite from the Chrome Web Store. On Windows, run it with `cargo xtask selftest --flavour winui [--network]`. That builds the browser, runs it on a private desktop where it never reaches your screen or your input, and fails unless `target/selftest/winui/report.json` lists every check as passed. Started any other way, the Windows build's `--self-test` exits 3 before it opens a window.
 
 ## Layout
 
