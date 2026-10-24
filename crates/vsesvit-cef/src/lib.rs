@@ -75,4 +75,16 @@ impl CefEngineFactory {
     }
 }
 
-impl vsesvit_engine::EngineFactory for CefEngineFactory {}
+impl vsesvit_engine::EngineFactory for CefEngineFactory {
+    fn chromium_version(&self) -> &'static str {
+        "154.0.8037.98"
+    }
+
+    /// Not built yet (W1.3).
+    fn initialize(
+        &self,
+        _config: vsesvit_engine::EngineConfig,
+    ) -> Result<vsesvit_engine::EngineParts, vsesvit_engine::EngineInitError> {
+        Err(vsesvit_engine::EngineInitError::Failed("the CEF engine is not built yet".to_owned()))
+    }
+}

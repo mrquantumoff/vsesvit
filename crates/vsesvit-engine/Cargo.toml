@@ -7,6 +7,13 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# FakeEngine for other crates' tests (UA section 4.5). Adds types only.
+fake = []
+# `Engine::test_shutdown`, for the shutdown self-test checks (design section 3.6).
+self-test = []
+
+# Never gpui or cef (design section 1.1; `cargo xtask check-deps`).
 [dependencies]
 vsesvit-core = { workspace = true }
 url = { workspace = true }
