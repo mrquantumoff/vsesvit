@@ -7,6 +7,7 @@
 //!
 //! The key table maps core's `Key` to Windows virtual-key codes, which CEF reports on every OS
 //! (`windows_key_code`). Symbol keys assume the US layout, as WinUI's table does.
+#![allow(clippy::unnecessary_cast, reason = "CEF's flag integers are i32 on Windows and u32 on Linux")]
 
 use std::sync::Arc;
 

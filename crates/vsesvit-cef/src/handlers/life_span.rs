@@ -350,8 +350,8 @@ pub fn do_close(id: BrowserId) -> bool {
 }
 
 /// Where a page wants a link opened, from CEF's raw disposition.
-pub fn disposition_of(raw: i32) -> OpenDisposition {
-    let is = |d: WindowOpenDisposition| raw == d.get_raw();
+pub fn disposition_of(raw: i64) -> OpenDisposition {
+    let is = |d: WindowOpenDisposition| raw == i64::from(d.get_raw());
     if is(WindowOpenDisposition::NEW_FOREGROUND_TAB) {
         OpenDisposition::NewForegroundTab
     } else if is(WindowOpenDisposition::NEW_BACKGROUND_TAB) {
@@ -458,7 +458,7 @@ wrap_life_span_handler! {
                            _settings: Option<&mut BrowserSettings>, _extra_info: Option<&mut Option<DictionaryValue>>,
                            _no_javascript_access: Option<&mut i32>) -> i32 {
             let Some(browser) = browser else { return 1 };
-            let disposition = disposition_of(target_disposition.get_raw());
+            let disposition = disposition_of(i64::from(target_disposition.get_raw()));
             let place = before_popup(browser.identifier(), popup_id, &strings::text(target_url), disposition, user_gesture != 0);
             let (Some(place), Some(info), Some(client)) = (place, window_info, client) else { return 1 };
             crate::native::fix_popup(info, place.parent, place.bounds, place.scale);
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn dispositions_map() {
-        let raw = |d: WindowOpenDisposition| d.get_raw();
+        let raw = |d: WindowOpenDisposition| i64::from(d.get_raw());
         assert_eq!(disposition_of(raw(WindowOpenDisposition::NEW_FOREGROUND_TAB)), OpenDisposition::NewForegroundTab);
         assert_eq!(disposition_of(raw(WindowOpenDisposition::NEW_BACKGROUND_TAB)), OpenDisposition::NewBackgroundTab);
         assert_eq!(disposition_of(raw(WindowOpenDisposition::NEW_POPUP)), OpenDisposition::NewPopup);

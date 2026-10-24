@@ -44,8 +44,10 @@ fn needed(readelf: &str) -> Vec<String> {
         .collect()
 }
 
+/// libcef and the C runtime: libc, libm, libgcc_s, and glibc's own dynamic loader, which glibc 2.34
+/// and later name as `NEEDED` (`ld-linux-x86-64.so.2`) and every dynamic executable loads anyway.
 fn allowed(lib: &str) -> bool {
-    lib == "libcef.so" || ["libc.so.", "libm.so.", "libgcc_s.so."].iter().any(|prefix| lib.starts_with(prefix))
+    lib == "libcef.so" || ["libc.so.", "libm.so.", "libgcc_s.so.", "ld-linux-"].iter().any(|prefix| lib.starts_with(prefix))
 }
 
 #[cfg(test)]
@@ -59,12 +61,13 @@ Dynamic section at offset 0x2a5d48 contains 30 entries:
  0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
  0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
  0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-x86-64.so.2]
  0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN]
 ";
 
     #[test]
     fn reads_the_needed_libraries() {
-        assert_eq!(needed(READELF), ["libcef.so", "libgcc_s.so.1", "libm.so.6", "libc.so.6"]);
+        assert_eq!(needed(READELF), ["libcef.so", "libgcc_s.so.1", "libm.so.6", "libc.so.6", "ld-linux-x86-64.so.2"]);
         assert!(needed(READELF).iter().all(|lib| allowed(lib)));
     }
 

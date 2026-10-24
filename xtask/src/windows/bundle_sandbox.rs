@@ -59,7 +59,9 @@ fn plan(names: &[String]) -> Result<Vec<(String, String)>> {
     }
     let runtime = |name: &str| {
         let lower = name.to_ascii_lowercase();
-        [".dll", ".pak", ".dat", ".bin", ".json"].iter().any(|ext| lower.ends_with(ext)) && lower != "vsesvit_app.dll"
+        // archive.json is cef-dll-sys's record of the distribution, not part of the runtime.
+        [".dll", ".pak", ".dat", ".bin", ".json"].iter().any(|ext| lower.ends_with(ext))
+            && !matches!(lower.as_str(), "vsesvit_app.dll" | "archive.json")
     };
     let mut plan = vec![("bootstrap.exe".to_owned(), "vsesvit.exe".to_owned()), ("vsesvit_app.dll".to_owned(), "vsesvit.dll".to_owned())];
     let mut files: Vec<&String> = names.iter().filter(|n| runtime(n)).collect();
@@ -109,6 +111,7 @@ mod tests {
             "v8_context_snapshot.bin",
             "vk_swiftshader_icd.json",
             "vsesvit_app.dll.lib",
+            "archive.json",
         ]);
         let plan = plan(&built).expect("a plan");
         let pairs: Vec<(&str, &str)> = plan.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
@@ -116,7 +119,9 @@ mod tests {
         assert!(pairs.contains(&("libcef.dll", "libcef.dll")));
         assert!(pairs.contains(&("icudtl.dat", "icudtl.dat")));
         assert!(pairs.contains(&("vk_swiftshader_icd.json", "vk_swiftshader_icd.json")));
-        assert!(!pairs.iter().any(|(from, _)| from.ends_with(".pdb") || from.ends_with(".lib") || *from == "bootstrapc.exe"));
+        assert!(!pairs.iter().any(|(from, _)| {
+            from.ends_with(".pdb") || from.ends_with(".lib") || *from == "bootstrapc.exe" || *from == "archive.json"
+        }));
         assert_eq!(pairs.iter().filter(|(_, to)| *to == "vsesvit.dll").count(), 1);
     }
 

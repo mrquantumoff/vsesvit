@@ -3,6 +3,7 @@
 //! hands middle and Ctrl clicks to the shell, certificate errors and renderer ends become `TabEvent`s
 //! (all UI thread). The IO-thread getters delegate: resource requests to `resource_request.rs` and
 //! auth to `auth.rs`.
+#![allow(clippy::unnecessary_cast, reason = "CEF's enum integers are i32 on Windows and u32 on Linux")]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -107,7 +108,7 @@ pub fn start_download(tab: vsesvit_engine::TabId, url: &Url) {
 }
 
 /// The logic of `on_open_urlfrom_tab`: the shell opens it. True cancels Chromium's own handling.
-pub fn open_url_from_tab(browser: BrowserId, url: &str, disposition: i32, user_gesture: bool) -> bool {
+pub fn open_url_from_tab(browser: BrowserId, url: &str, disposition: i64, user_gesture: bool) -> bool {
     let Some(Some((opener, sink))) = registry::with(|r| Some((r.tab_of(browser)?, r.sink.clone()))) else { return false };
     let Ok(url) = Url::parse(url) else { return true };
     sink.send(BrowserEvent::OpenUrlRequested { opener, url, disposition: disposition_of(disposition), user_gesture });
@@ -142,8 +143,8 @@ pub fn cert_status_of(bits: u32) -> CertStatus {
 }
 
 /// Why a renderer ended, from CEF's status.
-pub fn termination_of(raw: i32, error_code: i32) -> TerminationStatus {
-    let is = |t: cef::TerminationStatus| raw == t.get_raw();
+pub fn termination_of(raw: i64, error_code: i32) -> TerminationStatus {
+    let is = |t: cef::TerminationStatus| raw == i64::from(t.get_raw());
     if is(cef::TerminationStatus::PROCESS_CRASHED) {
         TerminationStatus::Crashed
     } else if is(cef::TerminationStatus::PROCESS_WAS_KILLED) {
@@ -177,7 +178,7 @@ wrap_request_handler! {
         fn on_open_urlfrom_tab(&self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>, target_url: Option<&CefString>,
                                target_disposition: WindowOpenDisposition, user_gesture: i32) -> i32 {
             let Some(browser) = browser else { return 0 };
-            open_url_from_tab(browser.identifier(), &strings::text(target_url), target_disposition.get_raw(), user_gesture != 0) as i32
+            open_url_from_tab(browser.identifier(), &strings::text(target_url), i64::from(target_disposition.get_raw()), user_gesture != 0) as i32
         }
 
         fn resource_request_handler(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut cef::Request>,
@@ -205,7 +206,7 @@ wrap_request_handler! {
         fn on_render_process_terminated(&self, browser: Option<&mut Browser>, status: cef::TerminationStatus, error_code: i32,
                                         _error_string: Option<&CefString>) {
             if let Some(browser) = browser {
-                to_tab(browser.identifier(), TabEvent::RenderProcessGone(termination_of(status.get_raw(), error_code)));
+                to_tab(browser.identifier(), TabEvent::RenderProcessGone(termination_of(i64::from(status.get_raw()), error_code)));
             }
         }
     }
@@ -236,7 +237,7 @@ mod tests {
 
     #[test]
     fn terminations_map() {
-        let raw = |t: cef::TerminationStatus| t.get_raw();
+        let raw = |t: cef::TerminationStatus| i64::from(t.get_raw());
         assert_eq!(termination_of(raw(cef::TerminationStatus::PROCESS_CRASHED), 0), TerminationStatus::Crashed);
         assert_eq!(termination_of(raw(cef::TerminationStatus::PROCESS_WAS_KILLED), 0), TerminationStatus::Killed);
         assert_eq!(termination_of(raw(cef::TerminationStatus::PROCESS_OOM), 0), TerminationStatus::OutOfMemory);

@@ -2,6 +2,7 @@
 //! `LoadHandler` (UI thread): loading state, commits, load ends and failures. `on_load_start` is CEF's
 //! commit signal for a new document: it raises the browser's generation and ends the old document's
 //! prompts (`Navigated`, design section 1.5), then reports `TabEvent::Committed`.
+#![allow(clippy::unnecessary_cast, reason = "CEF's enum integers are i32 on Windows and u32 on Linux")]
 
 use std::sync::Arc;
 

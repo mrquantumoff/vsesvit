@@ -3,6 +3,7 @@
 //! same fix-up for a popup's `WindowInfo` out-parameter, and the conversions between the contract's
 //! `NativeHandle` and CEF's window handle. CEF wants a child's bounds in DIP on Linux (SC section 5.3)
 //! and in physical pixels on Windows.
+#![allow(clippy::unnecessary_cast, reason = "CEF's window handle is a u64 on Linux and a pointer on Windows")]
 
 use cef::{Rect, RuntimeStyle, WindowInfo, sys};
 use vsesvit_engine::{NativeHandle, PhysRect};
