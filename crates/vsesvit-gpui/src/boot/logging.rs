@@ -60,10 +60,12 @@ pub fn open_file(path: &Path, mode: FileMode) {
     let Some(logger) = LOGGER.get() else { return };
     let mut sink = logger.sink.lock().unwrap_or_else(PoisonError::into_inner);
     let Sink::Pending(pending) = std::mem::replace(&mut *sink, Sink::Nowhere) else { return };
-    let opened = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| match mode {
-        FileMode::Truncate => File::create(path),
-        FileMode::Append => OpenOptions::new().create(true).append(true).open(path),
-    });
+    // Always in append mode, so the owner's lines never overwrite those a forwarding launch adds.
+    let opened = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| if mode == FileMode::Truncate { File::create(path).map(drop) } else { Ok(()) })
+        .and_then(|()| OpenOptions::new().create(true).append(true).open(path));
     match opened {
         Ok(mut file) => {
             for line in pending {

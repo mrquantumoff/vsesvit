@@ -137,18 +137,25 @@ mod tests {
         }
     }
 
+    /// A config built by hand: `engine_config` reads the display's scale on Linux, which a unit test
+    /// must not.
     fn config() -> EngineConfig {
-        let root = std::env::temp_dir().join(format!("vsesvit-boot-init-{}", std::process::id()));
-        let args = vsesvit_core::cli::Args { profile_dir: Some(root.clone()), ..Default::default() };
-        let config = match Config::resolve(args) {
-            Ok(vsesvit_core::cli::Start::Browse(config)) => config,
-            other => panic!("{other:?}"),
-        };
-        let mut profile = vsesvit_core::Profile::open(&root, vsesvit_core::OpenOptions::default()).unwrap();
-        let engine = engine_config::engine_config(&config, &mut profile);
-        drop(profile);
-        let _ = std::fs::remove_dir_all(&root);
-        engine
+        EngineConfig {
+            root_cache_path: engine_config::root_cache_path(std::path::Path::new("/p/Default")),
+            log_file: None,
+            verbose_log: false,
+            smooth_scrolling: true,
+            hardware_acceleration: true,
+            user_agent_product: "Vsesvit/0".into(),
+            persist_session_cookies: true,
+            background_color: 0,
+            locale: "en-US".into(),
+            device_scale_factor: None,
+            password_store: None,
+            load_extensions: Vec::new(),
+            scripted: false,
+            extra_switches: Vec::new(),
+        }
     }
 
     #[test]
