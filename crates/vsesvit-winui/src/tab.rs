@@ -13,6 +13,7 @@ use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Cause, Next, Upgrades};
 use vsesvit_core::memory_saver::{self, IdleClock, Sweep, TabActivity};
 use vsesvit_core::permissions::{Origin, Permission};
+use vsesvit_core::privacy::PageProtection;
 use vsesvit_core::private::Browsing;
 use vsesvit_core::session::plan::now_ms;
 use vsesvit_core::trackers::{self, TrackerList, TrackingProtection};
@@ -28,7 +29,7 @@ use crate::store;
 use crate::tab_header::{Audio, TabLook};
 use crate::window::BrowserWindow;
 use crate::media::{self, MediaAction, Playback};
-use crate::trackers::Protection;
+use crate::trackers::TrackerFilters;
 use crate::{capturing, connection, cookies, exec, platform, xaml, zoom};
 
 /// Identifies a tab within this process.
@@ -169,8 +170,10 @@ pub(crate) struct Tab {
     shortcut_worlds: RefCell<HashMap<String, shortcuts::World>>,
     /// The zoom remembered for the page's site, while the page is not at it.
     zoom_memory: RefCell<zoom::Memory>,
-    /// Tracking protection on the page (see `trackers`).
-    trackers: RefCell<Protection>,
+    /// Tracking protection on the page.
+    protection: RefCell<PageProtection>,
+    /// The requests the engine view raises for the tracker list (see `trackers`).
+    tracker_filters: RefCell<TrackerFilters>,
     /// HTTPS-only's upgrades and warning page in the tab.
     https: RefCell<Upgrades>,
     /// Cookie controls in the tab's DevTools sessions (see `cookies`).
@@ -216,7 +219,8 @@ impl Tab {
             capture_polled: Cell::new(false),
             shortcut_worlds: RefCell::default(),
             zoom_memory: RefCell::default(),
-            trackers: RefCell::default(),
+            protection: RefCell::default(),
+            tracker_filters: RefCell::default(),
             https: RefCell::default(),
             cookies: cookies::Sessions::default(),
             stopped: Cell::new(None),
@@ -918,14 +922,14 @@ impl Tab {
     /// Makes the engine view raise the requests `list` may block (see `trackers`).
     pub fn filter_trackers(&self, list: &TrackerList) {
         let Some(core) = self.core.get() else { return };
-        if let Err(e) = self.trackers.borrow_mut().add_filters(core, list) {
+        if let Err(e) = self.tracker_filters.borrow_mut().add_filters(core, list) {
             log::warn!("tab {}: tracker request filters: {e}", self.id);
         }
     }
 
     /// The tracker domains tracking protection blocked on the page.
     pub fn blocked_trackers(&self) -> Vec<String> {
-        self.trackers.borrow().blocked().iter().cloned().collect()
+        self.protection.borrow().blocked().iter().cloned().collect()
     }
 
     /// Turns tracking protection on or off for the page's site, and loads the page again under
@@ -960,8 +964,8 @@ impl Tab {
         let Ok(uri) = args.Request().and_then(|r| r.Uri()) else {
             return;
         };
-        let before = self.trackers.borrow().blocked().len();
-        if !self.trackers.borrow_mut().blocks(&browser.trackers(), &uri) {
+        let before = self.protection.borrow().blocked().len();
+        if !self.protection.borrow_mut().blocks(&browser.trackers(), &uri) {
             return;
         }
         log::debug!("tab {}: blocked tracker {}", self.id, self.browsing.loggable(&uri));
@@ -973,7 +977,7 @@ impl Tab {
         if let Err(e) = answered {
             log::warn!("tab {}: blocking {}: {e}", self.id, self.browsing.loggable(&uri));
         }
-        if self.trackers.borrow().blocked().len() > before {
+        if self.protection.borrow().blocked().len() > before {
             self.notify();
         }
     }
@@ -1178,13 +1182,16 @@ impl Tab {
                     return;
                 }
                 let origin = Origin::parse(&uri);
-                let level = tab.browser().map_or(TrackingProtection::Off, |b| {
-                    b.core(|p| trackers::level_for(p, origin.as_ref()))
+                let privacy = tab.browser().map(|b| b.privacy());
+                let level = privacy.as_ref().map_or(TrackingProtection::Off, |p| {
+                    p.tracker_level(origin.as_ref())
                 });
-                tab.trackers.borrow_mut().navigation_starting(&uri, level);
-                if let (Some(core), Some(browser)) = (tab.core.get(), tab.browser()) {
+                tab.protection
+                    .borrow_mut()
+                    .navigation_starting(&uri, level);
+                if let (Some(core), Some(privacy)) = (tab.core.get(), &privacy) {
                     let blocked =
-                        cookies::third_party_blocked(&browser, tab.browsing, origin.as_ref());
+                        privacy.third_party_cookies_blocked(tab.browsing, origin.as_ref());
                     tab.cookies.navigation_starting(core, blocked);
                 }
                 *tab.requested.borrow_mut() = uri;
@@ -1200,7 +1207,7 @@ impl Tab {
             tab.https.borrow_mut().committed();
             tab.state.borrow_mut().load = Load::Committed;
             tab.security.borrow_mut().new_document();
-            tab.trackers.borrow_mut().new_document();
+            tab.protection.borrow_mut().new_document();
             tab.committed(CommitKind::NewDocument);
         }))?
         .forget();
@@ -1247,7 +1254,7 @@ impl Tab {
                     tab.show_https_warning(&url);
                 }
                 if let Some(browser) = tab.browser() {
-                    let rules = browser.core(vsesvit_core::cookies::site_rules);
+                    let rules = browser.privacy().cookie_rules().clone();
                     cookies::delete_blocked(&browser, rules);
                 }
             },

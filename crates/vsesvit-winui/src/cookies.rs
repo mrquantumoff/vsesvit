@@ -26,7 +26,6 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use vsesvit_core::cookies::{self, SiteRules};
-use vsesvit_core::permissions::Origin;
 use vsesvit_core::private::Browsing;
 use windows_core::{HSTRING, Result};
 use windows_future::IAsyncOperation;
@@ -213,34 +212,25 @@ fn remove_script(
     )
 }
 
-/// Whether third-party cookies are blocked on a page of `top` in a `browsing` window.
-pub(crate) fn third_party_blocked(
-    browser: &Browser,
-    browsing: Browsing,
-    top: Option<&Origin>,
-) -> bool {
-    browser.core(|p| cookies::third_party_blocked(p, browsing, top))
-}
-
 /// The script the documents of every session run (`cookies::block_script`), if any site is set
 /// to Block.
 pub(crate) fn block_script(browser: &Browser) -> Option<String> {
-    browser.core(|p| cookies::block_script(cookies::site_rules(p).blocked_hosts()))
+    cookies::block_script(browser.privacy().cookie_rules().blocked_hosts())
 }
 
 /// Applies the stored choice and rules again in every tab, from each page's next load, and
 /// deletes the cookies of the sites set to Block: after a change here, in Settings or from a
 /// sync.
 pub(crate) fn changed(browser: &Browser) {
-    let rules = browser.core(cookies::site_rules);
-    let script = cookies::block_script(rules.blocked_hosts());
+    let privacy = browser.privacy();
+    let script = cookies::block_script(privacy.cookie_rules().blocked_hosts());
     for tab in browser.windows().iter().flat_map(|w| w.tabs_in_order()) {
         tab.apply_cookies(
-            third_party_blocked(browser, tab.browsing(), tab.origin().as_ref()),
+            privacy.third_party_cookies_blocked(tab.browsing(), tab.origin().as_ref()),
             script.as_deref(),
         );
     }
-    delete_blocked(browser, rules);
+    delete_blocked(browser, privacy.cookie_rules().clone());
 }
 
 /// Deletes the cookies of the sites `rules` sets to Block, if any.

@@ -14,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::hash::{BuildHasher, RandomState};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
@@ -23,11 +24,12 @@ use vsesvit_core::extensions::commands::extension_commands;
 use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
-use vsesvit_core::https_only::{self, Reach};
+use vsesvit_core::https_only::Reach;
 use vsesvit_core::memory_saver::{SWEEP_EVERY, Sweep};
 use vsesvit_core::omnibox_edit;
 use vsesvit_core::permissions::SiteSetting;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, homepage_url, keys};
+use vsesvit_core::privacy::Snapshot;
 use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles::{Home, ProfileColor, ProfileId, Registry, Startup};
 use vsesvit_core::search::{SelectionAction, Suggestions};
@@ -131,7 +133,7 @@ pub(crate) struct Browser {
     engine: Engine,
     page_script: Rc<shortcuts::PageScript>,
     /// The tracker list tracking protection blocks from (see `trackers`).
-    trackers: RefCell<Rc<TrackerList>>,
+    trackers: RefCell<Arc<TrackerList>>,
     /// Which http URLs HTTPS-only upgrades (the self-tests add their local server).
     https_reach: Cell<Reach>,
     windows: RefCell<Vec<Rc<BrowserWindow>>>,
@@ -241,7 +243,7 @@ async fn start(launch: Launch) -> windows_core::Result<()> {
         profile: RefCell::new(profile),
         engine,
         page_script,
-        trackers: RefCell::new(Rc::new(TrackerList::bundled().clone())),
+        trackers: RefCell::new(Arc::new(TrackerList::bundled().clone())),
         https_reach: Cell::new(Reach::Public),
         windows: RefCell::new(Vec::new()),
         dialog_windows: RefCell::new(Vec::new()),
@@ -403,14 +405,21 @@ impl Browser {
         self.page_script.clone()
     }
 
-    pub fn trackers(&self) -> Rc<TrackerList> {
+    pub fn trackers(&self) -> Arc<TrackerList> {
         self.trackers.borrow().clone()
+    }
+
+    /// The privacy settings as they stand now, for the questions a navigation asks (see
+    /// `vsesvit_core::privacy`).
+    pub fn privacy(&self) -> Snapshot {
+        let list = self.trackers();
+        self.core(|p| Snapshot::capture(p, list))
     }
 
     /// Blocks from `list` instead, in the tabs already open too (the self-tests add a tracker).
     #[cfg(feature = "self-test")]
     pub fn set_trackers(&self, list: TrackerList) {
-        let list = Rc::new(list);
+        let list = Arc::new(list);
         for tab in self.windows().iter().flat_map(|w| w.tabs_in_order()) {
             tab.filter_trackers(&list);
         }
@@ -420,8 +429,8 @@ impl Browser {
     /// The https URL a navigation to `url` in a tab of `browsing`'s kind loads instead, under
     /// HTTPS-only.
     pub fn https_upgrade(&self, browsing: Browsing, url: &Url) -> Option<Url> {
-        let reach = self.https_reach.get();
-        self.core(|p| https_only::upgrade(p, browsing, url, reach))
+        self.privacy()
+            .https_upgrade(browsing, url, self.https_reach.get())
     }
 
     #[cfg(feature = "self-test")]

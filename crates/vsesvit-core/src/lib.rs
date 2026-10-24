@@ -31,7 +31,7 @@
 //! | [`memory_saver`] | Memory Saver: which background tabs sleep, and when                  |
 //! | [`new_tab`]      | the new tab page: search box + most visited sites, as HTML            |
 //! | [`onboarding`]   | the first-run welcome: when to show it, recommended extensions        |
-//! | [`permissions`]  | site permissions: stored choices, one-time grants, the prompt         |
+//! | [`permissions`]  | site permissions: stored choices, one-time grants, the prompt, its queue |
 //! | [`private`]      | private windows: what a private session keeps in memory, never stored |
 //! | [`profiles`]     | the profile list: names, avatar colours, last used, startup picker    |
 //! | [`zoom`]         | page zoom per site (LOCAL)                                            |
@@ -52,7 +52,7 @@
 //! | [`closed_tabs`]  | the closed-tab stacks, normal and private                             |
 //! | [`omnibox_edit`] | the address field's edit model, the engine schemes                    |
 //! | [`os`]           | download origin marks, the Downloads folder, default browser (C.3)    |
-//! | [`privacy`]      | the privacy snapshot IO threads and hooks read (moving in, C.2)       |
+//! | [`privacy`]      | the privacy snapshot IO threads and hooks read, a page's blocked trackers |
 //! | `db`             | schema, migrations, `Tx` (stamp + seq + clock persistence)            |
 
 use std::marker::PhantomData;
