@@ -17,6 +17,8 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use vsesvit_core::bookmarks::{BookmarkId, BookmarkNode, InsertAt};
+use vsesvit_core::cli::{self, Config, Mode, Shell};
+use vsesvit_core::closed_tabs::{self, ClosedTabs};
 use vsesvit_core::extensions::commands::extension_commands;
 use vsesvit_core::extensions::toolbar::{self, Layout};
 use vsesvit_core::favicons::FaviconFetch;
@@ -36,7 +38,6 @@ use vsesvit_core::sync::Changed;
 use vsesvit_core::tab_groups::GroupId;
 use vsesvit_core::tab_search::{self, Hit, Listed, Row};
 use vsesvit_core::trackers::TrackerList;
-use vsesvit_core::cli::{self, Config, Mode, Shell};
 use vsesvit_core::{Profile, Url, onboarding};
 use windows_core::Interface;
 
@@ -56,8 +57,6 @@ use crate::updates::{self, Action, Trigger, Updates};
 use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
 use crate::{app, cookies, exec, instance, omnibox, platform, profiles, shortcuts, sync};
 
-/// Recently closed tabs kept for Ctrl+Shift+T.
-const CLOSED_TABS_KEPT: usize = 25;
 /// Tab changes are saved to the session this long after the last one.
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 const SUGGESTIONS: usize = 8;
@@ -112,40 +111,7 @@ enum Preload {
     Requested,
 }
 
-/// Recently closed tabs, a stack per kind of window: neither kind sees the other's.
-#[derive(Default)]
-struct ClosedTabs {
-    normal: Vec<ClosedTab>,
-    private: Vec<ClosedTab>,
-}
-
-impl ClosedTabs {
-    fn of(&self, browsing: Browsing) -> &[ClosedTab] {
-        match browsing {
-            Browsing::Normal => &self.normal,
-            Browsing::Private => &self.private,
-        }
-    }
-
-    fn of_mut(&mut self, browsing: Browsing) -> &mut Vec<ClosedTab> {
-        match browsing {
-            Browsing::Normal => &mut self.normal,
-            Browsing::Private => &mut self.private,
-        }
-    }
-}
-
-pub(crate) struct ClosedTab {
-    pub url: String,
-    pub title: String,
-    /// The tab's icon when it closed, for tab search.
-    pub favicon: Option<ImageSource>,
-    /// When it closed, on the use clock. No two closed tabs share it, so tab search names the
-    /// tab by it: unlike its place among them, it stays put while other tabs close.
-    pub closed: u64,
-    /// The group it was in, which it goes back into if its window still has it.
-    pub group: Option<GroupId>,
-}
+pub(crate) type ClosedTab = closed_tabs::ClosedTab<ImageSource>;
 
 /// The tab a tab search row stands for: an open tab, or a closed one by when it closed.
 pub(crate) type TabHit = Hit<TabId, u64>;
@@ -170,7 +136,7 @@ pub(crate) struct Browser {
     windows: RefCell<Vec<Rc<BrowserWindow>>>,
     /// Bookmarks, History, Downloads and Settings, each in a window of its own while open.
     dialog_windows: RefCell<Vec<Rc<DialogWindow>>>,
-    closed_tabs: RefCell<ClosedTabs>,
+    closed_tabs: RefCell<ClosedTabs<ImageSource>>,
     next_tab_id: Cell<u64>,
     /// Orders tab search (see `Browser::tick`).
     use_clock: Cell<u64>,
@@ -868,24 +834,19 @@ impl Browser {
             closed: self.tick(),
             group,
         };
-        let mut closed_tabs = self.closed_tabs.borrow_mut();
-        let closed = closed_tabs.of_mut(tab.browsing());
-        closed.push(closed_tab);
-        let excess = closed.len().saturating_sub(CLOSED_TABS_KEPT);
-        closed.drain(..excess);
+        self.closed_tabs
+            .borrow_mut()
+            .push(tab.browsing(), closed_tab);
     }
 
     pub fn take_closed(&self, browsing: Browsing) -> Option<ClosedTab> {
-        self.closed_tabs.borrow_mut().of_mut(browsing).pop()
+        self.closed_tabs.borrow_mut().pop(browsing)
     }
 
     /// The closed tab of `browsing`'s kind that closed at `closed`, taken from wherever it is
     /// among them.
     pub fn take_closed_at(&self, browsing: Browsing, closed: u64) -> Option<ClosedTab> {
-        let mut closed_tabs = self.closed_tabs.borrow_mut();
-        let tabs = closed_tabs.of_mut(browsing);
-        let at = tabs.iter().position(|t| t.closed == closed)?;
-        Some(tabs.remove(at))
+        self.closed_tabs.borrow_mut().take(browsing, closed)
     }
 
     /// Tab search's rows for `query` in a window of `browsing`'s kind: the open tabs of every
@@ -949,7 +910,7 @@ impl Browser {
     fn end_private_session(&self) {
         log::info!("the last private window closed: ending the private session");
         self.end_private_downloads();
-        self.closed_tabs.borrow_mut().private.clear();
+        self.closed_tabs.borrow_mut().end_private_session();
         self.core(Profile::end_private_session);
         self.engine.private_session_ended();
     }
