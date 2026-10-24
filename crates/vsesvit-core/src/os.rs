@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 /// - **Linux.** The extended attributes `user.xdg.origin.url` and `user.xdg.referrer.url`, as
 ///   Chrome writes them. A source that is not a web address leaves its attribute unwritten.
 ///
-/// The URLs lose their credentials. The shell calls this for downloads of normal browsing only,
-/// never private ones, since the mark tells where the user was.
+/// The URLs lose their credentials. On Linux the shell calls this for downloads of normal
+/// browsing only, never private ones, since the attributes record where the user browsed. The
+/// Windows mark is a safety check, as in Chrome's incognito windows, and goes on every download.
 pub fn mark_origin(file: &Path, url: &str, referrer: Option<&str>) -> io::Result<()> {
     sys::mark_origin(file, url, referrer)
 }
