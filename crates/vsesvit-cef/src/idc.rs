@@ -8,30 +8,33 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// The command's name, from CEF's own table (`cef_id_for_command_id_name`).
-pub fn name_of(id: i32) -> Option<&'static str> {
-    static MAP: OnceLock<HashMap<i32, &'static str>> = OnceLock::new();
-    MAP.get_or_init(|| {
+/// CEF's name table, read once. `cef_id_for_command_id_name` builds its own lookup lazily and is
+/// likely not safe to call from several threads at once (the parallel unit tests saw -1 for a known name in CI), so
+/// every lookup goes through this one initialisation.
+fn table() -> &'static HashMap<&'static str, i32> {
+    static TABLE: OnceLock<HashMap<&'static str, i32>> = OnceLock::new();
+    TABLE.get_or_init(|| {
         IDC_NAMES
             .iter()
             .filter_map(|name| {
                 // SAFETY: a NUL-terminated name from cef::resources.
                 let id = unsafe { cef::sys::cef_id_for_command_id_name(name.as_ptr()) };
-                Some((id, name.to_str().ok()?))
+                Some((name.to_str().ok()?, id))
             })
-            .filter(|(id, _)| *id >= 0)
+            .filter(|(_, id)| *id >= 0)
             .collect()
     })
-    .get(&id)
-    .copied()
+}
+
+/// The command's name, from CEF's own table (`cef_id_for_command_id_name`).
+pub fn name_of(id: i32) -> Option<&'static str> {
+    static BY_ID: OnceLock<HashMap<i32, &'static str>> = OnceLock::new();
+    BY_ID.get_or_init(|| table().iter().map(|(name, id)| (*id, *name)).collect()).get(&id).copied()
 }
 
 /// The command id for a name, or `None` if CEF does not know it.
 pub fn id_of(name: &str) -> Option<i32> {
-    let name = IDC_NAMES.iter().find(|n| n.to_str() == Ok(name))?;
-    // SAFETY: a NUL-terminated name from cef::resources.
-    let id = unsafe { cef::sys::cef_id_for_command_id_name(name.as_ptr()) };
-    (id >= 0).then_some(id)
+    table().get(name).copied()
 }
 
 /// Whether a command Chromium dispatched on its own may run: page editing and the page's own context
