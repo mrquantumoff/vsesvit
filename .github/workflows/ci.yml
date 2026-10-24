@@ -1,0 +1,104 @@
+# Builds and tests every push and pull request (docs/design/linux-cef/design.md section 6.3).
+# A step appears only once the unit that makes it pass has landed; no step runs a command that still
+# answers "not available yet". Owners of this file, in order: W0.1, W0.5, W1.8, W6.6, W7.1.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # GTK 4.22, libadwaita 1.9 and WebKitGTK 2.52 need Ubuntu 26.04, as in release.yml.
+    container: ubuntu:26.04
+    env:
+      CEF_PATH: ${{ github.workspace }}/.cef
+    steps:
+      - name: Build dependencies
+        run: |
+          apt-get update
+          # The GTK shell's build set (kept while vsesvit-gtk and vsesvit-webext are members), GPUI's
+          # X11 build set, and the libraries libcef loads.
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl ca-certificates git \
+            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libglib2.0-bin libglib2.0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libfontconfig-dev \
+            libnss3 libatk-bridge2.0-0t64 libcups2t64 libgbm1 libasound2t64 libgtk-3-0t64 mesa-vulkan-drivers
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # cef-dll-sys downloads CEF into CEF_PATH when it is missing.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: .cef
+          key: cef-154.0.34-linux
+      - run: cargo xtask vendor-gpui --check
+      - run: cargo xtask check-deps
+      # The input ban of clippy.toml fails the build; other lints stay warnings.
+      - run: cargo clippy --workspace --all-features -- -D clippy::disallowed_methods
+      - run: cargo test --workspace
+
+  windows-winui:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      CEF_PATH: ${{ github.workspace }}\.cef
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The CEF crates are workspace members, so they build here too: cef-dll-sys builds its
+      # libcef_dll_wrapper with CMake and Ninja.
+      - name: Ninja
+        shell: pwsh
+        run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja --no-progress -y }
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: .cef
+          key: cef-154.0.34-windows
+      - run: cargo test --workspace
+
+  windows-gpui:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      CEF_PATH: ${{ github.workspace }}\.cef
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: gpui
+      - name: Ninja
+        shell: pwsh
+        run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja --no-progress -y }
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: .cef
+          key: cef-154.0.34-windows
+      - run: cargo build -p vsesvit --no-default-features --features gpui
+      - run: cargo test -p vsesvit-engine -p vsesvit-cef -p vsesvit-gpui
