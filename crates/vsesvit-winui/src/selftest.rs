@@ -36,6 +36,7 @@ use vsesvit_core::permissions::{Origin, Permission};
 use vsesvit_core::prefs::{TabsPosition, keys};
 use vsesvit_core::private::Browsing;
 use vsesvit_core::search::NavTarget;
+use vsesvit_core::testkit::checks::{Flavour, expected};
 use vsesvit_core::testkit::report::{Check, Report};
 use vsesvit_core::testkit::{self, FixtureServer};
 use vsesvit_core::trackers::{self, Category, TrackerList};
@@ -48,7 +49,6 @@ use crate::browser::{Browser, PASSWORDS_PURGED};
 use crate::dialogs::{self, Dialog};
 use crate::layout;
 use crate::popup::Activation;
-use crate::report::expected;
 use crate::shortcuts::Command;
 use crate::tab::{Tab, TabId};
 use crate::window::BrowserWindow;
@@ -120,7 +120,7 @@ pub(crate) fn absent(removed: std::io::Result<()>) -> std::io::Result<()> {
 
 /// The profile did not open, so nothing else can run.
 pub(crate) fn report_failed_start(out_dir: &Path, network: bool, ms: u128, error: &str) {
-    let mut report = Report::new("windows", expected(network));
+    let mut report = Report::new("windows", expected(Flavour::Winui, network));
     report.push(Check {
         name: "profile_open",
         ok: false,
@@ -134,7 +134,7 @@ pub(crate) fn report_failed_start(out_dir: &Path, network: bool, ms: u128, error
 }
 
 pub(crate) async fn run(browser: Rc<Browser>, out_dir: PathBuf, network: bool) {
-    let mut report = Report::new("windows", expected(network));
+    let mut report = Report::new("windows", expected(Flavour::Winui, network));
     if let Err(e) = checks(&browser, &out_dir, network, &mut report).await {
         log::error!("self-test stopped: {e}");
         report.complete(&e);
@@ -1258,8 +1258,28 @@ fn visits(title: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImportItem, Url, absent, clear, has_link, visits};
+    use super::{Flavour, ImportItem, Url, absent, clear, expected, has_link, visits};
     use std::io::{Error, ErrorKind};
+
+    /// The names this file's checks report, in source order.
+    fn checks_in(source: &str) -> Vec<&str> {
+        source
+            .split("check(")
+            .zip(source.split("check(").skip(1))
+            .filter(|(before, _)| !before.ends_with(|c: char| c.is_alphanumeric() || c == '_'))
+            .filter_map(|(_, call)| {
+                let call = call.trim_start().strip_prefix("report,")?.trim_start();
+                call.strip_prefix('"')?.split('"').next()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn checks_are_the_ones_the_run_makes_in_its_order() {
+        let mut run = vec!["profile_open"];
+        run.extend(checks_in(include_str!("selftest.rs")));
+        assert_eq!(run, expected(Flavour::Winui, true));
+    }
 
     #[test]
     fn a_link_is_found_inside_folders() {

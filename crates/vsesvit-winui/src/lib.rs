@@ -79,8 +79,6 @@ mod player;
 mod profiles;
 mod popup;
 #[cfg(feature = "self-test")]
-mod report;
-#[cfg(feature = "self-test")]
 mod selftest;
 mod shortcuts;
 mod store;

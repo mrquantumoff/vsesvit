@@ -12,17 +12,16 @@ use serde_json::Value;
 use crate::testenv::{self, Run};
 use crate::{Result, Status, workspace_root};
 
+/// The check registry the shells report against, compiled in from vsesvit-core rather than
+/// linking all of it.
+#[path = "../../crates/vsesvit-core/src/testkit/checks.rs"]
+mod checks;
+
+use checks::Flavour;
+
 const USAGE: &str = "usage: cargo xtask selftest [--flavour gpui|winui] [--network]";
 /// The longest WinUI check budget is a few minutes; `--network` downloads a real extension.
 const TIMEOUT: Duration = Duration::from_secs(30 * 60);
-/// WinUI's check list, until C.0 moves it into core (design section 7.3).
-const WINUI_REPORT_RS: &str = include_str!("../../crates/vsesvit-winui/src/report.rs");
-
-#[derive(Debug, PartialEq, Eq)]
-enum Flavour {
-    Gpui,
-    Winui,
-}
 
 #[derive(Debug, PartialEq, Eq)]
 struct Options {
@@ -61,7 +60,7 @@ pub fn run(args: &[String]) -> Result<Status> {
 }
 
 fn winui(network: bool) -> Result<Status> {
-    let expected = winui_checks(WINUI_REPORT_RS, network)?;
+    let expected = checks::expected(Flavour::Winui, network);
     let program = testenv::cargo_build(&["-p", "vsesvit"], "vsesvit")?;
     let out_dir = crate::probe::fresh(workspace_root().join("target").join("selftest").join("winui"))?;
     let mut args: Vec<OsString> = vec!["--self-test".into(), out_dir.clone().into_os_string()];
@@ -76,23 +75,6 @@ fn winui(network: bool) -> Result<Status> {
     let passed = validate(report.as_deref(), &expected, code)?;
     eprintln!("selftest: all {passed} WinUI checks passed; report in {}", out_dir.join("report.json").display());
     Ok(Status::Done)
-}
-
-/// WinUI's `CHECKS` array and, with `--network`, its `NETWORK_CHECK`, read from its source.
-fn winui_checks(source: &'static str, network: bool) -> Result<Vec<&'static str>> {
-    let unreadable = || "crates/vsesvit-winui/src/report.rs: no `CHECKS: [&str; N] = [...]`".to_owned();
-    let (_, rest) = source.split_once("const CHECKS: [&str; ").ok_or_else(unreadable)?;
-    let (len, rest) = rest.split_once("] = [").ok_or_else(unreadable)?;
-    let (body, rest) = rest.split_once("];").ok_or_else(unreadable)?;
-    let mut checks: Vec<&str> = body.split('"').skip(1).step_by(2).collect();
-    if len.trim().parse() != Ok(checks.len()) {
-        return Err(format!("report.rs declares {len} checks and lists {}", checks.len()));
-    }
-    if network {
-        let (_, rest) = rest.split_once("const NETWORK_CHECK: &str = \"").ok_or_else(unreadable)?;
-        checks.push(rest.split('"').next().ok_or_else(unreadable)?);
-    }
-    Ok(checks)
 }
 
 /// Passes only a report that lists every expected check, each passed, from a run that exited 0.
@@ -152,21 +134,6 @@ mod tests {
         for bad in [&["--flavour"][..], &["--flavour", "gtk"], &["--network", "--network"], &["--fast"]] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
-    }
-
-    #[test]
-    fn winuis_list_has_47_checks_and_one_more_with_network() {
-        let checks = winui_checks(WINUI_REPORT_RS, false).unwrap();
-        assert_eq!(checks.len(), 47);
-        assert_eq!(checks[0], "profile_open");
-        assert_eq!(checks.last(), Some(&"screenshot"));
-        assert_eq!(winui_checks(WINUI_REPORT_RS, true).unwrap().last(), Some(&"cws_install"));
-    }
-
-    #[test]
-    fn a_list_whose_length_disagrees_is_refused() {
-        assert!(winui_checks(r#"const CHECKS: [&str; 2] = ["a"];"#, false).unwrap_err().contains("declares 2"));
-        assert!(winui_checks("no list here", false).is_err());
     }
 
     #[test]
