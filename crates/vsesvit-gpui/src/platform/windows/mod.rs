@@ -10,7 +10,6 @@ pub mod desktop;
 pub mod focus;
 pub mod frame;
 pub mod instance;
-mod seam;
 pub mod surface;
 
 use std::cell::RefCell;
@@ -23,7 +22,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 pub use desktop::WinDesktop;
-pub use seam::{
+pub use super::{
     AuxHost, Desktop, FocusOutcome, FocusTarget, Hole, NativeHandle, NativeSurface, PhysPoint, PhysRect,
     PlatformError,
 };
