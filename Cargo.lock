@@ -8768,6 +8768,7 @@ dependencies = [
  "sha2 0.11.0",
  "vsesvit-core",
  "vsesvit-sync",
+ "vsesvit-testenv",
  "vsesvit-update",
  "windows-collections 0.100.0",
  "windows-core 0.100.0",

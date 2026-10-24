@@ -76,8 +76,15 @@ const FAVICON_SWAPS: &str = "(() => { let n = 0; const swap = () => { const c = 
 /// uBlock Origin Lite.
 const CWS_ID: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
 
-/// Starts from a fresh profile: removes what an earlier run left in `out_dir`.
+/// Refuses, with exit 3, to run outside the launcher's test environment (`cargo xtask selftest
+/// --flavour winui`, docs/design/linux-cef/design.md section 7.3), then starts from a fresh profile.
 pub(crate) fn prepare(out_dir: &Path) -> std::io::Result<()> {
+    vsesvit_testenv::require();
+    clear(out_dir)
+}
+
+/// Removes what an earlier run left in `out_dir`.
+fn clear(out_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out_dir)?;
     for dir in ["profile", "downloads"] {
         absent(std::fs::remove_dir_all(out_dir.join(dir)))?;
@@ -1247,7 +1254,7 @@ fn visits(title: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImportItem, Url, absent, has_link, prepare, visits};
+    use super::{ImportItem, Url, absent, clear, has_link, visits};
     use std::io::{Error, ErrorKind};
 
     #[test]
@@ -1281,11 +1288,11 @@ mod tests {
     }
 
     #[test]
-    fn prepare_removes_what_an_earlier_run_left() {
+    fn clear_removes_what_an_earlier_run_left() {
         let dir =
             std::env::temp_dir().join(format!("vsesvit-winui-test-prepare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        prepare(&dir).unwrap();
+        clear(&dir).unwrap();
         std::fs::create_dir_all(dir.join("profile/x")).unwrap();
         std::fs::create_dir_all(dir.join("downloads")).unwrap();
         let files = [
@@ -1304,7 +1311,7 @@ mod tests {
         for file in files {
             std::fs::write(dir.join(file), "old").unwrap();
         }
-        prepare(&dir).unwrap();
+        clear(&dir).unwrap();
         let left: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name())

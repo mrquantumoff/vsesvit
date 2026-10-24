@@ -11,9 +11,11 @@ default = ["self-test"]
 # `--self-test` and `--ui-smoke`: the fixture server, the signed probe CRX and the test-only key
 # from vsesvit-core's testkit. On by default because the acceptance run uses release builds too;
 # a distribution build drops it with `default-features = false`.
-self-test = ["vsesvit-core/testkit"]
+self-test = ["vsesvit-core/testkit", "dep:vsesvit-testenv"]
 
 [target.'cfg(windows)'.dependencies]
+# The test-environment guard both test entries call first (docs/design/linux-cef/design.md section 7.3).
+vsesvit-testenv = { workspace = true, optional = true }
 vsesvit-core = { workspace = true }
 vsesvit-sync = { workspace = true }
 vsesvit-update = { workspace = true }

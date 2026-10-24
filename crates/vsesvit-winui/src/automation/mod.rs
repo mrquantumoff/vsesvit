@@ -417,9 +417,16 @@ async fn zoom_steps(
     Ok(())
 }
 
+/// Refuses, with exit 3, to run outside the launcher's test environment
+/// (docs/design/linux-cef/design.md section 7.3), then clears what an earlier run left.
+pub(crate) fn prepare(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()> {
+    vsesvit_testenv::require();
+    clear(out_dir, profile_dir)
+}
+
 /// Removes an earlier run's `smoke.json`, so a run that never writes one cannot pass for it,
 /// and starts from a fresh profile when the run uses the one inside `out_dir`.
-pub(crate) fn prepare(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()> {
+fn clear(out_dir: &Path, profile_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(out_dir)?;
     selftest::absent(std::fs::remove_file(out_dir.join("smoke.json")))?;
     if profile_dir == out_dir.join("profile") {
@@ -1285,17 +1292,17 @@ fn save(out_dir: &Path, name: &str, png: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::prepare;
+    use super::clear;
 
     #[test]
-    fn prepare_removes_an_earlier_report() {
+    fn clear_removes_an_earlier_report() {
         let dir =
             std::env::temp_dir().join(format!("vsesvit-winui-test-smoke-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        prepare(&dir, &dir.join("profile")).unwrap();
+        clear(&dir, &dir.join("profile")).unwrap();
         std::fs::write(dir.join("smoke.json"), r#"{"ok":true}"#).unwrap();
         std::fs::create_dir_all(dir.join("profile")).unwrap();
-        prepare(&dir, &dir.join("profile")).unwrap();
+        clear(&dir, &dir.join("profile")).unwrap();
         assert!(!dir.join("smoke.json").exists());
         assert!(!dir.join("profile").exists());
         std::fs::remove_dir_all(&dir).unwrap();
