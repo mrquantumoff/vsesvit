@@ -5,7 +5,8 @@ Checks:
   2. two units whose file lists overlap are ordered (one depends on the other, directly, through the
      chain, or through the wave barrier); a file may pass only along that order;
   3. every owned entry of the design's 1.2 and 1.3 trees is covered by its owner unit's file list;
-  4. every UA 5.1 path is covered by some unit, unless the design's 1.3 change table removes it.
+  4. every UA 5.1 path is covered by some unit, unless the design's 1.3 change table removes it;
+  5. every file under crates/vsesvit-gpui/src/self_test/checks/ has exactly one owner (W0.1 aside), the one its header names.
 Usage: python -I check_ownership.py <repo root>
 """
 import itertools
@@ -136,32 +137,66 @@ def parse_files(cell, tree12):
     return includes, excludes
 
 
+def strip_parens(text):
+    """text without balanced parenthesised groups (a child's description in a directory entry)."""
+    out, depth = [], 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(depth - 1, 0)
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
+MAX_ENTRY_INDENT = 8  # the trees nest at most three levels of two spaces; deeper lines wrap a description
+
+
 def parse_tree(block, root):
-    """Entries (path, owner) of an indented tree with owners at line ends."""
-    entries, stack, current = [], [(-1, root)], None
+    """Entries (path, owner) of an indented tree with owners at line ends.
+
+    An entry is a line plus its wrapped continuation lines: the lines indented to or past the column where the
+    entry's description starts (or past MAX_ENTRY_INDENT, for an entry whose name overruns that column). The owner is the unit at the end of the last of them. A directory entry whose
+    description starts with a file list (`x11/   mod.rs (...), surface.rs (...)`) owns the directory and each
+    listed file. A line that is neither an entry nor a continuation is an error, never silently dropped."""
+    groups = []  # [indent, desc_col, [lines]]
     for raw in block:
         line = raw.rstrip()
         if not line.strip():
             continue
         indent = len(line) - len(line.lstrip())
-        owner = re.search(r"\s(" + UNIT + r")\s*$", line)
-        tok = line.split()[0]
-        if indent < 20 and ("." in tok or tok.endswith("/") or "{" in tok):
-            while stack and stack[-1][0] >= indent:
-                stack.pop()
-            base = stack[-1][1] if stack else root
-            if tok.startswith("crates/"):
-                base = ""
-            if tok.endswith("/") and not owner and len(line.split()) == 1:
-                stack.append((indent, base + tok))
-                current = None
-            else:
-                current = [base + t for t in expand(tok)]
-                if tok.endswith("/"):
-                    stack.append((indent, base + tok))
-        if owner and current:
-            entries += [(p, owner.group(1)) for p in current]
-            current = None
+        if groups and groups[-1][1] is not None and indent >= min(groups[-1][1], MAX_ENTRY_INDENT):
+            groups[-1][2].append(line)
+            continue
+        parts = line.strip().split(None, 1)
+        desc_col = line.index(parts[1], indent + len(parts[0])) if len(parts) > 1 else None
+        groups.append([indent, desc_col, [line]])
+
+    entries, stack = [], [(-1, root)]
+    for indent, _, lines in groups:
+        first = lines[0].strip()
+        tok = first.split()[0]
+        if not ("." in tok or tok.endswith("/") or "{" in tok):
+            raise ValueError(f"tree line is neither an entry nor a continuation: {lines[0].strip()!r}")
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        base = stack[-1][1] if stack else root
+        if tok.startswith("crates/"):
+            base = ""
+        owner = re.search(r"\s(" + UNIT + r")\s*$", lines[-1])
+        if tok.endswith("/"):
+            stack.append((indent, base + tok))
+        if not owner:
+            if tok.endswith("/") and len(lines) == 1 and len(first.split()) == 1:
+                continue  # a bare directory line: only the nesting level
+            raise ValueError(f"tree entry without an owner: {first!r}")
+        paths = [base + t for t in expand(tok)]
+        desc = " ".join(l.strip() for l in lines)[len(tok):]
+        desc = re.sub(r"\s" + UNIT + r"\s*$", "", strip_parens(desc)).strip()
+        if tok.endswith("/") and re.match(r"[a-z_0-9]+\.rs", desc):
+            paths += [base + tok + n for n in re.findall(r"([a-z_0-9]+\.rs)", desc)]
+        entries += [(p, owner.group(1)) for p in paths]
     return entries
 
 
@@ -289,13 +324,13 @@ def main(repo):
     joined, buf = [], ""
     for line in ua_block:
         buf = buf + " " + line.strip() if buf else line
-        if buf.count("{") == buf.count("}"):
+        if buf.count("{") == buf.count("}") and not buf.rstrip().endswith(","):
             joined.append(buf)
             buf = ""
     ua_paths, cwd = [], ""
     for line in joined:
         indent = len(line) - len(line.lstrip())
-        body = re.sub(r"\s{2,}U\d\d.*$", "", line).strip()
+        body = re.sub(r"\s+U\d\d\b.*$", "", line).strip()
         if body == "crates/vsesvit-gpui/":
             cwd = GPUI
             continue
@@ -309,10 +344,13 @@ def main(repo):
         else:
             base = cwd
         for piece in re.split(r",\s*(?![^{]*\})", body):
-            piece = re.sub(r"\s*\(.*\)$", "", piece.strip())
-            if not piece or not is_pathish(piece):
+            piece = re.sub(r"\s*\(.*\)$", "", piece.strip()).replace(", ", ",")
+            if not piece:
                 continue
-            ua_paths += [base + t.replace(" ", "") for t in expand(piece.replace(", ", ","))]
+            if not is_pathish(piece):
+                problems.append(f"UA 5.1: cannot read tree text as a path: {piece!r}")
+                continue
+            ua_paths += [base + t for t in expand(piece)]
     uncovered = []
     for p in ua_paths:
         if any(covers(pattern(r), p) or p == r for r in removed):
@@ -329,9 +367,24 @@ def main(repo):
     for p in uncovered:
         problems.append(f"UA 5.1 path without an owner: {p}")
 
+    checks_dir = "crates/vsesvit-gpui/src/self_test/checks/"
+    files = sorted(f.name for f in (repo / checks_dir).glob("*") if f.is_file())
+    if not files:
+        problems.append(f"no files under {checks_dir}")
+    for f in files:
+        path = checks_dir + f
+        owners = [u for u in units if u != "W0.1" and any(covers(i, path) for i in units[u]["inc"]) and not excluded(u, path)]
+        if len(owners) != 1:
+            problems.append(f"{path}: owned by {len(owners)} units {owners}, expected exactly one")
+            continue
+        head = (repo / path).read_text(encoding="utf-8").splitlines()[:3]
+        stated = re.search(r"Owned by (" + UNIT + r")", " ".join(head))
+        if stated and stated.group(1) != owners[0]:
+            problems.append(f"{path}: its header says {stated.group(1)} but the table gives it to {owners[0]}")
+
     print(f"units: {len(units)}; dependency edges: {sum(len(e) for e in edges.values())}; "
           f"tree entries: {len(tree12) + len(tree13)}; UA 5.1 paths: {len(ua_paths)} ({len(removed)} removed by 1.3); "
-          f"overlapping file pairs checked: {shared}")
+          f"overlapping file pairs checked: {shared}; self_test/checks files: {len(files)}")
     for p in problems:
         print("PROBLEM:", p)
     print("OK" if not problems else f"{len(problems)} problem(s)")
