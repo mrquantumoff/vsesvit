@@ -1,9 +1,8 @@
 # Shared helpers for the spike scripts. Dot-source this file.
 # Everything runs against the spike's own windows only: no SendInput, no foreground changes,
-# no screen capture. By default the spike runs on a separate desktop (deskrun.exe) that is
-# never switched to, so activation, fullscreen and Chrome's own windows stay invisible to
-# the user. -Desktop '' runs it on the user's desktop, parked off-screen, where the spike
-# refuses every activation (win::init_desktop_guard).
+# no screen capture. The spike runs only on a separate desktop (deskrun.exe) that is never
+# switched to, so activation, fullscreen and Chrome's own windows stay invisible to the user.
+# An empty -Desktop, which once ran it on the user's desktop, is refused (design section 7.3).
 $ErrorActionPreference = 'Stop'
 $script:SpikeDir = Split-Path -Parent $PSScriptRoot
 $script:Scratch = 'C:\Users\mrqua\git\vsesvit\.audit\scratch\win-spike'
@@ -45,10 +44,11 @@ function Start-PageServer {
     }
 }
 
-# Start the spike. $Vars: extra environment (hashtable). Returns the launched process
-# (deskrun, or the browser itself with -Desktop ''); sets $script:Log and $script:Run.
+# Start the spike on the private desktop $Desktop. $Vars: extra environment (hashtable).
+# Returns the launched deskrun process; sets $script:Log and $script:Run.
 function Start-Spike {
     param([string]$Label = 'run', [hashtable]$Vars = @{}, [string]$Urls = 'http://127.0.0.1:8765/page1.html', [string]$Desktop = $script:Desk, [string]$Exe = "$script:Target\vsesvit-win-spike.exe")
+    if (-not $Desktop) { throw "Start-Spike: refusing an empty -Desktop; the spike never runs on the user's desktop" }
     Stop-Spike -KeepServer   # a failed script may have left one holding the ctl port
     $run = "$script:Scratch\runs\$Label"
     if (Test-Path $run) { Remove-Item -Recurse -Force $run }
@@ -67,11 +67,7 @@ function Start-Spike {
     foreach ($k in $Vars.Keys) { $all[$k] = $Vars[$k] }
     foreach ($k in $all.Keys) { $old[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $all[$k]) }
     $io = @{ WorkingDirectory = $run; PassThru = $true; WindowStyle = 'Hidden'; RedirectStandardError = "$run\stderr.txt"; RedirectStandardOutput = "$run\stdout.txt" }
-    if ($Desktop) {
-        $p = Start-Process -FilePath "$script:Target\deskrun.exe" -ArgumentList "$Desktop `"$exe`"" @io
-    } else {
-        $p = Start-Process -FilePath $exe @io
-    }
+    $p = Start-Process -FilePath "$script:Target\deskrun.exe" -ArgumentList "$Desktop `"$exe`"" @io
     foreach ($k in $old.Keys) { [Environment]::SetEnvironmentVariable($k, $old[$k]) }
     $script:Proc = $p
     if (-not (Wait-Log 'ctl: listening' 20)) { throw "spike did not start (see $script:Log)" }
