@@ -56,7 +56,8 @@ use crate::popup::ExtensionAction;
 use crate::shortcuts::Bindings;
 use crate::sync::{PrefEffect, SyncController};
 use crate::tab::{Tab, TabId};
-use crate::updates::{self, Action, Trigger, Updates};
+use crate::updates::{self, Updates};
+use vsesvit_update::lifecycle::{Action, Trigger};
 use crate::window::{Backdrop, BrowserWindow, Show, WindowPrefs};
 use crate::{app, cookies, exec, instance, omnibox, platform, profiles, shortcuts, sync};
 
@@ -1630,7 +1631,7 @@ impl Browser {
     /// Drops what the old channel found, a ready update included, and checks the new one.
     pub fn set_updates_channel(&self, channel: UpdateChannel) {
         self.write_pref(&keys::UPDATES_CHANNEL, &channel);
-        updates::switch_channel(self);
+        updates::switch_channel(self.me.clone());
     }
 
     // ---- sync ----

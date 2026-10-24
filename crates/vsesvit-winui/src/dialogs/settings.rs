@@ -21,7 +21,7 @@ use super::{Category, Dialog, Wired, on_click, side_list};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::sync::Applied;
-use crate::updates::StatusButton;
+use vsesvit_update::lifecycle::StatusButton;
 use crate::window::{Backdrop, BrowserWindow};
 use crate::{cookies, exec, pickers, xaml};
 

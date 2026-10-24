@@ -61,7 +61,7 @@ use crate::shortcuts::{self, Command};
 use crate::player::Player;
 use crate::strip::{SidePane, TopStrip};
 use crate::tab::{Initial, Tab, TabId};
-use crate::updates::{Action, Banner, Severity};
+use vsesvit_update::lifecycle::{Action, Banner, Severity};
 use crate::{capture, connection, exec, platform, xaml, zoom};
 
 use chrome::Chrome;
