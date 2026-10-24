@@ -1,0 +1,44 @@
+{
+  "name": "Vsesvit",
+  "themes": [
+    {
+      "is_default": true,
+      "name": "Vsesvit Dark",
+      "mode": "dark",
+      "font.size": 14,
+      "radius": 6,
+      "radius.lg": 12,
+      "colors": {
+        "background": "#222226",
+        "foreground": "#ffffff",
+        "title_bar.background": "#2e2e32",
+        "title_bar.border": "#ffffff17",
+        "border": "#ffffff17",
+        "window.border": "#ffffff17",
+        "sidebar.background": "#2e2e32",
+        "sidebar.foreground": "#ffffff",
+        "sidebar.accent.background": "#ffffff1a",
+        "sidebar.accent.foreground": "#ffffff",
+        "tab_bar.background": "#2e2e32",
+        "tab.foreground": "#ffffff",
+        "tab.active.background": "#3a3a3e",
+        "tab.active.foreground": "#ffffff",
+        "popover.background": "#36363a",
+        "popover.foreground": "#ffffff",
+        "primary.background": "#3584e4",
+        "primary.foreground": "#ffffff",
+        "accent.background": "#3584e4",
+        "accent.foreground": "#ffffff",
+        "link": "#78aeed",
+        "muted.foreground": "#ffffff99",
+        "input.border": "#ffffff1f",
+        "ring": "#78aeed80",
+        "danger.background": "#c01c28",
+        "success.background": "#26a269",
+        "warning.background": "#cd9309",
+        "list.hover.background": "#ffffff0f",
+        "overlay": "#000000b3"
+      }
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+# The icons stay byte for byte as gpui-kit-assets ships them (a test compares them), so a Windows
+# checkout's CRLF conversion must not touch them.
+icons/*.svg -text
