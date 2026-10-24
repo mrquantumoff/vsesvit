@@ -10,14 +10,15 @@ use std::rc::{Rc, Weak};
 
 use vsesvit_core::extensions::commands::{ExtensionCommand, ExtensionShortcuts};
 use vsesvit_core::shortcuts::{
-    Chord, Command as Core, Key, Keymap, NEEDS_MODIFIER_NOTE, NOT_A_KEY_NOTE, Section,
+    Capture as Press, Chord, Command as Core, Key, Keymap, NEEDS_MODIFIER_NOTE, NOT_A_KEY_NOTE,
+    Section, capture as press,
 };
 use windows_core::{Interface, Result};
 
 use super::on_click;
 use crate::bindings::*;
 use crate::browser::Browser;
-use crate::shortcuts::{self, Bindings, Mods, Press};
+use crate::shortcuts::{self, Bindings, Mods};
 use crate::window::BrowserWindow;
 use crate::{exec, platform, xaml};
 
@@ -559,7 +560,7 @@ impl Page {
             self.close_capture();
             self.edit(|k| target.assign(k, bindings.extensions(), chord));
         };
-        match shortcuts::press(vk, mods) {
+        match press(vk, mods.core()) {
             Press::Cancel => self.close_capture(),
             Press::Remove => assign(None),
             Press::Save => {

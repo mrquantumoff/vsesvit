@@ -28,11 +28,11 @@ use std::rc::Rc;
 
 use serde_json::Value;
 use vsesvit_core::extensions::commands::{ExtensionCommand, ExtensionShortcuts};
-use vsesvit_core::shortcuts::{self as keymap, Chord, Key, Keymap};
+use vsesvit_core::shortcuts::InPage::{self, Native, Overridable, Reserved};
+use vsesvit_core::shortcuts::{self as keymap, Chord, Keymap};
 
 use crate::popup::ExtensionAction;
 use crate::store::{self, StoreRequest};
-use InPage::{Native, Overridable, Reserved};
 use keymap::Command as Core;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,67 +82,54 @@ pub(crate) enum Command {
     ExtensionAction(usize),
 }
 
-/// Where a key press for a command is taken while the page has focus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum InPage {
-    Native,
-    Reserved,
-    Overridable,
-}
-
-/// Every core command this shell implements, with its shell command and the in-page kind of its
-/// default chords. Zoom, fullscreen, find next/previous, reload without the cache, quit,
-/// Settings and the shortcuts list are missing: WebView2 or nothing handles them.
-const IMPLEMENTED: &[(Core, Command, InPage)] = &[
-    (Core::NewTab, Command::NewTab, Reserved),
-    (Core::CloseTab, Command::CloseTab, Reserved),
-    (Core::ReopenClosedTab, Command::ReopenClosedTab, Reserved),
-    // Not among the keys Chrome keeps from pages.
-    (Core::SearchTabs, Command::SearchTabs, Overridable),
-    (Core::NextTab, Command::NextTab, Reserved),
-    (Core::PreviousTab, Command::PreviousTab, Reserved),
-    (Core::SelectTab1, Command::SelectTab(0), Overridable),
-    (Core::SelectTab2, Command::SelectTab(1), Overridable),
-    (Core::SelectTab3, Command::SelectTab(2), Overridable),
-    (Core::SelectTab4, Command::SelectTab(3), Overridable),
-    (Core::SelectTab5, Command::SelectTab(4), Overridable),
-    (Core::SelectTab6, Command::SelectTab(5), Overridable),
-    (Core::SelectTab7, Command::SelectTab(6), Overridable),
-    (Core::SelectTab8, Command::SelectTab(7), Overridable),
-    (Core::SelectLastTab, Command::SelectLastTab, Overridable),
-    (Core::ToggleTabList, Command::ToggleTabPane, Overridable),
-    (Core::NewWindow, Command::NewWindow, Reserved),
-    (Core::NewPrivateWindow, Command::NewPrivateWindow, Reserved),
-    (Core::FocusAddress, Command::FocusAddress, Overridable),
-    (Core::Back, Command::Back, Native),
-    (Core::Forward, Command::Forward, Native),
-    (Core::Reload, Command::Reload, Native),
-    // Pages such as editors keep a Ctrl+Shift+S of their own, as Chrome's Ctrl+S.
-    (Core::SavePage, Command::SavePage, Overridable),
-    (Core::Print, Command::Print, Native),
-    // WebView2 has no Ctrl+U of its own; pages keep theirs, as in Chrome.
-    (Core::ViewSource, Command::ViewSource, Overridable),
-    (Core::DeveloperTools, Command::DeveloperTools, Native),
-    (Core::JavaScriptConsole, Command::JavaScriptConsole, Native),
-    (Core::Find, Command::Find, Native),
-    (Core::BookmarkPage, Command::Bookmark, Overridable),
-    (Core::CopyCleanLink, Command::CopyCleanLink, Reserved),
-    (Core::CopyLink, Command::CopyLink, Reserved),
-    (
-        Core::ToggleBookmarksBar,
-        Command::ToggleBookmarksBar,
-        Overridable,
-    ),
-    (Core::ShowBookmarks, Command::ShowBookmarks, Overridable),
-    (Core::ShowHistory, Command::ShowHistory, Overridable),
-    (Core::ShowDownloads, Command::ShowDownloads, Overridable),
+/// Every core command this shell implements, with its shell command; core says where each is
+/// taken while the page has focus (`Core::in_page`). Zoom, fullscreen, find next/previous,
+/// reload without the cache, quit, Settings and the shortcuts list are missing: WebView2 or
+/// nothing handles them.
+const IMPLEMENTED: &[(Core, Command)] = &[
+    (Core::NewTab, Command::NewTab),
+    (Core::CloseTab, Command::CloseTab),
+    (Core::ReopenClosedTab, Command::ReopenClosedTab),
+    (Core::SearchTabs, Command::SearchTabs),
+    (Core::NextTab, Command::NextTab),
+    (Core::PreviousTab, Command::PreviousTab),
+    (Core::SelectTab1, Command::SelectTab(0)),
+    (Core::SelectTab2, Command::SelectTab(1)),
+    (Core::SelectTab3, Command::SelectTab(2)),
+    (Core::SelectTab4, Command::SelectTab(3)),
+    (Core::SelectTab5, Command::SelectTab(4)),
+    (Core::SelectTab6, Command::SelectTab(5)),
+    (Core::SelectTab7, Command::SelectTab(6)),
+    (Core::SelectTab8, Command::SelectTab(7)),
+    (Core::SelectLastTab, Command::SelectLastTab),
+    (Core::ToggleTabList, Command::ToggleTabPane),
+    (Core::NewWindow, Command::NewWindow),
+    (Core::NewPrivateWindow, Command::NewPrivateWindow),
+    (Core::FocusAddress, Command::FocusAddress),
+    (Core::Back, Command::Back),
+    (Core::Forward, Command::Forward),
+    (Core::Reload, Command::Reload),
+    (Core::SavePage, Command::SavePage),
+    (Core::Print, Command::Print),
+    // WebView2 has no Ctrl+U of its own.
+    (Core::ViewSource, Command::ViewSource),
+    (Core::DeveloperTools, Command::DeveloperTools),
+    (Core::JavaScriptConsole, Command::JavaScriptConsole),
+    (Core::Find, Command::Find),
+    (Core::BookmarkPage, Command::Bookmark),
+    (Core::CopyCleanLink, Command::CopyCleanLink),
+    (Core::CopyLink, Command::CopyLink),
+    (Core::ToggleBookmarksBar, Command::ToggleBookmarksBar),
+    (Core::ShowBookmarks, Command::ShowBookmarks),
+    (Core::ShowHistory, Command::ShowHistory),
+    (Core::ShowDownloads, Command::ShowDownloads),
 ];
 
-fn implemented(core: Core) -> Option<(Command, InPage)> {
+fn implemented(core: Core) -> Option<Command> {
     IMPLEMENTED
         .iter()
-        .find(|(c, _, _)| *c == core)
-        .map(|&(_, command, kind)| (command, kind))
+        .find(|(c, _)| *c == core)
+        .map(|&(_, command)| command)
 }
 
 /// The core commands this shell implements, in core's order, for the shortcuts list.
@@ -156,8 +143,8 @@ pub(crate) fn listed() -> impl Iterator<Item = Core> {
 fn core_of(command: Command) -> Option<Core> {
     IMPLEMENTED
         .iter()
-        .find(|(_, c, _)| *c == command)
-        .map(|&(core, _, _)| core)
+        .find(|(_, c)| *c == command)
+        .map(|&(core, _)| core)
 }
 
 /// Modifiers as the page script and XAML encode them.
@@ -186,11 +173,7 @@ impl Mods {
         self.0 & other.0 == other.0
     }
 
-    fn without(self, other: Self) -> Self {
-        Self(self.0 & !other.0)
-    }
-
-    fn core(self) -> keymap::Mods {
+    pub fn core(self) -> keymap::Mods {
         keymap::Mods {
             ctrl: self.has(Self::CTRL),
             alt: self.has(Self::ALT),
@@ -199,114 +182,11 @@ impl Mods {
     }
 }
 
-/// The Windows virtual-key code of `key`, and whether typing it takes Shift.
-///
-/// Symbol keys assume the US layout, where core's names match the keys: Plus is Shift with the
-/// `=+` key, Question is Shift with the `/?` key. `KeyboardEvent.keyCode` carries the same codes.
-fn key_vk(key: Key) -> (u16, bool) {
-    const OEM_1: u16 = 0xBA;
-    const OEM_PLUS: u16 = 0xBB;
-    const OEM_COMMA: u16 = 0xBC;
-    const OEM_MINUS: u16 = 0xBD;
-    const OEM_PERIOD: u16 = 0xBE;
-    const OEM_2: u16 = 0xBF;
-    let runs = [
-        (Key::A, Key::Z, 0x41),
-        (Key::Digit0, Key::Digit9, 0x30),
-        (Key::F1, Key::F24, 0x70),
-        (Key::Keypad0, Key::Keypad9, 0x60),
-    ];
-    let at = key as u16;
-    if let Some((first, _, base)) = runs
-        .iter()
-        .find(|(first, last, _)| (*first as u16..=*last as u16).contains(&at))
-    {
-        return (base + at - *first as u16, false);
-    }
-    let vk = match key {
-        Key::Tab => 0x09,
-        Key::Space => 0x20,
-        Key::PageUp => 0x21,
-        Key::PageDown => 0x22,
-        Key::End => 0x23,
-        Key::Home => 0x24,
-        Key::Left => 0x25,
-        Key::Up => 0x26,
-        Key::Right => 0x27,
-        Key::Down => 0x28,
-        Key::Insert => 0x2D,
-        Key::Delete => 0x2E,
-        Key::KeypadPlus => 0x6B,
-        Key::KeypadMinus => 0x6D,
-        Key::Semicolon => OEM_1,
-        Key::Equal => OEM_PLUS,
-        Key::Plus => return (OEM_PLUS, true),
-        Key::Comma => OEM_COMMA,
-        Key::Minus => OEM_MINUS,
-        Key::Period => OEM_PERIOD,
-        Key::Slash => OEM_2,
-        Key::Question => return (OEM_2, true),
-        _ => unreachable!("{key:?} is in a run of keys above"),
-    };
-    (vk, false)
-}
-
-/// The key code and modifiers that type `chord`.
-pub(crate) fn vk_chord(chord: Chord) -> (u16, Mods) {
-    let m = chord.mods();
-    let (vk, shift) = key_vk(chord.key());
-    (vk, Mods::of(m.ctrl, m.shift || shift, m.alt))
-}
-
-/// The key a key press is, and the modifiers held with it. Shift with the `=+` or `/?` key is
-/// Plus or Question, as those keys type with Shift.
-fn key_of(vk: u16, mods: Mods) -> Option<(Key, Mods)> {
-    let shifted = mods.has(Mods::SHIFT);
-    let find = |shift: bool| Key::ALL.iter().copied().find(|&k| key_vk(k) == (vk, shift));
-    match find(true).filter(|_| shifted) {
-        Some(key) => Some((key, mods.without(Mods::SHIFT))),
-        None => find(false).map(|key| (key, mods)),
-    }
-}
-
-/// What a key press does while Settings captures a shortcut.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Press {
-    Cancel,
-    /// Leaves the command without a shortcut.
-    Remove,
-    Save,
-    /// A modifier on its own: the chord is still coming.
-    Modifier,
-    Chord(Chord),
-    /// A key that types or moves the caret without Ctrl or Alt.
-    NeedsModifier,
-    /// A key core has no name for, such as Print Screen.
-    NotAKey,
-}
-
-pub(crate) fn press(vk: u16, mods: Mods) -> Press {
-    match vk {
-        0x1B => Press::Cancel,
-        0x08 => Press::Remove,
-        0x0D => Press::Save,
-        0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0x90 | 0x91 | 0xA0..=0xA5 => Press::Modifier,
-        _ => match key_of(vk, mods) {
-            Some((key, mods)) => {
-                Chord::new(mods.core(), key).map_or(Press::NeedsModifier, Press::Chord)
-            }
-            None => Press::NotAKey,
-        },
-    }
-}
-
-/// The in-page kind of a command's chord: a `Native` command is left to WebView2 only on the
-/// chords WebView2 knows it by, its defaults; on any other chord the script reports it.
-pub(crate) fn in_page(kind: InPage, on_a_default_chord: bool) -> InPage {
-    match kind {
-        Native if !on_a_default_chord => Overridable,
-        kind => kind,
-    }
+/// The key code and modifiers that type `chord` (`Chord::vk`), as the page script and XAML
+/// encode them.
+fn vk_chord(chord: Chord) -> (u16, Mods) {
+    let (vk, m) = chord.vk();
+    (vk, Mods::of(m.ctrl, m.shift, m.alt))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,12 +237,11 @@ impl Bindings {
     ) -> Self {
         let mut list: Vec<Binding> = Vec::new();
         for (core, chords) in keymap.iter() {
-            let Some((command, kind)) = implemented(core) else {
+            let Some(command) = implemented(core) else {
                 continue;
             };
             for &chord in chords {
-                let in_page = in_page(kind, core.defaults().contains(&chord));
-                bind(&mut list, chord, command, in_page);
+                bind(&mut list, chord, command, core.in_page_on(chord));
             }
         }
         let extensions = keymap.extension_shortcuts(commands);
@@ -381,8 +260,8 @@ impl Bindings {
         }
         let swallowed = IMPLEMENTED
             .iter()
-            .filter(|(_, _, kind)| *kind == Native)
-            .flat_map(|&(core, _, _)| core.defaults().iter().map(move |&chord| (core, chord)))
+            .filter(|(core, _)| core.in_page() == Native)
+            .flat_map(|&(core, _)| core.defaults().iter().map(move |&chord| (core, chord)))
             .filter(|&(core, chord)| {
                 keymap
                     .command_for(chord)
@@ -712,104 +591,12 @@ mod tests {
         s.parse().unwrap()
     }
 
-    fn chord_of(vk: u16, mods: Mods) -> Option<Chord> {
-        match press(vk, mods) {
-            Press::Chord(chord) => Some(chord),
-            _ => None,
-        }
-    }
-
     fn lookup(bindings: &Bindings, vk: u16, mods: Mods) -> Option<Binding> {
         bindings
             .list()
             .iter()
             .find(|b| b.vk == vk && b.mods == mods)
             .copied()
-    }
-
-    #[test]
-    fn every_key_has_its_own_key_press() {
-        for (i, &a) in Key::ALL.iter().enumerate() {
-            for &b in &Key::ALL[i + 1..] {
-                assert_ne!(key_vk(a), key_vk(b), "{a:?} and {b:?}");
-            }
-        }
-        assert_eq!(key_vk(Key::A), (0x41, false));
-        assert_eq!(key_vk(Key::Z), (0x5A, false));
-        assert_eq!(key_vk(Key::Digit9), (0x39, false));
-        assert_eq!(key_vk(Key::F1), (0x70, false));
-        assert_eq!(key_vk(Key::F9), (0x78, false));
-        assert_eq!(key_vk(Key::F24), (0x87, false));
-        assert_eq!(key_vk(Key::Keypad0), (0x60, false));
-        assert_eq!(key_vk(Key::Keypad9), (0x69, false));
-        assert_eq!(key_vk(Key::KeypadPlus), (0x6B, false));
-        assert_eq!(key_vk(Key::Plus), (0xBB, true));
-        assert_eq!(key_vk(Key::Equal), (0xBB, false));
-        assert_eq!(key_vk(Key::Question), (0xBF, true));
-        assert_eq!(key_vk(Key::Slash), (0xBF, false));
-        assert_eq!(key_vk(Key::Tab), (0x09, false));
-        assert_eq!(key_vk(Key::Left), (0x25, false));
-    }
-
-    #[test]
-    fn every_chord_survives_the_round_trip_through_its_key_press() {
-        for &key in Key::ALL {
-            for bits in 0..8 {
-                let mods = Mods(bits);
-                let Some(chord) = Chord::new(mods.core(), key) else {
-                    continue;
-                };
-                let (vk, pressed) = vk_chord(chord);
-                let back = chord_of(vk, pressed).unwrap();
-                let typed_with_shift = match key {
-                    Key::Equal | Key::Plus => Some(Key::Plus),
-                    Key::Slash | Key::Question => Some(Key::Question),
-                    _ => None,
-                };
-                let expected = match typed_with_shift {
-                    Some(symbol) if mods.has(Mods::SHIFT) => {
-                        Chord::new(mods.without(Mods::SHIFT).core(), symbol).unwrap()
-                    }
-                    _ => chord,
-                };
-                assert_eq!(back, expected, "{chord}");
-            }
-        }
-    }
-
-    #[test]
-    fn key_presses_read_as_chords() {
-        assert_eq!(chord_of(0xBB, CTRL_SHIFT), Some(chord("Ctrl+Plus")));
-        assert_eq!(chord_of(0xBB, Mods::CTRL), Some(chord("Ctrl+Equal")));
-        assert_eq!(chord_of(0xBF, CTRL_SHIFT), Some(chord("Ctrl+Question")));
-        assert_eq!(chord_of(0x59, CTRL_SHIFT), Some(chord("Ctrl+Shift+Y")));
-        assert_eq!(chord_of(0x78, Mods::NONE), Some(chord("F9")));
-        assert_eq!(chord_of(0x41, Mods::SHIFT), None, "Shift+A types text");
-        assert_eq!(chord_of(0x11, Mods::CTRL), None, "Ctrl alone is no chord");
-    }
-
-    #[test]
-    fn capture_reads_key_presses() {
-        assert_eq!(press(0x1B, Mods::CTRL), Press::Cancel);
-        assert_eq!(press(0x08, Mods::NONE), Press::Remove);
-        assert_eq!(press(0x0D, Mods::NONE), Press::Save);
-        assert_eq!(press(0x11, Mods::CTRL), Press::Modifier);
-        assert_eq!(press(0xA0, Mods::SHIFT), Press::Modifier);
-        assert_eq!(press(0x59, CTRL_SHIFT), Press::Chord(chord("Ctrl+Shift+Y")));
-        assert_eq!(press(0x75, Mods::NONE), Press::Chord(chord("F6")));
-        assert_eq!(press(0x59, Mods::SHIFT), Press::NeedsModifier);
-        assert_eq!(press(0x25, Mods::NONE), Press::NeedsModifier);
-        assert_eq!(press(0x2C, Mods::CTRL), Press::NotAKey, "Print Screen");
-    }
-
-    #[test]
-    fn native_commands_are_native_only_on_their_defaults() {
-        assert_eq!(in_page(Native, true), Native);
-        assert_eq!(in_page(Native, false), Overridable);
-        for kind in [Reserved, Overridable] {
-            assert_eq!(in_page(kind, true), kind);
-            assert_eq!(in_page(kind, false), kind);
-        }
     }
 
     #[test]
@@ -838,8 +625,8 @@ mod tests {
             lookup(&bindings, 0x7A, Mods::NONE).is_none(),
             "F11 is WebView2's"
         );
-        for (i, (_, a, _)) in IMPLEMENTED.iter().enumerate() {
-            assert!(IMPLEMENTED[i + 1..].iter().all(|(_, b, _)| a != b));
+        for (i, (_, a)) in IMPLEMENTED.iter().enumerate() {
+            assert!(IMPLEMENTED[i + 1..].iter().all(|(_, b)| a != b));
         }
     }
 

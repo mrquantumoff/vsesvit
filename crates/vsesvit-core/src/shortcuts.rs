@@ -318,6 +318,147 @@ impl Command {
     pub fn from_id(id: &str) -> Option<Command> {
         Command::ALL.iter().copied().find(|cmd| cmd.id() == id)
     }
+
+    /// Where a key press for the command is taken while the page has the keyboard focus, on its
+    /// default chords. Reserved are the keys Chrome keeps from pages; the rest reach the page
+    /// first, unless the engine knows the command's keys itself.
+    pub const fn in_page(self) -> InPage {
+        use Command::*;
+        use InPage::{Native, Overridable, Reserved};
+        match self {
+            NewTab | CloseTab | ReopenClosedTab | NextTab | PreviousTab | NewWindow | NewPrivateWindow | Quit => Reserved,
+            // Not among the keys Chrome keeps from pages.
+            SearchTabs | SelectTab1 | SelectTab2 | SelectTab3 | SelectTab4 | SelectTab5 | SelectTab6 | SelectTab7 | SelectTab8
+            | SelectLastTab | ToggleTabList | FocusAddress => Overridable,
+            Back | Forward | Reload | ReloadBypassCache => Native,
+            // Pages such as editors keep a Ctrl+Shift+S of their own, as Chrome's Ctrl+S.
+            SavePage => Overridable,
+            Print | Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset => Native,
+            // Pages keep their Ctrl+U, as in Chrome.
+            BookmarkPage | ViewSource | Fullscreen => Overridable,
+            CopyCleanLink | CopyLink => Reserved,
+            ToggleBookmarksBar | ShowBookmarks | ShowHistory | ShowDownloads | ShowSettings | ShowShortcuts => Overridable,
+            DeveloperTools | JavaScriptConsole => Native,
+        }
+    }
+
+    /// Where a key press of `chord` for the command is taken while the page has the keyboard
+    /// focus: a [`InPage::Native`] command is left to the engine only on the chords the engine
+    /// knows it by, its defaults; on any other chord the shell takes it after the page.
+    pub fn in_page_on(self, chord: Chord) -> InPage {
+        match self.in_page() {
+            InPage::Native if !self.defaults().contains(&chord) => InPage::Overridable,
+            kind => kind,
+        }
+    }
+}
+
+/// Where a key press for a command is taken while the page has the keyboard focus.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum InPage {
+    /// Left to the engine, which handles the command's default chords itself.
+    Native,
+    /// Taken before the page sees it.
+    Reserved,
+    /// Reaches the page first, and is taken only if the page does not `preventDefault()` it, as
+    /// Chromium treats browser shortcuts that are not reserved.
+    Overridable,
+}
+
+impl Key {
+    /// The Windows virtual-key code of the key, and whether typing it takes Shift. Windows and
+    /// CEF on every OS report key presses by these codes, as `KeyboardEvent.keyCode` does.
+    ///
+    /// Symbol keys assume the US layout, where the names match the keys: Plus is Shift with the
+    /// `=+` key, Question is Shift with the `/?` key.
+    pub fn vk(self) -> (u16, bool) {
+        const OEM_1: u16 = 0xBA;
+        const OEM_PLUS: u16 = 0xBB;
+        const OEM_COMMA: u16 = 0xBC;
+        const OEM_MINUS: u16 = 0xBD;
+        const OEM_PERIOD: u16 = 0xBE;
+        const OEM_2: u16 = 0xBF;
+        let runs = [(Key::A, Key::Z, 0x41), (Key::Digit0, Key::Digit9, 0x30), (Key::F1, Key::F24, 0x70), (Key::Keypad0, Key::Keypad9, 0x60)];
+        let at = self as u16;
+        if let Some((first, _, base)) = runs.iter().find(|(first, last, _)| (*first as u16..=*last as u16).contains(&at)) {
+            return (base + at - *first as u16, false);
+        }
+        let vk = match self {
+            Key::Tab => 0x09,
+            Key::Space => 0x20,
+            Key::PageUp => 0x21,
+            Key::PageDown => 0x22,
+            Key::End => 0x23,
+            Key::Home => 0x24,
+            Key::Left => 0x25,
+            Key::Up => 0x26,
+            Key::Right => 0x27,
+            Key::Down => 0x28,
+            Key::Insert => 0x2D,
+            Key::Delete => 0x2E,
+            Key::KeypadPlus => 0x6B,
+            Key::KeypadMinus => 0x6D,
+            Key::Semicolon => OEM_1,
+            Key::Equal => OEM_PLUS,
+            Key::Plus => return (OEM_PLUS, true),
+            Key::Comma => OEM_COMMA,
+            Key::Minus => OEM_MINUS,
+            Key::Period => OEM_PERIOD,
+            Key::Slash => OEM_2,
+            Key::Question => return (OEM_2, true),
+            _ => unreachable!("{self:?} is in a run of keys above"),
+        };
+        (vk, false)
+    }
+
+    /// The key a press of virtual-key code `vk` is, with the modifiers held with it. Shift with
+    /// the `=+` or `/?` key is Plus or Question, as those keys type with Shift.
+    pub fn of_vk(vk: u16, mods: Mods) -> Option<(Key, Mods)> {
+        let find = |shift: bool| Key::ALL.iter().copied().find(|&k| k.vk() == (vk, shift));
+        match find(true).filter(|_| mods.shift) {
+            Some(key) => Some((key, Mods { shift: false, ..mods })),
+            None => find(false).map(|key| (key, mods)),
+        }
+    }
+}
+
+impl Chord {
+    /// The virtual-key code and modifiers that type the chord.
+    pub fn vk(self) -> (u16, Mods) {
+        let (vk, shift) = self.key.vk();
+        (vk, Mods { shift: self.mods.shift || shift, ..self.mods })
+    }
+}
+
+/// What a key press does while the shortcut capture listens.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Capture {
+    Cancel,
+    /// Leaves the command without a shortcut.
+    Remove,
+    Save,
+    /// A modifier on its own: the chord is still coming.
+    Modifier,
+    Chord(Chord),
+    /// A key that types or moves the caret without Ctrl or Alt ([`NEEDS_MODIFIER_NOTE`]).
+    NeedsModifier,
+    /// A key with no name here, such as Print Screen ([`NOT_A_KEY_NOTE`]).
+    NotAKey,
+}
+
+/// What the key press of virtual-key code `vk` with `mods` held does while the shortcut capture
+/// listens: Escape cancels, Backspace removes the shortcut, Enter saves it.
+pub fn capture(vk: u16, mods: Mods) -> Capture {
+    match vk {
+        0x1B => Capture::Cancel,
+        0x08 => Capture::Remove,
+        0x0D => Capture::Save,
+        0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0x90 | 0x91 | 0xA0..=0xA5 => Capture::Modifier,
+        _ => match Key::of_vk(vk, mods) {
+            Some((key, mods)) => Chord::new(mods, key).map_or(Capture::NeedsModifier, Capture::Chord),
+            None => Capture::NotAKey,
+        },
+    }
 }
 
 /// What [`keys::SHORTCUTS`] stores: command id to chord strings, for reassigned commands only.
@@ -530,6 +671,108 @@ impl Prefs<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CTRL_SHIFT: Mods = Mods::CTRL.and(Mods::SHIFT);
+
+    fn chord(s: &str) -> Chord {
+        s.parse().unwrap()
+    }
+
+    fn chord_of(vk: u16, mods: Mods) -> Option<Chord> {
+        match capture(vk, mods) {
+            Capture::Chord(chord) => Some(chord),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn chromes_reserved_keys_are_taken_before_the_page_and_native_ones_only_on_their_defaults() {
+        let reserved: Vec<Command> = Command::ALL.iter().copied().filter(|c| c.in_page() == InPage::Reserved).collect();
+        use Command::*;
+        assert_eq!(reserved, [NewTab, CloseTab, ReopenClosedTab, NextTab, PreviousTab, NewWindow, NewPrivateWindow, Quit, CopyCleanLink, CopyLink]);
+        assert_eq!(SelectTab1.in_page(), InPage::Overridable, "Chrome leaves Ctrl+1 to pages");
+        assert_eq!(Reload.in_page_on(chord("Ctrl+R")), InPage::Native);
+        assert_eq!(Reload.in_page_on(chord("Ctrl+Shift+Y")), InPage::Overridable, "the engine knows Reload by its defaults only");
+        for command in Command::ALL.iter().copied().filter(|c| c.in_page() != InPage::Native) {
+            assert_eq!(command.in_page_on(chord("Ctrl+Shift+Y")), command.in_page(), "{command:?}");
+            for &default in command.defaults() {
+                assert_eq!(command.in_page_on(default), command.in_page(), "{command:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_key_has_its_own_key_press() {
+        for (i, &a) in Key::ALL.iter().enumerate() {
+            for &b in &Key::ALL[i + 1..] {
+                assert_ne!(a.vk(), b.vk(), "{a:?} and {b:?}");
+            }
+        }
+        assert_eq!(Key::A.vk(), (0x41, false));
+        assert_eq!(Key::Z.vk(), (0x5A, false));
+        assert_eq!(Key::Digit9.vk(), (0x39, false));
+        assert_eq!(Key::F1.vk(), (0x70, false));
+        assert_eq!(Key::F9.vk(), (0x78, false));
+        assert_eq!(Key::F24.vk(), (0x87, false));
+        assert_eq!(Key::Keypad0.vk(), (0x60, false));
+        assert_eq!(Key::Keypad9.vk(), (0x69, false));
+        assert_eq!(Key::KeypadPlus.vk(), (0x6B, false));
+        assert_eq!(Key::Plus.vk(), (0xBB, true));
+        assert_eq!(Key::Equal.vk(), (0xBB, false));
+        assert_eq!(Key::Question.vk(), (0xBF, true));
+        assert_eq!(Key::Slash.vk(), (0xBF, false));
+        assert_eq!(Key::Tab.vk(), (0x09, false));
+        assert_eq!(Key::Left.vk(), (0x25, false));
+    }
+
+    #[test]
+    fn every_chord_survives_the_round_trip_through_its_key_press() {
+        for &key in Key::ALL {
+            for bits in 0..8u8 {
+                let mods = Mods { ctrl: bits & 1 != 0, shift: bits & 2 != 0, alt: bits & 4 != 0 };
+                let Some(chord) = Chord::new(mods, key) else {
+                    continue;
+                };
+                let (vk, pressed) = chord.vk();
+                let back = chord_of(vk, pressed).unwrap();
+                let typed_with_shift = match key {
+                    Key::Equal | Key::Plus => Some(Key::Plus),
+                    Key::Slash | Key::Question => Some(Key::Question),
+                    _ => None,
+                };
+                let expected = match typed_with_shift {
+                    Some(symbol) if mods.shift => Chord::new(Mods { shift: false, ..mods }, symbol).unwrap(),
+                    _ => chord,
+                };
+                assert_eq!(back, expected, "{chord}");
+            }
+        }
+    }
+
+    #[test]
+    fn key_presses_read_as_chords() {
+        assert_eq!(chord_of(0xBB, CTRL_SHIFT), Some(chord("Ctrl+Plus")));
+        assert_eq!(chord_of(0xBB, Mods::CTRL), Some(chord("Ctrl+Equal")));
+        assert_eq!(chord_of(0xBF, CTRL_SHIFT), Some(chord("Ctrl+Question")));
+        assert_eq!(chord_of(0x59, CTRL_SHIFT), Some(chord("Ctrl+Shift+Y")));
+        assert_eq!(chord_of(0x78, Mods::NONE), Some(chord("F9")));
+        assert_eq!(chord_of(0x41, Mods::SHIFT), None, "Shift+A types text");
+        assert_eq!(chord_of(0x11, Mods::CTRL), None, "Ctrl alone is no chord");
+    }
+
+    #[test]
+    fn capture_reads_key_presses() {
+        assert_eq!(capture(0x1B, Mods::CTRL), Capture::Cancel);
+        assert_eq!(capture(0x08, Mods::NONE), Capture::Remove);
+        assert_eq!(capture(0x0D, Mods::NONE), Capture::Save);
+        assert_eq!(capture(0x11, Mods::CTRL), Capture::Modifier);
+        assert_eq!(capture(0xA0, Mods::SHIFT), Capture::Modifier);
+        assert_eq!(capture(0x59, CTRL_SHIFT), Capture::Chord(chord("Ctrl+Shift+Y")));
+        assert_eq!(capture(0x75, Mods::NONE), Capture::Chord(chord("F6")));
+        assert_eq!(capture(0x59, Mods::SHIFT), Capture::NeedsModifier);
+        assert_eq!(capture(0x25, Mods::NONE), Capture::NeedsModifier);
+        assert_eq!(capture(0x2C, Mods::CTRL), Capture::NotAKey, "Print Screen");
+    }
 
     #[test]
     fn only_f_keys_are_bindable_without_ctrl_or_alt() {

@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::json;
+use vsesvit_core::shortcuts::InPage;
 use vsesvit_core::view_source;
 use windows_core::Interface;
 
@@ -14,7 +15,7 @@ use super::{FIXTURE_TITLE, POLL, Probe, eval, tab_ids, until};
 use crate::automation::press;
 use crate::bindings::{ICoreWebView2_11, ICoreWebView2_16};
 use crate::exec;
-use crate::shortcuts::{Command, InPage, Mods};
+use crate::shortcuts::{Command, Mods};
 use crate::tab::{Tab, TabId, VIEW_SOURCE_ITEM};
 use crate::window::BrowserWindow;
 

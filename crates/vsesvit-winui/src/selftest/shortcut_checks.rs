@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use vsesvit_core::crdt::{DeviceId, Hlc, JsonText, Lww, Seq, Stamp};
 use vsesvit_core::prefs::{PrefRecord, keys};
-use vsesvit_core::shortcuts::{Command as Core, Keymap};
+use vsesvit_core::shortcuts::{Command as Core, InPage, Keymap};
 use vsesvit_core::sync::{Kind, WireRecord};
 use vsesvit_core::testkit;
 use windows_core::Interface;
@@ -25,7 +25,7 @@ use crate::dialogs::{
     Dialog, Preview, ShortcutsPage, extension_shortcut_row_name, shortcut_row_name,
 };
 use crate::exec;
-use crate::shortcuts::{self, Command, InPage, Mods};
+use crate::shortcuts::{self, Command, Mods};
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
 
