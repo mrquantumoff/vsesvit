@@ -4,13 +4,14 @@
 
 use vsesvit_core::Url;
 use vsesvit_core::history::Transition;
+use vsesvit_core::omnibox_edit::{Edit, Key, Outcome};
 use vsesvit_core::suggest::SearchSuggestions;
 use windows_core::{IInspectable, Interface};
 
 use super::BrowserWindow;
 use super::wiring::with;
 use crate::bindings::*;
-use crate::omnibox::{self, Address, Edit, Key, Outcome};
+use crate::omnibox::{self, Address};
 use crate::shortcuts::Mods;
 use crate::{exec, xaml};
 

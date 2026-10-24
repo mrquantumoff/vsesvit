@@ -25,6 +25,7 @@ use vsesvit_core::favicons::FaviconFetch;
 use vsesvit_core::history::Transition;
 use vsesvit_core::https_only::{self, Reach};
 use vsesvit_core::memory_saver::{SWEEP_EVERY, Sweep};
+use vsesvit_core::omnibox_edit;
 use vsesvit_core::permissions::SiteSetting;
 use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, homepage_url, keys};
 use vsesvit_core::private::Browsing;
@@ -1287,7 +1288,7 @@ impl Browser {
 
     /// What Enter in the address box loads for `text`.
     pub fn resolve_input(&self, text: &str) -> Option<String> {
-        if let Some(url) = omnibox::engine_url(text) {
+        if let Some(url) = omnibox_edit::engine_url(text) {
             return Some(url);
         }
         match self.core(|p| p.omnibox().resolve(text)) {
