@@ -1,0 +1,10 @@
+[package]
+name = "mkcrx"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+vsesvit-core = { path = "../../../../../../../crates/vsesvit-core", features = ["testkit"] }
+
+[workspace]

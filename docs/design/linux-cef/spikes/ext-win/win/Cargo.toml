@@ -1,0 +1,53 @@
+[package]
+name = "vsesvit-extwin-win"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# rlib for the binaries; cdylib = extwin.dll for bootstrap.exe (sandbox bundle).
+[lib]
+name = "extwin"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", default-features = false }
+gpui-component = { version = "=0.7.3", default-features = false }
+cef = { version = "=154.5.0", default-features = false, features = ["resources"] }
+raw-window-handle = "0.6"
+futures = "0.3"
+png = "0.17"
+anyhow = "1"
+serde_json = "1"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_System_Threading",
+    "Win32_System_SystemServices",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_Storage_Xps",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Console",
+    "Win32_Security",
+] }
+
+[[bin]]
+name = "vsesvit-extwin"
+path = "src/main.rs"
+
+[[bin]]
+name = "vsesvit-extwin-helper"
+path = "src/bin/helper.rs"
+
+[[bin]]
+name = "deskrun"
+path = "src/bin/deskrun.rs"
