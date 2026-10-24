@@ -55,7 +55,11 @@ jobs:
       - run: cargo clippy --workspace --all-features -- -D clippy::disallowed_methods
       - run: cargo test --workspace --exclude vsesvit-gtk
       # GTK's widget tests need a display and a session bus; the runner's own throwaway Xvfb is that.
+      # The container may not create user namespaces, which WebKit's bubblewrap sandbox needs.
       - run: xvfb-run -a dbus-run-session -- cargo test -p vsesvit-gtk
+        env:
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
+          GTK_A11Y: none
 
   windows-winui:
     runs-on: windows-latest
