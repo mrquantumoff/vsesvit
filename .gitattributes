@@ -6,3 +6,5 @@ packaging/linux/** text eol=lf
 # Vendored crates and their patches stay byte for byte as crates.io serves them, so a Windows
 # checkout's CRLF conversion cannot fail `cargo xtask vendor-gpui --check`.
 third_party/** -text
+# The design log is append-only and every unit adds rows on its own branch; union-merge keeps both sides.
+docs/design/linux-cef/log.tsv merge=union
