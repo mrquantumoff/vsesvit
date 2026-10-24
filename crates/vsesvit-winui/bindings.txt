@@ -442,7 +442,8 @@ Windows.Win32.CertFreeCertificateContext
 Windows.Win32.CertCloseStore
 Windows.Win32.CryptUIDlgViewContext
 Windows.Win32.CERT_STORE_CERTIFICATE_CONTEXT
-Windows.Win32.SendInput
+// SendInput is declared in platform.rs (`send_input`), not here: clippy cannot ban a local
+// extern function by path, only a Rust one (clippy.toml).
 Windows.Win32.INPUT
 Windows.Win32.INPUT_KEYBOARD
 Windows.Win32.KEYEVENTF_KEYUP

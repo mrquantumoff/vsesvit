@@ -24,6 +24,7 @@ use std::time::Duration;
 use vsesvit_core::zoom::{PRESETS, label};
 
 use crate::bindings::*;
+use crate::platform;
 
 /// A page's zoom, in percent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -277,13 +278,11 @@ pub(crate) fn press(
         inputs.extend([key(step.key(), false), key(step.key(), true)]);
     }
     inputs.push(key(VK_CONTROL, true));
-    let sent = unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            size_of::<INPUT>() as i32,
-        )
-    };
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "audited: may_press just checked that our page has the focus in the foreground window with nothing held"
+    )]
+    let sent = platform::send_input(&inputs);
     if sent as usize != inputs.len() {
         log::warn!(
             "zoom: only {sent} of {} key events went through",

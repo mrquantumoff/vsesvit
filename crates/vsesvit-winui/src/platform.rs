@@ -403,6 +403,21 @@ pub(crate) fn held_modifiers() -> Mods {
     Mods::of(held(0x11), held(0x10), held(0x12))
 }
 
+/// Sends `inputs` as one batch of OS input to whatever has the keyboard focus, and returns how
+/// many went through. That input reaches the user's desktop, so clippy.toml bans this function
+/// and each caller carries an audited allow. Declared here, not in `bindings`: clippy can ban a
+/// Rust function by path, not a local extern one.
+pub(crate) fn send_input(inputs: &[INPUT]) -> u32 {
+    windows_core::link!("user32.dll" "system" fn SendInput(cinputs : u32, pinputs : *const INPUT, cbsize : i32) -> u32);
+    unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            size_of::<INPUT>() as i32,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

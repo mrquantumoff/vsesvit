@@ -19,7 +19,7 @@ use crate::browser::Browser;
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
-use crate::{exec, xaml};
+use crate::{exec, platform, xaml};
 
 const ASK_NOTIFICATIONS: &str =
     "window.__notify = ''; Notification.requestPermission().then(r => window.__notify = r); 0";
@@ -839,13 +839,11 @@ fn send_keys(keys: &[u16]) {
         .iter()
         .flat_map(|&vk| [key(vk, false), key(vk, true)])
         .collect();
-    unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            size_of::<INPUT>() as i32,
-        )
-    };
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "audited: --ui-smoke only, which runs after vsesvit_testenv::require() (automation::prepare) and checks the window is in the foreground first"
+    )]
+    platform::send_input(&inputs);
 }
 
 /// The Settings page lists the fixture site's blocked notifications and screen sharing.
