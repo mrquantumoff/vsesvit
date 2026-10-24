@@ -23,6 +23,15 @@ pub fn run(args: &[String]) -> Result<Status> {
         testenv::cargo_build(&["-p", "vsesvit-helper"], "vsesvit-helper")?;
     }
     let program = testenv::cargo_build(&["-p", krate, "--example", example], example)?;
+    // cef-dll-sys copies libcef.dll and its runtime beside the bins, one level above `examples\`,
+    // and Windows looks for DLLs on PATH, not on an rpath.
+    if cfg!(windows) && let Some(bins) = program.parent().and_then(|examples| examples.parent()) {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let joined = std::env::join_paths(std::iter::once(bins.to_path_buf()).chain(std::env::split_paths(&path)))
+            .map_err(|e| e.to_string())?;
+        // SAFETY: xtask has started no other threads at this point.
+        unsafe { std::env::set_var("PATH", joined) };
+    }
     let out_dir = workspace_root().join("target").join("probe").join(example);
     let code = testenv::run(&Run {
         program,
