@@ -252,10 +252,15 @@ pub type EndedSlot = Rc<RefCell<Option<Ended>>>;
 pub struct QuitParts {
     pub engine: Rc<dyn Engine>,
     pub shell: Rc<dyn ShutdownShell>,
-    /// Step 7: ends the pump task after its current step. The driver stays in boot's slot.
+    /// Step 7: ends the pump task after its current step. The driver stays in `driver`.
     pub stop_pump: Box<dyn FnOnce()>,
+    pub driver: DriverSlot,
     pub ended: EndedSlot,
 }
+
+/// Where the driver lives from boot step 9 to shutdown step 8: the pump borrows it for each step, and
+/// boot takes it back after GPUI returned (design section 3.6, "Who owns the driver at the end").
+pub type DriverSlot = Rc<RefCell<Option<Box<dyn EngineDriver>>>>;
 
 struct Running {
     sequence: Sequence,
@@ -267,6 +272,7 @@ struct Quitter {
     engine: Rc<dyn Engine>,
     shell: Rc<dyn ShutdownShell>,
     stop_pump: Option<Box<dyn FnOnce()>>,
+    driver: DriverSlot,
     ended: EndedSlot,
     running: Option<Running>,
 }
@@ -279,6 +285,7 @@ pub fn install(parts: QuitParts, cx: &mut App) {
         engine: parts.engine,
         shell: parts.shell,
         stop_pump: Some(parts.stop_pump),
+        driver: parts.driver,
         ended: parts.ended,
         running: None,
     });
@@ -376,6 +383,14 @@ fn stop(end: End, cx: &mut App) {
     let quitter = cx.global_mut::<Quitter>();
     if let Some(stop_pump) = quitter.stop_pump.take() {
         stop_pump();
+    }
+    if end == End::Stuck {
+        // The driver's stuck path logs every live browser and makes no engine call. It runs here,
+        // while the windows and the hidden host that hold those browsers still exist.
+        let driver = quitter.driver.borrow_mut().take();
+        if let Some(driver) = driver {
+            driver.shutdown();
+        }
     }
     if let Some(running) = quitter.running.as_mut() {
         let intent = std::mem::replace(&mut running.intent, ExitIntent::Quit);
@@ -615,14 +630,19 @@ mod tests {
         engine: Rc<FakeEngine>,
         shell: Rc<Shell>,
         stopped: Rc<Cell<bool>>,
+        driver: DriverSlot,
         ended: EndedSlot,
+        /// The live count when phase one ended, as step 4 begins.
+        live_at_phase_one: Rc<Cell<Option<usize>>>,
     }
 
     fn start(cx: &mut TestAppContext) -> Harness {
         let (engine, mut events) = FakeEngine::new();
         let shell = Rc::new(Shell { saved: Cell::new(0), hidden: Cell::new(0) });
         let stopped = Rc::new(Cell::new(false));
+        let driver: DriverSlot = Rc::new(RefCell::new(Some(engine.driver())));
         let ended = EndedSlot::default();
+        let live_at_phase_one = Rc::new(Cell::new(None));
         let parts = QuitParts {
             engine: engine.clone(),
             shell: shell.clone(),
@@ -630,8 +650,10 @@ mod tests {
                 let stopped = stopped.clone();
                 move || stopped.set(true)
             }),
+            driver: driver.clone(),
             ended: ended.clone(),
         };
+        let (live, fake) = (live_at_phase_one.clone(), engine.clone());
         cx.update(|cx| {
             install(parts, cx);
             engine.set_hidden_host(NativeHandle::from_raw(1));
@@ -639,7 +661,10 @@ mod tests {
                 use futures::StreamExt as _;
                 while let Some(event) = events.next().await {
                     cx.update(|cx| match event {
-                        BrowserEvent::UserBrowsersClosed => user_browsers_closed(cx),
+                        BrowserEvent::UserBrowsersClosed => {
+                            live.set(Some(fake.live_browsers()));
+                            user_browsers_closed(cx)
+                        }
                         BrowserEvent::AllBrowsersClosed => all_browsers_closed(cx),
                         _ => {}
                     });
@@ -647,7 +672,7 @@ mod tests {
             })
             .detach();
         });
-        Harness { engine, shell, stopped, ended }
+        Harness { engine, shell, stopped, driver, ended, live_at_phase_one }
     }
 
     fn create(engine: &FakeEngine, tab: TabId) {
@@ -688,6 +713,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(h.engine.phase(), FakePhase::Drained);
         assert!(h.stopped.get());
+        assert!(h.driver.borrow().is_some() && !h.engine.driver_shut_down(), "a drained engine shuts down after GPUI returns");
         let ended = h.ended.borrow_mut().take().expect("ended");
         assert_eq!((ended.end, ended.code), (End::Drained, 0));
         assert!(matches!(ended.intent, ExitIntent::Quit));
@@ -711,6 +737,7 @@ mod tests {
         assert_eq!(ended.end, End::Stuck);
         assert!(matches!(ended.intent, ExitIntent::RemoveProfile));
         assert!(h.stopped.get());
+        assert!(h.driver.borrow().is_none() && h.engine.driver_shut_down(), "the stuck path runs inside GPUI, before its windows go");
         assert_eq!(h.engine.phase(), FakePhase::ClosingUser, "close_internal never ran");
     }
 
@@ -736,7 +763,9 @@ mod tests {
         cx.update(|cx| request(ExitIntent::Quit, cx));
         cx.run_until_parked();
         assert!(h.engine.tab(tab).is_none());
+        assert_eq!(h.live_at_phase_one.get(), Some(1), "only the maintenance browser is left for step 4");
         assert_eq!(h.engine.phase(), FakePhase::Drained);
+        assert_eq!(h.engine.live_browsers(), 0);
         let closes: Vec<_> = h
             .engine
             .commands()

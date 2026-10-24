@@ -16,16 +16,12 @@ use gpui::{
     WindowBounds, WindowHandle, WindowOptions, div,
 };
 use gpui_component::ActiveTheme as _;
-use vsesvit_engine::{BrowserEvent, EngineDriver};
+use vsesvit_engine::BrowserEvent;
 
 use super::instance::Invocation;
-use crate::app::quit::{self, ExitIntent, ShutdownShell};
+use crate::app::quit::{self, DriverSlot, ExitIntent, ShutdownShell};
 use crate::platform::{self, Desktop as _, Os, SurfaceOps};
 use crate::theme::{self, tokens};
-
-/// Where the driver lives from step 9 to step 8: the pump borrows it for each step, and boot takes it
-/// back after GPUI returned (design section 3.6, "Who owns the driver at the end").
-pub type DriverSlot = Rc<RefCell<Option<Box<dyn EngineDriver>>>>;
 
 /// The pump's longest wait while the engine is active, and once it has been idle for [`IDLE_AFTER`]
 /// (design section 3.4).

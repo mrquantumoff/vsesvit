@@ -15,8 +15,8 @@ use vsesvit_engine::{BrowserEvent, Engine};
 
 use super::extensions::AtStart;
 use super::instance::Listener;
-use super::interim::{self, DriverSlot, StubShell};
-use crate::app::quit::{self, EndedSlot, ExitIntent, QuitParts};
+use super::interim::{self, StubShell};
+use crate::app::quit::{self, DriverSlot, EndedSlot, ExitIntent, QuitParts};
 use crate::platform::{self, Desktop as _, Os};
 
 /// The start-up clear's cap (design section 3.7), as WinUI's.
@@ -43,10 +43,11 @@ impl Global for Booted {}
 
 pub fn start(args: StartArgs, cx: &mut App) {
     crate::theme::init(cx);
-    let stop_pump = interim::pump(args.driver, cx);
+    let stop_pump = interim::pump(args.driver.clone(), cx);
     interim::route(args.events, cx);
     let shell = Rc::new(StubShell::default());
-    quit::install(QuitParts { engine: args.engine.clone(), shell: shell.clone(), stop_pump, ended: args.ended }, cx);
+    let parts = QuitParts { engine: args.engine.clone(), shell: shell.clone(), stop_pump, driver: args.driver, ended: args.ended };
+    quit::install(parts, cx);
 
     let desktop = match <Os as platform::Desktop>::init() {
         Ok(desktop) => Rc::new(desktop),

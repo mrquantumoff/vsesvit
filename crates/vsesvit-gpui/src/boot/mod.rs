@@ -56,7 +56,7 @@ pub fn run(factory: &dyn EngineFactory) -> ExitCode {
     };
 
     let core = Rc::new(RefCell::new(profile));
-    let driver: interim::DriverSlot = Rc::new(RefCell::new(Some(parts.driver)));
+    let driver: quit::DriverSlot = Rc::new(RefCell::new(Some(parts.driver)));
     let ended = EndedSlot::default();
     let start = start::StartArgs {
         engine: parts.engine,
