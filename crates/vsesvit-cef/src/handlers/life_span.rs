@@ -294,7 +294,7 @@ pub fn after_created(creation: Option<CreationId>, page: Rc<dyn BrowserOps>, id:
             sink.send(BrowserEvent::PopupOpened { opener, tab, url, disposition });
         }
         if let Some((html, shown_url)) = then.html {
-            super::super::schemes::load_html(tab, html, shown_url.as_ref());
+            crate::schemes::load_html(tab, html, shown_url.as_ref());
         }
     }
     if then.hidden {

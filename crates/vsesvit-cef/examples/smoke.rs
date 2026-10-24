@@ -102,7 +102,7 @@ fn run() -> Result<(), String> {
                 let result = scenario(cx, &engine, &log, port).await;
                 stop.set(true);
                 *outcome.borrow_mut() = Some(result);
-                let _ = cx.update(|cx| cx.quit());
+                cx.update(|cx| cx.quit());
             })
             .detach();
         });
@@ -284,12 +284,13 @@ impl Harness<'_> {
         self.wait(cx, &format!("a commit of {url}"), committed).await?;
         let deadline = Instant::now() + STEP;
         loop {
-            let log = self.log.borrow();
-            let commit = log.iter().rposition(committed);
-            let stopped = log.iter().enumerate().skip(commit.unwrap_or(at)).any(|(_, e)| {
-                matches!(e, BrowserEvent::Tab(t, TabEvent::LoadingStateChanged { loading: false, .. }) if *t == tab)
-            });
-            drop(log);
+            let stopped = {
+                let log = self.log.borrow();
+                let commit = log.iter().rposition(committed).unwrap_or(at);
+                log[commit..].iter().any(|e| {
+                    matches!(e, BrowserEvent::Tab(t, TabEvent::LoadingStateChanged { loading: false, .. }) if *t == tab)
+                })
+            };
             if stopped {
                 return Ok(());
             }
@@ -324,10 +325,9 @@ impl Harness<'_> {
         }
     }
 
-    async fn close(&self, cx: &mut AsyncApp, tab: TabId, native: NativeHandle) -> Result<(), String> {
+    async fn close(&self, cx: &mut AsyncApp, tab: TabId) -> Result<(), String> {
         self.engine.close_tab(tab, CloseMode::Force);
         self.wait(cx, "Closed", |e| *e == BrowserEvent::Tab(tab, TabEvent::Closed)).await?;
-        let _ = native;
         Ok(())
     }
 
@@ -432,7 +432,7 @@ async fn scenario(cx: &mut AsyncApp, engine: &Rc<dyn Engine>, log: &Log, port: u
     } else {
         println!("smoke: info sandbox: chrome://sandbox in a dev build says {summary:?}");
     }
-    h.close(cx, s.0, s.1).await?;
+    h.close(cx, s.0).await?;
 
     engine.load(a.0, &Url::parse(&format!("{base}/page?n=4")).map_err(|e| e.to_string())?);
     h.loaded(cx, a.0, &format!("{base}/page?n=4")).await?;
@@ -465,8 +465,8 @@ async fn scenario(cx: &mut AsyncApp, engine: &Rc<dyn Engine>, log: &Log, port: u
     let bound_d = h.eval(cx, d.0, "typeof window.vsesvit").await?;
     let bound_e = h.eval(cx, e.0, "typeof window.vsesvit").await?;
     check("page_message_scope", bound_d == "\"object\"" && bound_e == "\"undefined\"", format!("allowed origin {bound_d}, other origin {bound_e}"))?;
-    h.close(cx, d.0, d.1).await?;
-    h.close(cx, e.0, e.1).await?;
+    h.close(cx, d.0).await?;
+    h.close(cx, e.0).await?;
 
     // A page that closes itself: an unrequested `Closed`, and the GPUI window stays.
     let f = h.open(cx, &format!("{base}/page?n=6"), false).await?;
@@ -478,7 +478,7 @@ async fn scenario(cx: &mut AsyncApp, engine: &Rc<dyn Engine>, log: &Log, port: u
     check("window_close", window_alive && others == "1", format!("GPUI window open: {window_alive}; other tabs answer: {others}"))?;
 
     for tab in [a, b, c] {
-        h.close(cx, tab.0, tab.1).await?;
+        h.close(cx, tab.0).await?;
     }
     check("tabs_closed", true, "three tabs closed")?;
 
