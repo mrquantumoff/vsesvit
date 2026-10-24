@@ -927,6 +927,13 @@ mod tests {
 
     #[test]
     fn a_picture_stays_until_the_list_names_its_replacement() {
+        // Root ignores the mode bits this test blocks the write with (CI's Linux job runs in a
+        // root container).
+        #[cfg(unix)]
+        if std::os::unix::fs::MetadataExt::uid(&fs::metadata("/proc/self").unwrap()) == 0 {
+            eprintln!("skipped: running as root, so a read-only list can still be replaced");
+            return;
+        }
         let dir = dir();
         let default = ProfileId::default_profile();
         fs::create_dir_all(dir.root(&default)).unwrap();
