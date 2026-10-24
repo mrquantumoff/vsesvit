@@ -23,6 +23,10 @@ pub mod x11;
 pub type Surface = x11::XSurface;
 #[cfg(target_os = "linux")]
 pub type Os = x11::XDesktop;
+#[cfg(windows)]
+pub type Surface = windows::WinSurface;
+#[cfg(windows)]
+pub type Os = windows::WinDesktop;
 
 /// A point on the screen, in physical pixels. Never in the engine contract, which has its own
 /// page-relative `PagePoint`.
@@ -222,7 +226,7 @@ pub trait Desktop: Sized + 'static {
 }
 
 /// The real backend's surface for `window`, as the shell holds it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub fn attach(window: &gpui::Window) -> Result<Box<dyn SurfaceOps>, PlatformError> {
     Ok(Box::new(<Surface as NativeSurface>::attach(window)?))
 }
