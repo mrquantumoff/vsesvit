@@ -1,12 +1,9 @@
 //! Process setup that has to happen before XAML starts, and the few Win32 calls the shell needs.
 
-use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::os::windows::ffi::OsStringExt;
-use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
 
-use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, w};
+use vsesvit_core::os;
+use windows_core::{HRESULT, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, w};
 
 use crate::bindings::*;
 use crate::shortcuts::Mods;
@@ -128,7 +125,7 @@ pub(crate) fn report_startup_failure(error: &StartupError) {
                 arch_name()
             );
             if message_box(&text, MB_YESNO | MB_ICONERROR) == IDYES {
-                open_in_shell(RUNTIME_DOWNLOAD.as_ref());
+                open_link(RUNTIME_DOWNLOAD);
             }
         }
         other => {
@@ -161,54 +158,20 @@ pub(crate) fn message_box(text: &str, style: i32) -> i32 {
     }
 }
 
-/// Opens a URL, file or folder with its default program.
-pub(crate) fn open_in_shell(target: &OsStr) {
-    let target = HSTRING::from(target);
-    unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            w!("open"),
-            PCWSTR(target.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        );
-    }
-}
-
-/// Where Vsesvit stands as the browser Windows opens links with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DefaultBrowser {
-    Vsesvit,
-    Other,
-    /// Windows does not know Vsesvit as a browser: this copy was not installed by the
-    /// installer, which registers it.
-    Unregistered,
-}
-
-/// The names `packaging/windows/installer.nsi` registers Vsesvit under.
-const REGISTERED_NAME: &str = "Vsesvit";
-const PROG_ID: &str = "VsesvitHTML";
-
-pub(crate) fn default_browser() -> DefaultBrowser {
-    if user_registry_string(r"Software\RegisteredApplications", REGISTERED_NAME).is_none() {
-        return DefaultBrowser::Unregistered;
-    }
-    let choice = user_registry_string(
-        r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
-        "ProgId",
-    );
-    if choice.as_deref() == Some(PROG_ID) {
-        DefaultBrowser::Vsesvit
-    } else {
-        DefaultBrowser::Other
-    }
-}
-
 /// Windows Settings' page for Vsesvit's default apps. Windows keeps the choice itself to the
 /// user; no app may make itself the default.
 pub(crate) fn open_default_apps_settings() {
-    open_in_shell(format!("ms-settings:defaultapps?registeredAppUser={REGISTERED_NAME}").as_ref());
+    open_link(&format!(
+        "ms-settings:defaultapps?registeredAppUser={}",
+        os::REGISTERED_NAME
+    ));
+}
+
+/// Opens `link` with the program Windows picks for it, logging a failure.
+fn open_link(link: &str) {
+    if let Err(e) = os::open(link.as_ref()) {
+        log::warn!("open {link}: {e}");
+    }
 }
 
 /// Whether Windows shows apps dark (Settings > Personalization > Colors); light when unknown.
@@ -230,64 +193,6 @@ pub(crate) fn apps_dark() -> bool {
         )
     };
     read == 0 && light == 0
-}
-
-/// A string value under `HKEY_CURRENT_USER`.
-fn user_registry_string(key: &str, value: &str) -> Option<String> {
-    let (key, value) = (HSTRING::from(key), HSTRING::from(value));
-    let read = |data: *mut u16, bytes: &mut u32| unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            PCWSTR(key.as_ptr()),
-            PCWSTR(value.as_ptr()),
-            RRF_RT_REG_SZ as u32,
-            std::ptr::null_mut(),
-            data.cast(),
-            bytes,
-        )
-    };
-    let mut bytes = 0;
-    if read(std::ptr::null_mut(), &mut bytes) != 0 {
-        return None;
-    }
-    let mut buffer = vec![0u16; (bytes as usize).div_ceil(2)];
-    if read(buffer.as_mut_ptr(), &mut bytes) != 0 {
-        return None;
-    }
-    let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
-    Some(String::from_utf16_lossy(&buffer[..end]))
-}
-
-/// Opens File Explorer on the folder that holds `file`, with `file` selected.
-pub(crate) fn show_in_folder(file: &Path) {
-    // Explorer reads its own command line: the path is quoted inside the one argument.
-    let mut select = OsString::from("/select,\"");
-    select.push(file);
-    select.push("\"");
-    if let Err(e) = std::process::Command::new("explorer.exe")
-        .raw_arg(select)
-        .spawn()
-    {
-        log::warn!("show {} in its folder: {e}", file.display());
-    }
-}
-
-/// The user's Downloads folder, wherever they moved it.
-pub(crate) fn downloads_folder() -> windows_core::Result<PathBuf> {
-    const FOLDERID_DOWNLOADS: GUID = GUID::from_u128(0x374de290_123f_4565_9164_39c4925e467b);
-    unsafe {
-        let mut path = PWSTR::null();
-        let found = SHGetKnownFolderPath(
-            &FOLDERID_DOWNLOADS,
-            KF_FLAG_DEFAULT,
-            std::ptr::null_mut(),
-            &mut path,
-        )
-        .ok()
-        .map(|()| PathBuf::from(OsString::from_wide(path.as_wide())));
-        CoTaskMemFree(path.0.cast());
-        found
-    }
 }
 
 #[windows_core::interface("eecdbf0e-bae9-4cb6-a68e-9598e1cb57bb")]

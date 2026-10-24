@@ -33,6 +33,7 @@ use std::rc::{Rc, Weak};
 
 use vsesvit_core::address::{readable_url, simplified_url};
 use vsesvit_core::bookmarks::BookmarkId;
+use vsesvit_core::downloads::Indicator;
 use vsesvit_core::extensions::toolbar::Layout;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
@@ -50,7 +51,6 @@ use crate::bookmarks_bar::{Bar, BarCommand, BarItem, Disposition};
 use crate::browser::{Browser, ClosedTab};
 use crate::connection::Headline;
 use crate::dialogs::{self, Dialog};
-use crate::downloads::Indicator;
 use crate::extension_toolbar as toolbar;
 use crate::layout::StripKind;
 use crate::omnibox::{self, Address};

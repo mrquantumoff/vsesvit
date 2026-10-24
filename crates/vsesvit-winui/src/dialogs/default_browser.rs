@@ -5,12 +5,12 @@
 use std::rc::Rc;
 use std::time::Duration;
 
+use vsesvit_core::os::{self, DefaultBrowser};
 use windows_core::Result;
 
 use super::on_click;
 use crate::bindings::*;
-use crate::platform::{self, DefaultBrowser};
-use crate::{exec, xaml};
+use crate::{exec, platform, xaml};
 
 /// The status, the button and a line under them.
 pub(super) const MARKUP: &str = r#"
@@ -62,7 +62,7 @@ pub(super) fn wire(root: &FrameworkElement) -> Result<Rc<Row>> {
         make: xaml::find(root, "DefaultBrowserMake")?,
         hint: xaml::find(root, "DefaultBrowserHint")?,
     });
-    let mut shown = platform::default_browser();
+    let mut shown = os::default_browser();
     row.show(shown);
     on_click(&row.make, platform::open_default_apps_settings)?;
     let weak = Rc::downgrade(&row);
@@ -70,7 +70,7 @@ pub(super) fn wire(root: &FrameworkElement) -> Result<Rc<Row>> {
         loop {
             exec::sleep(POLL).await;
             let Some(row) = weak.upgrade() else { break };
-            let now = platform::default_browser();
+            let now = os::default_browser();
             if now != shown {
                 shown = now;
                 row.show(now);

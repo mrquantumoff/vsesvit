@@ -1308,7 +1308,7 @@ impl Tab {
                     if let Some(window) = tab.window()
                         && let Some(browser) = window.browser()
                     {
-                        browser.download_starting(&window, args);
+                        browser.download_starting(&window, tab.id, args);
                     }
                 },
             ))?

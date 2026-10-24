@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use vsesvit_core::bookmarks::BookmarkId;
 use vsesvit_core::import::Source;
 use vsesvit_core::onboarding::RECOMMENDED_EXTENSIONS;
+use vsesvit_core::os;
 use vsesvit_core::prefs::{Theme, keys};
 use windows_core::{Interface, Result};
 
@@ -22,7 +23,7 @@ use crate::bindings::*;
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog, Preview, WELCOME_PAGES, WelcomePage, describe_default_browser};
 use crate::window::BrowserWindow;
-use crate::{exec, platform, xaml};
+use crate::{exec, xaml};
 
 const WAIT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(50);
@@ -128,7 +129,7 @@ pub(super) async fn run(
                 .await;
             }
             WelcomePage::DefaultBrowser => {
-                let state = platform::default_browser();
+                let state = os::default_browser();
                 let status = text(&preview, "DefaultBrowserStatus");
                 let button = preview
                     .find::<UIElement>("DefaultBrowserMake")
@@ -145,7 +146,7 @@ pub(super) async fn run(
                             "button_shown": button,
                             "ok": is_shown && chrome_ok
                                 && status == describe_default_browser(state).0
-                                && button == (state == platform::DefaultBrowser::Other),
+                                && button == (state == os::DefaultBrowser::Other),
                         })
                     },
                 )

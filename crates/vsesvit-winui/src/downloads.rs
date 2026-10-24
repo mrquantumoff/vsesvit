@@ -1,26 +1,27 @@
-//! Downloads: where WebView2 saves each file, the live byte counts, and core's downloads list.
+//! Downloads: where WebView2 saves each file, and core's downloads list.
 //!
 //! Every tab hands its `DownloadStarting` here. The file goes to the download folder under a
 //! name no file or running download has, or where the user says when they asked to be asked;
 //! core records the start, each pause or interruption, and the outcome, a private window's in
-//! its private session. Byte counts stay in memory while a download runs. Views subscribe while
-//! they are open, and a window's toolbar shows the downloads button once a download it lists
-//! started this session: a private window's download is listed in private windows only.
+//! its private session. Core's [`Tracker`] holds the running downloads, their byte counts and
+//! the toolbar button's state; this keeps WebView2's operations in it and tells the views what
+//! changed. Views subscribe while they are open.
 //!
 //! A file of a type that can run code is written under its unconfirmed name and waits for the
 //! user to keep or discard it; the window it came from shows Chrome's warning under the
 //! downloads button. Every finished file carries the Mark of the Web, so SmartScreen checks it
 //! when it is opened.
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::io::Write;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use vsesvit_core::Profile;
-use vsesvit_core::downloads::{self as list, Download, DownloadId, Progress, State, Transfer, listed_in};
+use vsesvit_core::downloads::{
+    self as list, Download, DownloadId, Indicator, LIST_LIMIT, Progress, Reported, Started, State,
+    Tracker,
+};
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
 use windows_core::Result;
@@ -28,13 +29,9 @@ use windows_core::Result;
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::sync::live;
+use crate::tab::TabId;
 use crate::window::BrowserWindow;
-use crate::{exec, pickers, platform};
-
-/// Entries the Downloads view lists.
-const LISTED: usize = 200;
-/// A running download's progress reaches the views at most this often.
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+use crate::{exec, pickers};
 
 /// What changed, for the views that show downloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,33 +42,15 @@ pub(crate) enum Change {
     List,
 }
 
-/// The toolbar's downloads button.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Indicator {
-    /// No download started this session.
-    Hidden,
-    Idle,
-    /// A download is running.
-    Busy,
-}
-
 type OnChange = dyn Fn(Change);
 
 /// Called with each change while the view that registered it keeps it alive.
 pub(crate) type Subscriber = Rc<OnChange>;
 
-/// A download the engine holds.
-struct Live {
+/// What the tracker keeps for a download the engine holds.
+#[derive(Clone)]
+struct Operation {
     operation: CoreWebView2DownloadOperation,
-    /// The kind of window it started in.
-    browsing: Browsing,
-    /// Where the engine writes: the destination, or its unconfirmed name for a dangerous file.
-    path: PathBuf,
-    dangerous: bool,
-    /// As last stored in core.
-    state: State,
-    transfer: Transfer,
-    notified: Instant,
     /// Whose tab started it: a dangerous file is warned about there.
     window: Weak<BrowserWindow>,
 }
@@ -79,10 +58,7 @@ struct Live {
 pub(crate) struct Downloads {
     /// The platform's Downloads folder, used while the user has chosen none.
     default_dir: PathBuf,
-    live: RefCell<HashMap<DownloadId, Live>>,
-    started: Cell<bool>,
-    /// Whether a download started in the private session, whose windows alone show it.
-    started_private: Cell<bool>,
+    tracker: RefCell<Tracker<Operation, TabId>>,
     subscribers: RefCell<Vec<Weak<OnChange>>>,
 }
 
@@ -95,15 +71,13 @@ impl Downloads {
             Ok(n) => log::info!("{n} download(s) from the last run did not finish"),
             Err(e) => log::warn!("downloads list: {e}"),
         }
-        let default_dir = platform::downloads_folder().unwrap_or_else(|e| {
+        let default_dir = vsesvit_core::os::downloads_dir().unwrap_or_else(|e| {
             log::warn!("the Downloads folder: {e}");
             std::env::temp_dir()
         });
         Self {
             default_dir,
-            live: RefCell::new(HashMap::new()),
-            started: Cell::new(false),
-            started_private: Cell::new(false),
+            tracker: RefCell::new(Tracker::new()),
             subscribers: RefCell::new(Vec::new()),
         }
     }
@@ -135,26 +109,12 @@ impl Browser {
 
     /// The downloads button of a window of `browsing`'s kind.
     pub fn downloads_indicator(&self, browsing: Browsing) -> Indicator {
-        let downloads = &self.downloads;
-        if downloads
-            .live
-            .borrow()
-            .values()
-            .any(|l| l.state == State::InProgress && listed_in(l.browsing, browsing))
-        {
-            Indicator::Busy
-        } else if downloads.started.get()
-            || (downloads.started_private.get() && listed_in(Browsing::Private, browsing))
-        {
-            Indicator::Idle
-        } else {
-            Indicator::Hidden
-        }
+        self.downloads.tracker.borrow().indicator(browsing)
     }
 
     /// Newest first, what windows of `browsing`'s kind list.
     pub fn download_list(&self, browsing: Browsing) -> Vec<Download> {
-        self.core(|p| p.downloads().list(LISTED, browsing))
+        self.core(|p| p.downloads().list(LIST_LIMIT, browsing))
             .unwrap_or_else(|e| {
                 log::warn!("downloads list: {e}");
                 Vec::new()
@@ -164,8 +124,7 @@ impl Browser {
     /// Bytes received and expected so far, and how fast they arrive, while the engine holds
     /// the download.
     pub fn download_progress(&self, id: DownloadId) -> Option<Progress> {
-        let live = self.downloads.live.borrow();
-        live.get(&id).map(|l| l.transfer.at(Instant::now()))
+        self.downloads.tracker.borrow().progress(id, Instant::now())
     }
 
     pub fn cancel_download(&self, id: DownloadId) {
@@ -191,10 +150,10 @@ impl Browser {
     ) {
         let operation = self
             .downloads
-            .live
+            .tracker
             .borrow()
-            .get(&id)
-            .map(|l| l.operation.clone());
+            .handle(id)
+            .map(|held| held.operation.clone());
         let Some(operation) = operation else {
             return;
         };
@@ -225,17 +184,9 @@ impl Browser {
     /// The private session ended: its running downloads are cancelled, and the private windows
     /// to come show no button for its downloads.
     pub fn end_private_downloads(&self) {
-        self.downloads.started_private.set(false);
-        let running: Vec<CoreWebView2DownloadOperation> = self
-            .downloads
-            .live
-            .borrow()
-            .values()
-            .filter(|l| l.browsing == Browsing::Private)
-            .map(|l| l.operation.clone())
-            .collect();
-        for operation in running {
-            if let Err(e) = operation.Cancel() {
+        let running = self.downloads.tracker.borrow_mut().end_private();
+        for held in running {
+            if let Err(e) = held.operation.Cancel() {
                 log::warn!("cancel download: {e}");
             }
         }
@@ -268,14 +219,18 @@ impl Browser {
     pub fn download_starting(
         self: &Rc<Self>,
         window: &Rc<BrowserWindow>,
+        tab: TabId,
         args: &CoreWebView2DownloadStartingEventArgs,
     ) {
-        cancel_unplaced(self.place_download(window, args), || args.SetCancel(true));
+        cancel_unplaced(self.place_download(window, tab, args), || {
+            args.SetCancel(true)
+        });
     }
 
     fn place_download(
         self: &Rc<Self>,
         window: &Rc<BrowserWindow>,
+        tab: TabId,
         args: &CoreWebView2DownloadStartingEventArgs,
     ) -> Result<()> {
         args.SetHandled(true)?;
@@ -286,7 +241,7 @@ impl Browser {
         let browsing = window.browsing();
         if !self.core(|p| p.prefs().get(&keys::DOWNLOADS_ASK)) {
             let path = self.free_path(&dir, &name);
-            return self.begin_download(args, &path, browsing, Rc::downgrade(window));
+            return self.begin_download(args, &path, browsing, tab, Rc::downgrade(window));
         }
         let deferral = args.GetDeferral()?;
         let owner = window.window_id();
@@ -299,7 +254,9 @@ impl Browser {
                 Err(e) => Err(e),
             };
             let placed = match (picked, browser.upgrade()) {
-                (Ok(Some(path)), Some(browser)) => browser.begin_download(&args, &path, browsing, window),
+                (Ok(Some(path)), Some(browser)) => {
+                    browser.begin_download(&args, &path, browsing, tab, window)
+                }
                 (Ok(_), _) => args.SetCancel(true),
                 (Err(e), _) => {
                     log::warn!("save dialog: {e}");
@@ -317,18 +274,7 @@ impl Browser {
         if let Err(e) = std::fs::create_dir_all(dir) {
             log::warn!("{}: {e}", dir.display());
         }
-        list::unique_destination(dir, name, |path| self.taken(path))
-    }
-
-    /// Whether a file or a running download has `path`.
-    fn taken(&self, path: &Path) -> bool {
-        path.exists()
-            || self
-                .downloads
-                .live
-                .borrow()
-                .values()
-                .any(|l| l.path == path)
+        self.downloads.tracker.borrow_mut().reserve(dir, name)
     }
 
     /// Sends the download to `path`, or beside it under its unconfirmed name if it can run
@@ -339,35 +285,49 @@ impl Browser {
         args: &CoreWebView2DownloadStartingEventArgs,
         path: &Path,
         browsing: Browsing,
+        tab: TabId,
         window: Weak<BrowserWindow>,
     ) -> Result<()> {
         let operation = args.DownloadOperation()?;
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let dangerous = list::is_dangerous(&name, operation.MimeType().ok().as_deref());
-        let path = match path.parent() {
-            Some(dir) if dangerous && self.taken(&list::unconfirmed_path(path)) => {
-                self.free_path(dir, &name)
-            }
-            _ => path.to_owned(),
-        };
-        let path = path.as_path();
-        let written = if dangerous {
-            list::unconfirmed_path(path)
-        } else {
-            path.to_owned()
-        };
-        args.SetResultFilePath(&written.to_string_lossy())?;
+        let placement = self
+            .downloads
+            .tracker
+            .borrow_mut()
+            .place(path, operation.MimeType().ok().as_deref());
+        let started = self.start_download(args, operation, &placement, browsing, tab, window);
+        if started.is_err() {
+            self.downloads
+                .tracker
+                .borrow_mut()
+                .release(&placement.destination);
+        }
+        started
+    }
+
+    fn start_download(
+        self: &Rc<Self>,
+        args: &CoreWebView2DownloadStartingEventArgs,
+        operation: CoreWebView2DownloadOperation,
+        placement: &list::Placement,
+        browsing: Browsing,
+        tab: TabId,
+        window: Weak<BrowserWindow>,
+    ) -> Result<()> {
+        args.SetResultFilePath(&placement.written.to_string_lossy())?;
         let total = known_total(operation.TotalBytesToReceive()?);
         let url = operation.Uri()?;
         let now = u64::try_from(vsesvit_core::session::plan::now_ms()).unwrap_or(0);
         let download = self
-            .core(|p| p.downloads().start(&url, path, total, now, browsing))
+            .core(|p| {
+                p.downloads()
+                    .start(&url, &placement.destination, total, now, browsing)
+            })
             .map_err(|e| windows_core::Error::new(E_FAIL, e.to_string()))?;
         let id = download.id;
         log::info!(
             "downloading {} to {}",
             browsing.loggable(&url),
-            browsing.loggable(&written.display())
+            browsing.loggable(&placement.written.display())
         );
         let browser = Rc::downgrade(self);
         operation
@@ -385,41 +345,28 @@ impl Browser {
                 }
             })?
             .forget();
-        self.downloads.live.borrow_mut().insert(
+        self.downloads.tracker.borrow_mut().track(
             id,
-            Live {
-                operation,
+            Started {
+                handle: Operation { operation, window },
                 browsing,
-                path: written,
-                dangerous,
-                state: State::InProgress,
-                transfer: Transfer::new(Instant::now(), total),
-                notified: Instant::now(),
-                window,
+                tab: Some(tab),
+                placement: placement.clone(),
+                total,
             },
+            Instant::now(),
         );
-        match browsing {
-            Browsing::Normal => self.downloads.started.set(true),
-            Browsing::Private => self.downloads.started_private.set(true),
-        }
         self.downloads_changed(Change::List);
         Ok(())
     }
 
     fn download_progressed(&self, id: DownloadId, operation: &CoreWebView2DownloadOperation) {
         let (received, total) = counts(operation);
-        let due = {
-            let mut live = self.downloads.live.borrow_mut();
-            let Some(entry) = live.get_mut(&id) else {
-                return;
-            };
-            entry.transfer.update(Instant::now(), received, total);
-            let due = entry.notified.elapsed() >= PROGRESS_INTERVAL;
-            if due {
-                entry.notified = Instant::now();
-            }
-            due
-        };
+        let due =
+            self.downloads
+                .tracker
+                .borrow_mut()
+                .progressed(id, Instant::now(), received, total);
         if due {
             self.downloads_changed(Change::Progress);
         }
@@ -430,32 +377,25 @@ impl Browser {
             return;
         };
         let can_resume = operation.CanResume().unwrap_or(false);
-        let (state, path, window, browsing) = {
-            let mut live = self.downloads.live.borrow_mut();
-            let Some(entry) = live.get_mut(&id) else {
-                return;
-            };
-            let state = list_state(engine, reason, can_resume, entry.dangerous);
-            if state == entry.state {
-                return;
-            }
-            entry.state = state;
-            entry.transfer.restart(Instant::now());
-            let (path, window) = (entry.path.clone(), entry.window.clone());
-            let browsing = entry.browsing;
-            if !state.is_live() {
-                live.remove(&id);
-            }
-            (state, path, window, browsing)
+        let settled = self.downloads.tracker.borrow_mut().reported(
+            id,
+            reported(engine, reason, can_resume),
+            Instant::now(),
+        );
+        let Some(settled) = settled else {
+            return;
         };
+        let (state, browsing) = (settled.state, settled.browsing);
         let (received, total) = counts(operation);
         log::info!("download {} is {state:?}: {received} bytes", id.0);
         if engine == CoreWebView2DownloadState::Completed {
             let marked = operation.Uri().map_err(std::io::Error::other);
-            if let Err(e) = marked.and_then(|url| mark_of_the_web(&path, &url)) {
+            if let Err(e) =
+                marked.and_then(|url| vsesvit_core::os::mark_origin(&settled.written, &url, None))
+            {
                 log::warn!(
                     "mark of the web on {}: {e}",
-                    browsing.loggable(&path.display())
+                    browsing.loggable(&settled.written.display())
                 );
             }
         }
@@ -464,7 +404,7 @@ impl Browser {
         }
         self.downloads_changed(Change::List);
         if state == State::Unconfirmed
-            && let Some(window) = window.upgrade()
+            && let Some(window) = settled.handle.window.upgrade()
             && let Some(download) = self
                 .download_list(browsing)
                 .into_iter()
@@ -503,36 +443,24 @@ fn cancel_unplaced(placed: Result<()>, cancel: impl FnOnce() -> Result<()>) {
     }
 }
 
-/// The list's state for the engine's. WebView2 reports a pause as an interruption.
-fn list_state(
+/// What core is told the engine's download is doing. WebView2 reports a pause as an
+/// interruption.
+fn reported(
     state: CoreWebView2DownloadState,
     reason: CoreWebView2DownloadInterruptReason,
     can_resume: bool,
-    dangerous: bool,
-) -> State {
+) -> Reported {
     use CoreWebView2DownloadInterruptReason as Reason;
     match state {
-        CoreWebView2DownloadState::Completed if dangerous => State::Unconfirmed,
-        CoreWebView2DownloadState::Completed => State::Completed,
+        CoreWebView2DownloadState::Completed => Reported::Completed,
         CoreWebView2DownloadState::Interrupted => match reason {
-            Reason::UserPaused => State::Paused,
-            Reason::UserCanceled => State::Cancelled,
-            _ if can_resume => State::Interrupted,
-            _ => State::Failed,
+            Reason::UserPaused => Reported::Paused,
+            Reason::UserCanceled => Reported::Cancelled,
+            _ => Reported::Interrupted {
+                resumable: can_resume,
+            },
         },
-        _ => State::InProgress,
-    }
-}
-
-/// Marks a finished file as downloaded from the Internet, unless the engine already did:
-/// SmartScreen checks such a file when it is opened, and a kept file takes the mark along.
-fn mark_of_the_web(file: &Path, url: &str) -> std::io::Result<()> {
-    let mut stream = file.as_os_str().to_owned();
-    stream.push(":Zone.Identifier");
-    match std::fs::File::create_new(&stream) {
-        Ok(mut f) => f.write_all(list::zone_identifier(url).as_bytes()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e),
+        _ => Reported::Running,
     }
 }
 
@@ -553,6 +481,10 @@ fn known_total(total: i64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
+    use vsesvit_core::downloads::state_for;
+
     use super::*;
 
     #[test]
@@ -619,27 +551,11 @@ mod tests {
         ];
         for (engine, reason, can_resume, dangerous, state) in cases {
             assert_eq!(
-                list_state(engine, reason, can_resume, dangerous),
+                state_for(reported(engine, reason, can_resume), dangerous),
                 state,
                 "{engine:?} {reason:?} resumable {can_resume} dangerous {dangerous}"
             );
         }
-    }
-
-    #[test]
-    fn a_finished_file_is_marked_once() {
-        let dir = std::env::temp_dir().join(format!("vsesvit-motw-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("setup.exe");
-        std::fs::write(&file, b"MZ").unwrap();
-        mark_of_the_web(&file, "https://example.com/setup.exe").unwrap();
-        mark_of_the_web(&file, "https://other.example/").unwrap();
-        let mark = std::fs::read_to_string(format!("{}:Zone.Identifier", file.display()));
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(
-            mark.unwrap(),
-            "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://example.com/setup.exe\r\n"
-        );
     }
 
     #[test]

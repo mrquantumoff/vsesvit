@@ -7,6 +7,7 @@ use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use vsesvit_core::downloads::{Download, State, status_line};
+use vsesvit_core::os;
 use vsesvit_core::private::Browsing;
 use windows_core::{Interface, Result};
 
@@ -14,7 +15,7 @@ use super::{Wired, on_click};
 use crate::bindings::*;
 use crate::browser::Browser;
 use crate::downloads::{Change, Subscriber, file_name};
-use crate::{exec, platform, xaml};
+use crate::{exec, xaml};
 
 pub(super) const MARKUP: &str = r#"
   <Grid RowSpacing="12">
@@ -133,7 +134,7 @@ pub(super) fn wire(
                 if let Err(e) = std::fs::create_dir_all(&dir) {
                     log::warn!("{}: {e}", dir.display());
                 }
-                platform::open_in_shell(dir.as_os_str());
+                logged(&dir, os::open(dir.as_os_str()));
             }
         },
     )?;
@@ -247,8 +248,8 @@ impl Page {
             return;
         };
         match action {
-            Action::Open => platform::open_in_shell(download.path.as_os_str()),
-            Action::ShowInFolder => platform::show_in_folder(&download.path),
+            Action::Open => logged(&download.path, os::open(download.path.as_os_str())),
+            Action::ShowInFolder => logged(&download.path, os::show_in_folder(&download.path)),
             Action::Pause => browser.pause_download(download.id),
             Action::Resume => browser.resume_download(download.id),
             Action::Cancel => browser.cancel_download(download.id),
@@ -256,6 +257,13 @@ impl Page {
             Action::Discard => browser.discard_download(download.id),
             Action::Remove => browser.remove_download(download.id),
         }
+    }
+}
+
+/// Logs why `target` could not be opened or shown.
+fn logged(target: &std::path::Path, result: std::io::Result<()>) {
+    if let Err(e) = result {
+        log::warn!("{}: {e}", target.display());
     }
 }
 

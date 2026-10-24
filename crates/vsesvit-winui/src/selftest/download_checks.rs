@@ -8,7 +8,9 @@ use std::path::Path;
 use std::rc::Rc;
 
 use vsesvit_core::Url;
-use vsesvit_core::downloads::{Download, DownloadId, State, unconfirmed_path, zone_identifier};
+use vsesvit_core::downloads::{
+    Download, DownloadId, Indicator, State, unconfirmed_path, zone_identifier,
+};
 use vsesvit_core::private::Browsing;
 use vsesvit_core::testkit::{STALLED_SENT, reads_speed_and_time_left};
 use windows_core::Interface;
@@ -18,7 +20,6 @@ use crate::automation::invoke;
 use crate::bindings::{Button, TextBlock, UIElement};
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog, Preview};
-use crate::downloads::Indicator;
 use crate::tab::Tab;
 use crate::window::BrowserWindow;
 use crate::xaml;
