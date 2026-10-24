@@ -56,11 +56,6 @@ pub fn follow_desktop(window: &Window) {
         .detach();
 }
 
-/// Whether the active palette is the dark one.
-pub fn is_dark(cx: &App) -> bool {
-    Theme::global(cx).is_dark()
-}
-
 fn mode(pref: prefs::Theme, desktop: WindowAppearance) -> ThemeMode {
     match pref {
         prefs::Theme::System => desktop.into(),
@@ -142,8 +137,8 @@ mod tests {
             init(cx);
             for (pref, dark) in [(prefs::Theme::Light, false), (prefs::Theme::Dark, true)] {
                 apply(pref, cx);
-                assert_eq!(is_dark(cx), dark);
                 let theme = Theme::global(cx);
+                assert_eq!(theme.is_dark(), dark);
                 assert_eq!(theme.font_size, tokens::TEXT);
                 for (key, field, light, dark_value) in table {
                     let want = if dark { dark_value } else { light };
