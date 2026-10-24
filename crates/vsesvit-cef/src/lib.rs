@@ -142,7 +142,12 @@ pub fn check_bootstrap_version(info: Option<&VersionInfoPrefix>) -> Result<(), S
 
 /// Boot step 0: `api_hash`, then `execute_process`; `Some(code)` in a CEF sub-process.
 pub fn run_subprocess(sandbox: &Sandbox) -> Option<ExitCode> {
-    vsesvit_cef_child::execute_subprocess(sandbox.info()).map(|code| ExitCode::from(code.clamp(0, 255) as u8))
+    subprocess_exit_code(sandbox).map(|code| ExitCode::from(code.clamp(0, 255) as u8))
+}
+
+/// [`run_subprocess`] with CEF's own exit code, for `RunWinMain`, which returns an `int`.
+pub fn subprocess_exit_code(sandbox: &Sandbox) -> Option<i32> {
+    vsesvit_cef_child::execute_subprocess(sandbox.info())
 }
 
 /// How many threads this process runs (Linux; `None` elsewhere). The Linux sandbox wants one while CEF
