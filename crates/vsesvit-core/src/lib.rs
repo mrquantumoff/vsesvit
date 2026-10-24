@@ -48,8 +48,8 @@
 //! | [`sync`]         | what the sync engine (`vsesvit-sync`) calls: `changes_since`, `apply` |
 //! | [`vault`]        | the profile's OS-protected key that seals secrets (LOCAL)             |
 //! | [`view_source`]  | `view-source:` addresses, and the source page for engines without one |
-//! | [`cli`]          | the command line every shell parses (moving in, W0.3)                 |
-//! | [`closed_tabs`]  | the closed-tab stacks, normal and private (moving in, W0.3)           |
+//! | [`cli`]          | the command line every shell parses, and the run config               |
+//! | [`closed_tabs`]  | the closed-tab stacks, normal and private                             |
 //! | [`omnibox_edit`] | the address field's edit model (moving in, C.1)                       |
 //! | [`os`]           | download origin marks, the Downloads folder, default browser (C.3)    |
 //! | [`privacy`]      | the privacy snapshot IO threads and hooks read (moving in, C.2)       |

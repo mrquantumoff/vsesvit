@@ -2,7 +2,9 @@
 //! reassignments, resolved into one keymap.
 //!
 //! Everything here is platform-neutral. Each shell maps a [`Command`] to its own action and a
-//! [`Chord`] to its native key representation. The user's reassignments are stored in
+//! [`Chord`] to its native key representation; the Windows virtual-key codes, which CEF reports
+//! on every OS, are here ([`Chord::vk`], [`capture`]), with where each command's key is taken
+//! while the page has the keyboard focus ([`Command::in_page`]). The user's reassignments are stored in
 //! [`keys::SHORTCUTS`] as overrides only, so a build that changes a default reaches everyone who
 //! never touched that command.
 
