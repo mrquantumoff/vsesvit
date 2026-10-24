@@ -4,7 +4,8 @@
 //! `spikes/win-core/src/bin/deskrun.rs`). A watchdog records the user's foreground window before the
 //! run and fails the run if it ever becomes a window of the job's processes.
 //!
-//! Q22's Windows Sandbox route is not built: XAML runs on the private desktop (log.tsv, W0.5).
+//! Q22's Windows Sandbox route is not built: the feature is off on the development PC, and turning
+//! it on is the owner's call (log.tsv, W0.5's Q22 row).
 
 use std::ffi::{OsStr, OsString, c_void};
 use std::os::windows::ffi::OsStrExt as _;
@@ -143,8 +144,8 @@ const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
 const WAIT_OBJECT_0: u32 = 0;
 const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 2;
 const POLL: Duration = Duration::from_millis(50);
-/// Chromium (and so WebView2) otherwise counts a window on an undisplayed desktop as covered and
-/// stops rendering it (design section 7.3). WebView2 appends this to the app's own arguments.
+/// The design's switch for a desktop nobody looks at (section 7.3), so Chromium never counts our
+/// windows as covered. WebView2 appends this variable to the app's own arguments.
 const WEBVIEW2_ARGUMENTS: (&str, &str) = ("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--disable-features=CalculateNativeWinOcclusion");
 
 fn last_error(call: &str) -> String {

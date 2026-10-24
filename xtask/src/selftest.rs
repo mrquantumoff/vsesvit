@@ -204,16 +204,16 @@ mod tests {
         assert!(validate(Some(&report(&all)), &EXPECTED, 70).unwrap_err().contains("exited with 70"));
     }
 
-    /// The first lines of a real run's report.json (W0.5's private-desktop run, 2026-10-24), cut
-    /// to two checks.
+    /// A real run's report.json (W0.5's private-desktop run, 2026-10-24), cut to two checks with
+    /// shortened details.
     #[test]
     fn a_recorded_report_parses() {
         let recorded = r#"{
   "platform": "windows",
   "ok": false,
   "checks": [
-    { "name": "profile_open", "ok": true, "ms": 0, "detail": "C:\\out\\profile" },
-    { "name": "screenshot", "ok": false, "ms": 565, "detail": "capture: The parameter is incorrect. (0x80070057)" }
+    { "name": "profile_open", "ok": true, "ms": 23, "detail": "opened C:\\out\\profile" },
+    { "name": "screenshot", "ok": false, "ms": 564, "detail": "capture: The parameter is incorrect. (0x80070057)" }
   ]
 }"#;
         let err = validate(Some(recorded), &["profile_open", "screenshot"], 1).unwrap_err();
