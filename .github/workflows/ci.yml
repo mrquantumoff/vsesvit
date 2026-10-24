@@ -52,7 +52,10 @@ jobs:
       - run: cargo xtask check-deps
       # The input ban of clippy.toml fails the build; other lints stay warnings.
       - run: cargo clippy --workspace --all-features -- -D clippy::disallowed_methods
-      - run: cargo test --workspace --exclude vsesvit-gtk
+      - run: cargo test --workspace --exclude vsesvit-gtk --no-run
+      # rust-cache restores deps/ but not the CEF runtime cef-dll-sys copies beside the bins on a fresh
+      # build, so the tests load libcef from the CEF download itself.
+      - run: LD_LIBRARY_PATH="$(echo "$CEF_PATH"/*/cef_linux_x86_64)" cargo test --workspace --exclude vsesvit-gtk
       # vsesvit-gtk's widget tests need a seat-bearing compositor, a session bus and user namespaces,
       # which this root container lacks; they run locally under a headless weston at each wave's end
       # (design log 2026-10-24). The crate is still built and linted above until wave 7 deletes it.
@@ -79,8 +82,10 @@ jobs:
         with:
           path: .cef
           key: cef-154.0.34-windows
-      # cef-dll-sys puts libcef.dll beside the bins, not beside the test executables in deps\.
-      - run: PATH="$PWD/target/debug:$PATH" cargo test --workspace
+      - run: cargo test --workspace --no-run
+      # rust-cache restores deps/ but not the CEF runtime cef-dll-sys copies beside the bins on a fresh
+      # build, so the tests load libcef from the CEF download itself.
+      - run: PATH="$(echo "$(cygpath -u "$CEF_PATH")"/*/cef_windows_x86_64):$PATH" cargo test --workspace
 
   windows-gpui:
     runs-on: windows-latest
@@ -105,5 +110,7 @@ jobs:
           path: .cef
           key: cef-154.0.34-windows
       - run: cargo build -p vsesvit --no-default-features --features gpui
-      # cef-dll-sys puts libcef.dll beside the bins, not beside the test executables in deps\.
-      - run: PATH="$PWD/target/debug:$PATH" cargo test -p vsesvit-engine -p vsesvit-cef -p vsesvit-gpui
+      - run: cargo test -p vsesvit-engine -p vsesvit-cef -p vsesvit-gpui --no-run
+      # rust-cache restores deps/ but not the CEF runtime cef-dll-sys copies beside the bins on a fresh
+      # build, so the tests load libcef from the CEF download itself.
+      - run: PATH="$(echo "$(cygpath -u "$CEF_PATH")"/*/cef_windows_x86_64):$PATH" cargo test -p vsesvit-engine -p vsesvit-cef -p vsesvit-gpui
