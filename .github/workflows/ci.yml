@@ -79,7 +79,8 @@ jobs:
         with:
           path: .cef
           key: cef-154.0.34-windows
-      - run: cargo test --workspace
+      # cef-dll-sys puts libcef.dll beside the bins, not beside the test executables in deps\.
+      - run: PATH="$PWD/target/debug:$PATH" cargo test --workspace
 
   windows-gpui:
     runs-on: windows-latest
@@ -105,6 +106,4 @@ jobs:
           key: cef-154.0.34-windows
       - run: cargo build -p vsesvit --no-default-features --features gpui
       # cef-dll-sys puts libcef.dll beside the bins, not beside the test executables in deps\.
-      - run: |
-          $env:PATH = "$PWD\target\debug;$env:PATH"
-          cargo test -p vsesvit-engine -p vsesvit-cef -p vsesvit-gpui
+      - run: PATH="$PWD/target/debug:$PATH" cargo test -p vsesvit-engine -p vsesvit-cef -p vsesvit-gpui
