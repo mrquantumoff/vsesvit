@@ -16,6 +16,10 @@ use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles::{AccountDetails, AccountPicture, ProfileEntry};
 use vsesvit_core::sync::{Changed, DataType};
+use vsesvit_sync::schedule::{
+    Event, FINAL_SYNC_WAIT, FIRST_SYNC, IDLE_WAIT, Progress, Schedule, TICK, next, settle,
+    should_sync, sign_in_failed, signed_in, stored_state,
+};
 use vsesvit_sync::status::{State, Status};
 use vsesvit_sync::{
     Account, Encryption, Error, Http, Passphrase, PassphraseJob, Round, SignIn, SignedIn,
@@ -25,18 +29,6 @@ use vsesvit_sync::{
 use crate::browser::Browser;
 use crate::exec;
 use crate::window::BrowserWindow;
-
-/// The first sync waits this long after the first window shows.
-const FIRST_SYNC: Duration = Duration::from_secs(10);
-/// How often the schedule looks for local changes.
-const TICK: Duration = Duration::from_secs(2);
-/// A local change syncs no sooner than this after the last sync started, so a burst of edits
-/// is one sync.
-const CHANGE_GAP: Duration = Duration::from_secs(10);
-/// Without local changes, a sync this often downloads what other devices sent.
-const SYNC_INTERVAL: Duration = Duration::from_secs(60);
-/// Quitting waits at most this long for the final sync.
-const FINAL_SYNC_WAIT: Duration = Duration::from_secs(3);
 
 /// What an open dialog runs after a sync applied records.
 pub(crate) type Applied = dyn Fn(&Changed);
@@ -54,11 +46,7 @@ pub(crate) struct SyncController {
     /// picture still on its way for an earlier sign-in is dropped.
     details: Cell<u64>,
     canceller: RefCell<Option<Arc<AtomicBool>>>,
-    /// When the last sync started, and the profile's `change_seq` then.
-    last_start: Cell<Option<(Instant, Seq)>>,
-    /// `change_seq` when the last sync that completed started: nothing is left to upload while
-    /// it has not moved.
-    uploaded: Cell<Option<Seq>>,
+    schedule: Cell<Schedule>,
     /// Called after every change of `state`, while their owners (an open Settings) keep them.
     listeners: RefCell<Vec<Weak<dyn Fn()>>>,
     /// Called after a sync applied records, while their owners (an open dialog) keep them.
@@ -69,17 +57,11 @@ impl SyncController {
     /// Signed in when the profile holds an account. One it holds but cannot read (its sealed
     /// tokens do not unseal) shows as signed out, with why.
     pub fn load(profile: &mut Profile) -> Self {
-        let signed_out = State::SignedOut { error: None };
-        let state = match Account::load(&mut profile.sync()) {
-            Ok(Some(account)) => next(signed_out, signed_in(&account)),
-            Ok(None) => signed_out,
-            Err(e) => {
-                log::warn!("sync account: {e}");
-                State::SignedOut {
-                    error: Some(e.to_string()),
-                }
-            }
-        };
+        let account = Account::load(&mut profile.sync());
+        if let Err(e) = &account {
+            log::warn!("sync account: {e}");
+        }
+        let state = stored_state(account.as_ref().map(Option::as_ref));
         Self {
             state: RefCell::new(state),
             http: Http::new(),
@@ -87,8 +69,7 @@ impl SyncController {
             attempts: Cell::new(0),
             details: Cell::new(0),
             canceller: RefCell::new(None),
-            last_start: Cell::new(None),
-            uploaded: Cell::new(None),
+            schedule: Cell::default(),
             listeners: RefCell::default(),
             applied: RefCell::default(),
         }
@@ -123,6 +104,18 @@ impl SyncController {
         }
     }
 
+    fn started(&self, seq: Seq) {
+        let mut schedule = self.schedule.get();
+        schedule.started(Instant::now(), seq);
+        self.schedule.set(schedule);
+    }
+
+    fn completed(&self, seq: Seq) {
+        let mut schedule = self.schedule.get();
+        schedule.completed(seq);
+        self.schedule.set(schedule);
+    }
+
     fn apply(&self, event: Event) {
         self.state
             .replace_with(|state| next(std::mem::replace(state, State::SigningIn), event));
@@ -139,183 +132,9 @@ pub(crate) fn live<T: ?Sized>(listeners: &RefCell<Vec<Weak<T>>>) -> Vec<Rc<T>> {
     listeners.iter().filter_map(Weak::upgrade).collect()
 }
 
-/// What happens to sync, as its state follows it.
-#[derive(Debug)]
-enum Event {
-    Sync(Progress),
-    SigningIn,
-    SignedIn(Signed),
-    SignInFailed {
-        /// Why; `None` when the user cancelled it.
-        error: Option<String>,
-        /// The account still stored, which was signing in again because its sign-in expired,
-        /// as it still is.
-        stored: Option<Signed>,
-    },
-    SignedOut,
-    /// What the stored account asks of the passphrase now, after a round or a passphrase step.
-    Encryption(Encryption),
-}
-
-/// What Settings shows of the account a profile is signed in with.
-#[derive(Debug)]
-struct Signed {
-    name: Option<String>,
-    server: String,
-    last_synced: Option<u64>,
-    encryption: Encryption,
-}
-
-/// Where a sync of the signed-in account is.
-#[derive(Debug)]
-enum Progress {
-    Started,
-    /// When the last round completed.
-    Synced(Option<u64>),
-    Failed(String),
-    SignInExpired,
-}
-
-fn next(state: State, event: Event) -> State {
-    match event {
-        Event::SigningIn => State::SigningIn,
-        Event::SignedIn(Signed {
-            name,
-            server,
-            last_synced,
-            encryption,
-        }) => State::SignedIn {
-            name,
-            server,
-            last_synced,
-            syncing: false,
-            error: None,
-            needs_sign_in: false,
-            encryption,
-        },
-        Event::SignedOut => State::SignedOut { error: None },
-        Event::SignInFailed { error, stored } => match (state, stored) {
-            (
-                State::SigningIn,
-                Some(Signed {
-                    name,
-                    server,
-                    last_synced,
-                    encryption,
-                }),
-            ) => State::SignedIn {
-                name,
-                server,
-                last_synced,
-                syncing: false,
-                error,
-                needs_sign_in: true,
-                encryption,
-            },
-            (State::SigningIn, None) => State::SignedOut { error },
-            (state, _) => state,
-        },
-        Event::Sync(progress) => {
-            let State::SignedIn {
-                name,
-                server,
-                last_synced,
-                error,
-                needs_sign_in,
-                encryption,
-                ..
-            } = state
-            else {
-                return state;
-            };
-            let (syncing, last_synced, error, needs_sign_in) = match progress {
-                Progress::Started => (true, last_synced, error, needs_sign_in),
-                Progress::Synced(at) => (false, at.or(last_synced), None, false),
-                Progress::Failed(error) => (false, last_synced, Some(error), false),
-                Progress::SignInExpired => (false, last_synced, None, true),
-            };
-            State::SignedIn {
-                name,
-                server,
-                last_synced,
-                syncing,
-                error,
-                needs_sign_in,
-                encryption,
-            }
-        }
-        Event::Encryption(encryption) => match state {
-            State::SignedIn {
-                name,
-                server,
-                last_synced,
-                syncing,
-                error,
-                needs_sign_in,
-                ..
-            } => State::SignedIn {
-                name,
-                server,
-                last_synced,
-                syncing,
-                error,
-                needs_sign_in,
-                encryption,
-            },
-            state => state,
-        },
-    }
-}
-
-fn signed(account: &Account) -> Signed {
-    Signed {
-        name: account.name().map(str::to_owned),
-        server: account.server().to_owned(),
-        last_synced: account.last_synced(),
-        encryption: account.encryption(),
-    }
-}
-
-fn signed_in(account: &Account) -> Event {
-    Event::SignedIn(signed(account))
-}
-
-/// Whether a scheduled sync or Sync Now runs: signed in with a sign-in the provider accepts.
-fn due(state: &State) -> bool {
-    matches!(
-        state,
-        State::SignedIn {
-            needs_sign_in: false,
-            ..
-        }
-    )
-}
-
-/// How a sync ended, as an event; `None` when the profile signed out (or in again) meanwhile,
-/// which leaves the state to whatever did that.
-fn outcome(result: Result<Option<u64>, Error>) -> Option<Event> {
-    match result {
-        Ok(last_synced) => Some(Event::Sync(Progress::Synced(last_synced))),
-        Err(Error::SignedOut) => None,
-        Err(e) if e.needs_sign_in() => Some(Event::Sync(Progress::SignInExpired)),
-        Err(e) => Some(Event::Sync(Progress::Failed(e.to_string()))),
-    }
-}
-
 impl From<exec::WorkerLost> for Error {
     fn from(lost: exec::WorkerLost) -> Self {
         Error::Profile(std::io::Error::from(lost).into())
-    }
-}
-
-/// A sign-in that failed with `e`, while the profile still stores `stored`.
-fn sign_in_failed(e: &Error, stored: Option<&Account>) -> Event {
-    Event::SignInFailed {
-        error: match e {
-            Error::Cancelled => None,
-            e => Some(e.to_string()),
-        },
-        stored: stored.map(signed),
     }
 }
 
@@ -329,29 +148,18 @@ fn stored_account(browser: &Browser) -> Option<Account> {
         })
 }
 
-/// Whether a scheduled tick syncs: while signed in and not syncing, `SYNC_INTERVAL` after the
-/// last sync started, or `CHANGE_GAP` after it when something changed here since. The first
-/// tick syncs.
-fn tick_syncs(due: bool, running: bool, changed: bool, since_start: Option<Duration>) -> bool {
-    if !due || running {
-        return false;
-    }
-    since_start.is_none_or(|since| since >= SYNC_INTERVAL || (changed && since >= CHANGE_GAP))
-}
-
-/// Syncs `FIRST_SYNC` after the first window shows, then as `tick_syncs` decides every `TICK`.
+/// Syncs `FIRST_SYNC` after the first window shows, then as `Schedule::due` decides every `TICK`.
 pub(crate) async fn schedule(browser: Weak<Browser>) {
     exec::sleep(FIRST_SYNC).await;
     loop {
         let Some(b) = browser.upgrade() else { return };
         let sync = b.sync();
-        let last_start = sync.last_start.get();
         let seq = b.core(|p| p.change_seq());
-        if tick_syncs(
-            due(&sync.state.borrow()),
+        if sync.schedule.get().due(
+            &sync.state.borrow(),
             sync.running.get(),
-            last_start.is_none_or(|(_, at)| at != seq),
-            last_start.map(|(at, _)| at.elapsed()),
+            Instant::now(),
+            seq,
         ) {
             sync_now(&b);
         }
@@ -363,12 +171,12 @@ pub(crate) async fn schedule(browser: Weak<Browser>) {
 /// Syncs, unless signed out, waiting for a new sign-in, or syncing already.
 pub(crate) fn sync_now(browser: &Rc<Browser>) {
     let sync = browser.sync();
-    if sync.running.get() || !due(&sync.state.borrow()) {
+    if !should_sync(&sync.state.borrow(), sync.running.get()) {
         return;
     }
     sync.running.set(true);
     let seq = browser.core(|p| p.change_seq());
-    sync.last_start.set(Some((Instant::now(), seq)));
+    sync.started(seq);
     sync.apply(Event::Sync(Progress::Started));
     exec::spawn(run(Rc::downgrade(browser), seq));
 }
@@ -378,12 +186,12 @@ async fn run(browser: Weak<Browser>, seq: Seq) {
     let Some(b) = browser.upgrade() else { return };
     b.sync().running.set(false);
     if result.is_ok() {
-        b.sync().uploaded.set(Some(seq));
+        b.sync().completed(seq);
     }
     if let Err(e) = &result {
         log::warn!("sync: {e}");
     }
-    match outcome(result) {
+    match settle(result.as_ref().copied()) {
         Some(event) => b.sync().apply(event),
         // Signed in again while this sync ran for the old account: the new one has not synced.
         None => sync_now(&b),
@@ -603,7 +411,11 @@ pub(crate) fn sign_out(browser: &Browser) {
 pub(crate) fn final_sync(browser: &Browser) {
     let sync = browser.sync();
     let seq = browser.core(|p| p.change_seq());
-    if sync.running.get() || !due(&sync.state.borrow()) || sync.uploaded.get() == Some(seq) {
+    if !sync
+        .schedule
+        .get()
+        .final_sync_due(&sync.state.borrow(), sync.running.get(), seq)
+    {
         return;
     }
     let gathered = browser.core(|p| {
@@ -655,7 +467,7 @@ pub(crate) fn delete_server_data(
     let browser = Rc::downgrade(browser);
     exec::spawn(async move {
         // A round running meanwhile could upload again what the deletion removes.
-        let idle = exec::wait_for(Duration::from_secs(120), Duration::from_millis(100), || {
+        let idle = exec::wait_for(IDLE_WAIT, Duration::from_millis(100), || {
             let b = browser.upgrade()?;
             (!b.sync().running.replace(true)).then_some(())
         })
@@ -703,7 +515,7 @@ pub(crate) fn set_passphrase(
 ) {
     let browser = Rc::downgrade(browser);
     exec::spawn(async move {
-        let idle = exec::wait_for(Duration::from_secs(120), Duration::from_millis(100), || {
+        let idle = exec::wait_for(IDLE_WAIT, Duration::from_millis(100), || {
             let b = browser.upgrade()?;
             (!b.sync().running.replace(true)).then_some(())
         })
@@ -802,213 +614,6 @@ pub(crate) fn pref_effects(keys: &[String]) -> Vec<PrefEffect> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vsesvit_sync::status::Action;
-
-    fn signed_in_state() -> State {
-        next(
-            State::SignedOut { error: None },
-            Event::SignedIn(Signed {
-                name: Some("Demir".into()),
-                server: "https://sync.example.com".into(),
-                last_synced: Some(100),
-                encryption: Encryption::Ready,
-            }),
-        )
-    }
-
-    fn fields(state: &State) -> (Option<u64>, bool, Option<&str>, bool) {
-        match state {
-            State::SignedIn {
-                last_synced,
-                syncing,
-                error,
-                needs_sign_in,
-                ..
-            } => (*last_synced, *syncing, error.as_deref(), *needs_sign_in),
-            other => panic!("not signed in: {other:?}"),
-        }
-    }
-
-    fn signed_in_event() -> Event {
-        Event::SignedIn(Signed {
-            name: None,
-            server: "https://sync.example.com".into(),
-            last_synced: None,
-            encryption: Encryption::Checking,
-        })
-    }
-
-    #[test]
-    fn a_sync_shows_while_it_runs_then_when_it_completed_or_why_it_failed() {
-        let syncing = next(signed_in_state(), Event::Sync(Progress::Started));
-        assert_eq!(fields(&syncing), (Some(100), true, None, false));
-        let failed = next(
-            syncing,
-            Event::Sync(Progress::Failed("could not reach x".into())),
-        );
-        assert_eq!(
-            fields(&failed),
-            (Some(100), false, Some("could not reach x"), false)
-        );
-        let again = next(failed, Event::Sync(Progress::Started));
-        assert_eq!(
-            fields(&again),
-            (Some(100), true, Some("could not reach x"), false)
-        );
-        let synced = next(again, Event::Sync(Progress::Synced(Some(200))));
-        assert_eq!(fields(&synced), (Some(200), false, None, false));
-        assert!(due(&synced));
-    }
-
-    #[test]
-    fn an_expired_sign_in_stops_syncs_until_the_next_sign_in() {
-        let expired = next(signed_in_state(), Event::Sync(Progress::SignInExpired));
-        assert_eq!(fields(&expired), (Some(100), false, None, true));
-        assert!(!due(&expired));
-        assert!(!due(&State::SignedOut { error: None }));
-        assert!(!due(&State::SigningIn));
-        let signing_in = next(expired, Event::SigningIn);
-        assert!(due(&next(signing_in, signed_in_event())));
-    }
-
-    #[test]
-    fn a_failed_or_cancelled_sign_in_is_signed_out() {
-        let failed = next(State::SigningIn, sign_in_failed(&Error::TimedOut, None));
-        let error = Some("the sign-in took too long".to_owned());
-        assert_eq!(failed, State::SignedOut { error });
-        let cancelled = next(State::SigningIn, sign_in_failed(&Error::Cancelled, None));
-        assert_eq!(cancelled, State::SignedOut { error: None });
-        let signed_in = next(State::SigningIn, signed_in_event());
-        let late = next(signed_in.clone(), sign_in_failed(&Error::Cancelled, None));
-        assert_eq!(late, signed_in);
-    }
-
-    #[test]
-    fn a_failed_or_cancelled_sign_in_again_keeps_the_stored_account_asking_for_another() {
-        let account: Account = serde_json::from_value(serde_json::json!({
-            "sign_in": "s", "server": "https://sync.example.com", "name": "Demir",
-            "limits": { "max_batch": 1, "max_record_bytes": 1, "max_request_bytes": 1 },
-            "download_cursor": 0, "upload_cursors": {}, "last_synced": 100,
-        }))
-        .expect("an account");
-        let failed = next(
-            State::SigningIn,
-            sign_in_failed(&Error::TimedOut, Some(&account)),
-        );
-        assert_eq!(
-            fields(&failed),
-            (Some(100), false, Some("the sign-in took too long"), true)
-        );
-        assert_eq!(
-            failed.status(100).subtitle,
-            "Sign-in failed: the sign-in took too long"
-        );
-        assert!(
-            !due(&failed),
-            "the expired sign-in still waits for the user"
-        );
-        let cancelled = next(
-            State::SigningIn,
-            sign_in_failed(&Error::Cancelled, Some(&account)),
-        );
-        assert_eq!(fields(&cancelled), (Some(100), false, None, true));
-        assert!(
-            matches!(
-                cancelled,
-                State::SignedIn {
-                    encryption: Encryption::Checking,
-                    ..
-                }
-            ),
-            "the stored account has not looked for the account's key record"
-        );
-        assert_eq!(
-            cancelled.status(100).subtitle,
-            "Sign in again to keep syncing."
-        );
-    }
-
-    #[test]
-    fn rounds_and_the_passphrase_step_change_only_what_the_device_asks_for() {
-        let checking = next(State::SigningIn, signed_in_event());
-        assert_eq!(
-            checking.status(0).actions,
-            [Action::SignOut, Action::DeleteServerData]
-        );
-        let syncing = next(checking, Event::Sync(Progress::Started));
-        let off = next(syncing, Event::Encryption(Encryption::Off));
-        assert_eq!(fields(&off), (None, true, None, false));
-        assert_eq!(
-            off.status(0).actions,
-            [
-                Action::SyncNow,
-                Action::SetPassphrase,
-                Action::SignOut,
-                Action::DeleteServerData
-            ]
-        );
-        let ready = next(off, Event::Encryption(Encryption::Ready));
-        let synced = next(ready, Event::Sync(Progress::Synced(Some(200))));
-        assert_eq!(fields(&synced), (Some(200), false, None, false));
-        assert_eq!(
-            synced.status(200).actions,
-            [
-                Action::SyncNow,
-                Action::ChangePassphrase,
-                Action::SignOut,
-                Action::DeleteServerData
-            ]
-        );
-        let signed_out = State::SignedOut { error: None };
-        assert_eq!(
-            next(signed_out.clone(), Event::Encryption(Encryption::Ready)),
-            signed_out
-        );
-    }
-
-    #[test]
-    fn a_sync_ended_by_a_sign_out_leaves_the_state_alone() {
-        assert!(outcome(Err(Error::SignedOut)).is_none());
-        let signed_out = State::SignedOut { error: None };
-        let late = next(signed_out.clone(), Event::Sync(Progress::Synced(Some(1))));
-        assert_eq!(late, signed_out);
-        assert!(matches!(
-            outcome(Err(Error::SignInExpired)),
-            Some(Event::Sync(Progress::SignInExpired))
-        ));
-        assert!(matches!(
-            outcome(Err(Error::Network("x".into()))),
-            Some(Event::Sync(Progress::Failed(e))) if e == "could not reach x"
-        ));
-        assert!(matches!(
-            outcome(Ok(Some(5))),
-            Some(Event::Sync(Progress::Synced(Some(5))))
-        ));
-    }
-
-    #[test]
-    fn a_tick_syncs_soon_after_a_change_and_now_and_then_without_one() {
-        let s = Duration::from_secs;
-        assert!(tick_syncs(true, false, false, None), "the first tick");
-        assert!(
-            !tick_syncs(true, false, true, Some(s(4))),
-            "too soon after the last start"
-        );
-        assert!(tick_syncs(true, false, true, Some(s(10))));
-        assert!(
-            !tick_syncs(true, false, false, Some(s(30))),
-            "nothing changed"
-        );
-        assert!(tick_syncs(true, false, false, Some(s(60))), "downloads");
-        assert!(
-            !tick_syncs(true, true, true, Some(s(90))),
-            "one sync at a time"
-        );
-        assert!(
-            !tick_syncs(false, false, true, Some(s(90))),
-            "signed out, or waiting for a new sign-in"
-        );
-    }
 
     #[test]
     fn each_changed_preference_maps_to_its_effect_once() {
