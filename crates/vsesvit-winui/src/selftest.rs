@@ -787,9 +787,9 @@ async fn checks(
     })
     .await;
 
+    let open = tab_ids(&window);
     check(report, "new_tab_page", DEFAULT_TIMEOUT, async |p| {
         let origin = server.url("/");
-        let open = tab_ids(&window);
         window.run(Command::NewTab);
         let ntp = until(p, |p| {
             let tabs = window.tabs_in_order();
@@ -812,12 +812,16 @@ async fn checks(
         std::fs::write(&path, &shot.png).map_err(|e| format!("{}: {e}", path.display()))?;
         let s = ntp.state();
         let detail = format!("url={:?} title={:?} tiles {tiles}", s.url, s.title);
-        window.close_tab(ntp.id);
         (s.url == "about:blank" && s.title == "New tab")
             .then_some(detail.clone())
             .ok_or(detail)
     })
     .await;
+    // Closed however the check ended: left selected, the new tab page would take save_page's
+    // Ctrl+Shift+S, and WebView2's modal Save As dialog would stall every check after it.
+    for id in tab_ids(&window).into_iter().filter(|id| !open.contains(id)) {
+        window.close_tab(id);
+    }
 
     let open = tab_ids(&window);
     let page = server.url("/trackers.html");
