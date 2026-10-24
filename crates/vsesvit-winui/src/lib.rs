@@ -9,7 +9,6 @@
 //! | `exec`            | a single-threaded executor on the UI `DispatcherQueue`, worker jobs |
 //! | `engine`          | the shared `CoreWebView2Environment` and engine-side extension calls|
 //! | `browser`         | app-wide controller: profile, windows, history, bookmarks, prefs    |
-//! | `session`         | session restore plans and snapshots (pure)                          |
 //! | `extensions`      | install pipeline driver and the WebView2 extension sync             |
 //! | `window`          | one window: tab list, toolbar, bookmarks bar, page grid             |
 //! | `layout`          | tab list placement and reading it back from geometry (pure)         |
@@ -83,7 +82,6 @@ mod popup;
 mod report;
 #[cfg(feature = "self-test")]
 mod selftest;
-mod session;
 mod shortcuts;
 mod store;
 mod strip;

@@ -14,6 +14,7 @@
 
 use std::rc::Rc;
 
+use vsesvit_core::session::plan::{TabPlan, WindowPlan};
 use vsesvit_core::tab_place::TabPlace;
 use windows_core::{Interface, Result};
 
@@ -21,7 +22,6 @@ use super::tab_menu::TabAction;
 use super::{BrowserWindow, Placement};
 use crate::bindings::*;
 use crate::omnibox::has_link;
-use crate::session::{TabPlan, WindowPlan};
 use crate::shortcuts::Command;
 use crate::tab::{Initial, Tab, TabId};
 use crate::{exec, platform, xaml};

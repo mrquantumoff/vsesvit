@@ -359,7 +359,7 @@ impl Browser {
         args.SetResultFilePath(&written.to_string_lossy())?;
         let total = known_total(operation.TotalBytesToReceive()?);
         let url = operation.Uri()?;
-        let now = u64::try_from(crate::session::now_ms()).unwrap_or(0);
+        let now = u64::try_from(vsesvit_core::session::plan::now_ms()).unwrap_or(0);
         let download = self
             .core(|p| p.downloads().start(&url, path, total, now, browsing))
             .map_err(|e| windows_core::Error::new(E_FAIL, e.to_string()))?;

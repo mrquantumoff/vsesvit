@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use vsesvit_core::Url;
 use vsesvit_core::prefs::keys;
+use vsesvit_core::session::plan::now_ms;
 use vsesvit_core::testkit::FixtureServer;
 use vsesvit_sync::Encryption;
 use vsesvit_sync::status::State;
@@ -30,7 +31,6 @@ use crate::bindings::*;
 use crate::browser::Browser;
 use crate::dialogs::sync_prompt::{self, Asks, PromptDialog};
 use crate::dialogs::{self, Dialog};
-use crate::session::now_ms;
 use crate::window::BrowserWindow;
 use crate::{exec, sync};
 

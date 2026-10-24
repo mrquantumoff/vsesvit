@@ -11,7 +11,7 @@ use windows_core::{IInspectable, Interface, Result};
 use super::{Category, Wired, on_click, side_list};
 use crate::bindings::*;
 use crate::browser::Browser;
-pub(super) use crate::session::now_ms;
+pub(super) use vsesvit_core::session::plan::now_ms;
 use crate::window::BrowserWindow;
 use crate::xaml;
 

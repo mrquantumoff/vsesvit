@@ -6,11 +6,11 @@
 use std::rc::Rc;
 
 use vsesvit_core::private::Browsing;
+use vsesvit_core::session::plan::{TabPlan, WindowPlan};
 use vsesvit_core::testkit::FixtureServer;
 
 use super::{FIXTURE_TITLE, PAGE2_TITLE, Probe, load, until};
 use crate::browser::Browser;
-use crate::session::{TabPlan, WindowPlan};
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::window::{BrowserWindow, TabSearch};

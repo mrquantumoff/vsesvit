@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles::{AccountDetails, AccountPicture, ProfileColor};
+use vsesvit_core::session::plan::{TabPlan, WindowPlan};
 
 use super::{Probe, until};
 use windows_core::Interface;
@@ -18,7 +19,6 @@ use windows_core::Interface;
 use crate::bindings::{FlyoutBase, FrameworkElement, TextBlock, ToggleSwitch};
 use crate::browser::Browser;
 use crate::dialogs::{self, Dialog, Preview};
-use crate::session::{TabPlan, WindowPlan};
 use crate::sync::take_account_details;
 use crate::window::BrowserWindow;
 use crate::{exec, profiles};

@@ -28,6 +28,7 @@ use vsesvit_core::prefs::{Pref, Scope, TabsPosition, Theme, UpdateChannel, homep
 use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles::{Home, ProfileColor, ProfileId, Registry, Startup};
 use vsesvit_core::search::{SelectionAction, Suggestions};
+use vsesvit_core::session::plan::{self, TabPlan, WindowPlan};
 use vsesvit_core::session::SessionSnapshot;
 use vsesvit_core::shortcuts::Keymap;
 use vsesvit_core::suggest::{Queries, SuggestRequest};
@@ -48,7 +49,6 @@ use crate::downloads::Downloads;
 use crate::engine::{self, Engine};
 use crate::extensions::{self, ExtensionHost};
 use crate::popup::ExtensionAction;
-use crate::session::{self, TabPlan, WindowPlan};
 use crate::shortcuts::Bindings;
 use crate::sync::{PrefEffect, SyncController};
 use crate::tab::{Tab, TabId};
@@ -986,7 +986,7 @@ impl Browser {
             .iter()
             .filter_map(|u| self.resolve_input(u))
             .collect();
-        session::startup_plan(startup, restored, homepage, urls)
+        plan::startup_plan(startup, restored, homepage, urls)
     }
 
     /// What the Home button opens: the home page, or `None` for the new tab page.
@@ -1042,7 +1042,7 @@ impl Browser {
                 let snapshots = tabs
                     .iter()
                     .map(|t| {
-                        session::tab_snapshot(
+                        plan::tab_snapshot(
                             t.session_id,
                             &t.session_url(),
                             &t.state().title,
@@ -1054,7 +1054,7 @@ impl Browser {
                     .collect();
                 let (bounds, maximized) =
                     window.bounds().map_or((None, false), |(b, m)| (Some(b), m));
-                session::window_snapshot(snapshots, active, bounds, maximized)
+                plan::window_snapshot(snapshots, active, bounds, maximized)
             })
             .collect();
         let device_name = self.core(|p| p.prefs().get(&keys::DEVICE_NAME));

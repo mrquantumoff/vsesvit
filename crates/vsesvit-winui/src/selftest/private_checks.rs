@@ -14,6 +14,7 @@ use vsesvit_core::cookies::ThirdPartyCookies;
 use vsesvit_core::downloads::State;
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
+use vsesvit_core::session::plan::{TabPlan, WindowPlan};
 use vsesvit_core::tab_search::Hit;
 use vsesvit_core::testkit::{self, FixtureServer};
 use windows_core::Interface;
@@ -22,7 +23,6 @@ use super::{DEFAULT_TIMEOUT, FIXTURE_TITLE, Probe, cookie_checks, emulate_zoom, 
 use crate::bindings::ICoreWebView2_13;
 use crate::browser::Browser;
 use crate::popup::Activation;
-use crate::session::{TabPlan, WindowPlan};
 use crate::shortcuts::{self, Command};
 use crate::{engine, exec, zoom};
 
