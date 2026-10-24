@@ -107,8 +107,10 @@ pub fn open_window(cx: &mut App) -> Result<WindowHandle<StubWindow>, String> {
     let window = cx
         .open_window(options, move |window, cx| {
             theme::follow_desktop(window);
+            // Deferred: inside this callback the window is checked out of the app, so the quit's step 3
+            // could not hide it.
             window.on_window_should_close(cx, |_, cx| {
-                quit::request(ExitIntent::Quit, cx);
+                cx.defer(|cx| quit::request(ExitIntent::Quit, cx));
                 false
             });
             let surface = platform::attach(window).map_err(|e| *report.borrow_mut() = Some(format!("the window's content host: {e}"))).ok();
@@ -133,12 +135,15 @@ impl ShutdownShell for StubShell {
 
     fn hide_windows(&self, cx: &mut App) {
         let Some(window) = self.window.borrow_mut().take() else { return };
-        let _ = window.update(cx, |view, window, _| {
+        let hidden = window.update(cx, |view, window, _| {
             if let Some(surface) = view.surface.take() {
                 surface.detach();
             }
             window.remove_window();
         });
+        if let Err(e) = hidden {
+            log::error!("shutdown: the window stays until GPUI ends: {e}");
+        }
     }
 }
 
