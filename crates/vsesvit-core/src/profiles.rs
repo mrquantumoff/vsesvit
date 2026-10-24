@@ -24,6 +24,7 @@ use std::time::Duration;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ProfilePaths;
+use crate::private::Browsing;
 
 pub use account::{AccountDetails, AccountPicture};
 
@@ -663,6 +664,17 @@ pub fn with_profile(page: &str, profile: Option<&str>) -> String {
     }
 }
 
+/// A browser window's title, as Chrome forms it: the page's title (empty for none), the
+/// profile's name when [`Registry::title_name`] gives one, and the app, which names a private
+/// window as Chrome names an incognito one.
+pub fn window_title(page: &str, profile: Option<&str>, browsing: Browsing) -> String {
+    let app = match browsing {
+        Browsing::Normal => "Vsesvit",
+        Browsing::Private => "Vsesvit (Private)",
+    };
+    [page, profile.unwrap_or_default(), app].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" - ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,6 +775,17 @@ mod tests {
         assert_eq!(registry.get(&work).unwrap().initial(), "O");
         assert_eq!(avatar_initial("  élan"), "É");
         assert_eq!(avatar_initial("--"), "?");
+    }
+
+    #[test]
+    fn a_window_title_names_the_profile_and_a_private_window() {
+        assert_eq!(window_title("", None, Browsing::Normal), "Vsesvit");
+        assert_eq!(window_title("Page", None, Browsing::Normal), "Page - Vsesvit");
+        assert_eq!(window_title("", None, Browsing::Private), "Vsesvit (Private)");
+        assert_eq!(window_title("Page", None, Browsing::Private), "Page - Vsesvit (Private)");
+        assert_eq!(window_title("Page", Some("Work"), Browsing::Normal), "Page - Work - Vsesvit");
+        assert_eq!(window_title("Page", Some("Work"), Browsing::Private), "Page - Work - Vsesvit (Private)");
+        assert_eq!(window_title("", Some("Work"), Browsing::Normal), "Work - Vsesvit");
     }
 
     #[test]

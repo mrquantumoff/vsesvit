@@ -37,7 +37,7 @@ use vsesvit_core::extensions::toolbar::Layout;
 use vsesvit_core::history::Transition;
 use vsesvit_core::prefs::{TabsPosition, Theme};
 use vsesvit_core::private::Browsing;
-use vsesvit_core::profiles::ProfileColor;
+use vsesvit_core::profiles::{ProfileColor, window_title};
 use vsesvit_core::session::plan::{TabPlan, WindowPlan};
 use vsesvit_core::suggest::Queries;
 use vsesvit_core::tab_groups::TabGroups;
@@ -162,20 +162,6 @@ pub(crate) struct WindowPrefs {
 
 /// The compact address bar's widest.
 const COMPACT_ADDRESS_WIDTH: f64 = 720.0;
-
-/// The window's title for a page titled `page` (empty for none) in `profile`, named when there
-/// is more than one, which names a private window as Chrome's names an incognito one.
-fn window_title(page: &str, profile: Option<&str>, browsing: Browsing) -> String {
-    let app = match browsing {
-        Browsing::Normal => "Vsesvit",
-        Browsing::Private => "Vsesvit (Private)",
-    };
-    [page, profile.unwrap_or_default(), app]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" - ")
-}
 
 /// Whether the star shows the page at `url` bookmarked: never a blank tab or the new tab page,
 /// which have no address to bookmark.
@@ -2131,25 +2117,6 @@ mod tests {
         assert_eq!(
             site_look("file:///C:/a.html", None).1,
             "This page is on your device or inside the browser"
-        );
-    }
-
-    #[test]
-    fn a_window_title_names_the_profile_and_a_private_window() {
-        assert_eq!(window_title("", None, Browsing::Normal), "Vsesvit");
-        assert_eq!(window_title("Page", None, Browsing::Normal), "Page - Vsesvit");
-        assert_eq!(window_title("", None, Browsing::Private), "Vsesvit (Private)");
-        assert_eq!(
-            window_title("Page", None, Browsing::Private),
-            "Page - Vsesvit (Private)"
-        );
-        assert_eq!(
-            window_title("Page", Some("Work"), Browsing::Normal),
-            "Page - Work - Vsesvit"
-        );
-        assert_eq!(
-            window_title("Page", Some("Work"), Browsing::Private),
-            "Page - Work - Vsesvit (Private)"
         );
     }
 
