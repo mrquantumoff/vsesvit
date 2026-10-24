@@ -27,6 +27,8 @@ use crate::platform::x11::instance as transport;
 pub const UNREACHABLE: &str = "vsesvit: the profile is in use by another Vsesvit process that could not be reached";
 /// How long a launch waits for the owner to take its connection.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a launch waits for the owner's status once its request is sent.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a new owner retries binding while the previous owner of the name is still exiting: a
 /// relaunch starts its successor just before the old process ends.
 const BIND_PATIENCE: Duration = Duration::from_secs(2);
@@ -108,8 +110,26 @@ fn forward_within(endpoint: &Endpoint, request: &Request, stderr: &mut dyn Write
     let mut line = serde_json::to_string(request).map_err(|e| failed("encoding the request", &e))?;
     line.push('\n');
     writer.write_all(line.as_bytes()).and_then(|()| writer.flush()).map_err(|e| failed("sending the request", &e))?;
-    for line in BufReader::new(reader).lines() {
-        let line = line.map_err(|e| failed("reading the answer", &e))?;
+    // The answer is read on its own thread, so an owner that took the connection but never answers
+    // cannot hang the launch (a synchronous pipe read has no timeout). This process never starts the
+    // engine, so the extra thread costs nothing.
+    let (lines, answers) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("instance-answer".into())
+        .spawn(move || {
+            for line in BufReader::new(reader).lines() {
+                if lines.send(line).is_err() {
+                    return;
+                }
+            }
+        })
+        .map_err(|e| failed("reading the answer", &e))?;
+    loop {
+        let line = match answers.recv_timeout(ANSWER_TIMEOUT) {
+            Ok(line) => line.map_err(|e| failed("reading the answer", &e))?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(Unreachable(format!("no answer within {ANSWER_TIMEOUT:?}"))),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match serde_json::from_str::<Answer>(&line) {
             Ok(Answer::Stderr(text)) => {
                 let _ = writeln!(stderr, "{text}");
@@ -121,18 +141,14 @@ fn forward_within(endpoint: &Endpoint, request: &Request, stderr: &mut dyn Write
     Err(Unreachable("the owner closed the connection without a status".into()))
 }
 
-type Halves = (Box<dyn Write>, Box<dyn Read>);
+type Halves = (Box<dyn Write>, Box<dyn Read + Send>);
 
 #[cfg(target_os = "linux")]
 fn connect(endpoint: &Endpoint, timeout: Duration) -> io::Result<Halves> {
     let deadline = Instant::now() + timeout;
     loop {
         match transport::connect(&endpoint.0) {
-            Ok(stream) => {
-                // An owner that took the connection but never answers must not hang the launch.
-                stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-                return Ok((Box::new(stream.try_clone()?), Box::new(stream)));
-            }
+            Ok(stream) => return Ok((Box::new(stream.try_clone()?), Box::new(stream))),
             Err(e) if Instant::now() < deadline && matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => {
                 std::thread::sleep(Duration::from_millis(50));
             }
