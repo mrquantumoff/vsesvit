@@ -585,6 +585,24 @@ pub struct SiteGroup {
     pub settings: Vec<(Permission, Setting)>,
 }
 
+/// One stored setting a change moved: the site, the permission, and its setting before and
+/// after (`None`: Ask).
+pub type Moved = (Origin, Permission, Option<Setting>, Option<Setting>);
+
+/// Each setting that differs between `before` and `after`, both lists of every stored setting
+/// ([`SitePermissions::all`]), as a sync brings them.
+pub fn moved_settings(before: &[SiteSetting], after: &[SiteSetting]) -> Vec<Moved> {
+    let setting_in = |list: &[SiteSetting], s: &SiteSetting| {
+        list.iter().find(|o| o.origin == s.origin && o.permission == s.permission).map(|o| o.setting)
+    };
+    let changed = before.iter().filter_map(|s| {
+        let now = setting_in(after, s);
+        (now != Some(s.setting)).then(|| (s.origin.clone(), s.permission, Some(s.setting), now))
+    });
+    let added = after.iter().filter(|s| setting_in(before, s).is_none()).map(|s| (s.origin.clone(), s.permission, None, Some(s.setting)));
+    changed.chain(added).collect()
+}
+
 /// The settings a tab of one [`Browsing`] kind goes by. In private, what the private session
 /// kept for a site wins over what is stored, and changes stay in the session.
 pub struct SitePermissions<'p> {

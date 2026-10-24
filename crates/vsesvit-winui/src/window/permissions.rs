@@ -14,8 +14,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use vsesvit_core::permissions::queue::{self, CLOSE_GRACE, Closing};
 use vsesvit_core::permissions::{
     Answer, Origin, Permission, Prompt, Setting, SiteChoice, SiteRow, site_rows,
 };
@@ -28,14 +29,6 @@ use crate::dialogs::on_click;
 use crate::permissions;
 use crate::tab::{Tab, TabId};
 use crate::{connection, exec, xaml};
-
-/// Answers this soon after a prompt shows or changes were aimed at something else (Chrome's
-/// input guard).
-const INPUT_GUARD: Duration = Duration::from_millis(500);
-
-/// A click that closes the prompt may be the press of a tab switch or of the site-info
-/// button; both take the prompt before this passes.
-const CLOSE_GRACE: Duration = Duration::from_millis(250);
 
 struct ShownPrompt {
     /// Every shown prompt has its own, so a late event of a closed one is told apart.
@@ -257,7 +250,7 @@ impl BrowserWindow {
     /// An answer button of prompt `id`; ignored within the input guard.
     fn prompt_button(&self, id: u64, answer: Answer) {
         let guarded = match self.permissions.prompt.borrow().as_ref() {
-            Some(shown) if shown.id == id => shown.since.elapsed() < INPUT_GUARD,
+            Some(shown) if shown.id == id => queue::guarded(shown.since.elapsed()),
             _ => return,
         };
         if guarded {
@@ -276,11 +269,12 @@ impl BrowserWindow {
             _ => return,
         };
         let selected = self.active_tab().is_some_and(|t| t.id == tab);
-        if selected && closed.duration_since(since) >= INPUT_GUARD {
-            self.settle_prompt(Answer::Dismiss);
-        } else {
-            self.withdraw_prompt();
-            self.show_next_prompt();
+        match queue::closing(selected, closed.duration_since(since)) {
+            Closing::Dismiss => self.settle_prompt(Answer::Dismiss),
+            Closing::Withdraw => {
+                self.withdraw_prompt();
+                self.show_next_prompt();
+            }
         }
     }
 

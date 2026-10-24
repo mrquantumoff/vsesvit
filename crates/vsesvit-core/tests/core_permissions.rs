@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use vsesvit_core::crdt::{DeviceId, Hlc, Lww, Seq, Stamp, TimeSource};
 use vsesvit_core::permissions::{
-    prompt, site_rows, Answer, Capturing, Decision, Origin, Permission, Setting, SiteChoice, SiteGroup, SitePermissionRecord,
+    moved_settings, prompt, site_rows, Answer, Capturing, Decision, Origin, Permission, Setting, SiteChoice, SiteGroup, SitePermissionRecord,
     SiteRow, SiteSetting, TabGrants,
 };
 use vsesvit_core::sync::{Kind, WireRecord};
@@ -564,4 +564,33 @@ fn settings_sync_between_profiles() {
     let report = a.sync().apply(vec![wire]).unwrap();
     assert_eq!(report.rejected.len(), 1);
     assert_eq!(exported(&mut a).len(), 2);
+}
+
+#[test]
+fn a_sync_moves_the_settings_it_added_removed_or_changed_and_no_others() {
+    let a = Origin::parse("https://a.test").unwrap();
+    let b = Origin::parse("https://b.test").unwrap();
+    let stored = |origin: &Origin, permission, setting| SiteSetting { origin: origin.clone(), permission, setting };
+    let moved = moved_settings(
+        &[
+            stored(&a, Camera, Setting::Allow),
+            stored(&a, Microphone, Setting::Allow),
+            stored(&b, Camera, Setting::Block),
+            stored(&b, Notifications, Setting::Allow),
+        ],
+        &[
+            stored(&a, Camera, Setting::Block),
+            stored(&b, Camera, Setting::Block),
+            stored(&b, Microphone, Setting::Block),
+            stored(&b, Notifications, Setting::Allow),
+        ],
+    );
+    assert_eq!(
+        moved,
+        [
+            (a.clone(), Camera, Some(Setting::Allow), Some(Setting::Block)),
+            (a, Microphone, Some(Setting::Allow), None),
+            (b, Microphone, None, Some(Setting::Block)),
+        ]
+    );
 }

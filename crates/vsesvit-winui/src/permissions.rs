@@ -13,26 +13,23 @@
 //! is only its word, so a block or a reset, made here or arriving through sync, that takes back
 //! a capture the shell let it make reloads the page ([`reload_allowed_captures`]).
 //!
-//! Camera and microphone from one `getUserMedia` arrive as two requests, in two turns of the UI
-//! thread. A request joins the last prompt of its tab when that is for the same origin, even one
-//! already shown (which then asks for both), so they get one prompt and one answer.
-//! A request waits (deferred) until its tab is the one shown, as in Chrome; the window shows one
-//! prompt at a time. A waiting request is denied when its tab closes or commits a document of
-//! another origin.
+//! The queue of waiting requests is core's (`vsesvit_core::permissions::queue`), over this
+//! shell's request handle: the deferral of a WebView2 request. It decides, groups, limits and
+//! answers; this module completes the requests it hands back. A request waits (deferred) until
+//! its tab is the one shown, as in Chrome; the window shows one prompt at a time.
 //!
 //! A tab decides and answers in its window's kind: a private window's answers stay in core's
 //! private session, over the stored settings. The engine's copy is of the stored settings, in
 //! the normal profile only.
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use vsesvit_core::Url;
+use vsesvit_core::permissions::queue::{self, Answered, Queue};
 use vsesvit_core::permissions::{
-    Answer, Capturing, Decision, Origin, Permission, Prompt, Setting, SiteSetting, TabGrants,
-    prompt,
+    Answer, Capturing, Decision, Origin, Permission, Prompt, Setting, SiteSetting, moved_settings,
 };
 use vsesvit_core::private::Browsing;
 use windows_core::{Interface, Result};
@@ -138,21 +135,10 @@ impl Request {
     }
 }
 
-/// The requests of one origin that one prompt answers.
-struct Waiting {
-    origin: Option<Origin>,
-    requests: Vec<Request>,
-    /// What the shown prompt asks for; `None` while it is not shown.
-    asked: Option<Vec<Permission>>,
-}
-
-/// One tab's permissions: its one-time grants, the requests waiting for a prompt, and what its
-/// page captures (see `capturing`).
+/// One tab's permissions: its one-time grants and the requests waiting for a prompt (core's
+/// queue), and what its page captures (see `capturing`).
 pub(crate) struct TabPermissions {
-    /// The tab's kind, whose settings decide its requests.
-    browsing: Browsing,
-    grants: RefCell<TabGrants>,
-    waiting: RefCell<VecDeque<Waiting>>,
+    queue: RefCell<Queue<Request>>,
     capturing: Cell<Capturing>,
     /// A capture was granted: watch the page until then even while nothing is live.
     watch_until: Cell<Option<Instant>>,
@@ -172,9 +158,7 @@ pub(crate) enum Requested {
 impl TabPermissions {
     pub fn new(browsing: Browsing) -> Self {
         Self {
-            browsing,
-            grants: RefCell::default(),
-            waiting: RefCell::default(),
+            queue: RefCell::new(Queue::new(browsing)),
             capturing: Cell::default(),
             watch_until: Cell::new(None),
             site_may_capture: Cell::new(false),
@@ -197,26 +181,18 @@ impl TabPermissions {
             deferral: args.GetDeferral()?,
             permission,
         };
-        match self.decide(browser, origin.as_ref(), &[permission]) {
-            Decision::Allow => self.complete(request, true),
-            Decision::Block => self.complete(request, false),
-            Decision::Ask(_) => {
-                let mut waiting = self.waiting.borrow_mut();
-                match waiting.back_mut() {
-                    Some(last) if last.origin == origin => {
-                        last.requests.push(request);
-                        last.asked = None;
-                    }
-                    _ => waiting.push_back(Waiting {
-                        origin,
-                        requests: vec![request],
-                        asked: None,
-                    }),
-                }
-                return Ok(Requested::Waiting);
+        let requested = browser.core(|p| {
+            self.queue
+                .borrow_mut()
+                .request(p, origin, vec![permission], request)
+        });
+        match requested {
+            queue::Requested::Answered(answered) => {
+                self.complete(answered);
+                Ok(Requested::Settled)
             }
+            queue::Requested::Waiting => Ok(Requested::Waiting),
         }
-        Ok(Requested::Settled)
     }
 
     /// Whether the settings block `permission` for the site. For a screen share, when they do
@@ -227,39 +203,21 @@ impl TabPermissions {
         origin: Option<&Origin>,
         permission: Permission,
     ) -> bool {
-        self.decide(browser, origin, &[permission]) == Decision::Block
+        self.decide(browser, origin, permission) == Decision::Block
     }
 
     /// The stored settings changed: waiting requests they now decide are answered. Whether the
     /// shown prompt changed (it went, or asks for less).
     pub fn settle_decided(&self, browser: &Browser) -> bool {
-        let mut changed = false;
-        let mut kept = VecDeque::new();
-        let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
-        for mut w in waiting {
-            let permissions: Vec<Permission> = w.requests.iter().map(|r| r.permission).collect();
-            match self.decide(browser, w.origin.as_ref(), &permissions) {
-                Decision::Ask(asked) => {
-                    if w.asked.as_ref().is_some_and(|shown| *shown != asked) {
-                        w.asked = None;
-                        changed = true;
-                    }
-                    kept.push_back(w);
-                }
-                Decision::Allow | Decision::Block => {
-                    changed |= w.asked.is_some();
-                    self.settle(browser, w);
-                }
-            }
-        }
-        *self.waiting.borrow_mut() = kept;
-        changed
+        let settled = browser.core(|p| self.queue.borrow_mut().settle_decided(p));
+        self.complete_all(settled.answers);
+        settled.prompt_changed
     }
 
     /// Re-reads whether the page at `origin` may capture without asking, after a navigation or
     /// a change of the settings.
     pub fn refresh_site(&self, browser: &Browser, origin: Option<&Origin>) {
-        let allowed = |p| self.decide(browser, origin, &[p]) == Decision::Allow;
+        let allowed = |p| self.decide(browser, origin, p) == Decision::Allow;
         self.site_may_capture
             .set(allowed(Permission::Camera) || allowed(Permission::Microphone));
     }
@@ -268,28 +226,21 @@ impl TabPermissions {
         &self,
         browser: &Browser,
         origin: Option<&Origin>,
-        permissions: &[Permission],
+        permission: Permission,
     ) -> Decision {
-        let grants = self.grants.borrow();
-        browser.core(|p| {
-            p.site_permissions_in(self.browsing)
-                .decide(origin, permissions, &grants)
-        })
+        browser.core(|p| self.queue.borrow().decide(p, origin, &[permission]))
     }
 
-    fn complete(&self, request: Request, allowed: bool) {
-        if allowed && is_capture(request.permission) {
+    fn complete(&self, answered: Answered<Request>) {
+        if answered.allowed && is_capture(answered.request.permission) {
             self.watch_until.set(Some(Instant::now() + CAPTURE_GRACE));
         }
-        request.complete(allowed);
+        answered.request.complete(answered.allowed);
     }
 
-    /// Answers each request from the settings and grants as they are now; what is still
-    /// undecided is denied.
-    fn settle(&self, browser: &Browser, waiting: Waiting) {
-        for request in waiting.requests {
-            let decision = self.decide(browser, waiting.origin.as_ref(), &[request.permission]);
-            self.complete(request, decision == Decision::Allow);
+    fn complete_all(&self, answers: Vec<Answered<Request>>) {
+        for answered in answers {
+            self.complete(answered);
         }
     }
 
@@ -297,58 +248,20 @@ impl TabPermissions {
     /// was last shown. Requests that the settings decide by now (the user answered the same
     /// site in another tab) are answered on the way.
     pub fn next_prompt(&self, browser: &Browser) -> Option<(Prompt, bool)> {
-        loop {
-            let (origin, permissions) = {
-                let waiting = self.waiting.borrow();
-                let head = waiting.front()?;
-                if let Some(asked) = &head.asked {
-                    return Some((prompt(head.origin.as_ref(), asked), false));
-                }
-                let permissions: Vec<Permission> =
-                    head.requests.iter().map(|r| r.permission).collect();
-                (head.origin.clone(), permissions)
-            };
-            match self.decide(browser, origin.as_ref(), &permissions) {
-                Decision::Ask(asked) => {
-                    let shown = prompt(origin.as_ref(), &asked);
-                    if let Some(head) = self.waiting.borrow_mut().front_mut() {
-                        head.asked = Some(asked);
-                    }
-                    return Some((shown, true));
-                }
-                Decision::Allow | Decision::Block => {
-                    if let Some(head) = self.waiting.borrow_mut().pop_front() {
-                        self.settle(browser, head);
-                    }
-                }
-            }
-        }
+        let next = browser.core(|p| self.queue.borrow_mut().next_prompt(p));
+        self.complete_all(next.answers);
+        next.prompt.map(|prompt| (prompt, next.changed))
     }
 
     /// The shown prompt went away unanswered (its tab is no longer the one shown).
     pub fn prompt_hidden(&self) {
-        if let Some(head) = self.waiting.borrow_mut().front_mut() {
-            head.asked = None;
-        }
+        self.queue.borrow_mut().prompt_hidden();
     }
 
     /// Applies the user's answer to the shown prompt.
     pub fn answer(&self, browser: &Browser, answer: Answer) {
-        let Some(head) = self.waiting.borrow_mut().pop_front() else {
-            return;
-        };
-        let asked = head.asked.clone().unwrap_or_default();
-        let answered = {
-            let mut grants = self.grants.borrow_mut();
-            browser.core(|p| {
-                p.site_permissions_in(self.browsing)
-                    .answer(head.origin.as_ref(), &asked, answer, &mut grants)
-            })
-        };
-        if let Err(e) = answered {
-            log::warn!("permission answer {answer:?}: {e}");
-        }
-        self.settle(browser, head);
+        let answers = browser.core(|p| self.queue.borrow_mut().answer(p, answer));
+        self.complete_all(answers);
     }
 
     /// A committed navigation of the tab: grants end when it leaves their site, and a new
@@ -358,40 +271,23 @@ impl TabPermissions {
         let Ok(url) = Url::parse(url) else {
             return false;
         };
-        self.grants.borrow_mut().committed(&url);
-        if !new_document {
-            return false;
-        }
-        let origin = Origin::of(&url);
-        let gone: VecDeque<Waiting> = {
-            let mut waiting = self.waiting.borrow_mut();
-            let (gone, kept) = std::mem::take(&mut *waiting)
-                .into_iter()
-                .partition(|w| w.origin.is_none() || w.origin != origin);
-            *waiting = kept;
-            gone
-        };
-        let shown = gone.iter().any(|w| w.asked.is_some());
-        for request in gone.into_iter().flat_map(|w| w.requests) {
-            request.complete(false);
-        }
-        shown
+        let settled = self.queue.borrow_mut().committed(&url, new_document);
+        self.complete_all(settled.answers);
+        settled.prompt_changed
     }
 
     /// The tab closed: whatever waits is denied.
     pub fn close(&self) {
-        let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
-        for request in waiting.into_iter().flat_map(|w| w.requests) {
-            request.complete(false);
-        }
+        let denied = self.queue.borrow_mut().close();
+        self.complete_all(denied);
     }
 
     pub fn grants(&self) -> Vec<Permission> {
-        self.grants.borrow().granted().collect()
+        self.queue.borrow().grants()
     }
 
     pub fn revoke(&self, permission: Permission) {
-        self.grants.borrow_mut().revoke(permission);
+        self.queue.borrow_mut().revoke(permission);
     }
 
     pub fn capturing(&self) -> Capturing {
@@ -616,29 +512,6 @@ pub(crate) fn reload_allowed_captures(
     }
 }
 
-/// One stored setting a change moved: the site, the permission, and its setting before and
-/// after (`None`: Ask).
-type Moved = (Origin, Permission, Option<Setting>, Option<Setting>);
-
-/// Each setting that differs between `before` and `after`, both lists of every stored setting
-/// (`SitePermissions::all`).
-fn moved_settings(before: &[SiteSetting], after: &[SiteSetting]) -> Vec<Moved> {
-    let setting_in = |list: &[SiteSetting], s: &SiteSetting| {
-        list.iter()
-            .find(|o| o.origin == s.origin && o.permission == s.permission)
-            .map(|o| o.setting)
-    };
-    let changed = before.iter().filter_map(|s| {
-        let now = setting_in(after, s);
-        (now != Some(s.setting)).then(|| (s.origin.clone(), s.permission, Some(s.setting), now))
-    });
-    let added = after
-        .iter()
-        .filter(|s| setting_in(before, s).is_none())
-        .map(|s| (s.origin.clone(), s.permission, None, Some(s.setting)));
-    changed.chain(added).collect()
-}
-
 /// After a sync changed the stored settings from `before`: reloads the tabs whose capture a
 /// block or a removal it brought takes back, as the same change on the Settings page does.
 pub(crate) fn sync_changed(browser: &Browser, before: &[SiteSetting]) {
@@ -672,44 +545,6 @@ pub(crate) fn reload_taken_back(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_sync_moves_the_settings_it_added_removed_or_changed_and_no_others() {
-        let a = Origin::parse("https://a.test").unwrap();
-        let b = Origin::parse("https://b.test").unwrap();
-        let stored = |origin: &Origin, permission, setting| SiteSetting {
-            origin: origin.clone(),
-            permission,
-            setting,
-        };
-        let moved = moved_settings(
-            &[
-                stored(&a, Permission::Camera, Setting::Allow),
-                stored(&a, Permission::Microphone, Setting::Allow),
-                stored(&b, Permission::Camera, Setting::Block),
-                stored(&b, Permission::Notifications, Setting::Allow),
-            ],
-            &[
-                stored(&a, Permission::Camera, Setting::Block),
-                stored(&b, Permission::Camera, Setting::Block),
-                stored(&b, Permission::Microphone, Setting::Block),
-                stored(&b, Permission::Notifications, Setting::Allow),
-            ],
-        );
-        assert_eq!(
-            moved,
-            [
-                (
-                    a.clone(),
-                    Permission::Camera,
-                    Some(Setting::Allow),
-                    Some(Setting::Block)
-                ),
-                (a, Permission::Microphone, Some(Setting::Allow), None),
-                (b, Permission::Microphone, None, Some(Setting::Block)),
-            ]
-        );
-    }
 
     #[test]
     fn the_engine_gets_exactly_the_stored_settings() {
