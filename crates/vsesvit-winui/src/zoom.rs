@@ -21,6 +21,8 @@
 
 use std::time::Duration;
 
+use vsesvit_core::zoom::{PRESETS, label};
+
 use crate::bindings::*;
 
 /// A page's zoom, in percent.
@@ -39,7 +41,7 @@ impl Level {
     }
 
     pub fn label(self) -> String {
-        format!("{}%", self.0)
+        label(self.factor())
     }
 
     /// Core's level, a factor (1.0 = 100%).
@@ -148,7 +150,7 @@ impl Memory {
 }
 
 /// The key presses that take a page at `from` to `to`: Ctrl+0 for 100%, else one Ctrl+plus or
-/// Ctrl+minus for each of Chrome's levels on the way.
+/// Ctrl+minus for each of Chrome's levels ([`PRESETS`]) on the way.
 pub(crate) fn steps(from: Level, to: Level) -> Vec<Step> {
     if from == to {
         return Vec::new();
@@ -158,27 +160,22 @@ pub(crate) fn steps(from: Level, to: Level) -> Vec<Step> {
     }
     let (from, to) = (from.0, to.0);
     if to > from {
-        let count = LEVELS.iter().filter(|&&l| from < l && l <= to).count();
+        let count = PRESETS.iter().filter(|&&l| from < l && l <= to).count();
         vec![Step::In; count.max(1)]
     } else {
-        let count = LEVELS.iter().filter(|&&l| to <= l && l < from).count();
+        let count = PRESETS.iter().filter(|&&l| to <= l && l < from).count();
         vec![Step::Out; count.max(1)]
     }
 }
 
-/// Chrome's zoom levels, in percent; a reported level is snapped to the nearest.
-const LEVELS: [u32; 17] = [
-    25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500,
-];
-
 /// The zoom, in percent, of a page whose `devicePixelRatio` is `ratio` in a window drawn at
-/// `scale`.
+/// `scale`, snapped to the nearest of Chrome's levels ([`PRESETS`]) when it is within 2% of it.
 pub(crate) fn percent(ratio: f64, scale: f64) -> u32 {
     if !(ratio.is_finite() && scale.is_finite() && ratio > 0.0 && scale > 0.0) {
         return 100;
     }
     let exact = ratio / scale * 100.0;
-    let nearest = LEVELS
+    let nearest = PRESETS
         .iter()
         .copied()
         .min_by(|a, b| {

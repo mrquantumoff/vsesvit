@@ -18,6 +18,33 @@ CREATE TABLE site_zoom (                 -- LOCAL
 /// A page at 100%.
 pub const DEFAULT: f64 = 1.0;
 
+/// Chrome's zoom levels, in percent: the presets zooming in and out steps through. Whole
+/// percents, as the store keeps them, so a level read back from it is still a preset.
+pub const PRESETS: [u32; 17] = [25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500];
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    In,
+    Out,
+}
+
+/// The next preset level from `current`, which need not be a preset itself. At the last
+/// preset, `current` stays.
+pub fn step(current: f64, step: Step) -> f64 {
+    const EPSILON: f64 = 0.001;
+    let mut presets = PRESETS.iter().map(|&percent| f64::from(percent) / 100.0);
+    match step {
+        Step::In => presets.find(|&l| l > current + EPSILON),
+        Step::Out => presets.rev().find(|&l| l < current - EPSILON),
+    }
+    .unwrap_or(current)
+}
+
+/// `level` as the zoom chip and the zoom bubble show it: "125%".
+pub fn label(level: f64) -> String {
+    format!("{:.0}%", level * 100.0)
+}
+
 /// The zoom a tab of one [`Browsing`] kind goes by: in private, what the private session kept
 /// for a site wins over what is stored.
 pub struct SiteZoom<'p> {
@@ -74,5 +101,52 @@ impl SiteZoom<'_> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steps_walk_the_presets_and_stop_at_the_ends() {
+        assert_eq!(step(1.0, Step::In), 1.1);
+        assert_eq!(step(1.0, Step::Out), 0.9);
+        assert_eq!(step(5.0, Step::In), 5.0);
+        assert_eq!(step(0.25, Step::Out), 0.25);
+    }
+
+    #[test]
+    fn zoom_out_follows_chromes_presets_below_half() {
+        assert_eq!(step(0.5, Step::Out), 0.33);
+        assert_eq!(step(0.33, Step::Out), 0.25);
+        assert_eq!(step(0.25, Step::In), 0.33);
+        assert_eq!(step(0.67, Step::Out), 0.5, "a level read back from the store's whole percents is still a preset");
+    }
+
+    #[test]
+    fn off_preset_levels_snap_to_the_neighbouring_preset() {
+        assert_eq!(step(1.05, Step::In), 1.1);
+        assert_eq!(step(1.05, Step::Out), 1.0);
+        assert_eq!(step(9.0, Step::Out), 5.0);
+    }
+
+    #[test]
+    fn labels_are_rounded_percents() {
+        assert_eq!(label(1.0), "100%");
+        assert_eq!(label(0.67), "67%");
+        assert_eq!(label(1.25), "125%");
+        for percent in PRESETS {
+            assert_eq!(label(f64::from(percent) / 100.0), format!("{percent}%"));
+        }
+    }
+
+    #[test]
+    fn presets_rise_through_100_and_survive_the_store() {
+        assert!(PRESETS.windows(2).all(|w| w[0] < w[1]));
+        assert!(PRESETS.contains(&100));
+        for percent in PRESETS {
+            assert_eq!(remembered(f64::from(percent) / 100.0).unwrap_or(100), i64::from(percent));
+        }
     }
 }
