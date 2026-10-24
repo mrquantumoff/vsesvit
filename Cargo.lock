@@ -8556,8 +8556,10 @@ dependencies = [
 name = "vsesvit-cef"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cef",
  "futures",
+ "libc",
  "log",
  "rusty-leveldb",
  "serde_json",
@@ -8567,6 +8569,7 @@ dependencies = [
  "vsesvit-engine",
  "vsesvit-gpui",
  "vsesvit-testenv",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

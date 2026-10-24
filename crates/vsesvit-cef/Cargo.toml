@@ -19,6 +19,20 @@ log = { workspace = true }
 serde_json = { workspace = true }
 # Seeds Chromium's extension storage before its first start (design section 5.9).
 rusty-leveldb = { workspace = true }
+# DevTools results (screenshots, PDFs) arrive base64-encoded.
+base64 = "0.22"
+
+[features]
+# `Engine::test_shutdown` for the shutdown self-test checks (design section 3.6).
+self-test = ["vsesvit-engine/self-test"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# poll(2) and eventfd(2) for the GLib fd watcher (`driver/glib.rs`).
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Popup window styles and an Alloy browser's own DestroyWindow (`native.rs`).
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 # The smoke example hosts browsers in the shell's platform surface (design section 6.2).
 [dev-dependencies]
