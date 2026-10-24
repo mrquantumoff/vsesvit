@@ -193,6 +193,11 @@ impl Sequence {
         if self.ended().is_some() {
             return due;
         }
+        // A zero count drains whenever it comes; past the cap nothing else reaches the engine.
+        if input != Input::AllBrowsersClosed && now >= self.began + CLOSE_CAP {
+            self.stage = Stage::Ended(End::Stuck);
+            return vec![Action::End(End::Stuck)];
+        }
         match (self.stage, input) {
             (_, Input::AllBrowsersClosed) => self.stage = Stage::Ended(End::Drained),
             (Stage::ClosingUser, Input::UserBrowsersClosed) if self.final_jobs => {
@@ -217,9 +222,6 @@ impl Sequence {
                 }
             }
             _ => {}
-        }
-        if self.ended().is_none() && now >= self.began + CLOSE_CAP {
-            self.stage = Stage::Ended(End::Stuck);
         }
         if let Some(end) = self.ended() {
             due.push(Action::End(end));
@@ -315,12 +317,13 @@ pub fn request_with_code(intent: ExitIntent, code: u8, cx: &mut App) {
     let (engine, shell) = (quitter.engine.clone(), quitter.shell.clone());
     let final_jobs = !matches!(intent, ExitIntent::RemoveProfile);
     log::info!("quitting: {intent:?}");
+    // Marked before the shell runs, so a quit its calls reach again finds this one under way.
+    let now = cx.background_executor().now();
+    cx.global_mut::<Quitter>().running = Some(Running { sequence: Sequence::begin(now, final_jobs), intent, code });
     if final_jobs {
         shell.save_session(cx);
     }
     shell.hide_windows(cx);
-    let now = cx.background_executor().now();
-    cx.global_mut::<Quitter>().running = Some(Running { sequence: Sequence::begin(now, final_jobs), intent, code });
     engine.begin_shutdown();
     cx.spawn(async move |cx| {
         loop {
@@ -386,8 +389,10 @@ fn stop(end: End, cx: &mut App) {
     }
     if end == End::Stuck {
         // The driver's stuck path logs every live browser and makes no engine call. It runs here,
-        // while the windows and the hidden host that hold those browsers still exist.
-        let driver = quitter.driver.borrow_mut().take();
+        // while the windows and the hidden host that hold those browsers still exist. If this runs
+        // nested in a pump step (a Windows message dispatched inside it), the driver stays for
+        // `finish`, which takes the same path.
+        let driver = quitter.driver.try_borrow_mut().ok().and_then(|mut slot| slot.take());
         if let Some(driver) = driver {
             driver.shutdown();
         }
@@ -534,6 +539,11 @@ mod tests {
         let mut internal_pinned = Sequence::begin(t, false);
         internal_pinned.feed(Input::UserBrowsersClosed, at(t, 10));
         assert_eq!(internal_pinned.feed(Input::Tick, at(t, 15_000)), [Action::End(End::Stuck)], "the cap counts from step 3");
+
+        let mut late = Sequence::begin(t, true);
+        assert_eq!(late.feed(Input::UserBrowsersClosed, at(t, 15_001)), [Action::End(End::Stuck)], "no final jobs past the cap");
+        let mut late = Sequence::begin(t, false);
+        assert_eq!(late.feed(Input::UserBrowsersClosed, at(t, 15_001)), [Action::End(End::Stuck)], "no close_internal past the cap");
     }
 
     #[test]
@@ -564,12 +574,20 @@ mod tests {
         assert_eq!(image_of(None, exe()).unwrap(), Path::new("/tmp/.mount_x/usr/bin/vsesvit"));
     }
 
+    /// Records each spawn, and whether the profile at `profile` could be opened at that moment.
     #[derive(Default)]
-    struct Recorder(RefCell<Vec<(PathBuf, Vec<OsString>)>>);
+    struct Recorder {
+        spawned: RefCell<Vec<(PathBuf, Vec<OsString>)>>,
+        profile: Option<PathBuf>,
+        lock_free_at_spawn: Cell<Option<bool>>,
+    }
 
     impl Spawner for Recorder {
         fn spawn(&self, image: &Path, args: &[OsString]) -> std::io::Result<()> {
-            self.0.borrow_mut().push((image.to_owned(), args.to_vec()));
+            self.spawned.borrow_mut().push((image.to_owned(), args.to_vec()));
+            if let Some(root) = &self.profile {
+                self.lock_free_at_spawn.set(Some(Profile::open(root, vsesvit_core::OpenOptions::default()).is_ok()));
+            }
             Ok(())
         }
     }
@@ -587,15 +605,15 @@ mod tests {
     #[test]
     fn a_relaunch_with_no_update_starts_this_image_after_the_profile_is_released() {
         let root = scratch("relaunch");
-        let recorder = Recorder::default();
+        let recorder = Recorder { profile: Some(root.clone()), ..Recorder::default() };
         let args = RelaunchArgs::profile(root.clone());
         let ended = Ended { end: End::Drained, intent: ExitIntent::Relaunch(args.clone()), code: 0 };
         let code =
             finish(Some(ended), Finish { driver: None, core: open(&root), profile_root: &root, home: None, spawner: &recorder });
         assert_eq!(code, ExitCode::SUCCESS);
-        let spawned = recorder.0.borrow().clone();
-        assert_eq!(spawned, [(std::env::current_exe().unwrap(), args.command_line())]);
-        assert!(Profile::open(&root, vsesvit_core::OpenOptions::default()).is_ok(), "the lock is free");
+        let spawned = recorder.spawned.borrow().clone();
+        assert_eq!(spawned, [(relaunch_image().unwrap(), args.command_line())]);
+        assert_eq!(recorder.lock_free_at_spawn.get(), Some(true), "the profile was released before the spawn");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -608,7 +626,7 @@ mod tests {
         let parts = Finish { driver: Some(engine.driver()), core: open(&root), profile_root: &root, home: None, spawner: &recorder };
         assert_eq!(finish(Some(ended), parts), ExitCode::from(1));
         assert!(engine.driver_shut_down());
-        assert!(recorder.0.borrow().is_empty());
+        assert!(recorder.spawned.borrow().is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
