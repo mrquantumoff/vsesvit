@@ -60,15 +60,24 @@ impl Cadence {
     }
 }
 
-type DriverCell = Rc<RefCell<Option<Box<dyn EngineDriver>>>>;
+/// Where the driver lives while the pump runs. The pump borrows it for each step; whoever started the
+/// pump keeps a clone, so the driver outlives the pump task (design section 3.6, "Who owns the driver
+/// at the end").
+pub type DriverSlot = Rc<RefCell<Option<Box<dyn EngineDriver>>>>;
 
-/// The running pump. The `Shell` keeps it until shutdown step 7 (design section 3.6).
+/// The running pump. Shutdown step 7 stops it (design section 3.6).
 pub struct PumpHandle {
     task: Task<()>,
-    driver: DriverCell,
+    driver: DriverSlot,
 }
 
 impl PumpHandle {
+    /// Ends the pump after its current step and leaves the driver in its slot. Unlike [`stop`](Self::stop)
+    /// it works mid-step too: the task only ends once the step returns.
+    pub fn halt(self) {
+        drop(self.task);
+    }
+
     /// Ends the pump after its current step and hands back the driver, for `EngineDriver::shutdown`
     /// once GPUI's `run` returned. Called mid-step, which only a call from inside an engine callback
     /// could be (section 1.6 rule 1 forbids it), the pump keeps running and comes back as the error.
@@ -90,10 +99,12 @@ impl PumpHandle {
     }
 }
 
-/// Starts the pump task.
-pub(crate) fn start(cx: &mut App, mut driver: Box<dyn EngineDriver>) -> PumpHandle {
-    let wakes = driver.schedule();
-    let driver: DriverCell = Rc::new(RefCell::new(Some(driver)));
+/// Starts the pump task over the driver in `driver`. With none there, the pump never steps.
+pub(crate) fn start(cx: &mut App, driver: DriverSlot) -> PumpHandle {
+    let Some(wakes) = driver.borrow_mut().as_mut().map(|d| d.schedule()) else {
+        log::error!("pump: no driver to pump");
+        return PumpHandle { task: Task::ready(()), driver };
+    };
     let clock = cx.background_executor().clone();
     let task = cx.spawn({
         let driver = driver.clone();
@@ -102,7 +113,7 @@ pub(crate) fn start(cx: &mut App, mut driver: Box<dyn EngineDriver>) -> PumpHand
     PumpHandle { task, driver }
 }
 
-async fn run(driver: DriverCell, mut wakes: UnboundedReceiver<Duration>, clock: BackgroundExecutor) {
+async fn run(driver: DriverSlot, mut wakes: UnboundedReceiver<Duration>, clock: BackgroundExecutor) {
     let mut cadence = Cadence::new(clock.now());
     let mut wakes_open = true;
     loop {

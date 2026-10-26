@@ -8,8 +8,9 @@
 
 use std::rc::Rc;
 
+use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{App, Global};
-use vsesvit_engine::{Engine, EngineParts};
+use vsesvit_engine::{BrowserEvent, Engine};
 
 use crate::platform::Desktop;
 
@@ -26,7 +27,7 @@ pub mod router;
 mod tests;
 
 pub use focus::{Focus, PageArea, SharedSurface};
-pub use pump::PumpHandle;
+pub use pump::{DriverSlot, PumpHandle};
 pub use router::ShellRoutes;
 
 /// What `start` hands back.
@@ -48,10 +49,17 @@ struct Bridge {
 
 impl Global for Bridge {}
 
-/// Starts the bridge: installs the hooks, then the pump, the router and the pointer-press watch as
-/// GPUI foreground tasks. Once per process, on main, before the first window.
-pub fn start<D: Desktop>(cx: &mut App, parts: EngineParts, desktop: Rc<D>, routes: Rc<dyn ShellRoutes>) -> Started {
-    let EngineParts { engine: raw, driver, events } = parts;
+/// Starts the bridge over the engine's parts: installs the hooks, then the pump over the driver in
+/// `driver`, the router and the pointer-press watch as GPUI foreground tasks. The driver stays in
+/// `driver` when the pump ends. Once per process, on main, before the first window.
+pub fn start<D: Desktop>(
+    cx: &mut App,
+    raw: Rc<dyn Engine>,
+    events: UnboundedReceiver<BrowserEvent>,
+    driver: DriverSlot,
+    desktop: Rc<D>,
+    routes: Rc<dyn ShellRoutes>,
+) -> Started {
     let presses = desktop.pointer_presses();
     let focus = Focus::new(
         raw.clone(),

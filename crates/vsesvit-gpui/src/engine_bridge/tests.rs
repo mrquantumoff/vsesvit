@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use gpui::{App, Context, IntoElement, Render, TestAppContext, Window, WindowId};
 use vsesvit_engine::{
-    AuthChallenger, Browsing, BrowserEvent, ContextMenuParams, Engine, EngineParts, FakeCommand, FakeEngine, FileChooserMode,
+    AuthChallenger, Browsing, BrowserEvent, ContextMenuParams, Engine, FakeCommand, FakeEngine, FileChooserMode,
     InitialPage, JsDialogKind, KeyboardOwner, MenuModel, NativeHandle, OpenDisposition, PageFocus, PagePoint, PermissionRequest,
     PhysRect, PromptAnswer, PromptEnd, PromptError, PromptRequest, RequestResult, RoutedKey, TabEvent, TabId, TabKind, TabSpec,
     Url,
@@ -117,8 +117,8 @@ fn rig(cx: &mut TestAppContext) -> Rig {
     let (fake, events) = FakeEngine::new();
     let desktop = Rc::new(FakeDesktop::init().unwrap());
     let routes = Rc::new(Recorder::default());
-    let parts = EngineParts { engine: fake.clone(), driver: fake.driver(), events };
-    let started = cx.update(|cx| start(cx, parts, desktop.clone(), routes.clone()));
+    let driver: DriverSlot = Rc::new(RefCell::new(Some(fake.driver())));
+    let started = cx.update(|cx| start(cx, fake.clone(), events, driver, desktop.clone(), routes.clone()));
     cx.run_until_parked();
     Rig { fake, desktop, routes, engine: started.engine, pump: Some(started.pump) }
 }
@@ -552,4 +552,20 @@ fn the_pump_steps_on_wakes_and_its_handle_returns_the_driver(cx: &mut TestAppCon
     assert_eq!(rig.fake.pump_steps(), stopped, "no step after stop");
     driver.shutdown();
     assert!(rig.fake.driver_shut_down());
+}
+
+#[gpui::test]
+fn a_halted_pump_leaves_its_driver_in_the_slot(cx: &mut TestAppContext) {
+    let (fake, events) = FakeEngine::new();
+    let driver: DriverSlot = Rc::new(RefCell::new(Some(fake.driver())));
+    let desktop = Rc::new(FakeDesktop::init().unwrap());
+    let started = cx.update(|cx| start(cx, fake.clone(), events, driver.clone(), desktop, Rc::new(Recorder::default())));
+    cx.run_until_parked();
+    started.pump.halt();
+    let halted = fake.pump_steps();
+    let _ = fake.wake(Duration::ZERO);
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(fake.pump_steps(), halted, "no step after halt");
+    assert!(driver.borrow().is_some(), "the driver stays for shutdown");
 }
