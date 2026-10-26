@@ -119,41 +119,17 @@ impl BrowserWindow {
             self.page.hooks_stale = true;
         }
 
-        let want = selected.and_then(|id| tabs.iter().find(|(t, _)| *t == id)).and_then(|(id, tab)| tab.read(cx).native().map(|n| (*id, n)));
-        let mut visibility = Vec::new();
-        let live: Vec<(TabId, NativeHandle)> = tabs.iter().filter_map(|(id, tab)| tab.read(cx).native().map(|n| (*id, n))).collect();
-        self.page.placed.retain(|native| live.iter().any(|(_, n)| n == native));
-        for &(id, native) in &live {
-            if self.page.placed.insert(native) && want != Some((id, native)) {
-                host.show_page(native, false);
-                visibility.push((id, false));
-            }
-        }
-        let shown_changed = self.page.shown != want;
-        if shown_changed {
-            if let Some((old, native)) = self.page.shown
-                && live.contains(&(old, native))
-            {
-                host.show_page(native, false);
-                visibility.push((old, false));
-            }
-            if let Some((new, native)) = want {
-                host.show_page(native, true);
-                visibility.push((new, true));
-            }
-            self.page.shown = want;
-        }
         drop(host);
-
-        for (id, visible) in visibility {
-            engine.set_visible(id, visible);
-        }
+        let Some(shown_changed) = self.show_selected(cx) else { return };
+        let want = self.page.shown;
         if let (true, Some((id, _))) = (moved && !shown_changed, want) {
             engine.notify_moved(id);
         }
         if rescaled {
-            for &(id, _) in &live {
-                engine.notify_screen_info_changed(id);
+            for (id, tab) in &tabs {
+                if tab.read(cx).native().is_some() {
+                    engine.notify_screen_info_changed(*id);
+                }
             }
         }
         for (id, tab) in &tabs {
@@ -177,6 +153,58 @@ impl BrowserWindow {
             let hook = TabHook { browsing: self.browsing, parent, bounds: page_size, scale_factor: scale };
             publish_hooks(tabs.iter().map(|(id, _)| (*id, hook)), cx);
         }
+    }
+
+    /// Shows the selected tab's page and hides every other page of the window: at once on a tab switch,
+    /// so the focus policy never moves the keyboard to a page still hidden, and again at every layout
+    /// for pages created since. Returns whether the shown page changed; `None` while the surface is
+    /// busy or not laid out yet.
+    pub(super) fn show_selected(&mut self, cx: &mut Context<Self>) -> Option<bool> {
+        let surface = self.surface.clone()?;
+        self.page.content?;
+        let state = self.state.upgrade()?;
+        let selected = self.tabs.read(cx).selected();
+        let live: Vec<(TabId, NativeHandle)> = self
+            .tabs
+            .read(cx)
+            .tabs()
+            .iter()
+            .filter_map(|&id| state.read(cx).tab(id).and_then(|tab| tab.read(cx).native()).map(|n| (id, n)))
+            .collect();
+        let want = live.iter().copied().find(|(id, _)| Some(*id) == selected);
+        let mut visibility = Vec::new();
+        {
+            let Ok(mut host) = surface.try_borrow_mut() else {
+                log::error!("window {}: the surface is borrowed; pages are shown next frame", self.id.0);
+                return None;
+            };
+            self.page.placed.retain(|native| live.iter().any(|(_, n)| n == native));
+            for &(id, native) in &live {
+                if self.page.placed.insert(native) && want != Some((id, native)) {
+                    host.show_page(native, false);
+                    visibility.push((id, false));
+                }
+            }
+            if self.page.shown != want {
+                if let Some((old, native)) = self.page.shown
+                    && live.contains(&(old, native))
+                {
+                    host.show_page(native, false);
+                    visibility.push((old, false));
+                }
+                if let Some((new, native)) = want {
+                    host.show_page(native, true);
+                    visibility.push((new, true));
+                }
+            }
+        }
+        let changed = self.page.shown != want;
+        self.page.shown = want;
+        let engine = Shell::engine(cx);
+        for (id, visible) in visibility {
+            engine.set_visible(id, visible);
+        }
+        Some(changed)
     }
 
     /// Tells the focus policy where the shown page is on the screen, after every change and after every

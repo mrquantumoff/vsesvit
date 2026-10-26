@@ -276,6 +276,21 @@ fn a_switch_gives_the_keyboard_to_the_page_or_to_the_address_field_of_a_blank_ta
 }
 
 #[gpui::test]
+fn a_switch_between_pages_shows_the_new_page_before_it_gets_the_keyboard(cx: &mut TestAppContext) {
+    let rig = rig(cx, "focus-page-to-page", Setup { targets: &["https://a.test/", "https://b.test/"], ..Setup::default() });
+    let window = rig.windows(cx)[0];
+    rig.activate(cx, window);
+    let [a, b] = rig.tabs(cx, window)[..] else { panic!("two tabs") };
+    assert_eq!(rig.fake.focused(), Some(a));
+    rig.select(cx, window, b);
+    assert_eq!(rig.fake.focused(), Some(b));
+    let journal = rig.journal(cx, window);
+    let refused: Vec<SurfaceCall> =
+        journal.borrow().iter().filter(|c| matches!(c, SurfaceCall::Focus { outcome: FocusOutcome::Refused, .. })).cloned().collect();
+    assert!(refused.is_empty(), "a hidden page was asked to take the keyboard: {refused:?}");
+}
+
+#[gpui::test]
 fn a_window_goes_when_its_last_tab_does_and_the_only_window_quits(cx: &mut TestAppContext) {
     let rig = rig(cx, "close-if-empty", Setup::default());
     let first = rig.windows(cx)[0];

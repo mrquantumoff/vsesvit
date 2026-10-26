@@ -289,6 +289,7 @@ impl BrowserWindow {
     /// Another tab shows: the focus policy follows, the toolbar shows the tab, and the keyboard goes
     /// to the address field for a blank tab or one with typed text, else to the page.
     fn selection_changed(&mut self, selected: Option<TabId>, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_selected(cx);
         engine_bridge::focus(cx).select_tab(self.gpui_id, selected);
         let tab = self.selected_tab(cx);
         self.toolbar.update(cx, |toolbar, cx| toolbar.show_tab(tab.clone(), window, cx));
