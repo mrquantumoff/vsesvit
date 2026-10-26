@@ -37,6 +37,7 @@ Usage: cargo xtask package <nsis|deb|rpm|pacman|appimage|flatpak>... [--sign]
        cargo xtask check-deps
        cargo xtask selftest [--flavour gpui|winui] [--network]
        cargo xtask probe EXAMPLE [ARGS]...
+       cargo xtask probe --program PATH [ARGS]...
        cargo xtask hand-test
        cargo xtask helper-check
        cargo xtask pack-helper
