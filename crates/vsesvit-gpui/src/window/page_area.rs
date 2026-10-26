@@ -30,9 +30,20 @@ pub struct PageSlot {
     area: Option<PageArea>,
     /// The hooks' snapshot needs this window's tabs again.
     hooks_stale: bool,
+    /// A tab whose page takes the keyboard once it is the one shown.
+    keyboard_waits_for: Option<TabId>,
 }
 
 impl PageSlot {
+    pub fn give_keyboard_to(&mut self, tab: TabId) {
+        self.keyboard_waits_for = Some(tab);
+    }
+
+    /// GPUI took the keyboard after a page was promised it.
+    pub fn give_keyboard_to_chrome(&mut self) {
+        self.keyboard_waits_for = None;
+    }
+
     pub fn tabs_changed(&mut self) {
         self.hooks_stale = true;
     }
@@ -154,7 +165,13 @@ impl BrowserWindow {
                 log::warn!("window {}: no browser for tab {}: {e}", self.id.0, id.get());
             }
         }
-        self.publish_page_area(content, scale, window, cx);
+        self.publish_page_area(content, scale, shown_changed, window, cx);
+        if let Some(tab) = self.page.keyboard_waits_for
+            && self.page.shown.is_some_and(|(shown, _)| shown == tab)
+        {
+            self.page.keyboard_waits_for = None;
+            engine_bridge::focus(cx).page_wants_keyboard(tab);
+        }
         if self.page.hooks_stale || moved {
             self.page.hooks_stale = false;
             let hook = TabHook { browsing: self.browsing, parent, bounds: page_size, scale_factor: scale };
@@ -162,8 +179,9 @@ impl BrowserWindow {
         }
     }
 
-    /// Tells the focus policy where the shown page is on the screen, after every change.
-    fn publish_page_area(&mut self, content: PhysRect, scale: f32, window: &Window, cx: &App) {
+    /// Tells the focus policy where the shown page is on the screen, after every change and after every
+    /// `show_page`, which lets the policy retry a page focus the OS refused.
+    fn publish_page_area(&mut self, content: PhysRect, scale: f32, shown_changed: bool, window: &Window, cx: &App) {
         let origin = window.bounds().origin;
         let rect = PhysRect {
             x: (f32::from(origin.x) * scale).round() as i32 + content.x,
@@ -171,7 +189,7 @@ impl BrowserWindow {
             ..content
         };
         let area = self.page.shown.zip(self.toplevel).map(|(_, toplevel)| PageArea { toplevel, rect, holes: Vec::new() });
-        if area != self.page.area {
+        if area != self.page.area || shown_changed {
             self.page.area = area.clone();
             engine_bridge::focus(cx).set_page_area(self.gpui_id, area);
         }

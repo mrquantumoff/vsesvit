@@ -309,10 +309,12 @@ impl BrowserWindow {
     }
 
     /// The selected page gets the keyboard; GPUI's own focus rests on the window, so the address field
-    /// shows its resting text.
+    /// shows its resting text. The keyboard moves once the page shows, at the next layout: an unmapped
+    /// page cannot take it.
     fn page_takes_keyboard(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
-        engine_bridge::focus(cx).page_wants_keyboard(tab);
+        self.page.give_keyboard_to(tab);
+        cx.notify();
     }
 
     /// The page tabbed past its last element (`next`) or its first: the address field takes the keyboard,

@@ -249,6 +249,9 @@ fn a_switch_gives_the_keyboard_to_the_page_or_to_the_address_field_of_a_blank_ta
     assert_eq!(last_focus, Some(SurfaceCall::Focus { target: FocusTarget::Chrome, outcome: FocusOutcome::Done }), "GPUI has the keyboard");
     rig.select(cx, window, page);
     assert_eq!(focus.published(page).map(|p| p.keyboard), Some(KeyboardOwner::Page), "back to the page");
+    assert_eq!(rig.fake.focused(), Some(page));
+    let refused = journal.borrow().iter().filter(|c| matches!(c, SurfaceCall::Focus { outcome: FocusOutcome::Refused, .. })).count();
+    assert_eq!(refused, 0, "the keyboard waits until the page shows: {:?}", journal.borrow());
 }
 
 #[gpui::test]
