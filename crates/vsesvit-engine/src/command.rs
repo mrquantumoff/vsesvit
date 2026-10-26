@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::extension::{ExtensionCall, ForeignId};
 use crate::focus::PageFocus;
 use crate::hooks::ShellHooks;
 use crate::ids::{EngineDownloadId, NativeHandle, ParkedId, PromptId, RequestId, TabId};
@@ -154,6 +155,15 @@ pub trait Engine {
     fn delete_cookies_for_hosts(&self, browsing: Browsing, hosts: &[String]);
     /// Clears the context's browsing data; `RequestResult::BrowsingDataCleared`.
     fn clear_browsing_data(&self, browsing: Browsing) -> RequestId;
+
+    // Extensions (design section 5.4).
+
+    /// A call into Chromium's extension system; `RequestResult::Extension` follows. After shutdown began
+    /// it fails at once.
+    fn extension_call(&self, call: ExtensionCall) -> RequestId;
+    /// Closes a browser Chromium opened itself, once the shell has reopened its page as a tab (design
+    /// section 5.7). An unknown id is ignored.
+    fn close_foreign(&self, id: ForeignId);
 
     /// Arms one of the shutdown self-test cases (design section 3.6, Tests). An engine without them
     /// answers `Unsupported`, so a check cannot pass by accident.

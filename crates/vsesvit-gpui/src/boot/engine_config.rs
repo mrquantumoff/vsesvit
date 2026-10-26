@@ -32,6 +32,8 @@ pub fn engine_config(config: &Config, profile: &mut Profile) -> EngineConfig {
         device_scale_factor: device_scale_factor(),
         password_store: password_store(&root_cache_path),
         load_extensions: config.load_extensions.clone(),
+        // Step 7 publishes nothing until the publish rule of design section 5.5 lands (W4.2, W4.5).
+        extensions: Default::default(),
         scripted: matches!(config.mode, Mode::SelfTest { .. }),
         extra_switches: Vec::new(),
         root_cache_path,

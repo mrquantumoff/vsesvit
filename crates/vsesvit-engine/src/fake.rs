@@ -22,9 +22,10 @@ use crate::command::Engine;
 #[cfg(feature = "self-test")]
 use crate::command::TestShutdown;
 use crate::event::{BrowserEvent, TabEvent};
+use crate::extension::{ExtensionCall, ExtensionEvent, ExtensionId, ExtensionReply, ForeignId, ForeignWindowEvent};
 use crate::factory::{EngineConfig, EngineDriver, EngineFactory, EngineInitError, EngineParts};
 use crate::focus::PageFocus;
-use crate::hooks::ShellHooks;
+use crate::hooks::{NeutralizeFailed, ShellHooks};
 use crate::ids::{EngineDownloadId, NativeHandle, ParkedId, PromptId, RequestId, TabId};
 use crate::prompt::{PromptAnswer, PromptEnd, PromptError, PromptLedger, PromptRequest, PromptScope, Refused, ScopeState};
 use crate::types::{
@@ -148,6 +149,10 @@ pub enum FakeCommand {
     DeleteCookiesForHosts(Browsing, Vec<String>),
     /// `clear_browsing_data`, with the id it returned.
     ClearBrowsingData(Browsing, RequestId),
+    /// `extension_call`.
+    ExtensionCall(ExtensionCall, RequestId),
+    /// `close_foreign`.
+    CloseForeign(ForeignId),
     /// `test_shutdown`.
     #[cfg(feature = "self-test")]
     TestShutdown(TestShutdown),
@@ -259,6 +264,8 @@ enum Role {
     Tab(TabId),
     /// Parked, with the tab it was.
     Parked(ParkedId, TabId),
+    /// A browser Chromium opened itself, hidden until the shell closes it.
+    Foreign(ForeignId),
     Internal,
 }
 
@@ -282,7 +289,7 @@ impl Browser {
     fn tab(&self) -> Option<TabId> {
         match self.role {
             Role::Tab(tab) | Role::Parked(_, tab) => Some(tab),
-            Role::Internal => None,
+            Role::Foreign(_) | Role::Internal => None,
         }
     }
 
@@ -306,6 +313,9 @@ struct State {
     refused: Vec<(PromptRequest, Refused)>,
     scripted: VecDeque<RequestResult>,
     pending: Vec<RequestId>,
+    /// Pending `Uninstall` calls, answered by their extension's `Uninstalled`.
+    uninstalls: Vec<(RequestId, ExtensionId)>,
+    last_foreign: u64,
     hold_creation: BTreeSet<TabId>,
     hold_close: BTreeSet<TabId>,
     downloading: BTreeSet<TabId>,
@@ -341,6 +351,8 @@ impl FakeEngine {
             refused: Vec::new(),
             scripted: VecDeque::new(),
             pending: Vec::new(),
+            uninstalls: Vec::new(),
+            last_foreign: 0,
             hold_creation: BTreeSet::new(),
             hold_close: BTreeSet::new(),
             downloading: BTreeSet::new(),
@@ -641,6 +653,82 @@ impl FakeEngine {
         self.state.borrow().pending.clone()
     }
 
+    // Extensions (design section 5.4).
+
+    /// Chromium's extension system reports an event. `Uninstalled` also answers the pending `Uninstall`
+    /// calls for its id, as the engine does.
+    pub fn extension_event(&self, event: ExtensionEvent) {
+        let mut state = self.state.borrow_mut();
+        let removed = match &event {
+            ExtensionEvent::Uninstalled { id } => Some(id.clone()),
+            _ => None,
+        };
+        state.emit(BrowserEvent::Extension(event));
+        let Some(removed) = removed else { return };
+        let calls = std::mem::take(&mut state.uninstalls);
+        for (call, id) in calls {
+            let Some(at) = state.pending.iter().position(|p| *p == call) else { continue };
+            if id == removed {
+                state.pending.remove(at);
+                state.emit(BrowserEvent::RequestFinished { id: call, result: RequestResult::Extension(Ok(ExtensionReply::Done)) });
+            } else {
+                state.uninstalls.push((call, id));
+            }
+        }
+    }
+
+    /// Chromium opens a browser itself (`on_after_created` through `default_client`). Counted at once;
+    /// `ShellHooks::neutralize_foreign` hides it (no hooks: it fails). While running, a hidden one is
+    /// `Opened` and a failure is closed and `Refused`; after that it is closed without an event.
+    pub fn open_foreign(&self, browsing: Browsing) -> ForeignId {
+        let (foreign, hooks) = {
+            let mut state = self.state.borrow_mut();
+            state.last_foreign += 1;
+            let foreign = ForeignId(state.last_foreign);
+            let id = state.add_browser(Role::Foreign(foreign), None, None);
+            state.finish_creation(id);
+            (foreign, state.hooks.clone())
+        };
+        let native = NativeHandle::from_raw(0x2000 + foreign.0);
+        let no_hooks = || Err(NeutralizeFailed { reason: "no hooks".to_owned() });
+        let neutralized = hooks.map_or_else(no_hooks, |h| h.neutralize_foreign(native));
+        let mut state = self.state.borrow_mut();
+        let Some(id) = state.foreign_browser(foreign) else { return foreign };
+        let running = state.phase == FakePhase::Running;
+        match neutralized {
+            Ok(()) if running => state.emit(BrowserEvent::ForeignWindow(ForeignWindowEvent::Opened { id: foreign, browsing })),
+            Ok(()) => state.begin_close(id),
+            Err(NeutralizeFailed { reason }) => {
+                state.begin_close(id);
+                if running {
+                    state.emit(BrowserEvent::ForeignWindow(ForeignWindowEvent::Refused { id: foreign, reason }));
+                }
+            }
+        }
+        foreign
+    }
+
+    /// A foreign browser has its URL (`None`: it stayed blank): `Ready`. Ignored once it is closing.
+    pub fn foreign_ready(&self, foreign: ForeignId, url: Option<Url>) {
+        let state = self.state.borrow();
+        if state.foreign_browser(foreign).is_some() {
+            state.emit(BrowserEvent::ForeignWindow(ForeignWindowEvent::Ready { id: foreign, url }));
+        }
+    }
+
+    /// The foreign browsers that live and are not closing, in id order.
+    pub fn foreign_browsers(&self) -> Vec<ForeignId> {
+        let state = self.state.borrow();
+        state
+            .browsers
+            .values()
+            .filter_map(|b| match b.role {
+                Role::Foreign(foreign) if b.life != Life::Closing => Some(foreign),
+                _ => None,
+            })
+            .collect()
+    }
+
     // The page, through the shell's hooks.
 
     /// The page navigates on its own: runs `ShellHooks::navigation_policy` (no hooks: `Allow`) and, for an
@@ -750,6 +838,11 @@ impl State {
     /// The browser that is this tab, closing or not.
     fn browser_of(&self, tab: TabId) -> Option<u64> {
         self.browsers.iter().find(|(_, b)| b.role == Role::Tab(tab)).map(|(id, _)| *id)
+    }
+
+    /// The live foreign browser, not closing.
+    fn foreign_browser(&self, foreign: ForeignId) -> Option<u64> {
+        self.browsers.iter().find(|(_, b)| b.role == Role::Foreign(foreign) && b.life == Life::Live).map(|(id, _)| *id)
     }
 
     fn live_page(&mut self, tab: TabId) -> Option<&mut FakeTab> {
@@ -1270,6 +1363,36 @@ impl Engine for FakeEngine {
 
     fn clear_browsing_data(&self, browsing: Browsing) -> RequestId {
         self.request(|id| FakeCommand::ClearBrowsingData(browsing, id))
+    }
+
+    /// Records the call. After shutdown began it fails at once. `Uninstall` waits for its extension's
+    /// `Uninstalled` (`extension_event`) and takes no scripted result; the others take one or wait, as
+    /// every request does.
+    fn extension_call(&self, call: ExtensionCall) -> RequestId {
+        let mut state = self.state.borrow_mut();
+        state.last_id += 1;
+        let id = RequestId(state.last_id);
+        state.commands.push(FakeCommand::ExtensionCall(call.clone(), id));
+        if state.phase != FakePhase::Running {
+            let result = RequestResult::Extension(Err("shutting down".to_owned()));
+            state.emit(BrowserEvent::RequestFinished { id, result });
+        } else if let ExtensionCall::Uninstall { id: extension } = call {
+            state.pending.push(id);
+            state.uninstalls.push((id, extension));
+        } else if let Some(result) = state.scripted.pop_front() {
+            state.emit(BrowserEvent::RequestFinished { id, result });
+        } else {
+            state.pending.push(id);
+        }
+        id
+    }
+
+    fn close_foreign(&self, foreign: ForeignId) {
+        let mut state = self.state.borrow_mut();
+        state.commands.push(FakeCommand::CloseForeign(foreign));
+        if let Some(id) = state.foreign_browser(foreign) {
+            state.begin_close(id);
+        }
     }
 
     /// `DelayClose` and `PinOpen` hold the tab's close and `HoldCreation` its creation, as

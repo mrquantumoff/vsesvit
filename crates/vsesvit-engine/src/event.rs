@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::extension::{ExtensionEvent, ForeignWindowEvent};
 use crate::ids::{NativeHandle, PromptId, RequestId, TabId};
 use crate::prompt::{PromptEnd, PromptRequest};
 use crate::types::{
@@ -86,6 +87,10 @@ pub enum BrowserEvent {
         /// The page's JSON text.
         payload: String,
     },
+    /// Something about extensions (design section 5.4).
+    Extension(ExtensionEvent),
+    /// A browser Chromium opened itself (design section 5.7).
+    ForeignWindow(ForeignWindowEvent),
     /// Every user browser has closed (shutdown phase one, design section 3.6 step 3).
     UserBrowsersClosed,
     /// The live-browser count is zero (shutdown phase two, design section 3.6 step 6).

@@ -68,6 +68,8 @@ pub fn route(event: BrowserEvent, cx: &mut App) {
         BrowserEvent::PageMessage { tab, origin, main_frame, channel, payload } => {
             crate::extensions::controller::page_message(tab, origin, main_frame, channel, payload, cx)
         }
+        BrowserEvent::Extension(event) => crate::extensions::controller::extension_event(event, cx),
+        BrowserEvent::ForeignWindow(event) => crate::extensions::controller::foreign_window(event, cx),
         BrowserEvent::UserBrowsersClosed => routes.user_browsers_closed(cx),
         BrowserEvent::AllBrowsersClosed => routes.all_browsers_closed(cx),
         BrowserEvent::AppRelaunch { argv, cwd } => routes.app_relaunch(argv, cwd, cx),

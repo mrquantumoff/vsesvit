@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use vsesvit_engine::extension::{ExtensionCall, ForeignId};
 use vsesvit_engine::{
     Browsing, Chord, CloseMode, Engine, EngineDownloadId, EngineError, EnginePrefs, EngineVersions, KeyRouting, NativeHandle,
     Origin, PageFocus, PagePoint, ParkedId, Permission, PromptAnswer, PromptError, PromptId, RequestFilter, RequestId,
@@ -259,5 +260,13 @@ impl Engine for GuardedEngine {
 
     fn clear_browsing_data(&self, browsing: Browsing) -> RequestId {
         self.inner.clear_browsing_data(browsing)
+    }
+
+    fn extension_call(&self, call: ExtensionCall) -> RequestId {
+        self.inner.extension_call(call)
+    }
+
+    fn close_foreign(&self, id: ForeignId) {
+        self.inner.close_foreign(id)
     }
 }

@@ -718,6 +718,7 @@ fn the_factory_hands_out_the_engine_once() {
         device_scale_factor: None,
         password_store: None,
         load_extensions: Vec::new(),
+        extensions: Default::default(),
         scripted: true,
         extra_switches: Vec::new(),
     };

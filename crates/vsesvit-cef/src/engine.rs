@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use vsesvit_engine::extension::{ExtensionCall, ForeignId};
 use vsesvit_engine::{
     Browsing, Chord, CloseMode, Engine, EngineDownloadId, EngineError, EnginePrefs, EngineVersions, KeyRouting,
     NativeHandle, Origin, PageFocus, PagePoint, ParkedId, Permission, PromptAnswer, PromptError, PromptId, RequestFilter,
@@ -14,7 +15,7 @@ use vsesvit_engine::{
 };
 
 use crate::handlers::{display, download, find, focus, keyboard, life_span, permission, request, resource_request};
-use crate::{app, contexts, devtools, hidden, lifecycle, prefs, prompts, registry, schemes, site_data};
+use crate::{app, contexts, devtools, ext, hidden, lifecycle, prefs, prompts, registry, schemes, site_data};
 
 /// The CEF engine.
 pub struct CefEngine {
@@ -247,6 +248,14 @@ impl Engine for CefEngine {
 
     fn clear_browsing_data(&self, browsing: Browsing) -> RequestId {
         site_data::clear_browsing_data(browsing)
+    }
+
+    fn extension_call(&self, call: ExtensionCall) -> RequestId {
+        ext::call(call)
+    }
+
+    fn close_foreign(&self, id: ForeignId) {
+        ext::close_foreign(id);
     }
 
     #[cfg(feature = "self-test")]

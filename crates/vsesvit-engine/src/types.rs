@@ -542,8 +542,8 @@ pub enum RequestResult {
     BrowsingDataCleared(Result<(), String>),
     /// `capture_page`: a PNG.
     Captured(Result<Vec<u8>, String>),
-    /// An extension call (design section 5.4).
-    Extension(Result<serde_json::Value, String>),
+    /// `extension_call` (design section 5.4).
+    Extension(Result<crate::extension::ExtensionReply, String>),
 }
 
 /// The page-to-shell channels of `BrowserEvent::PageMessage` (design section 1.5).

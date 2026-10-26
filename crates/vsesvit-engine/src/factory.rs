@@ -10,6 +10,7 @@ use futures_channel::mpsc::UnboundedReceiver;
 
 use crate::command::Engine;
 use crate::event::BrowserEvent;
+use crate::extension::ExtensionStart;
 
 /// What the engine needs to start (design sections 3.2 and 3.3). The engine derives the rest: the global
 /// context's cache path, the helper's path, the sandbox flag.
@@ -39,6 +40,8 @@ pub struct EngineConfig {
     pub password_store: Option<PasswordStore>,
     /// Unpacked extensions to load for this session (`--load-extension`).
     pub load_extensions: Vec<PathBuf>,
+    /// The extensions to install before Chromium starts (design sections 3.1 step 7 and 5.2).
+    pub extensions: ExtensionStart,
     /// A self-test run: fake capture devices and the other self-test switches.
     pub scripted: bool,
     /// More switches, verbatim.
