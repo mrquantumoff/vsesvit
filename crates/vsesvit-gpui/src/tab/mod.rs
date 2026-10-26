@@ -146,6 +146,14 @@ impl Tab {
         }
     }
 
+    /// A popup the engine created for a page (`window.open`, a `_blank` link): its browser already
+    /// lives, with `native` as its page's window, and it is loading `url`.
+    pub fn popup(id: TabId, browsing: Browsing, opener: TabId, url: Url, native: Option<NativeHandle>) -> Tab {
+        let mut tab = Tab::new(id, browsing, InitialPage::Url(url), Some(opener));
+        tab.life = native.map_or(Life::Creating, Life::Live);
+        tab
+    }
+
     pub fn id(&self) -> TabId {
         self.id
     }
@@ -258,6 +266,11 @@ impl Tab {
             Life::Live(native) => Some(native),
             _ => None,
         }
+    }
+
+    /// No browser yet: its window creates one once it can place the page.
+    pub fn needs_browser(&self) -> bool {
+        matches!(self.life, Life::Unborn(_))
     }
 
     /// The shell asked the engine to close or park it, or it already ended.
@@ -420,8 +433,9 @@ impl Tab {
         self.life = Life::Parking;
     }
 
-    /// The router's entry point.
+    /// The router's entry point. Every event notifies, so the window that shows the tab redraws.
     pub fn apply(&mut self, event: TabEvent, cx: &mut Context<Self>) {
+        cx.notify();
         match event {
             TabEvent::Created { native } => match self.life {
                 Life::Creating => self.life = Life::Live(native),

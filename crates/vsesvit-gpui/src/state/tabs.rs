@@ -59,14 +59,26 @@ impl BrowserState {
         opener: Option<TabId>,
         cx: &mut Context<Self>,
     ) -> Entity<Tab> {
-        let id = TabId::next();
-        let tab = cx.new(|_| Tab::new(id, browsing, page, opener));
+        self.register_tab(Tab::new(TabId::next(), browsing, page, opener), cx)
+    }
+
+    /// Registers a tab made elsewhere, such as a popup whose browser the engine already created; it is
+    /// in no window yet.
+    pub fn register_tab(&mut self, tab: Tab, cx: &mut Context<Self>) -> Entity<Tab> {
+        let (id, browsing) = (tab.id(), tab.browsing());
+        let tab = cx.new(|_| tab);
         let changes = cx.subscribe(&tab, move |state, tab, change, cx| state.tab_changed(&tab, change, cx));
         self.tabs.insert(id, TabEntry { tab: tab.clone(), window: None, reason: None, _changes: changes });
         if browsing == Browsing::Private {
             self.private_tab_added(cx);
         }
         tab
+    }
+
+    /// What the close path asks the downloads code, swapped by tests.
+    #[cfg(test)]
+    pub(crate) fn set_keep_alive(&mut self, keep_alive: KeepAlive) {
+        self.keep_alive = keep_alive;
     }
 
     /// The tab was opened or selected, or its window activated: tab search lists it first now.

@@ -7,7 +7,8 @@ use std::rc::Rc;
 use gpui::{App, AppContext, Entity};
 use vsesvit_engine::{Engine, NativeHandle};
 
-use crate::state::{BrowserState, Invocation};
+use crate::state::{BrowserState, BrowserStateEvent, Invocation};
+use crate::window::WindowHost;
 
 pub mod actions;
 pub mod quit;
@@ -18,6 +19,7 @@ use shell::{Core, ProfileLocation, Shell};
 /// What boot hands the app. Boot keeps `Desktop` alive and passes its hidden window.
 pub struct StartArgs {
     pub core: Core,
+    /// The engine as `engine_bridge::start` hands it out, which publishes the page-focus policy first.
     pub engine: Rc<dyn Engine>,
     pub location: ProfileLocation,
     pub scripted: bool,
@@ -26,10 +28,20 @@ pub struct StartArgs {
     pub first: Invocation,
 }
 
-/// Sets the `Shell` global and runs the process's own launch. W1.6's `engine_bridge::start` belongs
-/// between `init` and that launch, so the first tabs' events reach the router.
-pub fn start(cx: &mut App, args: StartArgs) -> Entity<BrowserState> {
+/// Sets the `Shell` global, opens browser windows as the state asks for them, binds the keys and runs
+/// the process's own launch, which opens the first windows. `engine_bridge::start` has run, so the
+/// first tabs' events reach the router. The engine's hidden host is boot's to set once the first
+/// window has its surface (on Windows it lives in a browser window).
+pub fn start(cx: &mut App, args: StartArgs, host: WindowHost) -> Entity<BrowserState> {
     let state = init(cx, args.core, args.engine, args.location, args.scripted, args.hidden_host);
+    crate::window::install(&state, host, cx);
+    install_keymap(cx);
+    cx.subscribe(&state, |_, event, cx| {
+        if *event == BrowserStateEvent::KeymapChanged {
+            install_keymap(cx);
+        }
+    })
+    .detach();
     state.update(cx, |state, cx| {
         state.profile_used(cx);
         let (_, errors) = state.handle_invocation(args.first, cx);
@@ -49,8 +61,13 @@ pub fn init(
     scripted: bool,
     hidden_host: NativeHandle,
 ) -> Entity<BrowserState> {
-    engine.set_hidden_host(hidden_host);
     let state = cx.new(|_| BrowserState::new(location.clone()));
     cx.set_global(Shell::new(core, engine, location, scripted, hidden_host, state.clone()));
     state
+}
+
+/// Core's keymap as GPUI bindings in the browser windows and as the engine's key routing.
+fn install_keymap(cx: &mut App) {
+    let keymap = Shell::core(cx).borrow_mut().prefs().keymap();
+    crate::engine_bridge::keymap::install(cx, &keymap);
 }

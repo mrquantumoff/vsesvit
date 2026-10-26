@@ -25,7 +25,7 @@ pub mod tabs;
 pub mod windows;
 
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
 

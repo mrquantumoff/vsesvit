@@ -16,7 +16,6 @@ pub mod engine_config;
 pub mod extensions;
 pub mod headless;
 pub mod instance;
-pub mod interim;
 pub mod logging;
 pub mod profile_start;
 pub mod start;
@@ -58,13 +57,17 @@ pub fn run(factory: &dyn EngineFactory) -> ExitCode {
     let core = Rc::new(RefCell::new(profile));
     let driver: quit::DriverSlot = Rc::new(RefCell::new(Some(parts.driver)));
     let ended = EndedSlot::default();
+    let first = crate::state::Invocation { targets: config.start_urls.clone(), cwd: request.cwd.clone(), startup_id: request.startup_id.clone() };
     let start = start::StartArgs {
+        core: core.clone(),
         engine: parts.engine,
         events: parts.events,
         driver: driver.clone(),
         ended: ended.clone(),
         listener,
+        location: crate::app::shell::ProfileLocation { root: config.profile_dir.clone(), home: config.home.clone() },
         mode: config.mode.clone(),
+        first,
         extensions,
     };
     // Only the shutdown sequence ends GPUI's loop, never its last window's close (design section 3.6).
