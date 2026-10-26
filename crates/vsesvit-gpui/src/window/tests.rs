@@ -229,6 +229,37 @@ fn an_address_typed_while_the_browser_is_created_loads_once_it_exists(cx: &mut T
 }
 
 #[gpui::test]
+fn a_popup_and_a_middle_click_open_tabs_next_to_their_opener(cx: &mut TestAppContext) {
+    let rig = rig(cx, "popups", Setup { targets: &["https://a.test/", "https://z.test/"], ..Setup::default() });
+    let window = rig.windows(cx)[0];
+    let [opener, last] = rig.tabs(cx, window)[..] else { panic!("two tabs") };
+    let popup_url = Url::parse("https://popup.test/").unwrap();
+    let request = vsesvit_engine::PopupRequest {
+        opener,
+        url: popup_url.clone(),
+        disposition: vsesvit_engine::OpenDisposition::NewForegroundTab,
+        user_gesture: true,
+    };
+    let vsesvit_engine::PopupDecision::AllowAsTab { tab: popup, .. } = rig.fake.open_popup(request) else { panic!("allowed") };
+    cx.run_until_parked();
+    assert_eq!(rig.tabs(cx, window), [opener, popup, last], "after its opener");
+    let view = rig.view(cx, window);
+    assert_eq!(view.read_with(cx, |w, cx| w.tabs.read(cx).selected()), Some(popup));
+    assert_eq!(view.read_with(cx, |w, _| w.page_slot().shown().map(|(t, _)| t)), Some(popup), "the popup's page shows");
+
+    let link = Url::parse("https://link.test/").unwrap();
+    let disposition = vsesvit_engine::OpenDisposition::NewBackgroundTab;
+    rig.fake.inject(BrowserEvent::OpenUrlRequested { opener, url: link.clone(), disposition, user_gesture: true });
+    cx.run_until_parked();
+    let tabs = rig.tabs(cx, window);
+    assert_eq!(tabs.len(), 4);
+    let opened = tabs[2];
+    assert_eq!(tabs, [opener, popup, opened, last], "after the opener's run");
+    assert_eq!(view.read_with(cx, |w, cx| w.tabs.read(cx).selected()), Some(popup), "a background tab");
+    assert_eq!(rig.fake.tab(opened).and_then(|t| t.url), Some(link));
+}
+
+#[gpui::test]
 fn the_title_names_the_page_the_profile_and_the_kind(cx: &mut TestAppContext) {
     let first = rig(cx, "title", Setup { targets: &[], ..Setup::default() });
     let window = first.windows(cx)[0];

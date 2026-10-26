@@ -544,8 +544,12 @@ pub fn open_from_page(opener: TabId, url: Url, disposition: OpenDisposition, cx:
     let found = state.read(cx).tab(opener).map(|t| t.read(cx).browsing()).zip(state.read(cx).window_of(opener));
     let Some((browsing, window)) = found else { return };
     state.update(cx, |state, cx| match disposition {
-        OpenDisposition::NewWindow | OpenDisposition::NewPopup => drop(state.open_window(browsing, vec![url], cx)),
-        OpenDisposition::OffTheRecord => drop(state.open_window(Browsing::Private, vec![url], cx)),
+        OpenDisposition::NewWindow | OpenDisposition::NewPopup => {
+            state.open_window(browsing, vec![url], cx);
+        }
+        OpenDisposition::OffTheRecord => {
+            state.open_window(Browsing::Private, vec![url], cx);
+        }
         OpenDisposition::CurrentTab => {
             if let Some(tab) = state.tab(opener) {
                 tab.update(cx, |tab, cx| tab.load(url, None, cx));

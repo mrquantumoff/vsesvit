@@ -85,8 +85,12 @@ impl ShellRoutes for Routes {
     fn tab(&self, tab: TabId, event: TabEvent, cx: &mut App) {
         let Some(entity) = cx.try_global::<Shell>().and_then(|shell| shell.state.read(cx).tab(tab)) else {
             match event {
-                TabEvent::Created { native } => drop(self.unclaimed.borrow_mut().insert(tab, native)),
-                TabEvent::Closed | TabEvent::Detached => drop(self.unclaimed.borrow_mut().remove(&tab)),
+                TabEvent::Created { native } => {
+                    self.unclaimed.borrow_mut().insert(tab, native);
+                }
+                TabEvent::Closed | TabEvent::Detached => {
+                    self.unclaimed.borrow_mut().remove(&tab);
+                }
                 other => log::debug!("router: tab {} is not ours: {other:?}", tab.get()),
             }
             return;
