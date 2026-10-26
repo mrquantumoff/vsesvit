@@ -106,6 +106,9 @@ pub struct Tab {
     /// How the next commit was reached, when the shell knows better than the engine.
     pending_transition: Option<Transition>,
     visit: Option<Visit>,
+    /// A navigation asked for while the browser was being created, which the engine cannot take yet: it
+    /// runs once the browser exists.
+    waiting: Option<InitialPage>,
 }
 
 impl EventEmitter<TabChanged> for Tab {}
@@ -143,6 +146,7 @@ impl Tab {
             typed: None,
             pending_transition: None,
             visit: None,
+            waiting: None,
         }
     }
 
@@ -346,7 +350,8 @@ impl Tab {
         self.requested = Some(url.clone());
         match &mut self.life {
             Life::Unborn(page) => *page = InitialPage::Url(url),
-            Life::Creating | Life::Live(_) => Shell::engine(cx).load(self.id, &url),
+            Life::Creating => self.waiting = Some(InitialPage::Url(url)),
+            Life::Live(_) => Shell::engine(cx).load(self.id, &url),
             Life::Closing(_) | Life::Parking | Life::Ended => {}
         }
     }
@@ -365,7 +370,8 @@ impl Tab {
         self.requested = None;
         match &mut self.life {
             Life::Unborn(page) => *page = InitialPage::Html { html, shown_url: None },
-            Life::Creating | Life::Live(_) => Shell::engine(cx).load_html(self.id, html, None),
+            Life::Creating => self.waiting = Some(InitialPage::Html { html, shown_url: None }),
+            Life::Live(_) => Shell::engine(cx).load_html(self.id, html, None),
             Life::Closing(_) | Life::Parking | Life::Ended => {}
         }
     }
@@ -438,7 +444,14 @@ impl Tab {
         cx.notify();
         match event {
             TabEvent::Created { native } => match self.life {
-                Life::Creating => self.life = Life::Live(native),
+                Life::Creating => {
+                    self.life = Life::Live(native);
+                    match self.waiting.take() {
+                        Some(InitialPage::Url(url)) => Shell::engine(cx).load(self.id, &url),
+                        Some(InitialPage::Html { html, shown_url }) => Shell::engine(cx).load_html(self.id, html, shown_url.as_ref()),
+                        Some(InitialPage::Blank) | None => {}
+                    }
+                }
                 Life::Closing(None) => self.life = Life::Closing(Some(native)),
                 _ => {}
             },

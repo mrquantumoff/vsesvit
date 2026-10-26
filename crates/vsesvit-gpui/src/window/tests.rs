@@ -208,6 +208,27 @@ fn the_page_shows_in_the_window_and_the_others_hide(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn an_address_typed_while_the_browser_is_created_loads_once_it_exists(cx: &mut TestAppContext) {
+    let rig = rig(cx, "load-while-creating", Setup::default());
+    let window = rig.windows(cx)[0];
+    let tab = rig.state.update(cx, |s, cx| s.new_tab_entity(Browsing::Normal, vsesvit_engine::InitialPage::Blank, None, cx));
+    let id = tab.read_with(cx, |t, _| t.id());
+    rig.fake.hold_creation(id);
+    rig.state.update(cx, |s, cx| s.attach_tab(window, &tab, crate::tab::model::Insert::End, true, cx));
+    cx.run_until_parked();
+    assert!(rig.fake.commands().iter().any(|c| matches!(c, FakeCommand::CreateTab(spec) if spec.tab == id)), "the browser is being created");
+    let url = Url::parse("https://typed.test/").unwrap();
+    tab.update(cx, |t, cx| t.load(url.clone(), None, cx));
+    cx.run_until_parked();
+    let loads = |rig: &Rig| rig.fake.commands().iter().filter(|c| matches!(c, FakeCommand::Load(t, u) if *t == id && *u == url)).count();
+    assert_eq!(loads(&rig), 0, "an engine that has no browser yet would drop it");
+    assert!(rig.fake.complete_creation(id));
+    cx.run_until_parked();
+    assert_eq!(loads(&rig), 1);
+    assert_eq!(rig.fake.tab(id).and_then(|t| t.url), Some(url));
+}
+
+#[gpui::test]
 fn the_title_names_the_page_the_profile_and_the_kind(cx: &mut TestAppContext) {
     let first = rig(cx, "title", Setup { targets: &[], ..Setup::default() });
     let window = first.windows(cx)[0];
