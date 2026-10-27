@@ -9,7 +9,9 @@ use windows_sys::Win32::System::StationsAndDesktops::{
     UOI_NAME,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, PostMessageW, WM_KEYDOWN, WM_KEYUP};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetWindowThreadProcessId, PostMessageW, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+};
 
 fn name_of(desktop: HDESK) -> Result<String, String> {
     let mut buf = [0u16; 256];
@@ -56,19 +58,44 @@ impl PrivateInput {
 
     /// Posts a key press and release of virtual key `vk` to `hwnd`, which must belong to this
     /// process.
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // an HWND is a handle the system checks, never dereferenced
     pub fn post_key(&self, hwnd: HWND, vk: u16) -> Result<(), String> {
-        let mut owner = 0u32;
-        unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
-        ours(owner, unsafe { GetCurrentProcessId() })?;
         // lParam: repeat count 1; the release also sets the previous-state and transition bits.
-        for (message, lparam) in [(WM_KEYDOWN, 1 as LPARAM), (WM_KEYUP, 0xC000_0001u32 as LPARAM)] {
-            if unsafe { PostMessageW(hwnd, message, usize::from(vk), lparam) } == 0 {
-                return Err(format!("PostMessageW: {}", std::io::Error::last_os_error()));
-            }
-        }
-        Ok(())
+        post(hwnd, &[(WM_KEYDOWN, usize::from(vk), 1), (WM_KEYUP, usize::from(vk), 0xC000_0001u32 as LPARAM)])
     }
+
+    /// Posts the pointer's move to (`x`, `y`), in `hwnd`'s client pixels, to `hwnd`, which must belong
+    /// to this process.
+    pub fn post_mouse_move(&self, hwnd: HWND, x: i16, y: i16) -> Result<(), String> {
+        post(hwnd, &[(WM_MOUSEMOVE, 0, point(x, y))])
+    }
+
+    /// Posts a left click at (`x`, `y`), in `hwnd`'s client pixels, to `hwnd`, which must belong to
+    /// this process: the window a real click there reaches is the deepest child under the point.
+    pub fn post_click(&self, hwnd: HWND, x: i16, y: i16) -> Result<(), String> {
+        let at = point(x, y);
+        post(hwnd, &[(WM_MOUSEMOVE, 0, at), (WM_LBUTTONDOWN, MK_LBUTTON, at), (WM_LBUTTONUP, 0, at)])
+    }
+}
+
+/// wParam of a press: the left button is down (`MK_LBUTTON`).
+const MK_LBUTTON: usize = 0x0001;
+
+/// A mouse message's lParam: the client point, x in the low word.
+fn point(x: i16, y: i16) -> LPARAM {
+    ((y as u16 as u32) << 16 | x as u16 as u32) as LPARAM
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // an HWND is a handle the system checks, never dereferenced
+fn post(hwnd: HWND, messages: &[(u32, usize, LPARAM)]) -> Result<(), String> {
+    let mut owner = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
+    ours(owner, unsafe { GetCurrentProcessId() })?;
+    for &(message, wparam, lparam) in messages {
+        if unsafe { PostMessageW(hwnd, message, wparam, lparam) } == 0 {
+            return Err(format!("PostMessageW: {}", std::io::Error::last_os_error()));
+        }
+    }
+    Ok(())
 }
 
 fn ours(owner: u32, me: u32) -> Result<(), String> {
@@ -81,6 +108,12 @@ fn ours(owner: u32, me: u32) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mouse_points_pack_x_low_and_y_high() {
+        assert_eq!(super::point(3, 2), 0x0002_0003);
+        assert_eq!(super::point(-1, 0) & 0xffff, 0xffff);
+    }
+
     #[test]
     fn input_goes_only_to_this_processs_windows() {
         assert!(super::ours(7, 7).is_ok());

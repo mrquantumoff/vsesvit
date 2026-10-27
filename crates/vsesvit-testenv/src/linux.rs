@@ -3,7 +3,10 @@
 //! the one place XTEST is called (design section 7.3).
 
 use x11rb::connection::{Connection, RequestConnection as _};
-use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, KEY_PRESS_EVENT, KEY_RELEASE_EVENT};
+use x11rb::protocol::xproto::{
+    AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ConnectionExt as _, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
+    MOTION_NOTIFY_EVENT,
+};
 use x11rb::protocol::xtest::{self, ConnectionExt as _};
 use x11rb::rust_connection::RustConnection;
 
@@ -57,29 +60,50 @@ pub(crate) fn root_token(display: &str) -> Result<Option<String>, String> {
     String::from_utf8(reply.value).map(Some).map_err(|_| failed(&"not UTF-8"))
 }
 
-/// Key input into the private X server, through XTEST. Only `TestEnv::input` builds one, after
-/// the guard confirmed the display is the launcher's Xvfb.
+/// Key and pointer input into the private X server, through XTEST. Only `TestEnv::input` builds one,
+/// after the guard confirmed the display is the launcher's Xvfb.
 pub struct PrivateInput {
     conn: RustConnection,
+    root: u32,
 }
 
 impl PrivateInput {
     pub(crate) fn open(display: &str) -> Result<PrivateInput, String> {
-        let (conn, _) = connect(display)?;
+        let (conn, screen) = connect(display)?;
         conn.extension_information(xtest::X11_EXTENSION_NAME)
             .map_err(|e| e.to_string())?
             .ok_or(format!("{display} has no XTEST"))?;
-        Ok(PrivateInput { conn })
+        let root = conn.setup().roots.get(screen).ok_or("the server has no such screen")?.root;
+        Ok(PrivateInput { conn, root })
     }
 
     /// Presses and releases `keycode`; the window with the input focus gets both.
     pub fn key(&self, keycode: u8) -> Result<(), String> {
         for kind in [KEY_PRESS_EVENT, KEY_RELEASE_EVENT] {
-            #[allow(clippy::disallowed_methods)] // the one XTEST call, inside the private Xvfb (design section 7.3)
-            let sent = self.conn.xtest_fake_input(kind, keycode, x11rb::CURRENT_TIME, x11rb::NONE, 0, 0, 0);
-            sent.map_err(|e| e.to_string())?.check().map_err(|e| format!("XTEST key {keycode}: {e}"))?;
+            self.fake(kind, keycode, 0, 0).map_err(|e| format!("XTEST key {keycode}: {e}"))?;
         }
         Ok(())
+    }
+
+    /// Moves the pointer to (`x`, `y`) on the root window, in physical pixels.
+    pub fn move_pointer(&self, x: i16, y: i16) -> Result<(), String> {
+        self.fake(MOTION_NOTIFY_EVENT, 0, x, y).map_err(|e| format!("XTEST motion to {x},{y}: {e}"))
+    }
+
+    /// Moves the pointer to (`x`, `y`) on the root window and clicks the first button there.
+    pub fn click(&self, x: i16, y: i16) -> Result<(), String> {
+        self.move_pointer(x, y)?;
+        for kind in [BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT] {
+            self.fake(kind, 1, 0, 0).map_err(|e| format!("XTEST click at {x},{y}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    fn fake(&self, kind: u8, detail: u8, x: i16, y: i16) -> Result<(), String> {
+        let root = if kind == MOTION_NOTIFY_EVENT { self.root } else { x11rb::NONE };
+        #[allow(clippy::disallowed_methods)] // the one XTEST call, inside the private Xvfb (design section 7.3)
+        let sent = self.conn.xtest_fake_input(kind, detail, x11rb::CURRENT_TIME, root, x, y, 0);
+        sent.map_err(|e| e.to_string())?.check().map_err(|e| e.to_string())
     }
 }
 
