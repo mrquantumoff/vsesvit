@@ -19,7 +19,8 @@ pub struct Process {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Usage {
     pub threads: usize,
-    pub children: usize,
+    /// Every process under the browser: on Linux renderers are the zygote's, not the browser's.
+    pub processes: usize,
     /// Open file descriptors on Linux, kernel handles on Windows.
     pub handles: usize,
     /// Windows only: GDI and USER objects.
@@ -29,7 +30,7 @@ pub struct Usage {
 impl std::fmt::Display for Usage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let handles = if cfg!(windows) { "handles" } else { "fds" };
-        write!(f, "{} threads, {} child processes, {} {handles}", self.threads, self.children, self.handles)?;
+        write!(f, "{} threads, {} processes under it, {} {handles}", self.threads, self.processes, self.handles)?;
         if let Some((gdi, user)) = self.gui {
             write!(f, ", {gdi} GDI and {user} USER objects")?;
         }
@@ -51,8 +52,8 @@ pub fn threads_before_engine() -> Option<usize> {
 }
 
 pub fn usage() -> Usage {
-    let me = std::process::id();
-    Usage { threads: threads(), children: children_of(me).len(), handles: os::handles(), gui: os::gui_objects() }
+    let processes = descendants(std::process::id()).len();
+    Usage { threads: threads(), processes, handles: os::handles(), gui: os::gui_objects() }
 }
 
 /// The threads of this process.
@@ -60,25 +61,26 @@ pub fn threads() -> usize {
     os::threads()
 }
 
-/// The processes `pid` started, and theirs.
+/// The processes `pid` started, and theirs. A process that names a parent pid but started before
+/// that pid's process is an older process's child whose pid was reused (Windows keeps stale parent
+/// pids), so it is not counted.
 pub fn descendants(pid: u32) -> Vec<Process> {
     let table = os::table();
-    let mut found: Vec<u32> = Vec::new();
-    let mut parents = vec![pid];
+    let mut found: Vec<Process> = Vec::new();
+    let Some(root) = process(pid) else { return found };
+    let mut parents = vec![root];
     while let Some(parent) = parents.pop() {
         for &(child, ppid) in &table {
-            if ppid == parent && child != pid && !found.contains(&child) {
+            if ppid != parent.pid || child == pid || found.iter().any(|p| p.pid == child) {
+                continue;
+            }
+            if let Some(child) = process(child).filter(|c| c.start >= parent.start) {
                 found.push(child);
                 parents.push(child);
             }
         }
     }
-    found.into_iter().filter_map(process).collect()
-}
-
-/// The processes `pid` started itself.
-pub fn children_of(pid: u32) -> Vec<Process> {
-    os::table().into_iter().filter(|&(_, ppid)| ppid == pid).filter_map(|(child, _)| process(child)).collect()
+    found
 }
 
 /// This process.

@@ -475,6 +475,10 @@ async fn page_focus_policy(env: &Env, cx: &mut AsyncApp, probe: &Probe) -> Resul
     seen.push(keyboard_stays(env.window, cx, probe, "the selected page's script focused its field", kept).await?);
 
     probes::force_native_focus(page)?;
+    match probes::native_focus() {
+        Some(now) if probes::within(now, page) => {}
+        other => return Err(format!("{}; focusing the page's window natively left the keyboard at {other:?}", seen.join("; "))),
+    }
     seen.push(keyboard_until(env.window, cx, probe, "the page's window focused natively, then given back", kept).await?);
 
     let at = eval(tab, FIELD_CENTRE, cx).await?;
@@ -614,7 +618,7 @@ async fn resources(env: &Env, cx: &mut AsyncApp, probe: &Probe) -> Result<String
     let settled = until(cx, probe, |_, p| {
         let now = probes::usage();
         p.observe(format!("baseline {baseline}; after {CYCLES} cycles {now}"));
-        (now.children <= baseline.children).then_some(now)
+        (now.processes <= baseline.processes).then_some(now)
     })
     .await;
     let detail = format!("{idle}; baseline after {WARM_UP_CYCLES} cycles: {baseline}; after {CYCLES} more: {settled}");
@@ -623,7 +627,7 @@ async fn resources(env: &Env, cx: &mut AsyncApp, probe: &Probe) -> Result<String
         (Some((gdi, user)), Some((gdi_now, user_now))) => grew(gdi as usize, gdi_now as usize) || grew(user as usize, user_now as usize),
         _ => false,
     };
-    if settled.children != baseline.children || grew(baseline.handles, settled.handles) || gui_grew {
+    if settled.processes != baseline.processes || grew(baseline.handles, settled.handles) || gui_grew {
         return Err(detail);
     }
     Ok(detail)
@@ -786,11 +790,14 @@ async fn shutdown_stuck(env: &Env, cx: &mut AsyncApp, probe: &Probe) -> Result<S
     if phase.log.contains(CEF_SHUTDOWN) {
         return Err(format!("a stuck shutdown still called cef::shutdown; {}", phase.tail()));
     }
-    let profile = env.out_dir.join("phases").join("shutdown-stuck").join("profile");
-    let options = vsesvit_core::OpenOptions { chrome_version: "154.0.8037.98".into(), ..vsesvit_core::OpenOptions::default() };
-    drop(vsesvit_core::Profile::open(&profile, options).map_err(|e| format!("the stuck run's profile cannot be opened again: {e}"))?);
+    // The profile is released (its LOCK freed) before the exit, not by it: its release logs only a
+    // failure, and the exit line comes after it.
+    phase.logged("exiting with 70")?;
+    if phase.log.contains("still hold the profile") {
+        return Err(format!("the stuck run exited with its profile still held; {}", phase.tail()));
+    }
     phase.all_gone()?;
-    Ok(format!("still-alive entry logged, no cef::shutdown, the profile's lock free; {}", phase.summary()))
+    Ok(format!("still-alive entry logged, no cef::shutdown, the profile released before the exit; {}", phase.summary()))
 }
 
 /// A tab whose creation completes only after `begin_shutdown`: closed at once, and the run drains.
