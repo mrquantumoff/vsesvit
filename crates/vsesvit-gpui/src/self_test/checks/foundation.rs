@@ -590,7 +590,7 @@ async fn resources(env: &Env, cx: &mut AsyncApp, probe: &Probe) -> Result<String
     let share = |used: Duration| used.as_secs_f64() / over.as_secs_f64() * 100.0;
     let used: Vec<Duration> = after.iter().zip(&before).map(|(a, b)| a.saturating_sub(*b)).collect();
     let mut each: Vec<(u32, Duration)> = processes.iter().map(|p| p.pid).zip(used.iter().copied()).collect();
-    each.sort_by(|a, b| b.1.cmp(&a.1));
+    each.sort_by_key(|&(_, used)| std::cmp::Reverse(used));
     let each: Vec<String> = each.iter().map(|(pid, used)| format!("{}{pid} {:.2}", if *pid == me.pid { "browser " } else { "" }, share(*used))).collect();
     let build = if cfg!(debug_assertions) { "debug" } else { "release" };
     let idle = format!(
