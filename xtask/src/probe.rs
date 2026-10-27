@@ -51,7 +51,7 @@ fn run_program(program: &std::path::Path, args: &[String]) -> Result<Status> {
 }
 
 /// Windows looks for a program's DLLs on PATH as well as beside it: `bins` goes first.
-fn dlls_from(bins: &std::path::Path) -> Result {
+pub(crate) fn dlls_from(bins: &std::path::Path) -> Result {
     if cfg!(windows) {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let joined = std::env::join_paths(std::iter::once(bins.to_path_buf()).chain(std::env::split_paths(&path)))

@@ -1,8 +1,10 @@
-//! Owned by W0.5.
-//! `cargo xtask selftest [--flavour gpui|winui] [--network]`: builds, runs `--self-test OUT_DIR` inside
-//! a fresh test environment, prints `report.json` and fails unless the report lists every check of the
-//! flavour, each passed (design section 6.2). W0.5 builds the `winui` branch; the `gpui` branch is
-//! W1.8's and exits 4, "not available yet", until then.
+//! Owned by W1.8 (from W0.5).
+//! `cargo xtask selftest [--flavour gpui|winui] [--network] [--release] [--all-features]`: builds, runs
+//! `--self-test OUT_DIR` inside a fresh test environment, prints `report.json` and fails unless the
+//! report lists every check of the flavour, each passed (design section 6.2). OUT_DIR is emptied first,
+//! so no run restores another's session. The GPUI flavour builds the GPUI browser (with its helper on
+//! Linux); `--release` builds it optimized, and `--all-features` runs the binary of
+//! `cargo build --workspace --all-features` instead (design section 1.4).
 
 use std::ffi::OsString;
 use std::time::Duration;
@@ -19,7 +21,7 @@ mod checks;
 
 use checks::Flavour;
 
-const USAGE: &str = "usage: cargo xtask selftest [--flavour gpui|winui] [--network]";
+const USAGE: &str = "usage: cargo xtask selftest [--flavour gpui|winui] [--network] [--release] [--all-features]";
 /// The longest WinUI check budget is a few minutes; `--network` downloads a real extension.
 const TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -27,15 +29,28 @@ const TIMEOUT: Duration = Duration::from_secs(30 * 60);
 struct Options {
     flavour: Flavour,
     network: bool,
+    build: Build,
+}
+
+/// Which GPUI binary runs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Build {
+    Debug,
+    Release,
+    /// `cargo build --workspace --all-features`: every shell and every test feature linked in.
+    AllFeatures,
 }
 
 fn parse(args: &[String]) -> Result<Options> {
     let mut flavour = None;
     let mut network = false;
+    let mut build = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--network" if !network => network = true,
+            "--release" if build.is_none() => build = Some(Build::Release),
+            "--all-features" if build.is_none() => build = Some(Build::AllFeatures),
             "--flavour" if flavour.is_none() => {
                 flavour = Some(match args.next().map(String::as_str) {
                     Some("gpui") => Flavour::Gpui,
@@ -47,22 +62,54 @@ fn parse(args: &[String]) -> Result<Options> {
         }
     }
     let flavour = flavour.unwrap_or(if cfg!(windows) { Flavour::Winui } else { Flavour::Gpui });
-    Ok(Options { flavour, network })
+    let build = build.unwrap_or(Build::Debug);
+    if flavour == Flavour::Winui && build != Build::Debug {
+        return Err(format!("--release and --all-features are for the GPUI flavour
+{USAGE}"));
+    }
+    Ok(Options { flavour, network, build })
 }
 
 pub fn run(args: &[String]) -> Result<Status> {
     let options = parse(args)?;
     match options.flavour {
-        Flavour::Gpui => Ok(Status::NotAvailable),
+        Flavour::Gpui => gpui(options.network, options.build),
         Flavour::Winui if !cfg!(windows) => Err("the WinUI self-test runs on Windows only".into()),
         Flavour::Winui => winui(options.network),
     }
 }
 
+fn gpui(network: bool, build: Build) -> Result<Status> {
+    let program = match build {
+        Build::Debug => testenv::cargo_build(&["-p", "vsesvit", "-p", "vsesvit-helper", "--no-default-features", "--features", "gpui"], "vsesvit")?,
+        Build::Release => testenv::cargo_build(
+            &["-p", "vsesvit", "-p", "vsesvit-helper", "--no-default-features", "--features", "gpui", "--release"],
+            "vsesvit",
+        )?,
+        Build::AllFeatures => testenv::cargo_build(&["--workspace", "--all-features"], "vsesvit")?,
+    };
+    // cef-dll-sys puts libcef beside the binary; Windows finds DLLs on PATH.
+    if let Some(bins) = program.parent() {
+        crate::probe::dlls_from(bins)?;
+    }
+    let dir = match build {
+        Build::Debug => "gpui",
+        Build::Release => "gpui-release",
+        Build::AllFeatures => "gpui-all-features",
+    };
+    let out_dir = crate::probe::fresh(workspace_root().join("target").join("selftest").join(dir))?;
+    selftest(Flavour::Gpui, program, out_dir, network)
+}
+
 fn winui(network: bool) -> Result<Status> {
-    let expected = checks::expected(Flavour::Winui, network);
     let program = testenv::cargo_build(&["-p", "vsesvit"], "vsesvit")?;
     let out_dir = crate::probe::fresh(workspace_root().join("target").join("selftest").join("winui"))?;
+    selftest(Flavour::Winui, program, out_dir, network)
+}
+
+/// Runs `program --self-test OUT_DIR` in a fresh test environment and checks its report.
+fn selftest(flavour: Flavour, program: std::path::PathBuf, out_dir: std::path::PathBuf, network: bool) -> Result<Status> {
+    let expected = checks::expected(flavour, network);
     let mut args: Vec<OsString> = vec!["--self-test".into(), out_dir.clone().into_os_string()];
     if network {
         args.push("--network".into());
@@ -73,7 +120,7 @@ fn winui(network: bool) -> Result<Status> {
         println!("{report}");
     }
     let passed = validate(report.as_deref(), &expected, code)?;
-    eprintln!("selftest: all {passed} WinUI checks passed; report in {}", out_dir.join("report.json").display());
+    eprintln!("selftest: all {passed} {flavour:?} checks passed; report in {}", out_dir.join("report.json").display());
     Ok(Status::Done)
 }
 
@@ -122,16 +169,29 @@ mod tests {
     const EXPECTED: [&str; 3] = ["profile_open", "install_crx", "navigate"];
 
     #[test]
-    fn gpui_is_not_available_yet() {
-        assert!(matches!(run(&args(&["--flavour", "gpui"])), Ok(Status::NotAvailable)));
-    }
-
-    #[test]
     fn options() {
         let default = if cfg!(windows) { Flavour::Winui } else { Flavour::Gpui };
-        assert_eq!(parse(&[]), Ok(Options { flavour: default, network: false }));
-        assert_eq!(parse(&args(&["--network", "--flavour", "winui"])), Ok(Options { flavour: Flavour::Winui, network: true }));
-        for bad in [&["--flavour"][..], &["--flavour", "gtk"], &["--network", "--network"], &["--fast"]] {
+        assert_eq!(parse(&[]), Ok(Options { flavour: default, network: false, build: Build::Debug }));
+        assert_eq!(
+            parse(&args(&["--network", "--flavour", "winui"])),
+            Ok(Options { flavour: Flavour::Winui, network: true, build: Build::Debug })
+        );
+        assert_eq!(
+            parse(&args(&["--flavour", "gpui", "--release"])),
+            Ok(Options { flavour: Flavour::Gpui, network: false, build: Build::Release })
+        );
+        assert_eq!(
+            parse(&args(&["--all-features", "--flavour", "gpui"])),
+            Ok(Options { flavour: Flavour::Gpui, network: false, build: Build::AllFeatures })
+        );
+        for bad in [
+            &["--flavour"][..],
+            &["--flavour", "gtk"],
+            &["--network", "--network"],
+            &["--fast"],
+            &["--release", "--all-features"],
+            &["--flavour", "winui", "--release"],
+        ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
     }

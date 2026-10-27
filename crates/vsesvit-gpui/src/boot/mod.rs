@@ -49,6 +49,10 @@ pub fn run(factory: &dyn EngineFactory) -> ExitCode {
     let listener = profile_start::bind(&config);
     let extensions = extensions::metadata_pass(&mut profile);
     let engine_config = engine_config::engine_config(&config, &mut profile);
+    #[cfg(feature = "self-test")]
+    if matches!(config.mode, vsesvit_core::cli::Mode::SelfTest { .. }) {
+        crate::self_test::probes::note_threads_before_engine();
+    }
     let parts = match initialize(factory, engine_config, &crate::platform::fatal_message) {
         Ok(parts) => parts,
         Err(code) => return code,
