@@ -573,9 +573,9 @@ async fn cycle(env: &Env, n: usize, cx: &mut AsyncApp, probe: &Probe) -> Result<
     Ok(())
 }
 
-/// CPU time of `processes` so far.
-fn cpu(processes: &[Process]) -> Duration {
-    processes.iter().filter_map(|p| probes::cpu_time(*p)).sum()
+/// CPU time each of `processes` has used so far; zero for one that ended.
+fn cpu(processes: &[Process]) -> Vec<Duration> {
+    processes.iter().map(|p| probes::cpu_time(*p).unwrap_or_default()).collect()
 }
 
 /// Section 7.5's resources, and Q23's idle CPU (recorded in the detail, not judged).
@@ -586,15 +586,20 @@ async fn resources(env: &Env, cx: &mut AsyncApp, probe: &Probe) -> Result<String
     probe.observe(format!("measuring idle CPU over {} processes", processes.len()));
     let (before, started) = (cpu(&processes), Instant::now());
     sleep(cx, IDLE).await;
-    let (used, over) = (cpu(&processes).saturating_sub(before), started.elapsed());
+    let (after, over) = (cpu(&processes), started.elapsed());
+    let share = |used: Duration| used.as_secs_f64() / over.as_secs_f64() * 100.0;
+    let used: Vec<Duration> = after.iter().zip(&before).map(|(a, b)| a.saturating_sub(*b)).collect();
+    let mut each: Vec<(u32, Duration)> = processes.iter().map(|p| p.pid).zip(used.iter().copied()).collect();
+    each.sort_by(|a, b| b.1.cmp(&a.1));
+    let each: Vec<String> = each.iter().map(|(pid, used)| format!("{}{pid} {:.2}", if *pid == me.pid { "browser " } else { "" }, share(*used))).collect();
     let build = if cfg!(debug_assertions) { "debug" } else { "release" };
     let idle = format!(
         "idle CPU {:.2} % of one core over {:.1} s, {} processes, {build} build",
-        used.as_secs_f64() / over.as_secs_f64() * 100.0,
+        share(used.iter().sum()),
         over.as_secs_f64(),
         processes.len()
     );
-    log::info!("self-test: {idle}");
+    log::info!("self-test: {idle} (by pid, %: {})", each.join(", "));
 
     for n in 0..WARM_UP_CYCLES {
         cycle(env, n, cx, probe).await?;
