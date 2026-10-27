@@ -7,6 +7,7 @@
 //! `cargo build --workspace --all-features` instead (design section 1.4).
 
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -86,12 +87,13 @@ fn gpui(network: bool, build: Build) -> Result<Status> {
             &["-p", "vsesvit", "-p", "vsesvit-helper", "--no-default-features", "--features", "gpui", "--release"],
             "vsesvit",
         )?,
-        Build::AllFeatures => testenv::cargo_build(&["--workspace", "--all-features"], "vsesvit")?,
+        // Without xtask itself: Windows cannot replace the xtask.exe that runs this.
+        Build::AllFeatures => testenv::cargo_build(&["--workspace", "--exclude", "xtask", "--all-features"], "vsesvit")?,
     };
-    // cef-dll-sys puts libcef beside the binary; Windows finds DLLs on PATH.
-    if let Some(bins) = program.parent() {
-        crate::probe::dlls_from(bins)?;
-    }
+    let bins = program.parent().ok_or("the browser has no folder")?;
+    stage_cef_runtime(bins)?;
+    // Windows finds DLLs on PATH as well as beside the program.
+    crate::probe::dlls_from(bins)?;
     let dir = match build {
         Build::Debug => "gpui",
         Build::Release => "gpui-release",
@@ -101,6 +103,39 @@ fn gpui(network: bool, build: Build) -> Result<Status> {
     selftest(Flavour::Gpui, program, out_dir, network)
 }
 
+/// The CEF runtime beside the browser, as cef-dll-sys's build script copies it: a build restored
+/// from a cache (CI's rust-cache keeps `deps/`, not the files beside the binaries) has the binary
+/// without it. The setuid `chrome-sandbox` is never copied: making it is root's (CI) or the
+/// package's job, and a copy here would replace a setuid one with a plain file.
+fn stage_cef_runtime(bins: &Path) -> Result {
+    let library = if cfg!(windows) { "libcef.dll" } else { "libcef.so" };
+    if bins.join(library).is_file() {
+        return Ok(());
+    }
+    let cef_path = std::env::var_os("CEF_PATH").ok_or(format!("{library} is not beside the browser and CEF_PATH is not set"))?;
+    let dist = cef_dist(Path::new(&cef_path)).ok_or(format!("no CEF distribution under {}", Path::new(&cef_path).display()))?;
+    eprintln!("selftest: copying the CEF runtime from {} to {}", dist.display(), bins.display());
+    for (from, to) in [(dist.clone(), bins.to_path_buf()), (dist.join("locales"), bins.join("locales"))] {
+        std::fs::create_dir_all(&to).map_err(|e| format!("{}: {e}", to.display()))?;
+        let entries = std::fs::read_dir(&from).map_err(|e| format!("{}: {e}", from.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            if !entry.path().is_file() || name == "chrome-sandbox" {
+                continue;
+            }
+            std::fs::copy(entry.path(), to.join(&name)).map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// `CEF_PATH/<version>/cef_<os>_<arch>`, the folder cef-dll-sys unpacks and copies from.
+fn cef_dist(cef_path: &Path) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "cef_windows_x86_64" } else { "cef_linux_x86_64" };
+    std::fs::read_dir(cef_path).ok()?.filter_map(|e| e.ok()).map(|e| e.path().join(name)).find(|dist| dist.is_dir())
+}
+
 fn winui(network: bool) -> Result<Status> {
     let program = testenv::cargo_build(&["-p", "vsesvit"], "vsesvit")?;
     let out_dir = crate::probe::fresh(workspace_root().join("target").join("selftest").join("winui"))?;
@@ -108,7 +143,7 @@ fn winui(network: bool) -> Result<Status> {
 }
 
 /// Runs `program --self-test OUT_DIR` in a fresh test environment and checks its report.
-fn selftest(flavour: Flavour, program: std::path::PathBuf, out_dir: std::path::PathBuf, network: bool) -> Result<Status> {
+fn selftest(flavour: Flavour, program: PathBuf, out_dir: PathBuf, network: bool) -> Result<Status> {
     let expected = checks::expected(flavour, network);
     let mut args: Vec<OsString> = vec!["--self-test".into(), out_dir.clone().into_os_string()];
     if network {
@@ -194,6 +229,16 @@ mod tests {
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_cef_runtime_comes_from_the_distribution_cef_dll_sys_unpacked() {
+        let root = std::env::temp_dir().join(format!("xtask-cef-{}", std::process::id()));
+        let dist = root.join("cef").join("154.0.34").join(if cfg!(windows) { "cef_windows_x86_64" } else { "cef_linux_x86_64" });
+        std::fs::create_dir_all(dist.join("locales")).unwrap();
+        assert_eq!(cef_dist(&root.join("cef")), Some(dist.clone()));
+        assert_eq!(cef_dist(&root.join("nothing")), None);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
