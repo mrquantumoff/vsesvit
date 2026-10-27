@@ -97,6 +97,22 @@ impl Toolbar {
         self.edited
     }
 
+    /// What the field shows.
+    pub fn address_text(&self, cx: &gpui::App) -> String {
+        self.address.read(cx).value().to_string()
+    }
+
+    /// Whether the field has GPUI's keyboard focus.
+    pub fn address_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        gpui::Focusable::focus_handle(self.address.read(cx), cx).is_focused(window)
+    }
+
+    /// Puts `text` in the field as if it had been typed there.
+    pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_text(text.to_owned(), window, cx);
+        self.edited = true;
+    }
+
     /// Gives the field the keyboard with its text selected (Ctrl+L, a blank tab).
     pub fn focus_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.address.update(cx, |address, cx| {

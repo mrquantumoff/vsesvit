@@ -248,6 +248,18 @@ impl BrowserWindow {
         self.surface.clone()
     }
 
+    /// Types `text` into the address field and submits it, as Enter there does (the self-test).
+    pub fn submit_address(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.toolbar.update(cx, |toolbar, cx| toolbar.type_text(text, window, cx));
+        self.navigate_to_typed(text, window, cx);
+    }
+
+    /// What the address field shows, and whether it has the keyboard (the self-test).
+    pub fn address(&self, window: &Window, cx: &App) -> (String, bool) {
+        let toolbar = self.toolbar.read(cx);
+        (toolbar.address_text(cx), toolbar.address_focused(window, cx))
+    }
+
     fn selected_tab(&self, cx: &App) -> Option<Entity<Tab>> {
         let id = self.tabs.read(cx).selected()?;
         self.state.upgrade()?.read(cx).tab(id)
@@ -305,6 +317,8 @@ impl BrowserWindow {
 
     /// The address field gets the keyboard, whether or not the window is active yet.
     pub(super) fn address_takes_keyboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A page promised the keyboard at its next layout (a typed navigation just before) loses it.
+        self.page.give_keyboard_to_chrome();
         engine_bridge::focus(cx).chrome_wants_keyboard(self.gpui_id);
         self.toolbar.update(cx, |toolbar, cx| toolbar.focus_address(window, cx));
     }

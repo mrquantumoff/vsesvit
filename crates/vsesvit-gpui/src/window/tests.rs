@@ -405,6 +405,24 @@ fn a_transparent_window_paints_nothing_over_the_page(cx: &mut TestAppContext) {
     }
 }
 
+#[gpui::test]
+fn the_address_field_keeps_the_keyboard_it_took_right_after_a_typed_navigation(cx: &mut TestAppContext) {
+    let rig = rig(cx, "focus-typed-then-address", Setup::default());
+    let window = rig.windows(cx)[0];
+    rig.activate(cx, window);
+    let page = rig.tabs(cx, window)[0];
+    let handle = rig.handle(cx, window).downcast::<BrowserWindow>().expect("a browser window");
+    handle
+        .update(cx, |view, window, cx| {
+            view.submit_address("https://typed.test/", window, cx);
+            view.address_takes_keyboard(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let focus = cx.update(|cx| engine_bridge::focus(cx));
+    assert_eq!(focus.published(page).map(|p| p.keyboard), Some(KeyboardOwner::Chrome), "the page's next layout took it back");
+}
+
 fn inset(b: Bounds<gpui::Pixels>, by: f32) -> Bounds<gpui::Pixels> {
     Bounds { origin: gpui::point(b.origin.x + px(by), b.origin.y + px(by)), size: gpui::size(b.size.width - px(2. * by), b.size.height - px(2. * by)) }
 }
