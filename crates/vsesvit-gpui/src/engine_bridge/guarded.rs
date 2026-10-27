@@ -5,8 +5,8 @@
 //! `load`, `load_html`, `reload`, `go_back` and `go_forward`. Focus itself goes through [`Focus`]:
 //! `focus_page` and `blur_page` ask the policy, and `set_page_focus` is the policy's alone.
 //!
-//! `test_shutdown` is not forwarded, so it answers `Unsupported` (the trait's default): the trait has it
-//! only with `vsesvit-engine/self-test`, which this crate's features do not turn on yet (W1.8).
+//! `test_shutdown` is forwarded only with this crate's `self-test` feature; without it the trait's
+//! default answers `Unsupported`, so a shutdown check cannot pass by accident.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -268,5 +268,10 @@ impl Engine for GuardedEngine {
 
     fn close_foreign(&self, id: ForeignId) {
         self.inner.close_foreign(id)
+    }
+
+    #[cfg(feature = "self-test")]
+    fn test_shutdown(&self, test: vsesvit_engine::TestShutdown) -> Result<(), EngineError> {
+        self.inner.test_shutdown(test)
     }
 }

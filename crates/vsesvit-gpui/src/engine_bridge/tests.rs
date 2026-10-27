@@ -569,3 +569,15 @@ fn a_halted_pump_leaves_its_driver_in_the_slot(cx: &mut TestAppContext) {
     assert_eq!(fake.pump_steps(), halted, "no step after halt");
     assert!(driver.borrow().is_some(), "the driver stays for shutdown");
 }
+
+/// The shutdown checks arm the engine through the bridge's engine, as every other caller holds it.
+#[cfg(feature = "self-test")]
+#[gpui::test]
+fn the_shutdown_test_cases_reach_the_engine(cx: &mut TestAppContext) {
+    use vsesvit_engine::TestShutdown;
+    let rig = rig(cx);
+    let tab = TabId::next();
+    rig.fake.take_commands();
+    rig.engine.test_shutdown(TestShutdown::PinOpen { tab }).unwrap();
+    assert_eq!(rig.fake.commands(), [FakeCommand::TestShutdown(TestShutdown::PinOpen { tab })]);
+}

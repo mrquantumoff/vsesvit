@@ -19,7 +19,9 @@ default = ["gtk", "winui"]
 gtk = ["dep:vsesvit-gtk"]
 # The Windows shell; nothing on Linux.
 winui = ["dep:vsesvit-winui"]
-gpui = ["dep:vsesvit-gpui", "dep:vsesvit-cef"]
+# The GPUI shell runs its self-test (vsesvit-gpui's default `self-test`), whose shutdown checks arm the
+# engine through `Engine::test_shutdown`.
+gpui = ["dep:vsesvit-gpui", "dep:vsesvit-cef", "vsesvit-cef/self-test"]
 
 [dependencies]
 vsesvit-gpui = { workspace = true, optional = true }
