@@ -24,8 +24,10 @@ const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
 /// How long a process gets to clean up after SIGTERM (Xvfb removes its lock file).
 const STOP_GRACE: Duration = Duration::from_secs(3);
-/// Passed through from the caller's environment; nothing else is.
-const PASSED: &[&str] = &["PATH", "RUST_BACKTRACE", "RUST_LOG"];
+/// Passed through from the caller's environment; nothing else is. `CHROME_DEVEL_SANDBOX` names a
+/// setuid sandbox helper outside the build tree, where a nosuid mount (CI's workspace) cannot
+/// strip its setuid bit.
+const PASSED: &[&str] = &["PATH", "RUST_BACKTRACE", "RUST_LOG", "CHROME_DEVEL_SANDBOX"];
 const COOKIE_NAME: &[u8] = b"MIT-MAGIC-COOKIE-1";
 
 unsafe extern "C" {

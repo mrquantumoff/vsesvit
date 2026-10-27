@@ -73,16 +73,18 @@ jobs:
           useradd --create-home tester
           cargo build -p vsesvit -p vsesvit-helper --no-default-features --features gpui
           chmod -R a+rwX "$GITHUB_WORKSPACE" "$HOME/.cargo" "$HOME/.rustup"
-          install -o root -g root -m 4755 "$(echo "$CEF_PATH"/*/cef_linux_x86_64)/chrome-sandbox" target/debug/chrome-sandbox
+          # Outside the bind-mounted workspace, whose mount may drop the setuid bit; Chromium takes it
+          # from CHROME_DEVEL_SANDBOX.
+          install -o root -g root -m 4755 "$(echo "$CEF_PATH"/*/cef_linux_x86_64)/chrome-sandbox" /usr/local/sbin/chrome-devel-sandbox
       - name: Self-test
         run: |
           runuser -u tester -- env HOME=/home/tester CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" \
-            PATH="$HOME/.cargo/bin:$PATH" CEF_PATH="$CEF_PATH" cargo xtask selftest --flavour gpui
+            PATH="$HOME/.cargo/bin:$PATH" CEF_PATH="$CEF_PATH" CHROME_DEVEL_SANDBOX=/usr/local/sbin/chrome-devel-sandbox cargo xtask selftest --flavour gpui
       # The binary of an --all-features build of the workspace runs the same checks (design section 1.4).
       - name: Self-test, all features
         run: |
           runuser -u tester -- env HOME=/home/tester CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" \
-            PATH="$HOME/.cargo/bin:$PATH" CEF_PATH="$CEF_PATH" cargo xtask selftest --flavour gpui --all-features
+            PATH="$HOME/.cargo/bin:$PATH" CEF_PATH="$CEF_PATH" CHROME_DEVEL_SANDBOX=/usr/local/sbin/chrome-devel-sandbox cargo xtask selftest --flavour gpui --all-features
 
   windows-winui:
     runs-on: windows-latest
