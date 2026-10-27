@@ -17,10 +17,11 @@ use gpui_component::ActiveTheme as _;
 use vsesvit_core::prefs::keys;
 use vsesvit_core::private::Browsing;
 use vsesvit_core::profiles;
-use vsesvit_engine::{CloseMode, InitialPage, NativeHandle, OpenDisposition, RoutedKey, TabId, Url};
+use vsesvit_engine::{CloseMode, InitialPage, KeyboardOwner, NativeHandle, OpenDisposition, RoutedKey, TabId, Url};
 
 use crate::app::shell::Shell;
 use crate::engine_bridge::{self, SharedSurface, keymap};
+use crate::overlay::{OverlayEvent, OverlayHost};
 use crate::platform::{PlatformError, SurfaceOps};
 use crate::state::{BrowserState, BrowserStateEvent, WindowId};
 use crate::tab::model::{Insert, TabListEvent, TabListModel};
@@ -142,6 +143,10 @@ pub struct BrowserWindow {
     state: WeakEntity<BrowserState>,
     tabs: Entity<TabListModel>,
     toolbar: Entity<Toolbar>,
+    /// Everything that may cover the page: menus, bubbles, suggestions, toasts.
+    overlays: Entity<OverlayHost>,
+    /// Who had the keyboard when the overlays took it.
+    keyboard_before_overlays: Option<KeyboardOwner>,
     focus: FocusHandle,
     /// The content host every page of this window lives in; `None` once detached, or if it could not
     /// be made.
@@ -184,6 +189,7 @@ impl BrowserWindow {
         }
         let position = Shell::core(cx).borrow_mut().prefs().get(&keys::TABS_POSITION);
         let toolbar = cx.new(|cx| Toolbar::new(browsing, window, cx));
+        let overlays = cx.new(|cx| OverlayHost::new(surface.clone(), window, cx));
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             this.update(cx, |this, cx| this.should_close(window, cx)).unwrap_or(true)
@@ -191,6 +197,7 @@ impl BrowserWindow {
         let subscriptions = vec![
             cx.subscribe_in(&tabs, window, Self::list_changed),
             cx.subscribe_in(&toolbar, window, Self::toolbar_event),
+            cx.subscribe_in(&overlays, window, Self::overlay_event),
             cx.subscribe_in(&state, window, Self::state_event),
             cx.observe_window_activation(window, Self::activation_changed),
             cx.observe_window_bounds(window, Self::bounds_changed),
@@ -201,6 +208,8 @@ impl BrowserWindow {
             state: state.downgrade(),
             tabs: tabs.clone(),
             toolbar,
+            overlays,
+            keyboard_before_overlays: None,
             focus: cx.focus_handle(),
             surface,
             gpui_id,
@@ -376,6 +385,32 @@ impl BrowserWindow {
         self.page_takes_keyboard(tab.read(cx).id(), window, cx);
     }
 
+    /// The overlays' holes moved, so the page's area for presses did; an interactive overlay took
+    /// the keyboard, or the last one gave it back to whoever had it.
+    fn overlay_event(&mut self, _: &Entity<OverlayHost>, event: &OverlayEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = engine_bridge::focus(cx);
+        let selected = self.tabs.read(cx).selected();
+        match event {
+            OverlayEvent::HolesChanged => self.holes_changed(window, cx),
+            OverlayEvent::KeyboardTaken => {
+                self.keyboard_before_overlays = selected.and_then(|tab| focus.published(tab)).map(|p| p.keyboard);
+                focus.overlay_wants_keyboard(self.gpui_id);
+            }
+            OverlayEvent::KeyboardReturned => match (self.keyboard_before_overlays.take(), selected) {
+                (Some(KeyboardOwner::Page), Some(tab)) => {
+                    window.focus(&self.focus, cx);
+                    focus.page_wants_keyboard(tab);
+                }
+                _ => focus.chrome_wants_keyboard(self.gpui_id),
+            },
+        }
+    }
+
+    /// The window's overlay host, for features that open overlays.
+    pub fn overlays(&self) -> &Entity<OverlayHost> {
+        &self.overlays
+    }
+
     fn state_event(&mut self, _: &Entity<BrowserState>, event: &BrowserStateEvent, _: &mut Window, cx: &mut Context<Self>) {
         match event {
             BrowserStateEvent::PrefsChanged(changed) if changed.iter().any(|k| k == keys::TABS_POSITION.key) => {
@@ -529,7 +564,8 @@ impl Render for BrowserWindow {
                     .map(|d| if right { d.flex_row_reverse() } else { d.flex_row() })
                     .when_some(side, |d, side| d.child(side))
                     .child(page),
-            );
+            )
+            .child(self.overlays.clone());
         actions::register(root, cx)
     }
 }

@@ -72,6 +72,8 @@ fn rig(cx: &mut TestAppContext, name: &str, setup: Setup) -> Rig {
     let location = ProfileLocation { root: root.clone(), home: setup.home };
     let state = cx.update(|cx| {
         crate::theme::init(cx);
+        let presses = desktop.clone();
+        crate::overlay::install(move || presses.pointer_presses(), cx);
         let started = engine_bridge::start(cx, fake.clone(), events, driver.clone(), desktop.clone(), Rc::new(Routes::default()));
         let pump = started.pump;
         let parts = QuitParts {
@@ -425,4 +427,39 @@ fn the_address_field_keeps_the_keyboard_it_took_right_after_a_typed_navigation(c
 
 fn inset(b: Bounds<gpui::Pixels>, by: f32) -> Bounds<gpui::Pixels> {
     Bounds { origin: gpui::point(b.origin.x + px(by), b.origin.y + px(by)), size: gpui::size(b.size.width - px(2. * by), b.size.height - px(2. * by)) }
+}
+
+#[gpui::test]
+fn an_overlay_over_the_page_cuts_a_hole_and_borrows_the_keyboard_from_it(cx: &mut TestAppContext) {
+    let rig = rig(cx, "overlay", Setup::default());
+    let window = rig.windows(cx)[0];
+    rig.activate(cx, window);
+    let page = rig.tabs(cx, window)[0];
+    let focus = cx.update(|cx| engine_bridge::focus(cx));
+    assert_eq!(rig.fake.focused(), Some(page));
+    let view = rig.view(cx, window);
+    let host = view.read_with(cx, |w, _| w.overlays().clone());
+    let content = view.read_with(cx, |w, _| w.page_slot().content()).expect("laid out");
+    let at = gpui::point(px(content.x as f32 + 100.), px(content.y as f32 + 100.));
+    let menu = crate::overlay::menu::Menu::new().item(crate::overlay::menu::Command::run("One", |_, _| {}));
+    let vcx = rig.visual(cx, window);
+    let id = vcx.update(|window, cx| {
+        host.update(cx, |h, cx| h.open_menu(menu, crate::overlay::Anchor::Point(at), crate::overlay::Placement::AtPoint, None, window, cx))
+    });
+    cx.run_until_parked();
+
+    assert_eq!(focus.published(page).map(|p| p.keyboard), Some(KeyboardOwner::Overlay), "the menu has the keyboard");
+    let holes = host.read_with(cx, |h, _| h.holes().to_vec());
+    assert_eq!(holes.len(), 1);
+    let surface = view.read_with(cx, |w, _| w.surface()).unwrap();
+    assert_eq!(surface.borrow().as_any().downcast_ref::<FakeSurface>().unwrap().holes(), holes.as_slice(), "cut out of the content host");
+    let area = view.read_with(cx, |w, _| w.page_slot().area().cloned()).expect("an area");
+    assert_eq!(area.holes, host.read_with(cx, |h, _| h.screen_holes().to_vec()), "presses on the menu are not the page's");
+
+    rig.visual(cx, window).simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!host.read_with(cx, |h, _| h.is_open(id)));
+    assert_eq!(focus.published(page).map(|p| p.keyboard), Some(KeyboardOwner::Page), "the keyboard went back to the page");
+    assert_eq!(rig.fake.focused(), Some(page));
+    assert!(view.read_with(cx, |w, _| w.page_slot().area().unwrap().holes.is_empty()));
 }

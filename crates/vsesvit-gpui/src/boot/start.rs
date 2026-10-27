@@ -62,6 +62,8 @@ pub fn start(args: StartArgs, cx: &mut App) {
         }
     };
     cx.set_global(Booted { desktop: desktop.clone() });
+    let presses = desktop.clone();
+    crate::overlay::install(move || presses.pointer_presses(), cx);
     let started = crate::engine_bridge::start(cx, args.engine, args.events, args.driver.clone(), desktop.clone(), Rc::new(Routes::default()));
     let pump = started.pump;
     quit::install(

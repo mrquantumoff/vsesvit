@@ -357,6 +357,16 @@ impl OverlayHost {
         cx.notify();
     }
 
+    /// The window is going: every overlay closes with `WindowClosed` and the host lets go of the
+    /// surface, which the window detaches next.
+    pub fn window_closing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let roots: Vec<OverlayId> = self.book.iter().filter(|e| e.parent.is_none()).map(|e| e.id).collect();
+        for root in roots {
+            self.close_with(root, DismissReason::WindowClosed, window, cx);
+        }
+        self.surface = None;
+    }
+
     /// The overlay a menu chain starts from.
     pub fn root_of(&self, id: OverlayId) -> OverlayId {
         self.book.root_of(id)

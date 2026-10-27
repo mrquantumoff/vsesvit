@@ -56,6 +56,11 @@ impl PageSlot {
     pub fn content(&self) -> Option<PhysRect> {
         self.content
     }
+
+    /// What the focus policy was last told about the page's place on the screen.
+    pub fn area(&self) -> Option<&PageArea> {
+        self.area.as_ref()
+    }
 }
 
 /// The slot's element. It paints `fill` under the page, or nothing at all when the window must stay
@@ -216,10 +221,20 @@ impl BrowserWindow {
             y: (f32::from(origin.y) * scale).round() as i32 + content.y,
             ..content
         };
-        let area = self.page.shown.zip(self.toplevel).map(|(_, toplevel)| PageArea { toplevel, rect, holes: Vec::new() });
+        let holes = self.overlays.read(cx).screen_holes().to_vec();
+        let area = self.page.shown.zip(self.toplevel).map(|(_, toplevel)| PageArea { toplevel, rect, holes });
         if area != self.page.area || shown_changed {
             self.page.area = area.clone();
             engine_bridge::focus(cx).set_page_area(self.gpui_id, area);
+        }
+    }
+}
+
+impl BrowserWindow {
+    /// The overlays' holes changed: the focus policy learns the page's area without them.
+    pub(super) fn holes_changed(&mut self, window: &Window, cx: &App) {
+        if let (Some(content), Some(scale)) = (self.page.content, self.page.scale) {
+            self.publish_page_area(content, scale, false, window, cx);
         }
     }
 }

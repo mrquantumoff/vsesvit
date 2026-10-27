@@ -58,6 +58,7 @@ impl BrowserWindow {
         }
         self.closed = true;
         engine_bridge::focus(cx).remove_window(self.gpui_id);
+        self.overlays.update(cx, |overlays, cx| overlays.window_closing(window, cx));
         if let Some(surface) = self.surface.take() {
             match std::rc::Rc::try_unwrap(surface) {
                 Ok(surface) => surface.into_inner().detach(),
