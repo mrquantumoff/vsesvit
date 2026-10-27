@@ -113,7 +113,9 @@ pub trait NativeSurface: Sized + 'static {
     fn open_aux(&mut self, rect: PhysRect) -> Result<AuxHost, PlatformError>;
     fn set_aux_rect(&mut self, aux: &AuxHost, rect: PhysRect);
     fn close_aux(&mut self, aux: AuxHost);
-    /// The whole window, page included.
+    /// The whole window, page included. Call it between GPUI updates: on Windows `PrintWindow` sends
+    /// the window a paint message, and GPUI's window procedure answers it by updating the app, which
+    /// an update in progress holds ("RefCell already borrowed").
     fn capture(&self) -> Result<image::RgbaImage, PlatformError>;
     /// After every page of this window closed or was parked.
     fn detach(self);
@@ -133,6 +135,7 @@ pub trait SurfaceOps: 'static {
     fn open_aux(&mut self, rect: PhysRect) -> Result<AuxHost, PlatformError>;
     fn set_aux_rect(&mut self, aux: &AuxHost, rect: PhysRect);
     fn close_aux(&mut self, aux: AuxHost);
+    /// `NativeSurface::capture`: between GPUI updates only.
     fn capture(&self) -> Result<image::RgbaImage, PlatformError>;
     fn detach(self: Box<Self>);
     /// For `move_page_to` and for tests that inspect a `FakeSurface`.
