@@ -517,11 +517,9 @@ mod native {
             let Ok((x, y)) = self.root_point(at) else { return Target::Other };
             let mut w = self.root;
             let mut path = Vec::new();
-            loop {
-                let Some(r) = self.conn.translate_coordinates(self.root, w, x, y).ok().and_then(|c| c.reply().ok()) else { break };
-                if r.child == x11rb::NONE {
-                    break;
-                }
+            while let Some(r) = self.conn.translate_coordinates(self.root, w, x, y).ok().and_then(|c| c.reply().ok())
+                && r.child != x11rb::NONE
+            {
                 w = r.child;
                 path.push(w);
             }
