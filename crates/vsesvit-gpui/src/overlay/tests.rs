@@ -171,14 +171,14 @@ fn the_holes_follow_what_was_drawn(cx: &mut TestAppContext) {
     let corner = (f32::from(radius) * scale).ceil() as u32;
     let want: Vec<Hole> =
         rounded(crate::window::page_area::physical(rect, scale), corner).into_iter().map(|rect| Hole { rect, interactive: true }).collect();
-    assert_eq!(want.len(), 2, "the theme rounds its panels");
+    assert!(want.len() > 1, "the theme rounds its panels");
     assert_eq!(rig.holes(), want);
     assert_eq!(rig.host.read_with(cx, |h, _| h.holes().to_vec()), want);
-    assert_eq!(rig.host.read_with(cx, |h, _| h.screen_holes().len()), 2);
+    assert_eq!(rig.host.read_with(cx, |h, _| h.screen_holes().len()), want.len());
 
     let tip = rig.open(cx, |_, cx| OverlaySpec::new(OverlayKind::Tooltip, button(), Placement::Below(Align::End), cx.new(|_| Panel)).pass_through());
-    assert_eq!(rig.holes().iter().filter(|h| !h.interactive).count(), 2, "a pass-through overlay is a hole that takes no clicks");
-    assert_eq!(rig.host.read_with(cx, |h, _| h.screen_holes().len()), 2, "and the page keeps its presses there");
+    assert_eq!(rig.holes().iter().filter(|h| !h.interactive).count(), want.len(), "a pass-through overlay is a hole that takes no clicks");
+    assert_eq!(rig.host.read_with(cx, |h, _| h.screen_holes().len()), want.len(), "and the page keeps its presses there");
     rig.close(cx, tip);
     rig.close(cx, id);
     assert!(rig.holes().is_empty(), "the content host is whole again");
@@ -349,7 +349,15 @@ fn hovering_a_submenu_row_opens_it_beside_and_a_click_inside_runs_it(cx: &mut Te
     assert_eq!(info[1].parent, Some(id));
     let (menu_rect, sub_rect) = (rig.rect(cx, id), rig.rect(cx, sub));
     assert!(sub_rect.left() > menu_rect.center().x && sub_rect.left() >= menu_rect.right() - px(8.), "beside the menu: {menu_rect:?} {sub_rect:?}");
-    assert_eq!(rig.holes().len(), 4, "two rectangles per panel, none between them");
+    let holes = rig.holes();
+    let (menu_rect, sub_rect) = (rig.rect(cx, id), rig.rect(cx, sub));
+    let scale = cx.update(|w, _| w.scale_factor());
+    let inside = |h: &Hole, r: Bounds<Pixels>| {
+        let p = crate::window::page_area::physical(r, scale);
+        h.rect.x >= p.x && h.rect.y >= p.y && h.rect.x + h.rect.width as i32 <= p.x + p.width as i32 && h.rect.y + h.rect.height as i32 <= p.y + p.height as i32
+    };
+    assert!(holes.iter().all(|h| inside(h, menu_rect) || inside(h, sub_rect)), "the holes cover the panels, nothing between them");
+    assert!(holes.iter().any(|h| inside(h, menu_rect)) && holes.iter().any(|h| inside(h, sub_rect)));
 
     let hundred = rig.row(cx, sub, 1);
     rig.screen_press(cx, hundred);
@@ -398,10 +406,13 @@ fn the_host_of_a_window_is_found_from_the_window(cx: &mut TestAppContext) {
 #[test]
 fn a_rounded_panel_leaves_its_corners_to_the_page() {
     let rect = PhysRect { x: 10, y: 20, width: 100, height: 50 };
-    assert_eq!(
-        rounded(rect, 6),
-        [PhysRect { x: 16, y: 20, width: 88, height: 50 }, PhysRect { x: 10, y: 26, width: 100, height: 38 }]
-    );
+    let holes = rounded(rect, 6);
+    let covers = |x: i32, y: i32| holes.iter().any(|h| x >= h.x && y >= h.y && x < h.x + h.width as i32 && y < h.y + h.height as i32);
+    assert!(!covers(10, 20) && !covers(109, 20) && !covers(10, 69) && !covers(109, 69), "the four corner pixels are the page's");
+    assert!(covers(16, 20) && covers(10, 26) && covers(60, 45) && covers(103, 69), "the rest is the panel's");
+    let area: u32 = holes.iter().map(|h| h.width * h.height).sum();
+    assert!(area < 100 * 50 && area > 100 * 50 - 4 * 36, "{area}: only the corners' outsides are left out");
+    assert!(holes.len() < 2 * 6 + 1 + 1, "runs of rows share a rectangle: {holes:?}");
     assert_eq!(rounded(rect, 0), [rect]);
     assert_eq!(rounded(PhysRect { width: 8, ..rect }, 6), [PhysRect { width: 8, ..rect }], "too small to round");
 }

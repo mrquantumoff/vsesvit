@@ -506,17 +506,34 @@ impl OverlayHost {
     }
 }
 
-/// The holes for a panel with rounded corners: two rectangles that leave its four corner squares to
-/// the page, which shows there instead of the window's background.
+/// The holes for a panel with corners of radius `corner`: the panel less what lies outside its
+/// rounded corners, as a staircase of rows (one rectangle per run of rows with the same inset), so
+/// the page shows there. On X11 the shape cuts paint too, so a plain rectangle would show the
+/// window's own background in the corners; on Windows only the input region follows.
 fn rounded(rect: PhysRect, corner: u32) -> Vec<PhysRect> {
     if corner == 0 || rect.width <= corner * 2 || rect.height <= corner * 2 {
         return vec![rect];
     }
-    let c = corner as i32;
-    vec![
-        PhysRect { x: rect.x + c, y: rect.y, width: rect.width - corner * 2, height: rect.height },
-        PhysRect { x: rect.x, y: rect.y + c, width: rect.width, height: rect.height - corner * 2 },
-    ]
+    let r = corner as f32;
+    let inset = |row: u32| {
+        let dy = r - row as f32 - 0.5;
+        (r - (r * r - dy * dy).max(0.).sqrt()).round() as u32
+    };
+    let mut top: Vec<(u32, u32, u32)> = Vec::new();
+    for row in 0..corner {
+        match top.last_mut() {
+            Some((_, rows, last)) if *last == inset(row) => *rows += 1,
+            _ => top.push((row, 1, inset(row))),
+        }
+    }
+    let band = |y: i32, height: u32, inset: u32| PhysRect { x: rect.x + inset as i32, y, width: rect.width - inset * 2, height };
+    let middle = band(rect.y + corner as i32, rect.height - corner * 2, 0);
+    let bottom = rect.y + rect.height as i32;
+    top.iter()
+        .map(|&(row, rows, inset)| band(rect.y + row as i32, rows, inset))
+        .chain(std::iter::once(middle))
+        .chain(top.iter().map(|&(row, rows, inset)| band(bottom - (row + rows) as i32, rows, inset)))
+        .collect()
 }
 
 /// The window's client origin on the screen, in physical pixels, rounded as the page's rectangle is.
