@@ -33,6 +33,8 @@ use gpui::{
     Render, Styled as _, Subscription, WeakEntity, Window, canvas, deferred, div, point, px,
 };
 
+use gpui_component::ActiveTheme as _;
+
 use crate::engine_bridge::SharedSurface;
 use crate::platform::{Hole, PhysPoint, PhysRect};
 
@@ -454,10 +456,12 @@ impl OverlayHost {
     fn frame_done(&mut self, drawn: Vec<(OverlayId, Bounds<Pixels>)>, window: &mut Window, cx: &mut Context<Self>) {
         self.book.set_rects(&drawn);
         let scale = window.scale_factor();
+        let corner = (f32::from(cx.theme().radius) * scale).ceil() as u32;
         let holes: Vec<Hole> = self
             .book
             .iter()
-            .filter_map(|e| e.rect.map(|r| Hole { rect: crate::window::page_area::physical(r, scale), interactive: !e.payload.pass_through }))
+            .filter_map(|e| e.rect.map(|r| (crate::window::page_area::physical(r, scale), !e.payload.pass_through)))
+            .flat_map(|(rect, interactive)| rounded(rect, corner).into_iter().map(move |rect| Hole { rect, interactive }))
             .collect();
         if holes == self.holes {
             return;
@@ -500,6 +504,19 @@ impl OverlayHost {
             }
         }
     }
+}
+
+/// The holes for a panel with rounded corners: two rectangles that leave its four corner squares to
+/// the page, which shows there instead of the window's background.
+fn rounded(rect: PhysRect, corner: u32) -> Vec<PhysRect> {
+    if corner == 0 || rect.width <= corner * 2 || rect.height <= corner * 2 {
+        return vec![rect];
+    }
+    let c = corner as i32;
+    vec![
+        PhysRect { x: rect.x + c, y: rect.y, width: rect.width - corner * 2, height: rect.height },
+        PhysRect { x: rect.x, y: rect.y + c, width: rect.width, height: rect.height - corner * 2 },
+    ]
 }
 
 /// The window's client origin on the screen, in physical pixels, rounded as the page's rectangle is.

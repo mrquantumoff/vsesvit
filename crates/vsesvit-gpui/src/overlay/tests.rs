@@ -167,15 +167,18 @@ fn the_holes_follow_what_was_drawn(cx: &mut TestAppContext) {
     let id = rig.open(cx, panel(OverlayKind::Bubble));
     let rect = rig.rect(cx, id);
     assert_eq!(rect, Bounds { origin: point(px(20.), px(39.)), size: size(px(100.), px(50.)) }, "under the button");
-    let scale = cx.update(|window, _| window.scale_factor());
-    let want = Hole { rect: crate::window::page_area::physical(rect, scale), interactive: true };
-    assert_eq!(rig.holes(), [want]);
-    assert_eq!(rig.host.read_with(cx, |h, _| h.holes().to_vec()), [want]);
-    assert_eq!(rig.host.read_with(cx, |h, _| h.screen_holes().len()), 1);
+    let (scale, radius) = cx.update(|window, cx| (window.scale_factor(), gpui_component::ActiveTheme::theme(cx).radius));
+    let corner = (f32::from(radius) * scale).ceil() as u32;
+    let want: Vec<Hole> =
+        rounded(crate::window::page_area::physical(rect, scale), corner).into_iter().map(|rect| Hole { rect, interactive: true }).collect();
+    assert_eq!(want.len(), 2, "the theme rounds its panels");
+    assert_eq!(rig.holes(), want);
+    assert_eq!(rig.host.read_with(cx, |h, _| h.holes().to_vec()), want);
+    assert_eq!(rig.host.read_with(cx, |h, _| h.screen_holes().len()), 2);
 
     let tip = rig.open(cx, |_, cx| OverlaySpec::new(OverlayKind::Tooltip, button(), Placement::Below(Align::End), cx.new(|_| Panel)).pass_through());
-    assert_eq!(rig.holes().iter().filter(|h| !h.interactive).count(), 1, "a pass-through overlay is a hole that takes no clicks");
-    assert_eq!(rig.host.read_with(cx, |h, _| h.screen_holes().len()), 1, "and the page keeps its presses there");
+    assert_eq!(rig.holes().iter().filter(|h| !h.interactive).count(), 2, "a pass-through overlay is a hole that takes no clicks");
+    assert_eq!(rig.host.read_with(cx, |h, _| h.screen_holes().len()), 2, "and the page keeps its presses there");
     rig.close(cx, tip);
     rig.close(cx, id);
     assert!(rig.holes().is_empty(), "the content host is whole again");
@@ -346,7 +349,7 @@ fn hovering_a_submenu_row_opens_it_beside_and_a_click_inside_runs_it(cx: &mut Te
     assert_eq!(info[1].parent, Some(id));
     let (menu_rect, sub_rect) = (rig.rect(cx, id), rig.rect(cx, sub));
     assert!(sub_rect.left() > menu_rect.center().x && sub_rect.left() >= menu_rect.right() - px(8.), "beside the menu: {menu_rect:?} {sub_rect:?}");
-    assert_eq!(rig.holes().len(), 2, "one hole per panel");
+    assert_eq!(rig.holes().len(), 4, "two rectangles per panel, none between them");
 
     let hundred = rig.row(cx, sub, 1);
     rig.screen_press(cx, hundred);
@@ -390,4 +393,15 @@ fn the_host_of_a_window_is_found_from_the_window(cx: &mut TestAppContext) {
     let (rig, cx) = rig(cx);
     let found = cx.update(|window, cx| OverlayHost::of(window, cx));
     assert_eq!(found, Some(rig.host.clone()));
+}
+
+#[test]
+fn a_rounded_panel_leaves_its_corners_to_the_page() {
+    let rect = PhysRect { x: 10, y: 20, width: 100, height: 50 };
+    assert_eq!(
+        rounded(rect, 6),
+        [PhysRect { x: 16, y: 20, width: 88, height: 50 }, PhysRect { x: 10, y: 26, width: 100, height: 38 }]
+    );
+    assert_eq!(rounded(rect, 0), [rect]);
+    assert_eq!(rounded(PhysRect { width: 8, ..rect }, 6), [PhysRect { width: 8, ..rect }], "too small to round");
 }
